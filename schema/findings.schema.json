@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json",
+  "title": "Code Review — findings",
+  "description": "Structured output of an agentic PR review. The review agent emits this object (e.g. via a coding-agent CLI's structured-output mode, such as Claude Code's `--json-schema`, whose result lands in `.structured_output`); a deterministic commenter renders it into a sticky summary comment and inline PR review comments. Agent- and provider-agnostic: any model driven by a compatible CLI adapter may produce it. Kept free of $ref/$defs so the same file works for both JSON-Schema validators and CLI structured-output enforcement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "verdict", "findings"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "Markdown walkthrough of the change and the overall assessment; rendered as the body of the sticky summary comment."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "comment", "changes"],
+      "description": "Overall stance. Advisory only: a conforming commenter posts the GitHub review as COMMENT and never REQUEST_CHANGES, surfacing this value as a badge."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Zero or more specific findings. Each becomes one inline review comment when its line is inside the diff; otherwise it is demoted into the summary.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "start_line", "end_line", "severity", "title", "body"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Repo-relative file path the finding anchors to."
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-indexed first line of the anchored range (post-change state when side is RIGHT)."
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-indexed last line of the range; must be >= start_line. A suggestion replaces exactly start_line..end_line."
+          },
+          "side": {
+            "type": "string",
+            "enum": ["RIGHT", "LEFT"],
+            "default": "RIGHT",
+            "description": "RIGHT for added/changed lines, LEFT for removed lines; matches the GitHub pulls reviews API."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor", "nit"],
+            "description": "Used for grouping and for folding nits into a collapsed section."
+          },
+          "title": {
+            "type": "string",
+            "description": "One-line summary of the finding."
+          },
+          "body": {
+            "type": "string",
+            "description": "Markdown explanation; rendered as the inline comment body."
+          },
+          "suggestion": {
+            "type": ["string", "null"],
+            "description": "Optional exact replacement text for start_line..end_line, rendered as a GitHub suggestion block. null when there is no mechanical fix."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Optional 0..1 confidence; a commenter may suppress findings below a threshold to control noise."
+          }
+        }
+      }
+    }
+  }
+}

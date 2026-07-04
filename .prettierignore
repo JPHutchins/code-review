@@ -1,0 +1,9 @@
+dist/
+node_modules/
+schema/
+.mypy_cache/
+.camas/
+*.md
+*.yaml
+*.yml
+*.eta

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/triage.schema.json",
+  "title": "Code Review — security triage result",
+  "description": "Structured output of the data-only security triage phase. The triage agent reads the diff and surrounding source (never executes) and decides whether it is safe to apply and execute the diff in a CI runner that holds an API key. Inlined (no $ref/$defs/$id fragments) so it works for both JSON-Schema validators and CLI structured-output enforcement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["safe", "reasons"],
+  "properties": {
+    "safe": {
+      "type": "boolean",
+      "description": "Whether the diff is safe to apply and execute in a privileged CI runner."
+    },
+    "reasons": {
+      "type": "string",
+      "description": "Human-readable explanation of the triage decision, especially when unsafe."
+    }
+  }
+}

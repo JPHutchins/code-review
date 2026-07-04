@@ -1,0 +1,53 @@
+{
+  "schema_version": "0.2.0",
+  "summary": "Adds a retry wrapper comment and updates the config type. The change is focused and minimal.",
+  "verdict": "comment",
+  "findings": [
+    {
+      "path": "src/upload/config.ts",
+      "start_line": 4,
+      "end_line": 4,
+      "side": "RIGHT",
+      "severity": "major",
+      "code": "widened-type",
+      "code_url": "https://example.com/rules/widened-type",
+      "title": "timeout type changed from number to number | string",
+      "body": "Changing `timeout` from `number` to `number | string` widens the type. Callers that assumed a number will now need coercion. Consider adding a `parseTimeout` helper at the edge instead.",
+      "suggestion": "  timeout: number;",
+      "confidence": 0.85
+    },
+    {
+      "path": "src/upload/client.ts",
+      "start_line": 14,
+      "end_line": 14,
+      "side": "RIGHT",
+      "severity": "nit",
+      "title": "Vague comment: 'retry wrapper'",
+      "body": "The comment `// retry wrapper` doesn't explain what is wrapped or why. Consider a more descriptive comment linking to the retry logic above.",
+      "suggestion": null,
+      "confidence": 0.6
+    },
+    {
+      "path": "src/upload/__init__.py",
+      "start_line": 3,
+      "end_line": 3,
+      "side": "RIGHT",
+      "severity": "minor",
+      "title": "__all__ should include all public names",
+      "body": "If `LegacyClient` is still part of the public API, it should be in `__all__`. If not, remove the import.",
+      "suggestion": null,
+      "confidence": 0.7
+    },
+    {
+      "path": "src/legacy/old_code.ts",
+      "start_line": 999,
+      "end_line": 999,
+      "side": "RIGHT",
+      "severity": "minor",
+      "title": "This line is NOT in the diff — should be demoted",
+      "body": "This finding anchors to a line that is not in the diff. The inline command must demote it to the summary.",
+      "suggestion": null,
+      "confidence": 0.5
+    }
+  ]
+}

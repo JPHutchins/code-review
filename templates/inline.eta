@@ -1,0 +1,9 @@
+<%~ it.body %>
+
+<% if (it.suggestion !== null && it.suggestion !== undefined) { %>
+```suggestion
+<%~ it.suggestion %>
+```
+<% } %>
+
+<sub>🤖 AI-generated — advisory only</sub>

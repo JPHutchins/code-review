@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/prices.schema.json",
+  "title": "Code Review — price map",
+  "description": "A date-stamped map of per-model token prices (USD per 1M tokens) the commenter uses to recompute canonical cost from the abstract result envelope's `models` array (SPEC §6.1). The CLI's `vendor_cost_usd` is vendor-priced and wrong for non-Anthropic backends; this map is the recomputation source. Kept free of $ref/$defs to match the findings schema's house style (inlining is not strictly required here — the price map is never passed to a model — but consistency with findings.schema.json is preferred).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_updated", "_unit", "models"],
+  "properties": {
+    "_comment": {
+      "type": "string",
+      "description": "Human note; not parsed. Should remind that prices drift and point at the cost formula (SPEC §6.2)."
+    },
+    "_updated": {
+      "type": "string",
+      "description": "ISO date (YYYY-MM-DD) the prices were last verified against the provider's pricing page. Prices drift; keep this current."
+    },
+    "_unit": {
+      "type": "string",
+      "description": "Unit the prices are expressed in per 1M tokens, e.g. \"USD per 1M tokens\"."
+    },
+    "models": {
+      "type": "object",
+      "description": "Map of model identifier → per-token prices. Keys are the model identifiers as they appear in the result envelope's `models[].model`.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["in", "out", "cache_read", "cache_write"],
+        "properties": {
+          "in": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Price per 1M input tokens."
+          },
+          "out": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Price per 1M output tokens."
+          },
+          "cache_read": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Price per 1M cache-read tokens (prompt-cache hits)."
+          },
+          "cache_write": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Price per 1M cache-write tokens (prompt-cache population)."
+          }
+        }
+      }
+    }
+  }
+}

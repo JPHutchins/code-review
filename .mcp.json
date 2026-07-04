@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "camas": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "tasks.py", "mcp"]
+    }
+  }
+}

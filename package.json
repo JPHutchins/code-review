@@ -1,0 +1,43 @@
+{
+  "name": "code-review",
+  "version": "0.1.0",
+  "description": "Deterministic commenter for agentic PR review — render, inline-validate, cost, and validate findings JSON",
+  "type": "module",
+  "license": "MIT",
+  "author": "JP Hutchins",
+  "repository": "github:JPHutchins/code-review",
+  "bin": {
+    "code-review": "./dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "templates/",
+    "schema/"
+  ],
+  "scripts": {
+    "prepublishOnly": "npx tsup"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "citty": "^0.1.6",
+    "eta": "^3.5.0",
+    "fp-ts": "^2.16.9",
+    "io-ts": "^2.2.22",
+    "parse-diff": "^0.12.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.13.0",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.4",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.62.1",
+    "vitest": "^3.0.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -5,8 +5,13 @@
   "description": "Structured output of an agentic PR review. The review agent emits this object (e.g. via a coding-agent CLI's structured-output mode, such as Claude Code's `--json-schema`, whose result lands in `.structured_output`); a deterministic commenter renders it into a sticky summary comment and inline PR review comments. Agent- and provider-agnostic: any model driven by a compatible CLI adapter may produce it. Kept free of $ref/$defs so the same file works for both JSON-Schema validators and CLI structured-output enforcement.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "verdict", "findings"],
+  "required": ["schema_version", "summary", "verdict", "findings"],
   "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(\\d+)\\.(\\d+)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+      "description": "Semver version of this findings schema the object conforms to (e.g. \"0.1.0\"). Lets a commenter detect a version mismatch rather than silently dropping fields."
+    },
     "summary": {
       "type": "string",
       "description": "Markdown walkthrough of the change and the overall assessment; rendered as the body of the sticky summary comment."
@@ -36,7 +41,7 @@
           "end_line": {
             "type": "integer",
             "minimum": 1,
-            "description": "1-indexed last line of the range; must be >= start_line. A suggestion replaces exactly start_line..end_line."
+            "description": "1-indexed last line of the range; MUST be >= start_line. A suggestion replaces exactly start_line..end_line."
           },
           "side": {
             "type": "string",
@@ -49,6 +54,15 @@
             "enum": ["critical", "major", "minor", "nit"],
             "description": "Used for grouping and for folding nits into a collapsed section."
           },
+          "code": {
+            "type": "string",
+            "description": "Stable rule identifier (e.g. \"null-check-missing\") for rule-based filtering, suppression, and cross-run dedup."
+          },
+          "code_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL documenting the rule named by code."
+          },
           "title": {
             "type": "string",
             "description": "One-line summary of the finding."
@@ -59,13 +73,13 @@
           },
           "suggestion": {
             "type": ["string", "null"],
-            "description": "Optional exact replacement text for start_line..end_line, rendered as a GitHub suggestion block. null when there is no mechanical fix."
+            "description": "null = no mechanical fix (render no suggestion block); \"\" (empty string) = delete start_line..end_line (render an empty suggestion block); non-empty = exact replacement text for start_line..end_line (render a GitHub suggestion block). A suggestion spanning more than GitHub's single-block line limit is demoted to the summary."
           },
           "confidence": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Optional 0..1 confidence; a commenter may suppress findings below a threshold to control noise."
+            "description": "Optional 0..1 confidence; a commenter MAY suppress findings below a configurable threshold to control noise, but MUST NOT suppress a critical-severity finding on confidence alone."
           }
         }
       }

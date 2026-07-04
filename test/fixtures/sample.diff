@@ -1,0 +1,28 @@
+diff --git a/src/upload/__init__.py b/src/upload/__init__.py
+index 1f79eab..2a565ea 100644
+--- a/src/upload/__init__.py
++++ b/src/upload/__init__.py
+@@ -1 +1,3 @@
+ from .client import UploadClient
++
++__all__ = ['UploadClient']
+diff --git a/src/upload/client.ts b/src/upload/client.ts
+index b02920f..d80f582 100644
+--- a/src/upload/client.ts
++++ b/src/upload/client.ts
+@@ -10,3 +10,5 @@ export class UploadClient {
+     return 0;
+   }
+ }
++
++// retry wrapper
+diff --git a/src/upload/config.ts b/src/upload/config.ts
+index 9ba1ce6..d96864c 100644
+--- a/src/upload/config.ts
++++ b/src/upload/config.ts
+@@ -1,4 +1,4 @@
+ export interface UploadConfig {
+   retries: number;
+-  timeout: number;
++  timeout: number | string;
+ }

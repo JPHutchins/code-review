@@ -177,7 +177,7 @@ validators and CLI structured-output enforcement (e.g. `claude -p --json-schema`
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `schema_version` | `string` (semver) | yes | The findings-schema version this object conforms to (e.g. `"0.1.0"`); see §4.2. Lets a commenter detect a version mismatch rather than silently dropping fields. |
+| `schema_version` | `string` (semver) | yes | The findings-schema version this object conforms to (e.g. `"0.2.0"`); see §4.2. Lets a commenter detect a version mismatch rather than silently dropping fields. |
 | `summary` | `string` | yes | Markdown walkthrough of the change and overall assessment |
 | `verdict` | `enum[approve, comment, changes]` | yes | Overall stance; advisory only |
 | `findings` | `array` | yes | Zero or more specific findings |
@@ -188,7 +188,7 @@ Each finding:
 |---|---|---|---|
 | `path` | `string` | yes | Repo-relative file path |
 | `start_line` | `integer` (≥1) | yes | 1-indexed first line of the anchored range |
-| `end_line` | `integer` (≥1) | yes | 1-indexed last line; must be ≥ `start_line` |
+| `end_line` | `integer` (≥1) | yes | 1-indexed last line; must be ≥ `start_line` (enforced by the runtime codecs; see REQ-SC-6) |
 | `side` | `enum[RIGHT, LEFT]` | no (default: `RIGHT`) | RIGHT for added/changed lines, LEFT for removed lines |
 | `severity` | `enum[critical, major, minor, nit]` | yes | Used for grouping and noise folding |
 | `code` | `string` | no | Stable rule identifier (e.g. `"null-check-missing"`) for rule-based filtering, suppression, and cross-run dedup |
@@ -204,11 +204,15 @@ The schema follows [semver](https://semver.org). The **in-data conformance signa
 `schema_version` field (§4.1): a findings object declares which schema version it conforms to, so a
 commenter can detect a version mismatch rather than silently dropping or misinterpreting fields.
 
+A conforming commenter accepts a configurable allowlist of schema minors (currently `{0.2}`); a
+document declaring a minor outside the allowlist degrades per §5.5 rather than being silently
+accepted or rejected without explanation.
+
 The schema file's `$id` URI is the schema's own identity, distinct from a finding's
 `schema_version`:
 
 ```
-https://raw.githubusercontent.com/JPHutchins/code-review/v<version>/schema/findings.schema.json
+https://raw.githubusercontent.com/JPHutchins/code-review/schema-v<version>/schema/findings.schema.json
 ```
 
 The `$id` on a tagged release MUST carry that release's version tag — not `main`. The release
@@ -255,10 +259,11 @@ array. Each finding becomes one inline comment.
 
 Rules (these MUST be enforced by the commenter, not the agent):
 
-1. **In-diff only.** A finding whose `(path, start_line)` does not appear in any diff hunk MUST be
-   demoted into the summary body — not dropped, and not posted as an inline comment. Posting a
-   comment on a line absent from the diff causes the GitHub API to reject the entire review
-   (`422`).
+1. **In-diff only.** A finding whose `path` + anchored range endpoints (`start_line` AND `end_line`)
+   do not all appear in the diff hunks MUST be demoted into the summary body — not dropped, and not
+   posted as an inline comment. The inline comment anchors on `end_line` (with `start_line` for
+   multi-line ranges), and posting a comment where either endpoint is absent from the diff causes
+   the GitHub API to reject the entire review (`422`).
 2. **Use absolute `line` + `side`** (`RIGHT` for additions), plus `start_line`/`start_side` for
    multi-line ranges. The deprecated `position` (diff-offset) field MUST NOT be used.
 3. **`commit_id`** MUST be the reviewed head SHA (`workflow_run.head_sha`).
@@ -266,8 +271,9 @@ Rules (these MUST be enforced by the commenter, not the agent):
    `start_line..end_line`. A finding's `suggestion` field has three distinct semantics: `null` — no
    mechanical fix, render no block; `""` (empty string) — delete the range, render an empty
    suggestion block; non-empty — replace the range with the given text. A suggestion spanning more
-   than GitHub's single-block line limit MUST be demoted to the summary (with a warning) rather than
-   emitted and risk a 422 that rejects the whole review.
+   than GitHub's single-block line limit MUST be stripped (never emitted) and reported (a warning,
+   with the stripped suggestion noted in the summary); the inline comment MAY be retained without
+   the suggestion block. Emitting a payload that would 422 remains prohibited.
 5. **Event.** MUST post as `COMMENT`, never `REQUEST_CHANGES`. The review is advisory and MUST
    never block merge via branch protection.
 6. **Re-run hygiene.** When the head SHA differs from the reviewed-SHA marker, the commenter MUST
@@ -299,7 +305,7 @@ The commenter consumes two inputs produced by the review job (passed as files, n
 
 - **`findings`** — the findings object (§4) carried in the envelope's `findings` field (§6.1).
 - **`envelope`** — the full abstract result envelope (§6.1), source of `models`, `turns`,
-  `duration_ms`, and `schema_version`.
+  `duration_ms`, and `schema_version` (the reference CLI exposes this input as `--usage`).
 
 The reviewer's inputs (gathered by the review job, also as files) are: the diff (§3.1), the CI
 result, prior bot-authored review context (§3.3), failing-job logs when CI failed, and an optional
@@ -332,7 +338,7 @@ non-reference adapter need not mimic any other CLI's internal keys.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `schema_version` | `string` | yes | Semver version of the findings schema this object conforms to (e.g. `"0.1.0"`); see §4.2. |
+| `schema_version` | `string` | yes | Semver version of the findings schema this object conforms to (e.g. `"0.2.0"`); see §4.2. |
 | `findings` | `object` | yes | The findings object conforming to [§4](#4-findings-schema). |
 | `models` | `array<object>` | yes | Per-model token breakdown; subagent models appear as their own entries. |
 | `models[].model` | `string` | yes | Model identifier as the CLI reports it. |
@@ -346,7 +352,7 @@ non-reference adapter need not mimic any other CLI's internal keys.
 
 ```jsonc
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "findings": { /* …per §4… */ },
   "models": [
     { "model": "deepseek-v4-pro",   "input_tokens": 0, "output_tokens": 0,
@@ -365,6 +371,8 @@ A reference adapter's **native** envelope (e.g. Claude Code's `--output-format j
 shape by the adapter; the mapping is documented in [`docs/adapters.md`](docs/adapters.md). The
 commenter consumes the abstract shape only — it MUST NOT depend on any adapter's internal field
 names.
+
+When structured-output enforcement is imperfect or absent, a conforming adapter MUST deterministically recover `findings` via an ordered extraction ladder (agent-file → structured output → parsed result → fenced block, exactly-one-validating), preferring an agent-written, self-validated findings file over parsing free-text output.
 
 ### 6.2 Price map
 
@@ -421,6 +429,7 @@ side-effects such as turn count. Followed by an LLM Disclosure aside naming the 
 | PR diff prompts model to exfiltrate secrets | Preflight triage (§7.3); read-only token; egress lock; spend cap |
 | Model output contains injection payloads | Commenter is deterministic; all text JSON-escaped before API call |
 | Model output injects into the review itself (a finding body aimed at the maintainer — "ignore previous instructions", phishing links) | Findings `body` is untrusted text rendered as markdown; treated as any PR comment; GitHub's renderer strips scripts (defense-in-depth) |
+| Injected extra JSON block in agent output (append-a-block to smuggle a differing verdict) | Extraction ladder (§6.1) requires exactly-one validating candidate; ambiguous output fails closed (findings: non-zero exit; triage: `safe:false`) |
 | Fork PR redirects review to wrong target | PR number resolved from trusted `head_sha` + disambiguated by `head_branch`; CI event is not fork-controlled (§8.3) |
 | Prior review marker spoofed by fork author | Trust by author identity (bot login), not by marker (§5.3) |
 | CI job logs contain secrets | Logs are untrusted; passed as data, never interpolated |
@@ -442,7 +451,8 @@ triage SHOULD screen for:
 - Obfuscated or encoded payloads.
 
 The triage is a **heuristic first filter** — it reads the same untrusted diff an injection would ride
-in. The controls that actually hold are:
+in. The triage decision MUST fail closed: any ambiguous, malformed, or unrecoverable Phase 1 output
+is treated as `safe:false`, never defaulted to safe. The controls that actually hold are:
 
 1. **Read-only token** on the agent job.
 2. **Egress lock** (e.g. harden-runner `egress-policy: block` with an explicit allowlist).
@@ -514,7 +524,7 @@ jobs:
       - uses: actions/setup-node@v6
 
       # Lock egress BEFORE untrusted data touches the agent, AFTER trusted setup
-      - uses: step-security/harden-runner@v2
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
 
       # Phase 1: data-only security triage of the diff
       # Phase 2: if safe, agentic review → abstract envelope (§6.1)
@@ -538,7 +548,7 @@ jobs:
 
       # The comment job holds the WRITE token and runs NO agent, NO PR code —
       # so it MUST also have a locked egress allowlist (api.github.com + blob host only).
-      - uses: step-security/harden-runner@v2
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
 
       # Deterministic posting (resolves PR from head_sha, validates diff, renders, posts):
       #   code-review post --repo … --head-sha … --findings … --envelope … \
@@ -612,6 +622,10 @@ A conforming review agent MUST:
 - **REQ-RA-6:** Route behavior on the CI result — full review on pass, mechanic-only pass on fail,
   skip on cancelled/skipped/not-run (§3.1).
 
+A conforming review agent MAY satisfy REQ-RA-1's and REQ-RA-2's findings requirement by writing a
+self-validated findings file for the commenter's deterministic extraction ladder (§6.1) to recover,
+rather than relying solely on structured-output enforcement.
+
 A conforming review agent SHOULD:
 
 - **REC-RA-1:** Run a data-only security triage before executing PR code (§7.3).
@@ -623,8 +637,9 @@ A conforming commenter MUST:
 
 - **REQ-CO-1:** Post a sticky summary comment with the `<!-- code-review -->` marker (§5.1).
 - **REQ-CO-2:** Post an inline PR review as `COMMENT`, never `REQUEST_CHANGES` (§5.2).
-- **REQ-CO-3:** Validate each finding's line against the diff and demote out-of-diff findings into
-  the summary body (§5.2 rule 1).
+- **REQ-CO-3:** Validate each finding's anchored range endpoints (`start_line` AND `end_line`)
+  against the diff and demote a finding into the summary body if either endpoint is out-of-diff
+  (§5.2 rule 1).
 - **REQ-CO-4:** Use the modern absolute `line` + `side` API; never the deprecated `position` field
   (§5.2 rule 2).
 - **REQ-CO-5:** Trust the previous review by author identity (bot login), not by marker (§5.3).
@@ -644,9 +659,9 @@ A conforming commenter MUST:
   replacing exactly `start_line..end_line`; a `null` suggestion renders no block, an empty-string
   suggestion (`""`) renders a deletion block, and a non-empty suggestion renders a replacement
   (§4.1, §5.2.4).
-- **REQ-CO-13:** Treat a suggestion spanning more than GitHub's single-block line limit as a
-  demotion to the summary (with a warning) rather than letting the API reject the whole review —
-  never emit a review payload that will 422.
+- **REQ-CO-13:** Strip (never emit) a suggestion block that spans more than GitHub's single-block
+  line limit, report it (a warning, with the stripped suggestion noted in the summary), and MAY
+  retain the inline comment without it — never emit a review payload that will 422.
 
 A conforming commenter SHOULD:
 
@@ -680,8 +695,9 @@ A conforming findings schema MUST:
   MUST require `path`, `start_line`, `end_line`, `severity`, `title`, and `body`.
 - **REQ-SC-5:** Declare `suggestion` as `string | null` with `""` (delete) and non-empty (replace)
   both valid; `null` (no fix) is the only absence sentinel.
-- **REQ-SC-6:** Constrain `end_line >= start_line`; both `>= 1`. (The runtime codecs SHOULD enforce
-  this, not just integer ≥ 1.)
+- **REQ-SC-6:** Constrain both `start_line` and `end_line` `>= 1` in the schema; the schema MAY
+  approximate the cross-field `end_line >= start_line` invariant where the schema language allows,
+  but the invariant MUST be enforced by the runtime codecs.
 - **REQ-SC-7:** Allow an optional `code` (stable rule identifier) and `code_url` per finding, for
   rule-based filtering, suppression, cross-run dedup, and SARIF export.
 

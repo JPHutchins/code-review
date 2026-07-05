@@ -32,9 +32,10 @@ with spec-owned field names — not its CLI's internal keys:
 | `vendor_cost_usd` | The CLI's reported cost if any (Claude Code: `total_cost_usd`); nullable. The commenter recomputes canonical cost from `models` + the price map. |
 
 The reference adapter (Claude Code) produces a native `--output-format json` envelope with its own
-keys (`modelUsage`, `usage`, `num_turns`, `structured_output`, `result`, `total_cost_usd`). A thin
-mapping step (a `jq` filter or a function in the commenter package) projects that native shape onto
-the abstract envelope above; the commenter consumes the abstract shape only.
+keys (`modelUsage`, `usage`, `num_turns`, `structured_output`, `result`, `total_cost_usd`). The
+`code-review adapt` command projects that native shape onto the abstract envelope above, delegating
+`findings` recovery to `code-review extract` (see "Extraction ladder" below); the commenter consumes
+the abstract shape only.
 
 The adapter MUST NOT:
 - Post comments, reviews, or any content to GitHub.
@@ -120,10 +121,47 @@ The `--output-format json` envelope has this shape (verify against your CLI vers
   },
   "num_turns": 7,
   "duration_ms": 91234,
-  "structured_output": { /* findings per schema */ },
+  "structured_output": { /* findings per schema — MAY be absent; the extraction ladder recovers from "result" when it is */ },
   "result": "…"
 }
 ```
+
+## Extraction ladder
+
+Structured-output enforcement (`--json-schema`) is preferred but not always clean in practice —
+`structured_output` may be absent, or the model may embed its answer in `result` instead. `code-review
+extract` (and `adapt`, which delegates to it) recovers a schema-conforming candidate deterministically,
+via a fixed-priority ladder:
+
+1. **`--agent-file`** — a file the agent was told to write its own validated JSON to (findings only;
+   a documented no-op for triage). Present-but-invalid falls through to the next rung.
+2. **`structured_output`** — the CLI's native structured-output field, when present.
+3. **Parsed `result`** — the whole `result` string, trimmed, parsed as one JSON document.
+4. **Fenced code blocks** — every ` ```json `/bare ` ``` ` block in `result`, in document order.
+
+The first rung that produces a validating candidate wins — an earlier rung always beats a later one,
+even if a later rung disagrees (the "file wins over a disagreeing fence" invariant). Within the
+fenced-block rung specifically, validating candidates are first deduplicated by canonicalized exact
+equality (a model re-emitting its answer verbatim is not a conflict), and then **exactly one**
+distinct candidate must remain: zero means nothing was recovered, and **more than one distinct
+candidate is treated as ambiguous, never resolved by picking the first or the last**. This defeats
+an append-a-block injection (a PR diff or file content that smuggles a second,
+differing JSON block into the model's context) — a naive "last JSON wins" parser is directly
+exploitable by such an append; refusing on ambiguity is not. The residual risk — a *total-replacement*
+injection that suppresses the genuine block entirely and leaves exactly one (forged) survivor — is out
+of the ladder's scope and is contained by the SPEC §7.2 controls (untrusted-markdown rendering,
+read-only token, egress lock, spend cap); the triage step itself is only a heuristic pre-filter whose
+sole effect is whether Phase 2 (fully sandboxed) runs at all.
+
+An envelope reporting `is_error`/a non-`"success"` `subtype`/a non-null `api_error_status` short-circuits
+before any rung runs — a failed agent run is never salvaged from a stray fenced block. Triage extraction
+additionally **fails closed**: when the ladder can't recover a validated `{safe, reasons}` object,
+`code-review extract --schema triage` still exits 0 but synthesizes `safe: false` (§7.3) — only
+findings extraction exits non-zero when nothing is recovered.
+
+Caveat: a finding `body` that happens to contain a complete, valid findings-JSON example (e.g. as
+documentation) can itself trip the ambiguity guard against the real answer. This is an accepted,
+fail-closed false positive, not a bug.
 
 ## Writing a new adapter
 
@@ -162,3 +200,10 @@ A conformance test suite for adapters SHOULD verify:
    is demoted to the summary rather than 422-ing the review.
 7. `post` finds-and-PATCHes the existing bot comment by marker **and author identity**; a non-bot
    comment carrying the marker is not updated.
+8. `structured_output` absent + a valid fenced block in `result` → `extract`/`adapt` recover it
+   (not just the happy path where `structured_output` is present).
+9. Two differing, independently-validating candidates (e.g. two fenced blocks) → `ambiguous`, never
+   resolved by taking the first or the last.
+10. An error envelope (`is_error`/non-`"success"` `subtype`/non-null `api_error_status`) → treated as
+    "review did not complete" (§5.5), even when a validating candidate is also present.
+11. Triage extraction from prose with no recoverable JSON → fails closed to `safe: false`, exit 0.

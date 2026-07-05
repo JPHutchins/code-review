@@ -142,9 +142,9 @@ presence of that marker, which a fork author can paste into their own text.
 
 ## History & provenance
 
-**Extracted from camas.** This project was prototyped and *proven* in a different repo — **camas**, a
-Python task-runner: <https://github.com/JPHutchins/camas>. The reference implementation posted a real
-sticky review comment on a live PR —
+**Extracted from camas.** This project was prototyped and *proven* in a different repo — **camas**,
+a parallel task-tree runner: <https://github.com/JPHutchins/camas>. The reference implementation
+posted a real sticky review comment on a live PR —
 [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691) — and that run's
 `step-security/harden-runner` egress log confirmed the designed containment actually held (only the
 DeepSeek/Anthropic APIs, PyPI/uv, and GitHub hosts were contacted; the runner's eBPF "armour" engaged).

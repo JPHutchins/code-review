@@ -28,7 +28,7 @@ from the schema file's `$id`, which is the schema's own identity URI.
 The `$id` in each schema revision SHALL point to the tagged, immutable copy:
 
 ```
-https://raw.githubusercontent.com/JPHutchins/code-review/v<version>/schema/findings.schema.json
+https://raw.githubusercontent.com/JPHutchins/code-review/schema-v<version>/schema/findings.schema.json
 ```
 
 The file on `main` carries the moving `main` ref until a version tag is cut. **At release time the
@@ -42,6 +42,23 @@ versions carrying the same `$id` violates REQ-SC-3.
 2. Add a row to the Published versions table.
 3. Tag the release; the CI check confirms the `$id` in the tag matches the tag name.
 4. Restore the `main` `$id` on the post-release `main` commit.
+
+## Bundled versioned copies (runtime multi-version)
+
+The published npm package bundles a JSON-schema file for **every findings-schema minor the CLI
+still supports**, so a findings object declaring an older `schema_version` keeps validating after a
+newer version ships. This is distinct from the git-tag `$id` mechanism above:
+
+- The **latest** version lives flat at `schema/<kind>.schema.json` and carries the moving `/main/`
+  `$id` (the package-release guard requires this).
+- When a version stops being latest, it is **frozen** to `schema/v<major.minor>/<kind>.schema.json`
+  with its `$id` pinned to that version's schema-release tag
+  (`https://raw.githubusercontent.com/JPHutchins/code-review/schema-v<version>/schema/<kind>.schema.json`).
+  A frozen copy is never edited again.
+
+The CLI's registry (`src/registry.ts`) maps each supported `major.minor` to its bundled file, codec,
+and upcast normalizer. Dispatch is by the `major.minor` of the document's `schema_version` (patch is
+ignored); a version outside the supported set degrades to a §5.5 sticky notice.
 
 ## Published versions
 

@@ -4,8 +4,6 @@
 
 import * as t from "io-ts";
 
-// ---- Findings (from schema/findings.schema.json) ----
-
 const SeverityCodec = t.union([
   t.literal("critical"),
   t.literal("major"),
@@ -24,6 +22,18 @@ const LineNumber = t.refinement(
 );
 
 const Confidence = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Confidence");
+
+// Mirrors findings.schema.json's `schema_version.pattern` exactly, so `resolve()` (registry.ts,
+// consumed by post.ts's §5.5 malformed-doc path) never accepts a value that ajv (validate.ts, the
+// extraction ladder's candidate gate) would reject — e.g. a truncated "0.2" or an over-long "0.2.0.0".
+const SCHEMA_VERSION_RE =
+  /^(0|[1-9]\d*)\.(\d+)\.(\d+)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+const SchemaVersion = t.refinement(
+  t.string,
+  (s): s is string => SCHEMA_VERSION_RE.test(s),
+  "SchemaVersion",
+);
 
 const FindingShape = t.intersection([
   t.type({
@@ -53,15 +63,19 @@ export const FindingCodec = t.exact(EndGeStart);
 
 export const FindingsCodec = t.exact(
   t.type({
-    schema_version: t.string,
+    schema_version: SchemaVersion,
     summary: t.string,
     verdict: VerdictCodec,
     findings: t.array(FindingCodec),
   }),
 );
 
-// ---- Result envelope (abstract, vendor-neutral — SPEC §6.1) ----
+export const TriageCodec = t.type({
+  safe: t.boolean,
+  reasons: t.string,
+});
 
+// Abstract, vendor-neutral result envelope (SPEC §6.1) — not any adapter's native shape.
 const TokenCount = t.refinement(
   t.number,
   (n): n is number => Number.isInteger(n) && n >= 0,
@@ -93,8 +107,6 @@ export const ResultEnvelopeCodec = t.intersection([
   }),
 ]);
 
-// ---- Price map (from schema/prices.example.json) ----
-
 export const ModelPricesCodec = t.type({
   in: t.number,
   out: t.number,
@@ -108,10 +120,31 @@ export const PriceMapCodec = t.type({
   models: t.record(t.string, ModelPricesCodec),
 });
 
-// ---- Materialized types (SSOT — no hand-written duplicates) ----
+// Format-agnostic test summary (SPEC §5.1 item 4, REQ-CO-9) — any conforming test report shape.
+export const TestFailureCodec = t.intersection([
+  t.type({ name: t.string }),
+  t.partial({ message: t.string }),
+]);
+
+export const TestSummaryCodec = t.intersection([
+  t.type({
+    passed: t.number,
+    failed: t.number,
+    total: t.number,
+  }),
+  t.partial({
+    failures: t.array(TestFailureCodec),
+  }),
+]);
+
+// The supported-minor allowlist and version dispatch live in the registry (src/registry.ts),
+// which sources its findings entry's defaultVersion from this constant.
+/** Full semver used when an adapter's native output omits `schema_version` (SPEC §6.1). */
+export const DEFAULT_SCHEMA_VERSION = "0.2.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
+export type Triage = t.TypeOf<typeof TriageCodec>;
 export type Severity = t.TypeOf<typeof SeverityCodec>;
 export type Side = t.TypeOf<typeof SideCodec>;
 export type Verdict = t.TypeOf<typeof VerdictCodec>;
@@ -119,3 +152,5 @@ export type ModelUsageEntry = t.TypeOf<typeof ModelUsageEntryCodec>;
 export type ResultEnvelope = t.TypeOf<typeof ResultEnvelopeCodec>;
 export type ModelPrices = t.TypeOf<typeof ModelPricesCodec>;
 export type PriceMap = t.TypeOf<typeof PriceMapCodec>;
+export type TestFailure = t.TypeOf<typeof TestFailureCodec>;
+export type TestSummary = t.TypeOf<typeof TestSummaryCodec>;

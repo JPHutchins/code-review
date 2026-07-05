@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateFindings, decodeFindings } from "./validate.js";
+import { validateAgainstSchema, decodeFindings } from "./validate.js";
 import type { Findings } from "./schema.js";
 import { FindingsCodec, FindingCodec } from "./schema.js";
 
@@ -25,15 +25,15 @@ const validFindings: unknown = {
   ],
 };
 
-describe("validateFindings", () => {
+describe("validateAgainstSchema", () => {
   it("validates a correct findings object", () => {
-    const result = validateFindings(validFindings, schemaPath);
+    const result = validateAgainstSchema(validFindings, schemaPath);
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
   });
 
   it("validates findings with zero findings array", () => {
-    const result = validateFindings(
+    const result = validateAgainstSchema(
       { schema_version: "0.2.0", summary: "Clean.", verdict: "approve", findings: [] },
       schemaPath,
     );
@@ -72,32 +72,32 @@ describe("validateFindings", () => {
         },
       ],
     };
-    const result = validateFindings(full, schemaPath);
+    const result = validateAgainstSchema(full, schemaPath);
     expect(result.valid).toBe(true);
   });
 
   describe("required field validation", () => {
     it("rejects findings missing summary", () => {
-      const result = validateFindings({ verdict: "approve", findings: [] }, schemaPath);
+      const result = validateAgainstSchema({ verdict: "approve", findings: [] }, schemaPath);
       expect(result.valid).toBe(false);
       expect(result.errors.length).toBeGreaterThan(0);
       expect(result.errors.some((e) => e.includes("summary"))).toBe(true);
     });
 
     it("rejects findings missing verdict", () => {
-      const result = validateFindings({ summary: "Test.", findings: [] }, schemaPath);
+      const result = validateAgainstSchema({ summary: "Test.", findings: [] }, schemaPath);
       expect(result.valid).toBe(false);
       expect(result.errors.some((e) => e.includes("verdict"))).toBe(true);
     });
 
     it("rejects findings missing the findings array", () => {
-      const result = validateFindings({ summary: "Test.", verdict: "approve" }, schemaPath);
+      const result = validateAgainstSchema({ summary: "Test.", verdict: "approve" }, schemaPath);
       expect(result.valid).toBe(false);
       expect(result.errors.some((e) => e.includes("findings"))).toBe(true);
     });
 
     it("rejects a finding missing path", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -118,7 +118,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects a finding missing severity", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -139,7 +139,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects a finding missing title", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -160,7 +160,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects a finding missing body", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -183,7 +183,7 @@ describe("validateFindings", () => {
 
   describe("out-of-range values", () => {
     it("rejects confidence below 0", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -206,7 +206,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects confidence above 1", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -229,7 +229,7 @@ describe("validateFindings", () => {
     });
 
     it("accepts confidence at exactly 0", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           schema_version: "0.2.0",
           summary: "Test.",
@@ -252,7 +252,7 @@ describe("validateFindings", () => {
     });
 
     it("accepts confidence at exactly 1", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           schema_version: "0.2.0",
           summary: "Test.",
@@ -275,7 +275,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects start_line of 0", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -297,7 +297,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects negative start_line", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -319,7 +319,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects end_line of 0", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -341,7 +341,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects invalid severity value", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -363,7 +363,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects invalid verdict value", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "reject",
@@ -376,7 +376,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects invalid side value", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -401,7 +401,7 @@ describe("validateFindings", () => {
 
   describe("additional properties", () => {
     it("rejects unknown top-level properties (strict schema)", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -415,7 +415,7 @@ describe("validateFindings", () => {
     });
 
     it("rejects unknown properties on findings items", () => {
-      const result = validateFindings(
+      const result = validateAgainstSchema(
         {
           summary: "Test.",
           verdict: "approve",
@@ -459,10 +459,10 @@ describe("decodeFindings", () => {
     expect(() => decodeFindings(undefined)).toThrow();
   });
 
-  it("round-trips through Codec and validateFindings", () => {
+  it("round-trips through Codec and validateAgainstSchema", () => {
     const decoded = decodeFindings(validFindings);
     // Re-validate the decoded object
-    const result = validateFindings(decoded, schemaPath);
+    const result = validateAgainstSchema(decoded, schemaPath);
     expect(result.valid).toBe(true);
   });
 });

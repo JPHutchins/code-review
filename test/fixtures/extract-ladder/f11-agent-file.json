@@ -1,0 +1,18 @@
+{
+  "schema_version": "0.2.0",
+  "summary": "Authoritative: from the agent-written file.",
+  "verdict": "comment",
+  "findings": [
+    {
+      "path": "src/upload.ts",
+      "start_line": 10,
+      "end_line": 12,
+      "side": "RIGHT",
+      "severity": "minor",
+      "title": "Missing null check",
+      "body": "The `file` parameter may be undefined; add a guard before use.",
+      "suggestion": null,
+      "confidence": 0.7
+    }
+  ]
+}

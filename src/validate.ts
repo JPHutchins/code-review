@@ -43,7 +43,7 @@ export interface ValidateResult {
   readonly errors: readonly string[];
 }
 
-export const validateFindings = (findings: unknown, schemaPath: string): ValidateResult => {
+export const validateAgainstSchema = (findings: unknown, schemaPath: string): ValidateResult => {
   const validator = compileSchema(schemaPath);
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- ajv returns boolean | Promise<unknown>
   const valid = validator(findings) as boolean;

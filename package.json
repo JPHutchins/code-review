@@ -1,11 +1,23 @@
 {
-  "name": "code-review",
-  "version": "0.1.0",
-  "description": "Deterministic commenter for agentic PR review — render, inline-validate, cost, and validate findings JSON",
+  "name": "@jphutchins/code-review",
+  "version": "0.1.0-alpha.1",
+  "description": "Deterministic commenter for agentic PR review — render, inline, post, adapt, cost, validate, print-schema",
   "type": "module",
   "license": "MIT",
-  "author": "JP Hutchins",
+  "author": "JP Hutchins <jp@intercreate.io>",
+  "homepage": "https://github.com/JPHutchins/code-review",
+  "bugs": "https://github.com/JPHutchins/code-review/issues",
   "repository": "github:JPHutchins/code-review",
+  "keywords": [
+    "code-review",
+    "pull-request",
+    "agentic",
+    "llm",
+    "ci",
+    "github",
+    "findings",
+    "json-schema"
+  ],
   "bin": {
     "code-review": "./dist/index.js"
   },
@@ -14,8 +26,11 @@
     "templates/",
     "schema/"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "prepublishOnly": "npx tsup"
+    "prepack": "npx tsup"
   },
   "dependencies": {
     "ajv": "^8.17.1",

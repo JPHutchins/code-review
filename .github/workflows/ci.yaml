@@ -1,0 +1,37 @@
+# CI — the single source of truth for checks is camas (uv run tasks.py ci).
+# The PR-review workflow (examples/workflows/review*.yaml) chains on this
+# workflow's name via workflow_run, so it MUST stay named exactly "CI".
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      # tasks shell out to npx, so node_modules must exist before camas runs.
+      - run: npm ci
+
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      - run: uv run tasks.py ci

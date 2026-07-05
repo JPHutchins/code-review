@@ -1,0 +1,77 @@
+# Release — publishes @jphutchins/code-review to npm on package-release tags
+# (v*). Schema-release tags (schema-v*) do not start with "v" and are
+# excluded by the tag filter below; they carry no npm publish.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # tasks shell out to npx, so node_modules must exist before camas runs.
+      - run: npm ci
+
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      # Green gate — also builds dist/ (the "build" leaf of the ci task).
+      - run: uv run tasks.py ci
+
+      - name: Guard — tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(jq -r '.version' package.json)"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME (version $tag_version) does not match package.json version ($pkg_version)"
+            exit 1
+          fi
+
+      - name: Guard — schema $id must not carry a schema-release identity
+        run: |
+          schema_id="$(jq -r '."$id"' schema/findings.schema.json)"
+          case "$schema_id" in
+            */main/*) ;;
+            *)
+              echo "::error::schema/findings.schema.json \$id ('$schema_id') does not contain '/main/' — a package release (v*) must not ship a schema-release \$id (that's schema-v* tags' job); restore the main \$id on schema/findings.schema.json before tagging a package release"
+              exit 1
+              ;;
+          esac
+
+      # Trusted Publishing's OIDC token exchange needs a recent npm CLI;
+      # the version bundled with actions/setup-node may predate it.
+      - name: Ensure npm CLI supports trusted publishing (OIDC)
+        run: npm install -g npm@latest
+
+      # Auth via npm Trusted Publishing (OIDC): configure this repo + this
+      # workflow file as a trusted publisher for @jphutchins/code-review on
+      # npmjs.com — npm exchanges the job's id-token for a short-lived
+      # publish token automatically, no secret required.
+      #
+      # Fallback (classic automation token) if trusted publishing isn't
+      # configured yet:
+      #   env:
+      #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm
+        run: npm publish --provenance --access public --tag alpha

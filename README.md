@@ -64,9 +64,11 @@ in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the ad
 5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
    ([SPEC §8.4](SPEC.md#84-egress-allowlist)).
 
-Backend and model are per-repo **Actions variables** — set `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
-or `CLAUDE_CODE_SUBAGENT_MODEL` to override the defaults without editing the workflow file
-([SPEC §8.5](SPEC.md#85-model-backend-env)).
+Every model knob is a committed `env` block at the top of the workflow's review job — triage,
+reviewer, and mechanic models and efforts, the subagent model, and the tier aliases — edited and
+PR-reviewed like the rest of the file ([SPEC §8.5](SPEC.md#85-model-backend-env)). Only the backend
+endpoint is a per-repo **Actions variable** (`ANTHROPIC_BASE_URL`); pointing it at another provider
+requires adding that provider's API host to the workflow's egress allowlist in the same reviewed PR.
 
 ## What's here
 

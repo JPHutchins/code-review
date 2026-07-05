@@ -1,7 +1,7 @@
 {
   "name": "@jphutchins/code-review",
-  "version": "0.1.0-alpha.1",
-  "description": "Deterministic commenter for agentic PR review — render, inline, post, adapt, cost, validate, print-schema",
+  "version": "0.1.0-alpha.2",
+  "description": "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, cost, validate, print-schema",
   "type": "module",
   "license": "MIT",
   "author": "JP Hutchins <jp@intercreate.io>",

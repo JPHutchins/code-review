@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["camas[mcp]==0.1.21"]
+# dependencies = ["camas[mcp]==0.1.22"]
 # ///
 """Project tasks for code-review — a deterministic commenter for agentic PR review."""
 

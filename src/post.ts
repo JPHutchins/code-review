@@ -59,6 +59,7 @@ export interface PostInput {
   readonly envelopePath: string;
   readonly pricesPath: string;
   readonly templatePath: string;
+  readonly inlineTemplatePath?: string;
   readonly route: string;
   readonly headBranch?: string;
   readonly testReportPath?: string;
@@ -421,6 +422,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     throw new Error(`Price map at ${input.pricesPath} does not match the expected shape`);
   }
   const template = readFileSync(input.templatePath, "utf-8");
+  const inlineTemplate = input.inlineTemplatePath
+    ? readFileSync(input.inlineTemplatePath, "utf-8")
+    : undefined;
 
   const renderNotice = (message: string): string =>
     render({
@@ -478,7 +482,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     process.exit(0);
   }
 
-  const { comments: rawComments, strays } = buildInlineComments(findings.findings, diff);
+  const { comments: rawComments, strays } = buildInlineComments(
+    findings.findings,
+    diff,
+    inlineTemplate,
+  );
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
     process.stderr.write(

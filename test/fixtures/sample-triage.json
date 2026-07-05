@@ -1,0 +1,4 @@
+{
+  "safe": true,
+  "reasons": "No prompt injection or exfiltration attempts found in the diff or surrounding source."
+}

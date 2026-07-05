@@ -13,6 +13,9 @@ const repoRoot = resolve(__dirname, "..");
 const nativeFixturePath = resolve(repoRoot, "test", "fixtures", "native-claude-code-envelope.json");
 const sampleFindingsPath = resolve(repoRoot, "test", "fixtures", "sample-findings.json");
 const sampleEnvelopePath = resolve(repoRoot, "test", "fixtures", "sample-envelope.json");
+const sampleTriagePath = resolve(repoRoot, "test", "fixtures", "sample-triage.json");
+const samplePricesPath = resolve(repoRoot, "schema", "prices.example.json");
+const triageSchemaPath = resolve(repoRoot, "schema", "triage.schema.json");
 
 const ladderFixturePath = (name: string): string =>
   resolve(repoRoot, "test", "fixtures", "extract-ladder", name);
@@ -134,7 +137,7 @@ describe("cli — extract", () => {
       ladderFixturePath("f03-fenced-json.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "findings",
     ]);
     expect(exitCode).toBeNull();
@@ -149,7 +152,7 @@ describe("cli — extract", () => {
       ladderFixturePath("f06-fenced-ambiguous.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "findings",
     ]);
     expect(exitCode).toBe(1);
@@ -162,7 +165,7 @@ describe("cli — extract", () => {
       ladderFixturePath("t14-pure-json-result.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "triage",
     ]);
     expect(exitCode).toBeNull();
@@ -178,7 +181,7 @@ describe("cli — extract", () => {
       ladderFixturePath("t16-prose-only.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "triage",
     ]);
     expect(exitCode).toBeNull();
@@ -193,7 +196,7 @@ describe("cli — extract", () => {
       ladderFixturePath("t19-injection-ambiguous.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "triage",
     ]);
     expect(exitCode).toBeNull();
@@ -207,7 +210,7 @@ describe("cli — extract", () => {
       ladderFixturePath("f11-agent-file-wins.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "findings",
       "--agent-file",
       ladderFixturePath("f11-agent-file.json"),
@@ -223,7 +226,7 @@ describe("cli — extract", () => {
       ladderFixturePath("t14-pure-json-result.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "triage",
       "--agent-file",
       ladderFixturePath("f11-agent-file.json"),
@@ -236,17 +239,30 @@ describe("cli — extract", () => {
     });
   });
 
-  it('exits 1 for an unsupported --schema value (no "prices" — unlike print-schema)', async () => {
+  it('exits 1 for an unsupported --kind value (no "prices" — unlike print-schema)', async () => {
     const { stderr, exitCode } = await runCli([
       "extract",
       ladderFixturePath("f03-fenced-json.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "prices",
     ]);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("findings, triage");
+  });
+
+  it("rejects the removed --schema spelling — the extract kind flag is now --kind", async () => {
+    await expect(
+      runCli([
+        "extract",
+        ladderFixturePath("f03-fenced-json.json"),
+        "--adapter",
+        "claude-code",
+        "--schema",
+        "findings",
+      ]),
+    ).rejects.toThrow("Missing required argument: --kind");
   });
 
   it("exits 1 for an unsupported --adapter value", async () => {
@@ -255,7 +271,7 @@ describe("cli — extract", () => {
       ladderFixturePath("f03-fenced-json.json"),
       "--adapter",
       "opencode",
-      "--schema",
+      "--kind",
       "findings",
     ]);
     expect(exitCode).toBe(1);
@@ -268,7 +284,7 @@ describe("cli — extract", () => {
       ladderFixturePath("f08-prose-only.json"),
       "--adapter",
       "claude-code",
-      "--schema",
+      "--kind",
       "findings",
     ]);
     expect(exitCode).toBe(1);
@@ -329,6 +345,68 @@ describe("cli — validate --schema-version", () => {
     ]);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("Unsupported findings schema version");
+  });
+});
+
+describe("cli — validate --kind", () => {
+  it("validates a conforming prices document against --kind prices", async () => {
+    const { stdout, exitCode } = await runCli(["validate", samplePricesPath, "--kind", "prices"]);
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("valid");
+  });
+
+  it("exits 1 for a prices document that violates --kind prices", async () => {
+    const badPath = join(tmpDir, "bad-prices.json");
+    writeFileSync(
+      badPath,
+      JSON.stringify({
+        _updated: "2026-07-05",
+        _unit: "USD per 1M tokens",
+        models: { "some-model": { in: -1, out: 0, cache_read: 0, cache_write: 0 } },
+      }),
+    );
+    const { stderr, exitCode } = await runCli(["validate", badPath, "--kind", "prices"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("invalid");
+  });
+
+  it("validates a conforming triage document against --kind triage", async () => {
+    const { stdout, exitCode } = await runCli(["validate", sampleTriagePath, "--kind", "triage"]);
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("valid");
+  });
+
+  it("exits 1 for a triage document that violates --kind triage", async () => {
+    const badPath = join(tmpDir, "bad-triage.json");
+    writeFileSync(badPath, JSON.stringify({ safe: "yes" }));
+    const { stderr, exitCode } = await runCli(["validate", badPath, "--kind", "triage"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("invalid");
+  });
+
+  it("exits 1 for an unknown --kind, listing the supported kinds", async () => {
+    const { stderr, exitCode } = await runCli(["validate", sampleFindingsPath, "--kind", "bogus"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("findings, triage, prices");
+  });
+
+  it("an explicit --schema file path wins over --kind derivation", async () => {
+    const { stdout, exitCode } = await runCli([
+      "validate",
+      sampleTriagePath,
+      "--kind",
+      "findings",
+      "--schema",
+      triageSchemaPath,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("valid");
+  });
+
+  it("defaults to the findings kind when --kind is omitted (regression)", async () => {
+    const { stdout, exitCode } = await runCli(["validate", sampleFindingsPath]);
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("valid");
   });
 });
 

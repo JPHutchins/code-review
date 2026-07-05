@@ -211,34 +211,46 @@ const declaredSchemaVersion = (raw: unknown): string | undefined =>
       : undefined
     : undefined;
 
+/** The version to derive when neither --schema nor --schema-version is given: findings carries its
+ *  version in-data; triage/prices have no in-data signal (see registry.ts), so undefined selects the
+ *  registry default (latest) for the kind. */
+const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefined =>
+  kind === "findings" ? declaredSchemaVersion(raw) : undefined;
+
 const validateCmd = defineCommand({
   meta: {
     name: "validate",
-    description: "Validate findings JSON against the canonical schema",
+    description: "Validate a findings/triage/prices JSON document against the canonical schema",
   },
   args: {
-    findings: {
+    document: {
       type: "positional",
-      description: "Path to findings JSON",
+      description: "Path to the JSON document to validate (of the given --kind)",
       required: true,
+    },
+    kind: {
+      type: "string",
+      description:
+        "Schema kind to validate against: findings | triage | prices (default: findings)",
     },
     schema: {
       type: "string",
       description:
-        "Path to findings schema (default: derived from --schema-version, the document's declared schema_version, or the bundled latest)",
+        "Path to a schema file (wins over --kind; default: the bundled schema derived from --kind, --schema-version, the document's declared schema_version, or the bundled latest)",
     },
     "schema-version": {
       type: "string",
       description:
-        "Findings schema major.minor version to validate against (default: the document's declared schema_version, or latest)",
+        "Schema major.minor version to validate against (default: the document's declared schema_version for findings, or the kind's latest)",
     },
   },
   run: async ({ args }) => {
-    const findingsRaw = readJSON(args.findings);
+    const kind = requireSchemaKind(args.kind || "findings");
+    const documentRaw = readJSON(args.document);
     const schemaPath = args.schema
       ? resolve(args.schema)
-      : requireSchemaPath("findings", args["schema-version"] || declaredSchemaVersion(findingsRaw));
-    const { valid, errors } = validateAgainstSchema(findingsRaw, schemaPath);
+      : requireSchemaPath(kind, args["schema-version"] || derivedSchemaVersion(kind, documentRaw));
+    const { valid, errors } = validateAgainstSchema(documentRaw, schemaPath);
     if (valid) {
       process.stdout.write("✅ valid\n");
     } else {
@@ -285,7 +297,7 @@ const isExtractSchemaKind = (s: string): s is ExtractKind => s === "findings" ||
  *  or fail with a clear message (never falls through). */
 const requireExtractSchemaKind = (name: string): ExtractKind => {
   if (isExtractSchemaKind(name)) return name;
-  fail(`Unknown schema "${name}" for extract — expected one of: findings, triage`);
+  fail(`Unknown kind "${name}" for extract — expected one of: findings, triage`);
   throw new Error("unreachable"); // fail() always exits
 };
 
@@ -313,7 +325,7 @@ const extractCmd = defineCommand({
       description: 'Adapter whose native envelope shape to extract from (currently: "claude-code")',
       required: true,
     },
-    schema: {
+    kind: {
       type: "string",
       description: "Schema kind to extract: findings | triage",
       required: true,
@@ -326,7 +338,7 @@ const extractCmd = defineCommand({
   },
   run: async ({ args }) => {
     requireAdapterName(args.adapter);
-    const kind = requireExtractSchemaKind(args.schema);
+    const kind = requireExtractSchemaKind(args.kind);
     const outcome = extractStructured({
       kind,
       native: readJSON(args.native),
@@ -432,6 +444,10 @@ const postCmd = defineCommand({
       description:
         "Path to Eta template file for the summary comment (default: bundled templates/comment.eta)",
     },
+    "inline-template": {
+      type: "string",
+      description: "Path to inline comment Eta template (default: built-in format)",
+    },
     route: {
       type: "string",
       description: 'Review route label (e.g. "full review" or "mechanic")',
@@ -464,6 +480,7 @@ const postCmd = defineCommand({
       envelopePath: args.usage,
       pricesPath: resolvePricesPath(args.prices),
       templatePath: resolveTemplatePath(args.template),
+      inlineTemplatePath: args["inline-template"] ? resolve(args["inline-template"]) : undefined,
       route: args.route,
       headBranch: args["head-branch"],
       effort: args.effort,

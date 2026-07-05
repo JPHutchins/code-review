@@ -1180,6 +1180,60 @@ describe("post — REQ-CO-9 test-report threading", () => {
   });
 });
 
+describe("post — --inline-template", () => {
+  const inlineMocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+      response: "",
+    },
+  ];
+
+  it("renders inline comment bodies with a custom Eta template", async () => {
+    const inlineTemplatePath = join(tmpDir, "inline.eta");
+    writeFileSync(inlineTemplatePath, "CUSTOM INLINE: <%~ it.body %>");
+
+    const { api, calls } = mkMockGhApi(inlineMocks);
+
+    await post(mkInput({ inlineTemplatePath }), api);
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeDefined();
+    const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(body.comments[0]?.body).toContain("CUSTOM INLINE:");
+    expect(body.comments[0]?.body).toContain("Test body content.");
+  });
+
+  it("uses the built-in inline format when --inline-template is omitted (regression)", async () => {
+    const { api, calls } = mkMockGhApi(inlineMocks);
+
+    await post(mkInput({}), api);
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeDefined();
+    const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(body.comments[0]?.body).toBe("Test body content.");
+    expect(body.comments[0]?.body).not.toContain("CUSTOM INLINE:");
+  });
+});
+
 describe("post — --effort threading", () => {
   it("renders the passed effort in the sticky's route line", async () => {
     const { api, calls } = mkMockGhApi([

@@ -13,8 +13,8 @@ on:
     workflows: ["CI"]       # your existing CI workflow name — unmodified
     types: [completed]
 
-concurrency:                 # cancel superseded runs on force-push — bounds spend (§7.2, §8.2)
-  group: review-${{ github.event.workflow_run.head_sha }}
+concurrency:                 # a newer CI run for the same PR branch cancels an in-flight review — bounds spend (§7.2, §8.2)
+  group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 jobs:

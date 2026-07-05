@@ -15,6 +15,7 @@ import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { ResultEnvelopeCodec, FindingsCodec, PriceMapCodec, TestSummaryCodec } from "./schema.js";
 import type { Triage } from "./schema.js";
 import { post } from "./post.js";
+import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName } from "./adapt.js";
 import { extractStructured, describeLadderFailure } from "./extract.js";
@@ -407,6 +408,59 @@ const printSchemaCmd = defineCommand({
   },
 });
 
+const gatherCmd = defineCommand({
+  meta: {
+    name: "gather",
+    description:
+      "Resolve the PR from the CI head SHA and gather review inputs (diff with git-diff fallback, PR context, prior bot review, failing-job logs) as files for the review agent",
+  },
+  args: {
+    repo: { type: "string", description: "Repository (owner/name)", required: true },
+    "head-sha": {
+      type: "string",
+      description: "Trusted head SHA to resolve the PR (from workflow_run.head_sha)",
+      required: true,
+    },
+    "head-branch": {
+      type: "string",
+      description: "Head branch to disambiguate the PR when multiple share a commit",
+    },
+    "run-id": {
+      type: "string",
+      description:
+        "CI run id (from workflow_run.id); its failing jobs' logs are downloaded on failure",
+      required: true,
+    },
+    conclusion: {
+      type: "string",
+      description:
+        "CI conclusion (e.g. success | failure); failure triggers failing-job log download",
+      required: true,
+    },
+    "bot-login": {
+      type: "string",
+      description:
+        "Bot login whose last PR comment is captured as prior review (default: github-actions[bot])",
+    },
+    "out-dir": {
+      type: "string",
+      description: "Directory to write gathered files into (default: current directory)",
+    },
+  },
+  run: async ({ args }) => {
+    const result = await gather({
+      repo: args.repo,
+      headSha: args["head-sha"],
+      headBranch: args["head-branch"],
+      runId: args["run-id"],
+      conclusion: args.conclusion,
+      botLogin: args["bot-login"] || "github-actions[bot]",
+      outDir: args["out-dir"] ? resolve(args["out-dir"]) : process.cwd(),
+    });
+    process.stdout.write(renderOutputs(result));
+  },
+});
+
 const postCmd = defineCommand({
   meta: {
     name: "post",
@@ -494,9 +548,10 @@ export const main = defineCommand({
     name: "code-review",
     version: "0.1.0",
     description:
-      "Deterministic commenter for agentic PR review — render, inline, post, adapt, extract, cost, and validate findings JSON",
+      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, cost, and validate findings JSON",
   },
   subCommands: {
+    gather: gatherCmd,
     render: renderCmd,
     inline: inlineCmd,
     post: postCmd,

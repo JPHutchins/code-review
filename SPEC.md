@@ -527,6 +527,7 @@ jobs:
       # Lock egress BEFORE untrusted data touches the agent, AFTER trusted setup
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
 
+      # Gather review inputs: resolve PR from head_sha, fetch diff (git-diff fallback), context, logs
       # Phase 1: data-only security triage of the diff
       # Phase 2: if safe, agentic review → abstract envelope (§6.1)
 

@@ -7,9 +7,11 @@ by your existing CI workflow completing. Its routing follows
 gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
 - **`review` job** — holds the model key + a **read-only** token + locked egress. Fetches the diff
-  as data via the API, runs the two-phase gate: (1) a data-only security triage of the diff →
-  `{safe, reasons}`, fail-closed; (2) if safe, the agentic review runs and its output is mapped onto
-  the spec envelope with `code-review adapt`.
+  as data via the API. `code-review gather` collects the inputs (resolves the PR, fetches the diff
+  with a git-diff fallback, the PR context, the prior bot review, and failing-job logs as files),
+  then it runs the two-phase gate: (1) a data-only security triage of the diff → `{safe, reasons}`,
+  fail-closed; (2) if safe, the agentic review runs and its output is mapped onto the spec envelope
+  with `code-review adapt`.
 - **`comment` job** — holds the write token, runs **no agent and no PR code**; `code-review post`
   validates findings against the diff and posts the inline review + sticky summary.
 

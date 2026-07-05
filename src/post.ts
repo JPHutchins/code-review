@@ -5,7 +5,6 @@
 // the first API write; then the sticky is posted, and the inline review second. A posting
 // failure propagates and exits the process non-zero (never partially posts).
 
-import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { InlineComment } from "./types.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
@@ -19,37 +18,10 @@ import {
 } from "./schema.js";
 import type { Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
-
-/** Signature of the `gh api` effect. Default implementation shells out to the `gh` CLI. */
-export type GhApi = (
-  args: readonly string[],
-  stdin?: string,
-  env?: Readonly<Record<string, string>>,
-) => Promise<string>;
-
-/** Default effect: execFile gh. Extra `env` merges over process.env for this call only —
- *  used to pass untrusted values (bot login, marker) to jq via `env.NAME`, never interpolated
- *  into the filter text (SPEC §5.4). */
-export const runGhApi: GhApi = (args, stdin, env) =>
-  new Promise<string>((resolve, reject) => {
-    const child = execFile(
-      "gh",
-      ["api", ...args],
-      { env: { ...process.env, ...env }, encoding: "utf-8" },
-      (err, stdout, stderr) => {
-        if (err) {
-          const stderrStr = typeof stderr === "string" && stderr.trim() ? stderr.trim() : "";
-          const errStr = err instanceof Error ? err.message : "unknown error";
-          reject(new Error(`gh api failed: ${stderrStr || errStr}`));
-        } else {
-          resolve(stdout);
-        }
-      },
-    );
-    if (stdin !== undefined) {
-      child.stdin?.end(stdin);
-    }
-  });
+import type { GhApi } from "./gh.js";
+import { runGhApi } from "./gh.js";
+export type { GhApi } from "./gh.js";
+import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 
 export interface PostInput {
   readonly repo: string;
@@ -106,59 +78,6 @@ const noticeFindings = (message: string): Findings => ({
   verdict: "comment",
   findings: [],
 });
-
-// PR resolution (SPEC §5.5, §8.3): a single read, and never jq-interpolated.
-interface PrCandidate {
-  readonly number: number;
-  readonly state: string;
-  readonly headRef: string;
-}
-
-const fetchPrCandidates = async (
-  repo: string,
-  headSha: string,
-  ghApi: GhApi,
-): Promise<readonly PrCandidate[]> => {
-  const stdout = await ghApi([
-    `repos/${repo}/commits/${headSha}/pulls`,
-    "--jq",
-    ".[] | {number: .number, state: .state, headRef: .head.ref}",
-  ]);
-  return stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as PrCandidate);
-};
-
-type PrResolution =
-  | { readonly kind: "none" }
-  | { readonly kind: "not-open"; readonly prNumber: number; readonly state: string }
-  | { readonly kind: "open"; readonly prNumber: number };
-
-/** Resolve which PR to post to. Disambiguates by head branch (pure); never shells out. */
-const resolvePr = (
-  candidates: readonly PrCandidate[],
-  headBranch: string | undefined,
-): PrResolution => {
-  if (candidates.length === 0) return { kind: "none" };
-  const scoped =
-    candidates.length > 1 && headBranch
-      ? candidates.filter((c) => c.headRef === headBranch)
-      : candidates;
-  const chosen = scoped[0] ?? candidates[0];
-  if (chosen === undefined) return { kind: "none" };
-  return chosen.state === "open"
-    ? { kind: "open", prNumber: chosen.number }
-    : { kind: "not-open", prNumber: chosen.number, state: chosen.state };
-};
-
-const fetchDiff = async (repo: string, prNumber: number, ghApi: GhApi): Promise<string> =>
-  ghApi([
-    `repos/${repo}/pulls/${String(prNumber)}`,
-    "-H",
-    "Accept: application/vnd.github.v3.diff",
-  ]);
 
 // Loaders below never throw on untrusted artifacts (SPEC §5.5) — malformed input degrades to a
 // tagged result the caller renders as a notice, rather than crashing the post.

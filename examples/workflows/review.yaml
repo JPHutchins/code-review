@@ -83,61 +83,38 @@ jobs:
       #   pypi.org:443
       #   files.pythonhosted.org:443
 
-      # Gather untrusted data as files (fixed paths, never shell-interpolated)
+      # Gather untrusted data as files (fixed paths, never shell-interpolated). `code-review gather`
+      # resolves the PR from the trusted head SHA (disambiguated by branch), fetches the diff (with a
+      # non-truncating git-diff fallback, §3.1), the PR title/body, the prior bot review, and — when
+      # CI failed — the failing-job logs. It writes pr.diff, pr_context.json, prior_review.json, and
+      # job_<id>.log into the workspace and prints the step outputs (pr, conclusion, diff_size, or
+      # skip=true) to stdout, which is appended to $GITHUB_OUTPUT.
       - name: Gather review inputs
         id: gather
         env:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          code-review gather \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --head-branch "$HEAD_BRANCH" \
+            --run-id "$RUN_ID" \
+            --conclusion "$CONCLUSION" \
+            >> "$GITHUB_OUTPUT"
 
-          # Disambiguate by branch (mirrors the commenter, §8.3) — a commit can be the head of
-          # more than one open PR; taking an arbitrary first match risks reviewing the wrong one.
-          PR=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
-                | jq -r --arg branch "$HEAD_BRANCH" '[.[] | select(.head.ref == $branch)] | .[0].number // empty')
-          if [ -z "$PR" ]; then
-            echo "::notice::No open PR for $HEAD_SHA — nothing to review"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "pr=$PR" >> "$GITHUB_OUTPUT"
-          echo "conclusion=$CONCLUSION" >> "$GITHUB_OUTPUT"
-
-          # The diff API can truncate large responses; detect that (or an outright failure) and
-          # fall back to a non-truncating `git diff` against the PR's base (§3.1 "Diff size").
-          CHANGED_FILES=$(gh api "repos/$REPO/pulls/$PR" --jq '.changed_files')
-          BASE_SHA=$(gh api "repos/$REPO/pulls/$PR" --jq '.base.sha')
-
-          DIFF_STATUS=0
-          gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.v3.diff' >pr.diff \
-            || DIFF_STATUS=$?
-
-          if [ "$DIFF_STATUS" -ne 0 ] || { [ ! -s pr.diff ] && [ "$CHANGED_FILES" -gt 0 ]; }; then
-            echo "::warning::PR diff fetch failed or was empty for $CHANGED_FILES changed files — falling back to git diff"
-            git fetch origin "$HEAD_SHA"
-            git diff "$BASE_SHA" "$HEAD_SHA" >pr.diff
-          fi
-          echo "diff_size=$(wc -c <pr.diff)" >> "$GITHUB_OUTPUT"
-
-          gh api "repos/$REPO/pulls/$PR" --jq '{title: .title, body: .body}' >pr_context.json
-
-          BOT_LOGIN="github-actions[bot]"
-          gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq "[.[] | select(.user.login == \"$BOT_LOGIN\")] | last | {id: .id, body: .body}" \
-            >prior_review.json || echo 'null' >prior_review.json
-
-          if [ "$CONCLUSION" = "failure" ]; then
-            gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
-              --jq '.jobs[] | select(.conclusion == "failure") | .id' \
-              | while read -r JOB_ID; do
-                gh api "repos/$REPO/actions/jobs/$JOB_ID/logs" >"job_${JOB_ID}.log"
-              done
-          fi
+          # Add any extra inputs your review should see below. Files you write into the
+          # workspace here are visible to the agent in Phase 1/2 — e.g. a machine-readable
+          # test report, extra repo context, or CI artifacts. This is the place to customize
+          # input collection; the fixed core above is the everyone-needs-it baseline.
+          # Example (download a CTRF/JUnit report your CI uploaded, then pass it to
+          # `code-review post --test-report` in the comment job):
+          #   gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" > artifacts.json
 
       # Phase 1 — Data-only security triage (never executes PR code; heuristic filter)
       - name: Phase 1 — security triage

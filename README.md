@@ -37,6 +37,7 @@ npx @jphutchins/code-review <subcommand>
 | Subcommand | What it does |
 | --- | --- |
 | `post` | Post a complete review (inline comments + sticky summary) from findings + envelope + diff — the one-call path |
+| `gather` | Resolve the PR from the CI head SHA and gather the review inputs (diff with git-diff fallback, PR context, prior bot review, failing-job logs) into the workspace for the agent |
 | `render` | Render the sticky-comment markdown from findings + usage + prices |
 | `inline` | Build the GitHub reviews `comments[]` payload from findings + diff (in-diff validation; strays demote to the summary) |
 | `adapt` | Map a native agent-CLI result envelope onto the abstract SPEC §6.1 envelope |

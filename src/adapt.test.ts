@@ -201,3 +201,24 @@ describe("adapt — claude-code — extraction ladder integration", () => {
     expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
   });
 });
+
+describe("adapt — run metadata (route/effort)", () => {
+  it("stamps route and effort into the envelope when provided", () => {
+    const result = adapt("claude-code", nativeFixture, undefined, {
+      route: "full review",
+      effort: "max",
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.route).toBe("full review");
+    expect(result.right.effort).toBe("max");
+  });
+
+  it("omits route and effort when no metadata is provided", () => {
+    const result = adapt("claude-code", nativeFixture);
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.route).toBeUndefined();
+    expect(result.right.effort).toBeUndefined();
+  });
+});

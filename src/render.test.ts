@@ -668,3 +668,32 @@ describe("usage unavailable (envelope missing — SPEC §5.5)", () => {
     expect(result).toContain("unknown model");
   });
 });
+
+describe("render — route/effort from the envelope (SSOT)", () => {
+  const envWithMeta: ResultEnvelope = { ...baseEnvelope, route: "mechanic", effort: "low" };
+
+  it("renders the envelope's route and effort when no override is passed", () => {
+    const result = render({ findings: mkFindings([]), envelope: envWithMeta, prices, template });
+    expect(result).toContain("**Route:** mechanic");
+    expect(result).toContain("**effort:** low");
+  });
+
+  it("lets an explicit route/effort override the envelope's", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: envWithMeta,
+      prices,
+      template,
+      route: "full review",
+      effort: "max",
+    });
+    expect(result).toContain("**Route:** full review");
+    expect(result).toContain("**effort:** max");
+    expect(result).not.toContain("mechanic");
+  });
+
+  it("omits the Route label when neither an override nor the envelope carries one", () => {
+    const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+    expect(result).not.toContain("**Route:**");
+  });
+});

@@ -24,7 +24,8 @@ export interface RenderInput {
   readonly prices: PriceMap;
   readonly template: string;
   readonly reviewedSha?: string;
-  readonly route: string;
+  /** Overrides the envelope's `route`/`effort` (SPEC §6.1) when set; otherwise the envelope is the source. */
+  readonly route?: string;
   readonly effort?: string;
   readonly testReport?: TestSummary;
 }

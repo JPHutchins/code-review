@@ -1268,4 +1268,42 @@ describe("post — --effort threading", () => {
     expect(body.body).toContain("**effort:** low");
     expect(body.body).toContain("mechanic");
   });
+
+  it("renders route/effort from the envelope when no override is passed (SSOT)", async () => {
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, route: "mechanic", effort: "low" }),
+    );
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({ route: undefined }), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("**Route:** mechanic");
+    expect(body.body).toContain("**effort:** low");
+  });
 });

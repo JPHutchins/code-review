@@ -28,7 +28,8 @@ export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
   const usageAvailable = input.envelope !== null;
   const costReport = input.envelope ? computeCost(input.envelope.models, input.prices) : null;
-  const route = input.route;
+  const route = input.route ?? input.envelope?.route ?? null;
+  const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
 
   const findings = input.findings.findings.map(sanitizeFinding);
@@ -41,7 +42,7 @@ export const render = (input: RenderInput): string => {
     usageAvailable,
     costReport,
     route,
-    effort: input.effort ?? null,
+    effort,
     modelNames,
     testReport: input.testReport ?? null,
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",

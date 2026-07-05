@@ -188,7 +188,6 @@ jobs:
           ANTHROPIC_BASE_URL: ${{ vars.API_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
           ANTHROPIC_MODEL: ${{ steps.gather.outputs.conclusion == 'success' && 'deepseek-v4-pro' || 'deepseek-v4-flash' }}
-          CLAUDE_CODE_EFFORT_LEVEL: ${{ steps.gather.outputs.conclusion == 'success' && 'high' || 'low' }}
           # CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-pro # optionally override subagent
           ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro # tier aliases — what the agent's
           ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro # internal model picks resolve to
@@ -205,14 +204,17 @@ jobs:
           DRAFT="$RUNNER_TEMP/findings-draft.json"
           rm -f "$DRAFT"
 
+          # Route + effort are decided once here and stamped into the envelope by `adapt` below,
+          # so the comment footer reflects the run instead of re-deriving and risking drift.
           if [ "$CONCLUSION" = "success" ]; then
-            REVIEW_MODE="full review"
+            ROUTE="full review"; EFFORT="max"
             PROMPT="/code-review"
           else
-            REVIEW_MODE="mechanic (CI red)"
+            ROUTE="mechanic"; EFFORT="low"
             PROMPT="CI failed on this PR. The diff at pr.diff and the failing job logs at job_*.log show what broke. Propose minimal, targeted fixes ONLY for the failures — no comprehensive review. Do not fix unrelated issues."
           fi
-          echo "::group::Route: $CONCLUSION → $REVIEW_MODE"
+          export CLAUDE_CODE_EFFORT_LEVEL="$EFFORT"
+          echo "::group::Route: $CONCLUSION → $ROUTE (effort: $EFFORT)"
 
           if ! git apply --3way pr.diff 2>/dev/null && ! git apply pr.diff 2>/dev/null; then
             echo "::warning::Could not apply pr.diff to the checked-out base — skipping the review rather than running it against an unmodified tree"
@@ -227,7 +229,7 @@ jobs:
             exit 0
           fi
 
-          echo "Review mode: $REVIEW_MODE"
+          echo "Review mode: $ROUTE"
           claude -p "$PROMPT" \
             --permission-mode bypassPermissions \
             --strict-mcp-config \
@@ -242,7 +244,7 @@ jobs:
           # result (§6.1 extraction ladder); $DRAFT lives outside the worktree so a PR-planted
           # repo-root findings-draft.json can never win this rung.
           mkdir -p findings
-          code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" >findings/envelope.json
+          code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" --route "$ROUTE" --effort "$EFFORT" >findings/envelope.json
           jq -c '.findings' findings/envelope.json >findings/findings.json
           echo "::endgroup::"
 
@@ -337,17 +339,8 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
           set -euo pipefail
-
-          if [ "$CONCLUSION" = "success" ]; then
-            ROUTE="full review"
-            EFFORT="max"
-          else
-            ROUTE="mechanic"
-            EFFORT="low"
-          fi
 
           # Recompute cost from the repo's rates when the review job shipped them; otherwise the
           # bundled all-zero map applies and `post` warns on stderr (§6.2) — graceful, not an error.
@@ -356,11 +349,10 @@ jobs:
             PRICES_ARGS=(--prices findings/prices.json)
           fi
 
+          # route/effort come from the envelope the review job stamped (§6.1) — not re-derived here.
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
             --repo "$REPO" \
             --usage findings/envelope.json \
-            --effort "$EFFORT" \
-            --route "$ROUTE" \
             --head-branch "$HEAD_BRANCH" \
             "${PRICES_ARGS[@]}"

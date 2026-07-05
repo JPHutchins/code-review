@@ -32,7 +32,8 @@ export interface PostInput {
   readonly pricesPath: string;
   readonly templatePath: string;
   readonly inlineTemplatePath?: string;
-  readonly route: string;
+  /** Overrides the envelope's route (SPEC §6.1) when set; otherwise the envelope is the source. */
+  readonly route?: string;
   readonly headBranch?: string;
   readonly testReportPath?: string;
   readonly effort?: string;

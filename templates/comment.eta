@@ -3,7 +3,7 @@
 
 ### <%= it.verdictBadge(it.findings.verdict) %>
 
-**Route:** <%~ it.route %><% if (it.effort) { %> · **effort:** <%~ it.effort %><% } %><% if (it.usageAvailable) { %> · **turns:** <%= it.envelope.turns %> · **wall:** <%~ it.formatDuration(it.envelope.duration_ms) %><% } else { %> · _usage unavailable_<% } %>
+<% const meta = [] %><% if (it.route) { meta.push('**Route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.usageAvailable) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)) } else { meta.push('_usage unavailable_') } %><%~ meta.join(' · ') %>
 
 <%~ it.findings.summary %>
 

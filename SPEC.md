@@ -350,6 +350,8 @@ non-reference adapter need not mimic any other CLI's internal keys.
 | `turns` | `integer` | yes | Number of agentic turns taken. |
 | `duration_ms` | `integer` | yes | Wall-clock duration of the review, in milliseconds. |
 | `vendor_cost_usd` | `number` \| `null` | no | CLI-reported cost, vendor-priced — MUST NOT be used as canonical; recompute from `models` (§6.2). |
+| `route` | `string` | no | The routing decision the review ran under (§3.1), e.g. `"full review"` or `"mechanic"`. The commenter renders this rather than re-deriving it (§6.3). |
+| `effort` | `string` | no | The effort level the review ran under, e.g. `"max"` or `"low"`. |
 
 ```jsonc
 {
@@ -363,7 +365,9 @@ non-reference adapter need not mimic any other CLI's internal keys.
   ],
   "turns": 7,
   "duration_ms": 91234,
-  "vendor_cost_usd": null
+  "vendor_cost_usd": null,
+  "route": "full review",
+  "effort": "max"
 }
 ```
 
@@ -410,8 +414,10 @@ Route: full review (all green) · effort: max · turns: 7 · wall: 91s
 ```
 
 The footer's `Route` line MUST reflect the actual routing decision (§3.1), not be inferred from
-side-effects such as turn count. Followed by an LLM Disclosure aside naming the model(s) from
-`models`.
+side-effects such as turn count. The route and effort labels SHOULD come from the envelope's `route`
+and `effort` fields (§6.1) — stamped by the agent job that made the decision — so the footer cannot
+drift from the run; a commenter MAY accept an explicit override. Followed by an LLM Disclosure aside
+naming the model(s) from `models`.
 
 ---
 
@@ -555,7 +561,7 @@ jobs:
       # Deterministic posting (resolves PR from head_sha, validates diff, renders, posts;
       # reads the write token from GH_TOKEN):
       #   code-review post findings/findings.json --repo … --head-sha … --head-branch … \
-      #     --usage … --route … --effort … --prices …
+      #     --usage … --prices …   (route/effort come from the envelope — §6.1/§6.3)
 ```
 
 The full, copy-paste-ready example lives in [`examples/workflows/review.yaml`](examples/workflows/review.yaml).

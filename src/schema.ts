@@ -104,6 +104,8 @@ export const ResultEnvelopeCodec = t.intersection([
   }),
   t.partial({
     vendor_cost_usd: t.union([t.number, t.null]),
+    route: t.string,
+    effort: t.string,
   }),
 ]);
 

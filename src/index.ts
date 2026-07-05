@@ -112,13 +112,13 @@ const renderCmd = defineCommand({
     },
     route: {
       type: "string",
-      description: 'Review route label (e.g. "full review" or "mechanic")',
-      required: true,
+      description:
+        "Review route label; overrides the envelope's route when set (default: read from the envelope)",
     },
     effort: {
       type: "string",
       description:
-        'Effort label to render in the route line (e.g. "max" or "low"); omitted when absent',
+        "Effort label; overrides the envelope's effort when set (default: read from the envelope)",
     },
     "test-report": {
       type: "string",
@@ -287,10 +287,22 @@ const adaptCmd = defineCommand({
       description:
         "Path to a file the agent was told to write its own validated findings JSON to (wins over the native envelope's structured_output/result when it validates)",
     },
+    route: {
+      type: "string",
+      description:
+        'Review route label to stamp into the envelope (e.g. "full review" or "mechanic")',
+    },
+    effort: {
+      type: "string",
+      description: 'Effort label to stamp into the envelope (e.g. "max" or "low")',
+    },
   },
   run: async ({ args }) => {
     const envelope = unwrapAdapt(
-      adapt(requireAdapterName(args.adapter), readJSON(args.native), args["agent-file"]),
+      adapt(requireAdapterName(args.adapter), readJSON(args.native), args["agent-file"], {
+        route: args.route,
+        effort: args.effort,
+      }),
     );
     process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
   },
@@ -508,8 +520,8 @@ const postCmd = defineCommand({
     },
     route: {
       type: "string",
-      description: 'Review route label (e.g. "full review" or "mechanic")',
-      required: true,
+      description:
+        "Review route label; overrides the envelope's route when set (default: read from the envelope)",
     },
     "bot-login": {
       type: "string",
@@ -522,7 +534,7 @@ const postCmd = defineCommand({
     effort: {
       type: "string",
       description:
-        'Effort label to render in the route line (e.g. "max" or "low"); omitted when absent',
+        "Effort label; overrides the envelope's effort when set (default: read from the envelope)",
     },
     "test-report": {
       type: "string",

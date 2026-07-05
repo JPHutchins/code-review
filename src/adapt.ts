@@ -61,9 +61,16 @@ const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsage
 /** Map Claude Code's native `--output-format json` envelope onto the abstract envelope (SPEC §6.1).
  *  `findings` and `schema_version` come from the extraction ladder; every other envelope field
  *  (models, turns, duration, vendor cost) always comes from the native envelope itself. */
+/** Route/effort the review ran under (SPEC §6.1 envelope fields). */
+export interface RunMeta {
+  readonly route?: string;
+  readonly effort?: string;
+}
+
 const adaptClaudeCode = (
   native: ClaudeCodeEnvelope,
   agentFilePath: string | undefined,
+  meta: RunMeta,
 ): Either<string, ResultEnvelope> => {
   const outcome = extractStructured({ kind: "findings", native, agentFilePath });
   if (outcome.kind !== "ok") {
@@ -80,6 +87,8 @@ const adaptClaudeCode = (
         turns: native.num_turns,
         duration_ms: native.duration_ms,
         vendor_cost_usd: native.total_cost_usd ?? null,
+        ...(meta.route ? { route: meta.route } : {}),
+        ...(meta.effort ? { effort: meta.effort } : {}),
       })
     : left(
         "internal error: the extraction ladder validated a candidate the registry then rejected",
@@ -92,6 +101,7 @@ export const adapt = (
   adapterName: AdapterName,
   native: unknown,
   agentFilePath?: string,
+  meta: RunMeta = {},
 ): Either<string, ResultEnvelope> => {
   switch (adapterName) {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exhaustive by design; AdapterName grows (e.g. "opencode") without collapsing this switch to an if
@@ -100,7 +110,7 @@ export const adapt = (
       if (decoded._tag === "Left") {
         return left("native envelope does not match the Claude Code output shape");
       }
-      return adaptClaudeCode(decoded.right, agentFilePath);
+      return adaptClaudeCode(decoded.right, agentFilePath, meta);
     }
   }
 };

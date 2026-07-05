@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CLI entry point — citty subcommands for render, inline, post, cost, validate, adapt, print-schema.
+// CLI entry point — citty subcommands for render, inline, post, cost, validate, adapt, extract, print-schema.
 
 /* eslint-disable @typescript-eslint/require-await */
 // citty requires async run() even when the body has no explicit await
@@ -477,7 +477,7 @@ export const main = defineCommand({
     name: "code-review",
     version: "0.1.0",
     description:
-      "Deterministic commenter for agentic PR review — render, inline, post, cost, validate, and adapt findings JSON",
+      "Deterministic commenter for agentic PR review — render, inline, post, adapt, extract, cost, and validate findings JSON",
   },
   subCommands: {
     render: renderCmd,

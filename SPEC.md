@@ -1,9 +1,10 @@
 # code-review — normative specification
 
-> **Version:** 0.1.0-draft
-> **Status:** in progress — the approach is proven (reference implementation posted a live review on
-> [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691)); this spec
-> generalizes it.
+> **Version:** 0.1.0-alpha
+> **Status:** alpha — implemented by [`@jphutchins/code-review`](https://www.npmjs.com/package/@jphutchins/code-review)
+> and the reference workflow in [examples/workflows/review.yaml](examples/workflows/review.yaml). The
+> approach is proven — a reference implementation posted a live review on
+> [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691).
 >
 > The reference adapter is Claude Code (`claude -p`); the same shape fits other agent CLIs
 > (e.g. OpenCode) and any Anthropic-compatible model backend. "Claude," "Claude Code," "DeepSeek,"
@@ -510,8 +511,8 @@ jobs:
   review:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion != 'cancelled' &&
-      github.event.workflow_run.conclusion != 'skipped'
+      (github.event.workflow_run.conclusion == 'success' ||
+       github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -550,12 +551,13 @@ jobs:
       # so it MUST also have a locked egress allowlist (api.github.com + blob host only).
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
 
-      # Deterministic posting (resolves PR from head_sha, validates diff, renders, posts):
-      #   code-review post --repo … --head-sha … --findings … --envelope … \
-      #     --route … --template … --prices … --token-env GH_TOKEN
+      # Deterministic posting (resolves PR from head_sha, validates diff, renders, posts;
+      # reads the write token from GH_TOKEN):
+      #   code-review post findings/findings.json --repo … --head-sha … --head-branch … \
+      #     --usage … --route … --effort …
 ```
 
-The full, copy-paste-ready v2 example lives in [`examples/workflows/review-v2.yaml`](examples/workflows/review-v2.yaml).
+The full, copy-paste-ready example lives in [`examples/workflows/review.yaml`](examples/workflows/review.yaml).
 
 ### 8.3 PR number resolution
 
@@ -582,6 +584,7 @@ github.com:443
 api.github.com:443
 objects.githubusercontent.com:443
 *.blob.core.windows.net:443     # artifact download
+results-receiver.actions.githubusercontent.com:443  # artifact upload
 ```
 
 Plus ecosystem registries (pypi.org, npmjs.org, etc.) if the agent needs to install packages to

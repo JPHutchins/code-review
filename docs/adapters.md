@@ -2,58 +2,43 @@
 
 Each agent CLI is treated as a pluggable **adapter** behind one interface. The reference adapter is
 **Claude Code** (`claude -p`); the same contract fits any headless coding-agent CLI (e.g. OpenCode).
+The reference implementation is [`src/adapt.ts`](../src/adapt.ts), with its finding-recovery ladder
+in [`src/extract.ts`](../src/extract.ts).
 
 ## Contract
 
-### Input (adapter receives)
+An adapter maps one agent CLI's native result envelope onto the **abstract result envelope**
+([SPEC §6.1](../SPEC.md#61-result-envelope)) and does nothing else. Its inputs, outputs, and
+prohibitions are normative in SPEC — this file explains the shape and the reference invocation; SPEC
+owns the field lists so they can't rot out of sync here.
 
-| Input | Format | Description |
-|---|---|---|
-| Diff | unified diff text (file) | The PR's changes — fetched via API, never by checking out fork code |
-| CI result | `workflow_run.conclusion` or equivalent | pass → full review; fail → mechanic-only pass |
-| Context | JSON file(s) | Prior review (bot-authored comments), PR title/body, optional test report (any conforming format) |
-| Failing-job logs | text (file) | When CI failed — the failed step logs; presented alongside the test report when both exist |
+### Input
 
-All inputs are passed as **files**, never as shell arguments or environment variables. The adapter
-reads them from known paths.
+The adapter receives the reviewer's inputs — the PR diff, the CI result, prior-review context, an
+optional test report, and failing-job logs — as **files** (SPEC §2.2, §3.3). It never fetches them
+itself (no network) and never takes untrusted text as a shell argument or environment variable
+(SPEC §5.4). The CI result routes the run per [SPEC §3.1](../SPEC.md#31-abstract-contract): pass →
+full review, fail → mechanic-only pass, cancelled/skipped/not-run → post nothing.
 
-### Output (adapter MUST produce)
+### Output
 
-The adapter MUST emit the **abstract result envelope** defined in [SPEC §6.1](../SPEC.md#61-result-envelope),
-with spec-owned field names — not its CLI's internal keys:
+The adapter emits the abstract result envelope with the **spec-owned field names**
+([SPEC §6.1](../SPEC.md#61-result-envelope)) — `schema_version`, `findings`, `models`, `turns`,
+`duration_ms`, `vendor_cost_usd` — not its CLI's internal keys. The commenter consumes only this
+abstract shape and MUST NOT depend on any adapter's native field names.
 
-| Field | Source |
-|---|---|
-| `schema_version` | The findings-schema version the adapter targets. |
-| `findings` | The model's structured output, conforming to [`findings.schema.json`](../schema/findings.schema.json). |
-| `models` | Per-model token counts (incl. subagents). Map the CLI's native per-model breakdown (e.g. Claude Code's `modelUsage` keyed object) to this array of `{model, input_tokens, output_tokens, cache_read_tokens?, cache_write_tokens?}`. |
-| `turns` | Number of agentic turns (Claude Code: `num_turns`). |
-| `duration_ms` | Wall-clock duration (Claude Code: `duration_ms`). |
-| `vendor_cost_usd` | The CLI's reported cost if any (Claude Code: `total_cost_usd`); nullable. The commenter recomputes canonical cost from `models` + the price map. |
-
-The reference adapter (Claude Code) produces a native `--output-format json` envelope with its own
-keys (`modelUsage`, `usage`, `num_turns`, `structured_output`, `result`, `total_cost_usd`). The
-`code-review adapt` command projects that native shape onto the abstract envelope above, delegating
-`findings` recovery to `code-review extract` (see "Extraction ladder" below); the commenter consumes
-the abstract shape only.
-
-The adapter MUST NOT:
-- Post comments, reviews, or any content to GitHub.
-- Hold or use a writable GitHub token.
-- Format the comment (presentation is the commenter's job).
-
-### Routing behavior
-
-| CI result | Adapter behavior |
-|---|---|
-| pass (`success`) | Full agentic review; may re-run project checks to validate findings. High-effort model. |
-| fail (`failure`) | Fast mechanic pass: only proposes minimal fixes from failing-job logs. Low-effort model. No comprehensive review. |
-| cancelled / skipped / not-run | No review; post nothing. |
+The adapter MUST NOT post to GitHub, hold a writable GitHub token, or format the comment —
+presentation and posting are the commenter's job (SPEC §2.3, and §9.1 REQ-RA-3/REQ-RA-4).
 
 ## Reference adapter: Claude Code
 
-The Claude Code CLI (`@anthropic-ai/claude-code`) is the reference adapter. Its structured-output
-mode (`--json-schema`) constrains the model to emit findings conforming to the published schema.
+`code-review adapt --adapter claude-code <native.json>` projects Claude Code's native
+`--output-format json` envelope onto the abstract envelope, delegating `findings` recovery to the
+extraction ladder (`code-review extract`, below). [`src/adapt.ts`](../src/adapt.ts) is the mapping:
+`modelUsage` → `models[]`, `num_turns` → `turns`, `duration_ms` → `duration_ms`, `total_cost_usd` →
+`vendor_cost_usd`. `findings` and `schema_version` come from the ladder; every other envelope field
+always comes from the native envelope itself. A real captured native envelope lives at
+[`test/fixtures/native-claude-code-envelope.json`](../test/fixtures/native-claude-code-envelope.json).
 
 ### Invocation shape
 
@@ -61,149 +46,80 @@ mode (`--json-schema`) constrains the model to emit findings conforming to the p
 claude -p "/code-review" \
   --output-format json \
   --json-schema "$(cat schema/findings.schema.json)" \
-  --tools "Read,Grep,Glob,Bash(uv run:*),Bash(npm:*),Bash(cargo:*)" \
+  --tools "Read,Grep,Glob,Bash(npm:*),Bash(cargo:*)" \
   --permission-mode bypassPermissions \
   --strict-mcp-config \
   --disallowedTools "Read(/proc/**)" "Read(/sys/**)" "Grep(/proc/**)" \
   >envelope.json
 ```
 
-### Key flags
+Notes on the flags:
 
-| Flag | Purpose |
-|---|---|
-| `-p "/code-review"` | Headless invocation with the built-in code-review command |
-| `--output-format json` | Result envelope (not just the text) — `modelUsage`, `usage`, `num_turns`, `duration_ms` |
-| `--json-schema '<schema>'` | Forces structured output into `.structured_output`. The schema MUST be inlined (no `$ref`/`$defs`/`$id` fragments). |
-| `--tools "…"` | Restrict the toolset — e.g. read-only for triage, broader for phase-2 review |
-| `--permission-mode dontAsk` | Deny anything not allowed; never hangs in CI (used for triage) |
-| `--permission-mode bypassPermissions` | Allow tool use; safe because the runner is throwaway, egress-locked, and read-only token (used for phase 2) |
-| `--strict-mcp-config` | No ambient MCP servers leak in |
-| `--disallowedTools` | Deny beats allow — block `/proc/`, `/sys/` reads |
-| `--append-system-prompt` | Frame the review with project-specific instructions |
+- `--json-schema` asks for structured output in `.structured_output`, but the Claude Code CLI does
+  not reliably populate it (observed on 2.1.197/2.1.201; GitHub issues #18536 and #27926, both closed
+  not-planned) — the JSON often arrives as a fenced block inside the prose `result` string instead.
+  The extraction ladder recovers it deterministically either way, so structured-output enforcement is
+  a best-effort optimization, not a dependency. The schema MUST be inlined (no `$ref`/`$defs`/`$id`).
+- `--tools` restricts the toolset — read-only for triage, broader (e.g. adding the project's own
+  test/build runner) for the phase-2 review.
+- `--permission-mode bypassPermissions` is safe only because the runner is throwaway, egress-locked,
+  and carries a read-only token; use a deny-by-default mode for triage so it never hangs in CI.
+- `--strict-mcp-config` keeps ambient MCP servers out; `--disallowedTools` blocks `/proc` and `/sys`
+  reads (deny beats allow).
 
-### Model configuration (non-Anthropic backend example)
-
-```bash
-ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
-ANTHROPIC_AUTH_TOKEN=<key>          # NOTE: _AUTH_TOKEN, not _API_KEY
-ANTHROPIC_MODEL=deepseek-v4-pro
-CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash
-CLAUDE_CODE_EFFORT_LEVEL=max
-ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro
-ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro
-ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash
-```
-
-Any Anthropic-compatible backend works with the same env shape.
-
-### Result envelope
-
-The `--output-format json` envelope has this shape (verify against your CLI version):
-
-```jsonc
-{
-  "type": "result",
-  "subtype": "success",
-  "is_error": false,
-  "total_cost_usd": 0.0,          // Anthropic-priced — recompute for other backends
-  "usage": {
-    "input_tokens": 0,
-    "output_tokens": 0,
-    "cache_read_input_tokens": 0,
-    "cache_creation_input_tokens": 0
-  },
-  "modelUsage": {                 // per-model; subagent models appear as their own keys
-    "deepseek-v4-pro": {
-      "inputTokens": 0, "outputTokens": 0,
-      "cacheReadInputTokens": 0, "costUSD": 0
-    }
-  },
-  "num_turns": 7,
-  "duration_ms": 91234,
-  "structured_output": { /* findings per schema — MAY be absent; the extraction ladder recovers from "result" when it is */ },
-  "result": "…"
-}
-```
+For the model-backend env (base URL, auth token, model + subagent model + effort), see
+[SPEC §8.5](../SPEC.md#85-model-backend-env). Note the auth variable is `ANTHROPIC_AUTH_TOKEN`, not
+`ANTHROPIC_API_KEY`. Any Anthropic-compatible backend works with the same env shape.
 
 ## Extraction ladder
 
-Structured-output enforcement (`--json-schema`) is preferred but not always clean in practice —
-`structured_output` may be absent, or the model may embed its answer in `result` instead. `code-review
-extract` (and `adapt`, which delegates to it) recovers a schema-conforming candidate deterministically,
-via a fixed-priority ladder:
+Because structured-output enforcement is unreliable (above), `code-review extract` (and `adapt`,
+which delegates to it) recovers a schema-conforming candidate deterministically. The rung order and
+the exactly-one-distinct-validating semantics are implemented and commented in
+[`src/extract.ts`](../src/extract.ts); the ordered rungs are `--agent-file` (findings only — a
+documented no-op for triage) → `structured_output` → the whole `result` parsed as one JSON document →
+fenced code blocks. The first rung that yields a validating candidate wins, so an earlier rung always
+beats a disagreeing later one.
 
-1. **`--agent-file`** — a file the agent was told to write its own validated JSON to (findings only;
-   a documented no-op for triage). Present-but-invalid falls through to the next rung.
-2. **`structured_output`** — the CLI's native structured-output field, when present.
-3. **Parsed `result`** — the whole `result` string, trimmed, parsed as one JSON document.
-4. **Fenced code blocks** — every ` ```json `/bare ` ``` ` block in `result`, in document order.
+The security property is why the fenced-block rung refuses to guess. Validating candidates are first
+deduplicated by canonical equality (a model re-emitting its answer verbatim is not a conflict), then
+**exactly one** distinct candidate must remain: zero recovers nothing, and **more than one is
+ambiguous, never resolved by taking the first or the last**. This defeats an append-a-block injection
+(a diff or file that smuggles a second, differing JSON block into the model's context) that a naive
+"last JSON wins" parser would obey ([SPEC §7.2](../SPEC.md#72-threats)). The residual
+total-replacement injection — one forged survivor left after the genuine block is suppressed entirely
+— is out of the ladder's scope and is contained by the §7.2 controls (read-only token, egress lock,
+spend cap, untrusted-markdown rendering).
 
-The first rung that produces a validating candidate wins — an earlier rung always beats a later one,
-even if a later rung disagrees (the "file wins over a disagreeing fence" invariant). Within the
-fenced-block rung specifically, validating candidates are first deduplicated by canonicalized exact
-equality (a model re-emitting its answer verbatim is not a conflict), and then **exactly one**
-distinct candidate must remain: zero means nothing was recovered, and **more than one distinct
-candidate is treated as ambiguous, never resolved by picking the first or the last**. This defeats
-an append-a-block injection (a PR diff or file content that smuggles a second,
-differing JSON block into the model's context) — a naive "last JSON wins" parser is directly
-exploitable by such an append; refusing on ambiguity is not. The residual risk — a *total-replacement*
-injection that suppresses the genuine block entirely and leaves exactly one (forged) survivor — is out
-of the ladder's scope and is contained by the SPEC §7.2 controls (untrusted-markdown rendering,
-read-only token, egress lock, spend cap); the triage step itself is only a heuristic pre-filter whose
-sole effect is whether Phase 2 (fully sandboxed) runs at all.
+An error envelope (`is_error`, a non-`"success"` `subtype`, or a non-null `api_error_status`)
+short-circuits before any rung runs — a failed run is never salvaged from a stray block. Triage
+extraction additionally **fails closed**: when nothing validates, `extract --schema triage` still
+exits 0 but synthesizes `safe: false` ([SPEC §7.3](../SPEC.md#73-preflight-security-triage)); only
+findings extraction exits non-zero on recovery failure.
 
-An envelope reporting `is_error`/a non-`"success"` `subtype`/a non-null `api_error_status` short-circuits
-before any rung runs — a failed agent run is never salvaged from a stray fenced block. Triage extraction
-additionally **fails closed**: when the ladder can't recover a validated `{safe, reasons}` object,
-`code-review extract --schema triage` still exits 0 but synthesizes `safe: false` (§7.3) — only
-findings extraction exits non-zero when nothing is recovered.
-
-Caveat: a finding `body` that happens to contain a complete, valid findings-JSON example (e.g. as
-documentation) can itself trip the ambiguity guard against the real answer. This is an accepted,
+Caveat: a finding `body` that itself contains a complete, valid findings-JSON example (e.g. as
+documentation) can trip the ambiguity guard against the real answer. This is an accepted,
 fail-closed false positive, not a bug.
 
 ## Writing a new adapter
 
-A conforming adapter for another agent CLI (e.g. OpenCode) MUST:
+A new adapter for another agent CLI (e.g. OpenCode) implements the same contract: accept the inputs
+as files, emit the abstract envelope (SPEC §6.1) mapped from the CLI's native output, recover
+`findings` via the same extraction ladder when structured-output enforcement is imperfect, never post
+to GitHub, and run under the same controls (read-only token, egress lock, burner key with spend cap).
+The full conformance requirements are [SPEC §9.1](../SPEC.md#91-review-agent) (REQ-RA-1…6); the
+reference to mirror is [`src/adapt.ts`](../src/adapt.ts).
 
-1. **Accept the same inputs** — diff, CI result, context, and logs as file paths.
-2. **Emit findings JSON conforming to the findings schema** — either via structured-output enforcement
-   or by post-validating the model's free-text output and mapping it to the schema.
-3. **Emit the abstract result envelope** (SPEC §6.1): `schema_version`, `findings`, `models`
-   (per-model token counts), `turns`, `duration_ms`, and optional `vendor_cost_usd` — mapped from
-   the CLI's native output onto these spec-owned field names.
-4. **Not post to GitHub** — the commenter owns presentation and posting.
-5. **Be subject to the same security controls** — read-only token, egress lock, burner key with
-   spend cap.
-
-An adapter MAY:
-
-- Use a different CLI flag syntax (the contract is the data, not the flags).
-- Map the agent CLI's native output format to the envelope shape.
-- Add project-specific context (CLAUDE.md, README, contributing guidelines) to the prompt.
-- Re-run project checks to validate findings (the runner is throwaway).
+An adapter MAY use any CLI flag syntax (the contract is the data, not the flags), add project-specific
+context (CLAUDE.md, README, contributing guidelines) to the prompt, and re-run project checks to
+validate findings (the runner is throwaway).
 
 ## Conformance tests
 
-A conformance test suite for adapters SHOULD verify:
-
-1. Valid findings JSON → `validate` command passes; invalid → non-zero exit.
-2. In-diff findings → `inline` command maps them to comments (not strays).
-3. Out-of-diff findings → `inline` command demotes them to strays (not dropped, not 422).
-4. Envelope `models` + price map → `cost` command produces correct USD; an unknown model warns,
-   not silently zeroes.
-5. Findings + envelope + prices + template → `render` command produces valid markdown with the
-   normative sections (marker first line, verdict, route, summary, cost footer, LLM disclosure
-   naming the models from `models`).
-6. A `suggestion: ""` finding renders a deletion block; `null` renders none; a >10-line suggestion
-   is demoted to the summary rather than 422-ing the review.
-7. `post` finds-and-PATCHes the existing bot comment by marker **and author identity**; a non-bot
-   comment carrying the marker is not updated.
-8. `structured_output` absent + a valid fenced block in `result` → `extract`/`adapt` recover it
-   (not just the happy path where `structured_output` is present).
-9. Two differing, independently-validating candidates (e.g. two fenced blocks) → `ambiguous`, never
-   resolved by taking the first or the last.
-10. An error envelope (`is_error`/non-`"success"` `subtype`/non-null `api_error_status`) → treated as
-    "review did not complete" (§5.5), even when a validating candidate is also present.
-11. Triage extraction from prose with no recoverable JSON → fails closed to `safe: false`, exit 0.
+The adapter and ladder conformance suite is executable, not aspirational:
+[`src/adapt.test.ts`](../src/adapt.test.ts), [`src/extract.test.ts`](../src/extract.test.ts), and the
+fixtures in [`test/fixtures/extract-ladder/`](../test/fixtures/extract-ladder/) exercise the rung
+order, the error-envelope short-circuit, the ajv + io-ts candidate gate, ambiguity-is-failure, and
+fail-closed triage. Commenter-side conformance (in-diff demotion, cost recompute, render sections,
+`post` upsert by marker **and** author identity) is covered by the sibling `src/*.test.ts` suites.
+Run them via the project's test task.

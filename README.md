@@ -54,8 +54,11 @@ in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the ad
 
 1. Copy [examples/workflows/review.yaml](examples/workflows/review.yaml) into `.github/workflows/`.
    Your existing CI workflow is untouched — edit the `workflows: ["CI"]` filter to match its `name:`.
-2. Add a repo secret `MODEL_API_KEY` — a **burner key with a hard spend cap** (it is exposed to
-   untrusted PR code during the contained review window).
+2. Set the `API_BASE_URL` Actions **variable** — your provider's Anthropic-compatible endpoint,
+   e.g. `https://api.deepseek.com/anthropic` — and add a repo secret `MODEL_API_KEY`, a **burner
+   key with a hard spend cap** (it is exposed to untrusted PR code during the contained review
+   window). Both are required: with no endpoint configured the workflow fails loudly rather than
+   letting the CLI pick where your key gets sent.
 3. Commit `.github/prices.json` (fork [schema/prices.example.json](schema/prices.example.json) and
    fill in your provider's per-token rates) — without it the cost footer renders **$0**
    ([SPEC §6.2](SPEC.md#62-price-map)).
@@ -67,8 +70,9 @@ in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the ad
 Every model knob is committed step `env` on the workflow's triage and review steps — models,
 efforts, the subagent model, and the tier aliases, right where each is consumed — edited and
 PR-reviewed like the rest of the file ([SPEC §8.5](SPEC.md#85-model-backend-env)). Only the backend
-endpoint is a per-repo **Actions variable** (`ANTHROPIC_BASE_URL`); pointing it at another provider
-requires adding that provider's API host to the workflow's egress allowlist in the same reviewed PR.
+endpoint is a per-repo **Actions variable** (`API_BASE_URL`, required, no default); pointing it at
+another provider requires adding that provider's API host to the workflow's egress allowlist in the
+same reviewed PR.
 
 ## What's here
 

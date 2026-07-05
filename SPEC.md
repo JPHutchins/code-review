@@ -607,6 +607,11 @@ abstract requirement (§2.2) is that the adapter accepts a model backend URL, a 
 optionally a subagent model identifier and an effort level. Any Anthropic-compatible backend works
 with the Claude Code adapter's env shape above.
 
+The binding MUST NOT default the backend endpoint: it is explicit operator configuration (the
+reference workflow requires an `API_BASE_URL` repository variable and fails before any model call
+when it is unset), because a CLI left to fall back to its own vendor's API would send the model key
+to an endpoint the operator never chose.
+
 ---
 
 ## 9. Conformance

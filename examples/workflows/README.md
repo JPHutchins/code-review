@@ -17,8 +17,10 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
 1. Copy `review.yaml` into `.github/workflows/`. Your existing CI workflow is untouched — edit the
    `workflows: ["CI"]` filter to match its `name:`.
-2. Add a repo secret `MODEL_API_KEY` — a **burner key with a hard spend cap** (it is exposed to
-   untrusted PR code during the contained phase-2 window).
+2. Set the `API_BASE_URL` Actions **variable** (your provider's Anthropic-compatible endpoint,
+   e.g. `https://api.deepseek.com/anthropic`) and add a repo secret `MODEL_API_KEY` — a **burner
+   key with a hard spend cap** (it is exposed to untrusted PR code during the contained phase-2
+   window). Both are required; an unset endpoint fails the triage step loudly.
 3. Commit `.github/prices.json` (fork [`schema/prices.example.json`](../../schema/prices.example.json))
    so the cost footer isn't **$0** ([SPEC §6.2](../../SPEC.md#62-price-map)).
 4. `workflow_run` only fires from the **default branch** — merge first, then open a test PR. The
@@ -28,11 +30,12 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
 Model configuration is committed step `env` on the two claude-invoking steps — models, efforts, the
 subagent model, and the tier aliases, scoped to where each is consumed — deliberately in-file config,
-reviewed in your own PR flow. Only `ANTHROPIC_BASE_URL` is a per-repo **Actions variable**, and it is
-safe as one because the egress allowlist still pins the reachable hosts: a different provider means
-adding its API host to `allowed-endpoints` in the same PR. Add your ecosystem's package registries
-there only if the agent should install packages to validate findings (the file's own comment marks
-where).
+reviewed in your own PR flow. Only the backend endpoint is a per-repo **Actions variable**
+(`API_BASE_URL`, required, no default — an unset endpoint fails loudly instead of letting the CLI
+choose where the key gets sent), and it is safe as one because the egress allowlist still pins the
+reachable hosts: a different provider means adding its API host to `allowed-endpoints` in the same
+PR. Add your ecosystem's package registries there only if the agent should install packages to
+validate findings (the file's own comment marks where).
 
 The approach was proven by a live review on
 [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691); see

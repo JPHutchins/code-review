@@ -26,9 +26,10 @@ const sanitizeFinding = (f: Finding): Finding => ({
 /** Render a code-review comment from findings, envelope, and prices. Pure. */
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
-  const costReport = computeCost(input.envelope.models, input.prices);
+  const usageAvailable = input.envelope !== null;
+  const costReport = input.envelope ? computeCost(input.envelope.models, input.prices) : null;
   const route = input.route;
-  const modelNames = input.envelope.models.map((m) => m.model).join(", ");
+  const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
 
   const findings = input.findings.findings.map(sanitizeFinding);
   const safeFindings = { ...input.findings, findings };
@@ -37,13 +38,18 @@ export const render = (input: RenderInput): string => {
   return eta.renderString(input.template, {
     findings: safeFindings,
     envelope: input.envelope,
+    usageAvailable,
     costReport,
     route,
+    effort: input.effort ?? null,
     modelNames,
     testReport: input.testReport ?? null,
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
     totalCount: findings.length,
     fileCount: uniqueFiles.length,
+    // REC-CO-1: nits (and only nits) fold into <details>; everything else stays visible.
+    visibleFindings: findings.filter((f) => f.severity !== "nit"),
+    nitFindings: findings.filter((f) => f.severity === "nit"),
     suggestionCount: findings.filter((f) => f.suggestion).length,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

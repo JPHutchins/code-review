@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { indexDiff, isInDiff, partitionFindings, defaultSide } from "./diff.js";
+import { indexDiff, isInDiff, partitionFindings, defaultSide, isEmptyDiff } from "./diff.js";
 import type { Finding } from "./schema.js";
 
 const sampleDiff = `diff --git a/src/foo.ts b/src/foo.ts
@@ -87,8 +87,6 @@ describe("partitionFindings", () => {
   });
 });
 
-// ---- LEFT-side findings ----
-
 const leftSideDiff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
 --- a/src/foo.ts
@@ -131,8 +129,6 @@ describe("LEFT-side (deletion) line indexing", () => {
     expect(strays).toHaveLength(1);
   });
 });
-
-// ---- Multi-file diffs with overlapping line numbers ----
 
 const multiFileDiff = `diff --git a/src/a.ts b/src/a.ts
 index 111..222 100644
@@ -182,8 +178,6 @@ describe("multi-file diff indexing", () => {
   });
 });
 
-// ---- Empty diff input ----
-
 describe("empty diff input", () => {
   it("returns an empty index for an empty string", () => {
     const index = indexDiff("");
@@ -207,8 +201,6 @@ describe("empty diff input", () => {
   });
 });
 
-// ---- Diff with only deleted files ----
-
 const deleteOnlyDiff = `diff --git a/src/removed.ts b/src/removed.ts
 deleted file mode 100644
 index abc..0000000
@@ -229,8 +221,6 @@ describe("deleted-files-only diff", () => {
     expect(isInDiff(index, "src/removed.ts", 3)).toBe(true);
   });
 });
-
-// ---- Renamed file diff ----
 
 const renameDiff = `diff --git a/src/old.ts b/src/new.ts
 similarity index 100%
@@ -269,8 +259,6 @@ describe("renamed file diff", () => {
   });
 });
 
-// ---- defaultSide ----
-
 describe("defaultSide", () => {
   it('returns "RIGHT" when side is undefined', () => {
     expect(defaultSide(undefined)).toBe("RIGHT");
@@ -286,5 +274,27 @@ describe("defaultSide", () => {
 
   it('returns "RIGHT" for any unrecognized string', () => {
     expect(defaultSide("BOTH")).toBe("RIGHT");
+  });
+});
+
+describe("isEmptyDiff", () => {
+  it("is true for an empty string", () => {
+    expect(isEmptyDiff("")).toBe(true);
+  });
+
+  it("is true for whitespace-only input", () => {
+    expect(isEmptyDiff("   \n  \n  ")).toBe(true);
+  });
+
+  it("is false for a diff with real hunks", () => {
+    expect(isEmptyDiff(sampleDiff)).toBe(false);
+  });
+
+  it("is true when parsed files carry no chunks (e.g. mode-only changes)", () => {
+    const modeOnlyDiff = `diff --git a/src/foo.ts b/src/foo.ts
+old mode 100644
+new mode 100755
+`;
+    expect(isEmptyDiff(modeOnlyDiff)).toBe(true);
   });
 });

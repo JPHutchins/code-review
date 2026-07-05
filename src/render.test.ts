@@ -3,8 +3,14 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
-import type { Findings, ResultEnvelope, PriceMap, Finding, ModelUsageEntry } from "./schema.js";
-import type { TestSummary } from "./types.js";
+import type {
+  Findings,
+  ResultEnvelope,
+  PriceMap,
+  Finding,
+  ModelUsageEntry,
+  TestSummary,
+} from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const template = readFileSync(resolve(__dirname, "..", "templates", "comment.eta"), "utf-8");
@@ -100,7 +106,7 @@ describe("render", () => {
   });
 
   describe("findings summary table", () => {
-    it("renders findings in a summary details block", () => {
+    it("renders a critical finding visibly, not folded in <details>", () => {
       const findings = mkFindings([
         mkFinding({ severity: "critical", title: "CRIT-1", start_line: 10 }),
       ]);
@@ -113,7 +119,7 @@ describe("render", () => {
       });
 
       expect(result).toContain("Findings summary");
-      expect(result).toContain("<details>");
+      expect(result).not.toContain("<details>");
       expect(result).toContain("CRIT-1");
       expect(result).toContain("🔴");
     });
@@ -444,7 +450,7 @@ describe("render", () => {
     expect(result).toContain("Custom summary walkthrough.");
   });
 
-  it("shows the route line with effort", () => {
+  it("shows the route line without an effort segment when effort is omitted", () => {
     const findings = mkFindings([]);
     const result = render({
       findings,
@@ -454,7 +460,21 @@ describe("render", () => {
       route: "full review",
     });
     expect(result).toContain("Route:");
-    expect(result).toContain("effort:");
+    expect(result).not.toContain("effort:");
+  });
+
+  it("renders the passed effort in the route line", () => {
+    const findings = mkFindings([]);
+    const result = render({
+      findings,
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "mechanic",
+      effort: "low",
+    });
+    expect(result).toContain("Route:");
+    expect(result).toContain("**effort:** low");
   });
 
   it("shows LLM disclosure note", () => {
@@ -566,5 +586,85 @@ describe("severity emoji", () => {
       route: "full review",
     });
     expect(result).toContain("❓");
+  });
+});
+
+describe("severity grouping (REC-CO-1)", () => {
+  it("folds nits, and only nits, into a <details> block", () => {
+    const findings = mkFindings([
+      mkFinding({ severity: "critical", title: "CRIT" }),
+      mkFinding({ severity: "major", title: "MAJ" }),
+      mkFinding({ severity: "minor", title: "MIN" }),
+      mkFinding({ severity: "nit", title: "NIT" }),
+    ]);
+    const result = render({
+      findings,
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+    });
+
+    expect(result).toContain("<details>");
+    expect(result).toContain("nit");
+
+    const detailsStart = result.indexOf("<details>");
+    const detailsEnd = result.indexOf("</details>");
+    const foldedSection = result.slice(detailsStart, detailsEnd);
+
+    expect(foldedSection).toContain("NIT");
+    expect(foldedSection).not.toContain("CRIT");
+    expect(foldedSection).not.toContain("MAJ");
+    expect(foldedSection).not.toContain("MIN");
+
+    const visibleSection = result.slice(0, detailsStart);
+    expect(visibleSection).toContain("CRIT");
+    expect(visibleSection).toContain("MAJ");
+    expect(visibleSection).toContain("MIN");
+    expect(visibleSection).not.toContain("NIT");
+  });
+
+  it("omits the <details> fold when there are no nits", () => {
+    const findings = mkFindings([mkFinding({ severity: "major", title: "MAJ-ONLY" })]);
+    const result = render({
+      findings,
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+    });
+    expect(result).not.toContain("<details>");
+    expect(result).toContain("MAJ-ONLY");
+  });
+});
+
+describe("usage unavailable (envelope missing — SPEC §5.5)", () => {
+  it("renders a usage-unavailable note instead of the cost footer when envelope is null", () => {
+    const findings = mkFindings([]);
+    const result = render({ findings, envelope: null, prices, template, route: "full review" });
+    expect(result).toContain("Usage/cost unavailable");
+    expect(result).not.toContain("| Model | Input");
+  });
+
+  it("shows 'usage unavailable' in the route line instead of turns/wall", () => {
+    const findings = mkFindings([]);
+    const result = render({ findings, envelope: null, prices, template, route: "full review" });
+    expect(result).toContain("usage unavailable");
+    expect(result).not.toContain("turns:");
+  });
+
+  it("still renders findings and summary when envelope is null", () => {
+    const findings = mkFindings([mkFinding({ title: "Still shown", severity: "major" })], {
+      summary: "Real summary text.",
+    });
+    const result = render({ findings, envelope: null, prices, template, route: "full review" });
+    expect(result).toContain("Still shown");
+    expect(result).toContain("Real summary text.");
+  });
+
+  it("falls back to 'unknown model' in the LLM disclosure when envelope is null", () => {
+    const findings = mkFindings([]);
+    const result = render({ findings, envelope: null, prices, template, route: "full review" });
+    expect(result).toContain("unknown model");
   });
 });

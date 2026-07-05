@@ -254,8 +254,6 @@ describe("renderStraysSection", () => {
   });
 });
 
-// ---- Custom inline template rendering ----
-
 describe("buildInlineComments with custom template", () => {
   const inlineTemplate = `<%~ it.body %>
 
@@ -393,8 +391,6 @@ index abc..def 100644
     expect(comments[0]!.body).not.toContain("```malicious```");
   });
 });
-
-// ---- Template injection attempts ----
 
 describe("injection resistance", () => {
   it("handles pipe characters in finding title without breaking table", () => {

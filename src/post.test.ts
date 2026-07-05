@@ -1,14 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput } from "./post.js";
 import { post } from "./post.js";
-import type { Findings, ResultEnvelope, PriceMap, Finding, ModelUsageEntry } from "./schema.js";
+import type {
+  Findings,
+  ResultEnvelope,
+  PriceMap,
+  Finding,
+  ModelUsageEntry,
+  TestSummary,
+} from "./schema.js";
 
-// ---------------------------------------------------------------------------
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 // Test helpers
-// ---------------------------------------------------------------------------
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
   path: "src/foo.ts",
@@ -58,33 +66,9 @@ const prices: PriceMap = {
   },
 };
 
-const template = `<!-- code-review -->
-<!-- reviewed-sha: <%= it.reviewedSha %> %>
-
-### <%= it.verdictBadge(it.findings.verdict) %>
-
-**Route:** <%~ it.route %> · **effort:** max · **turns:** <%= it.envelope.turns %> · **wall:** <%~ it.formatDuration(it.envelope.duration_ms) %>
-
-<%~ it.findings.summary %>
-
----
-
-<sub>
-
-| Model | Input | Output | Cache read | Cache write | Cost |
-|---|--:|--:|--:|--:|--:|
-<% it.costReport.lines.forEach(function(l) { %>
-| <%= l.model %> | <%= it.formatTokens(l.inputTokens) %> | <%= it.formatTokens(l.outputTokens) %> | <%= it.formatTokens(l.cacheReadTokens) %> | <%= it.formatTokens(l.cacheWriteTokens) %> | <%= it.formatCost(l.costUSD) %> |
-<% }) %>
-| **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD) %>** |
-
-</sub>
-
-> [!NOTE]
-> **LLM Disclosure** — this review was produced by <%= it.modelNames || "unknown model" %> running
-> headless in an ephemeral, egress-locked CI runner with no write access to the repository. It is
-> advisory and does not block merge.
-`;
+// The real bundled template — exercises the actual shipped rendering (null-envelope
+// degradation, severity grouping, effort segment), not a hand-rolled duplicate that drifts.
+const template = readFileSync(resolve(__dirname, "..", "templates", "comment.eta"), "utf-8");
 
 const inlineDiff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
@@ -134,6 +118,7 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
 interface RecordedCall {
   readonly args: readonly string[];
   readonly stdin?: string;
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 interface ReviewBody {
@@ -161,8 +146,8 @@ const mkMockGhApi = (
   }>,
 ): { readonly api: GhApi; readonly calls: () => readonly RecordedCall[] } => {
   const calls: RecordedCall[] = [];
-  const api: GhApi = (args, stdin) => {
-    calls.push({ args: [...args], stdin });
+  const api: GhApi = (args, stdin, env) => {
+    calls.push({ args: [...args], stdin, env });
     for (const r of responses) {
       if (r.match(args)) return Promise.resolve(r.response);
     }
@@ -171,16 +156,14 @@ const mkMockGhApi = (
   return { api, calls: () => calls };
 };
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 describe("post — upsert sticky comment", () => {
   it("PATCHes existing bot comment found by marker + author", async () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -218,7 +201,7 @@ describe("post — upsert sticky comment", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -252,7 +235,7 @@ describe("post — upsert sticky comment", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -291,7 +274,7 @@ describe("post — inline review", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -337,7 +320,7 @@ describe("post — inline review", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -375,7 +358,7 @@ describe("post — suggestion handling", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -422,7 +405,7 @@ describe("post — suggestion handling", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -468,7 +451,7 @@ describe("post — suggestion handling", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -532,16 +515,9 @@ describe("post — PR resolution", () => {
   it("disambiguates by head_branch when multiple PRs share a commit", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) =>
-          a[0]?.startsWith("repos/owner/repo/commits/") === true &&
-          a.some((arg) => typeof arg === "string" && arg.includes(".[].number")),
-        response: "42\n99\n",
-      },
-      {
-        match: (a) =>
-          a[0]?.startsWith("repos/owner/repo/commits/") === true &&
-          a.some((arg) => typeof arg === "string" && arg.includes("head.ref")),
-        response: "99\n",
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"other-branch"}\n{"number":99,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/99" && a.includes("-H"),
@@ -556,7 +532,7 @@ describe("post — PR resolution", () => {
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/pulls/99/reviews",
+        match: (a) => a[0] === "repos/owner/repo/pulls/99/reviews" && a.includes("--input"),
         response: "",
       },
     ]);
@@ -573,6 +549,28 @@ describe("post — PR resolution", () => {
     );
     expect(diffCall42).toBeUndefined();
   });
+
+  it("exits 0 without posting when the resolved PR is not open", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"closed","headRef":"feature-branch"}\n',
+      },
+    ]);
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("not open"));
+    expect(calls()).toHaveLength(1); // only the PR-resolution read — nothing else, nothing posted
+
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
 });
 
 describe("post — injection discipline", () => {
@@ -580,7 +578,7 @@ describe("post — injection discipline", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: "42\n",
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -607,5 +605,613 @@ describe("post — injection discipline", () => {
         expect(() => JSON.parse(c.stdin ?? "") as unknown).not.toThrow();
       }
     }
+  });
+
+  it("passes bot login and marker to jq via env, never interpolated into the filter text (jq hardening)", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const findCommentsCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--paginate"),
+    );
+    expect(findCommentsCall).toBeDefined();
+    expect(findCommentsCall?.args.some((a) => a.includes("github-actions[bot]"))).toBe(false);
+    expect(
+      findCommentsCall?.args.some(
+        (a) => a.includes("env.CODE_REVIEW_BOT_LOGIN") && a.includes("env.CODE_REVIEW_MARKER"),
+      ),
+    ).toBe(true);
+    expect(findCommentsCall?.env?.["CODE_REVIEW_BOT_LOGIN"]).toBe("github-actions[bot]");
+    expect(findCommentsCall?.env?.["CODE_REVIEW_MARKER"]).toBe("<!-- code-review -->");
+  });
+});
+
+describe("post — §5.5 error semantics", () => {
+  const mkBaseMocks = (overrides: { readonly diff?: string } = {}) => [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: overrides.diff ?? inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+  ];
+
+  it("posts a sticky-only notice for an empty diff; no inline review; exit 0", async () => {
+    const { api, calls } = mkMockGhApi(mkBaseMocks({ diff: "" }));
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    expect(stickyCall).toBeDefined();
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("diff for this PR is empty");
+    expect(body.body).toContain("💬 comment");
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+
+  it("posts a sticky-only notice when the findings file is corrupt (invalid JSON); exit 0", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), "{ not valid json");
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("did not complete");
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+
+  it("posts a sticky-only notice when the findings file is absent; exit 0", async () => {
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(
+      post(mkInput({ findingsPath: join(tmpDir, "does-not-exist.json") }), api),
+    ).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("did not complete");
+
+    exitSpy.mockRestore();
+  });
+
+  it("posts a sticky-only notice when findings fail FindingsCodec (invalid shape); exit 0", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify({ not: "findings shaped" }));
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("did not conform to the findings schema");
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+
+  it("F3: posts the malformed notice for a schema_version missing its patch component (ajv/codec parity)", async () => {
+    const findings = mkFindings([mkFinding({})]);
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({ ...findings, schema_version: "0.2" }),
+    );
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("did not conform to the findings schema");
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+
+  it("posts the malformed notice (missing-version) when schema_version is entirely absent; exit 0", async () => {
+    const findings = mkFindings([mkFinding({})]);
+    const withoutVersion: Record<string, unknown> = { ...findings };
+    delete withoutVersion["schema_version"];
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(withoutVersion));
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("did not conform to the findings schema");
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+
+  it("posts a sticky-only notice when schema_version major.minor is unsupported; exit 0", async () => {
+    const unsupported = mkFindings([mkFinding({})]);
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({ ...unsupported, schema_version: "1.0.0" }),
+    );
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain('schema_version "1.0.0"');
+    expect(body.body).toContain("does not support");
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+
+  it("posts a sticky-only notice with real findings when the envelope is absent; no inline; exit 0", async () => {
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(
+      post(mkInput({ envelopePath: join(tmpDir, "does-not-exist-envelope.json") }), api),
+    ).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    // Real findings summary is preserved — this is not a synthetic notice.
+    expect(body.body).toContain("A test summary.");
+    expect(body.body).toContain("Usage/cost unavailable");
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+
+  it("posts a sticky-only notice when the envelope file is corrupt (invalid JSON); exit 0", async () => {
+    writeFileSync(join(tmpDir, "envelope.json"), "{ not valid json");
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+});
+
+describe("post — re-run hygiene (REC-CO-2)", () => {
+  it("updates only the sticky when the head SHA matches the reviewed-sha marker", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nold"}\n`,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+
+    const reviewsListCall = calls().find((c) =>
+      c.args[0]?.startsWith("repos/owner/repo/pulls/42/reviews"),
+    );
+    expect(reviewsListCall).toBeUndefined();
+  });
+
+  it("dismisses prior bot reviews and posts a fresh inline review when the head SHA differs", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: JSON.stringify([
+          { id: 555, user: { login: "github-actions[bot]" }, state: "APPROVED" },
+          { id: 556, user: { login: "someone-else" }, state: "APPROVED" },
+        ]),
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews/555/dismissals",
+        response: "",
+      },
+      {
+        match: (a) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" &&
+          a.includes("--input") &&
+          !a.includes("--paginate"),
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const dismissCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews/555/dismissals",
+    );
+    expect(dismissCall).toBeDefined();
+    expect(dismissCall?.args).toContain("PUT");
+
+    const notDismissed = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews/556/dismissals",
+    );
+    expect(notDismissed).toBeUndefined();
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+
+    const inlineCall = calls().find(
+      (c) =>
+        c.args[0] === "repos/owner/repo/pulls/42/reviews" &&
+        c.args.includes("--input") &&
+        !c.args.includes("--paginate"),
+    );
+    expect(inlineCall).toBeDefined();
+  });
+
+  it("logs a dismissal failure and continues posting rather than failing the job", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: JSON.stringify([
+          { id: 777, user: { login: "github-actions[bot]" }, state: "APPROVED" },
+        ]),
+      },
+      // Deliberately no mock for the dismissals PUT call — it rejects as "unexpected".
+      {
+        match: (a) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" &&
+          a.includes("--input") &&
+          !a.includes("--paginate"),
+        response: "",
+      },
+    ]);
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await post(mkInput({}), api);
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("failed to dismiss"));
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+    const inlineCall = calls().find(
+      (c) =>
+        c.args[0] === "repos/owner/repo/pulls/42/reviews" &&
+        c.args.includes("--input") &&
+        !c.args.includes("--paginate"),
+    );
+    expect(inlineCall).toBeDefined();
+
+    stderrSpy.mockRestore();
+  });
+});
+
+describe("post — CO-R3: never-partially-post ordering", () => {
+  const normalMocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+      response: "",
+    },
+  ];
+
+  it("posts the sticky before the inline review", async () => {
+    const { api, calls } = mkMockGhApi(normalMocks);
+
+    await post(mkInput({}), api);
+
+    const stickyIndex = calls().findIndex(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const inlineIndex = calls().findIndex(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect(stickyIndex).toBeGreaterThanOrEqual(0);
+    expect(inlineIndex).toBeGreaterThan(stickyIndex);
+  });
+
+  it("propagates a posting failure (never partially posts) and never attempts the inline review", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      // Deliberately no mock for the sticky POST — it rejects as "unexpected gh api call".
+    ]);
+
+    await expect(post(mkInput({}), api)).rejects.toThrow(/Unexpected gh api call/);
+
+    const inlineCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    expect(inlineCall).toBeUndefined();
+  });
+});
+
+describe("post — REQ-CO-9 test-report threading", () => {
+  it("renders the test panel when --test-report is provided", async () => {
+    const testReport: TestSummary = { passed: 3, failed: 1, total: 4 };
+    writeFileSync(join(tmpDir, "test-report.json"), JSON.stringify(testReport));
+
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({ testReportPath: join(tmpDir, "test-report.json") }), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("Test results");
+    expect(body.body).toContain("3 passed, 1 failed");
+  });
+
+  it("omits the test panel and warns (but still posts) when --test-report is malformed", async () => {
+    writeFileSync(join(tmpDir, "test-report.json"), "{ not valid json");
+
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await post(mkInput({ testReportPath: join(tmpDir, "test-report.json") }), api);
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("test report"));
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    expect(stickyCall).toBeDefined();
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).not.toContain("Test results");
+
+    stderrSpy.mockRestore();
+  });
+});
+
+describe("post — --effort threading", () => {
+  it("renders the passed effort in the sticky's route line", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({ effort: "low", route: "mechanic" }), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("**effort:** low");
+    expect(body.body).toContain("mechanic");
   });
 });

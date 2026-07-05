@@ -1,9 +1,7 @@
 // Domain types NOT derived from io-ts codecs.
-// For DTO types (Finding, Findings, ResultEnvelope, PriceMap, etc.) import from ./schema.js.
+// For DTO types (Finding, Findings, ResultEnvelope, PriceMap, TestSummary, etc.) import from ./schema.js.
 
-import type { Finding, Findings, Side, ResultEnvelope, PriceMap } from "./schema.js";
-
-// ---- Inline review output (built programmatically, not from JSON input) ----
+import type { Finding, Findings, Side, ResultEnvelope, PriceMap, TestSummary } from "./schema.js";
 
 export interface InlineComment {
   readonly path: string;
@@ -19,28 +17,14 @@ export interface InlineResult {
   readonly strays: readonly Finding[];
 }
 
-// ---- Test summary (format-agnostic — SPEC §5.1 item 4, REQ-CO-9) ----
-
-export interface TestFailure {
-  readonly name: string;
-  readonly message?: string;
-}
-
-export interface TestSummary {
-  readonly passed: number;
-  readonly failed: number;
-  readonly total: number;
-  readonly failures?: readonly TestFailure[];
-}
-
-// ---- Render input ----
-
 export interface RenderInput {
   readonly findings: Findings;
-  readonly envelope: ResultEnvelope;
+  /** null when the result envelope is unavailable or malformed — renders a "usage unavailable" note. */
+  readonly envelope: ResultEnvelope | null;
   readonly prices: PriceMap;
   readonly template: string;
   readonly reviewedSha?: string;
   readonly route: string;
+  readonly effort?: string;
   readonly testReport?: TestSummary;
 }

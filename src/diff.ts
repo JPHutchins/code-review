@@ -68,6 +68,13 @@ export const indexDiff = (diff: string): DiffLineIndex => {
 export const isInDiff = (index: DiffLineIndex, path: string, line: number): boolean =>
   index.has(key(path, line));
 
+/** True for a diff with no content or no hunks — nothing to review or anchor inline comments to. */
+export const isEmptyDiff = (diff: string): boolean => {
+  if (diff.trim().length === 0) return true;
+  const files = parseDiff(diff);
+  return !Array.isArray(files) || files.length === 0 || files.every((f) => f.chunks.length === 0);
+};
+
 /** Default side for inline comments: RIGHT for additions, LEFT for deletions. */
 export const defaultSide = (side: string | undefined): Side => (side === "LEFT" ? "LEFT" : "RIGHT");
 

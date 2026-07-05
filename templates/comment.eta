@@ -3,27 +3,39 @@
 
 ### <%= it.verdictBadge(it.findings.verdict) %>
 
-**Route:** <%~ it.route %> · **effort:** max · **turns:** <%= it.envelope.turns %> · **wall:** <%~ it.formatDuration(it.envelope.duration_ms) %>
+**Route:** <%~ it.route %><% if (it.effort) { %> · **effort:** <%~ it.effort %><% } %><% if (it.usageAvailable) { %> · **turns:** <%= it.envelope.turns %> · **wall:** <%~ it.formatDuration(it.envelope.duration_ms) %><% } else { %> · _usage unavailable_<% } %>
 
 <%~ it.findings.summary %>
 
 ---
 
 <% if (it.totalCount > 0) { %>
-<details>
-<summary>📊 Findings summary — <%= it.totalCount %> finding<%= it.totalCount === 1 ? '' : 's' %> on <%= it.fileCount %> file<%= it.fileCount === 1 ? '' : 's' %></summary>
+#### 📊 Findings summary — <%= it.totalCount %> finding<%= it.totalCount === 1 ? '' : 's' %> on <%= it.fileCount %> file<%= it.fileCount === 1 ? '' : 's' %>
 
+<% if (it.visibleFindings.length > 0) { %>
 | Severity | File | Line | Summary |
 |---|---|---|---|
-<% it.findings.findings.forEach(function(f) { %>
+<% it.visibleFindings.forEach(function(f) { %>
 | <%= it.severityEmoji(f.severity) %> <%= f.severity %> | `<%= f.path %>` | <%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %> | <%= f.title %> |
 <% }) %>
+
+<% } %>
+<% if (it.nitFindings.length > 0) { %>
+<details>
+<summary>⚪ <%= it.nitFindings.length %> nit<%= it.nitFindings.length === 1 ? '' : 's' %> (folded)</summary>
+
+| File | Line | Summary |
+|---|---|---|
+<% it.nitFindings.forEach(function(f) { %>
+| `<%= f.path %>` | <%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %> | <%= f.title %> |
+<% }) %>
+
+</details>
+<% } %>
 
 <% if (it.suggestionCount > 0) { %>
 <%= it.suggestionCount %> finding<%= it.suggestionCount === 1 ? '' : 's' %> included suggestions — see inline comments for details.
 <% } %>
-
-</details>
 <% } else { %>
 _No findings — clean review._
 <% } %>
@@ -47,6 +59,7 @@ All <%= it.testReport.total %> tests passed.
 
 ---
 
+<% if (it.usageAvailable) { %>
 <sub>
 
 | Model | Input | Output | Cache read | Cache write | Cost |
@@ -57,6 +70,9 @@ All <%= it.testReport.total %> tests passed.
 | **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD) %>** |
 
 </sub>
+<% } else { %>
+> **Usage/cost unavailable** — the result envelope for this run was missing or malformed.
+<% } %>
 
 > [!NOTE]
 > **LLM Disclosure** — this review was produced by <%= it.modelNames || "unknown model" %> running

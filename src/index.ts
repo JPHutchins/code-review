@@ -61,6 +61,10 @@ const unwrapAdapt = <A>(either: Either<string, A>): A => {
 const bundledPath = (...segments: string[]): string =>
   resolve(import.meta.dirname, "..", ...segments);
 
+const packageVersion = (
+  JSON.parse(readFileSync(bundledPath("package.json"), "utf-8")) as { version: string }
+).version;
+
 /** `--template` defaults to the bundled comment template when omitted. */
 const resolveTemplatePath = (templateArg: string | undefined): string =>
   templateArg ? resolve(templateArg) : bundledPath("templates", "comment.eta");
@@ -546,7 +550,7 @@ const postCmd = defineCommand({
 export const main = defineCommand({
   meta: {
     name: "code-review",
-    version: "0.1.0",
+    version: packageVersion,
     description:
       "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, cost, and validate findings JSON",
   },

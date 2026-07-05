@@ -33,22 +33,6 @@ jobs:
       pull-requests: read    # fetch PR conversation as context
       issues: read           # fetch prior review comments
 
-    # Model configuration — the whole surface, committed and PR-reviewed like the rest of this
-    # file. Only the backend endpoint is an Actions *variable* (deployment-specific, and safe to
-    # override because the egress allowlist below still pins the reachable hosts — pointing it at
-    # another provider requires adding that host here, in a reviewed PR).
-    env:
-      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.deepseek.com/anthropic' }}
-      TRIAGE_MODEL: deepseek-v4-pro           # phase 1 — data-only security triage
-      REVIEWER_MODEL: deepseek-v4-pro         # CI green — full review
-      REVIEWER_EFFORT: max
-      MECHANIC_MODEL: deepseek-v4-flash       # CI red — minimal-fix pass
-      MECHANIC_EFFORT: low
-      CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-pro
-      ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro    # tier aliases — what the agent's
-      ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro  # internal model picks resolve to
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
-
     steps:
       # Trusted base — never the PR's code. fetch-depth: 0 so the base/head commits are
       # resolvable locally for the git-diff fallback below and for `git apply`.
@@ -158,9 +142,14 @@ jobs:
       - name: Phase 1 — security triage
         id: triage
         if: ${{ steps.gather.outputs.skip != 'true' }}
+        # Model config is committed step env, PR-reviewed like the rest of the file. Only the
+        # backend endpoint is an Actions variable — safe to override because the egress lock above
+        # still pins the reachable hosts (another provider means allowlisting its API host here,
+        # in a reviewed PR).
         env:
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.deepseek.com/anthropic' }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
-          ANTHROPIC_MODEL: ${{ env.TRIAGE_MODEL }}
+          ANTHROPIC_MODEL: deepseek-v4-pro
           CLAUDE_CODE_EFFORT_LEVEL: max
         run: |
           set -euo pipefail
@@ -215,7 +204,14 @@ jobs:
         id: review
         if: ${{ steps.gather.outputs.skip != 'true' && steps.triage.outputs.safe == 'true' }}
         env:
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.deepseek.com/anthropic' }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
+          ANTHROPIC_MODEL: ${{ steps.gather.outputs.conclusion == 'success' && 'deepseek-v4-pro' || 'deepseek-v4-flash' }}
+          CLAUDE_CODE_EFFORT_LEVEL: ${{ steps.gather.outputs.conclusion == 'success' && 'max' || 'low' }}
+          CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-pro
+          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro    # tier aliases — what the agent's
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro  # internal model picks resolve to
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
           CONCLUSION: ${{ steps.gather.outputs.conclusion }}
         run: |
           set -euo pipefail
@@ -229,13 +225,9 @@ jobs:
           rm -f "$DRAFT"
 
           if [ "$CONCLUSION" = "success" ]; then
-            export ANTHROPIC_MODEL="$REVIEWER_MODEL"
-            export CLAUDE_CODE_EFFORT_LEVEL="$REVIEWER_EFFORT"
             REVIEW_MODE="full review"
             PROMPT="/code-review"
           else
-            export ANTHROPIC_MODEL="$MECHANIC_MODEL"
-            export CLAUDE_CODE_EFFORT_LEVEL="$MECHANIC_EFFORT"
             REVIEW_MODE="mechanic (CI red)"
             PROMPT="CI failed on this PR. The diff at pr.diff and the failing job logs at job_*.log show what broke. Propose minimal, targeted fixes ONLY for the failures — no comprehensive review. Do not fix unrelated issues."
           fi

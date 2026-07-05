@@ -26,12 +26,13 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
    ([SPEC §8.4](../../SPEC.md#84-egress-allowlist)).
 
-The `review` job's `env` block is the model configuration surface — triage/reviewer/mechanic models
-and efforts, the subagent model, and the tier aliases — deliberately committed config, reviewed in
-your own PR flow. Only `ANTHROPIC_BASE_URL` is a per-repo **Actions variable**, and it is safe as
-one because the egress allowlist still pins the reachable hosts: a different provider means adding
-its API host to `allowed-endpoints` in the same PR. Add your ecosystem's package registries there
-only if the agent should install packages to validate findings (the file's own comment marks where).
+Model configuration is committed step `env` on the two claude-invoking steps — models, efforts, the
+subagent model, and the tier aliases, scoped to where each is consumed — deliberately in-file config,
+reviewed in your own PR flow. Only `ANTHROPIC_BASE_URL` is a per-repo **Actions variable**, and it is
+safe as one because the egress allowlist still pins the reachable hosts: a different provider means
+adding its API host to `allowed-endpoints` in the same PR. Add your ecosystem's package registries
+there only if the agent should install packages to validate findings (the file's own comment marks
+where).
 
 The approach was proven by a live review on
 [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691); see

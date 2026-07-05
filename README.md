@@ -45,9 +45,10 @@ npx @jphutchins/code-review <subcommand>
 | `validate` | Validate findings JSON against the published schema |
 | `print-schema` | Print a bundled schema (findings, triage, prices) |
 
-Every helper is usable standalone; the reference workflow composes them. See
-[docs/adapters.md](docs/adapters.md) for the adapter contract and `code-review <subcommand> --help`
-for flags.
+Every helper is usable standalone; the reference workflow composes them. The comment templates are
+user-swappable — pass `--template` / `--inline-template` to `post` to override the bundled defaults
+in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the adapter contract and
+`code-review <subcommand> --help` for flags.
 
 ## Quickstart
 
@@ -55,10 +56,17 @@ for flags.
    Your existing CI workflow is untouched — edit the `workflows: ["CI"]` filter to match its `name:`.
 2. Add a repo secret `MODEL_API_KEY` — a **burner key with a hard spend cap** (it is exposed to
    untrusted PR code during the contained review window).
-3. Merge to your default branch first — `workflow_run` only fires from the default branch, so the
+3. Commit `.github/prices.json` (fork [schema/prices.example.json](schema/prices.example.json) and
+   fill in your provider's per-token rates) — without it the cost footer renders **$0**
+   ([SPEC §6.2](SPEC.md#62-price-map)).
+4. Merge to your default branch first — `workflow_run` only fires from the default branch, so the
    introducing PR won't review itself — then open a test PR.
-4. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
+5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
    ([SPEC §8.4](SPEC.md#84-egress-allowlist)).
+
+Backend and model are per-repo **Actions variables** — set `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
+or `CLAUDE_CODE_SUBAGENT_MODEL` to override the defaults without editing the workflow file
+([SPEC §8.5](SPEC.md#85-model-backend-env)).
 
 ## What's here
 
@@ -68,7 +76,6 @@ for flags.
 - **[docs/adapters.md](docs/adapters.md)** — the adapter contract + the Claude Code reference adapter.
 - **[docs/design.md](docs/design.md)** — rationale and history.
 - **[examples/workflows/review.yaml](examples/workflows/review.yaml)** — the copy-paste reference workflow.
-- **[examples/templates/comment.example.md](examples/templates/comment.example.md)** — the target comment look.
 
 ## License
 

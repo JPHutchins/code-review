@@ -40,6 +40,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Preserve the repo's committed price map OUTSIDE the worktree, BEFORE any untrusted PR data is
+      # fetched or `git apply`'d — otherwise a PR could tamper with the rates the comment renders (§6.2).
+      # Optional: absent → the comment job falls back to the bundled all-zero map + a stderr warning.
+      - name: Preserve committed price map
+        run: |
+          set -euo pipefail
+          if [ -f .github/prices.json ]; then
+            cp .github/prices.json "$RUNNER_TEMP/prices.json"
+          fi
+
       # Agent CLI + ecosystem tooling
       - uses: actions/setup-node@v6
         with:
@@ -64,8 +74,10 @@ jobs:
             api.github.com:443
             objects.githubusercontent.com:443
             *.blob.core.windows.net:443
-      # Needed only if the agent installs packages to validate findings (§8.4) — add the
-      # registries for your ecosystem to the allowed-endpoints list above:
+            results-receiver.actions.githubusercontent.com:443
+      # The two endpoints above carry artifact download/upload (§8.4). Needed only if the agent
+      # installs packages to validate findings (§8.4) — add the registries for your ecosystem to
+      # the allowed-endpoints list above:
       #   registry.npmjs.org:443
       #   pypi.org:443
       #   files.pythonhosted.org:443
@@ -133,7 +145,7 @@ jobs:
         env:
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.deepseek.com/anthropic' }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
-          ANTHROPIC_MODEL: deepseek-v4-pro
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'deepseek-v4-pro' }}
           CLAUDE_CODE_EFFORT_LEVEL: max
         run: |
           set -euo pipefail
@@ -167,7 +179,7 @@ jobs:
             --output-format json \
             --json-schema "$(code-review print-schema triage)" \
             >triage.json
-          code-review extract triage.json --adapter claude-code --schema triage >triage.parsed.json
+          code-review extract triage.json --adapter claude-code --kind triage >triage.parsed.json
           jq -c . triage.parsed.json
 
           PARSED_SAFE=$(jq -r '.safe' triage.parsed.json)
@@ -190,10 +202,12 @@ jobs:
         env:
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.deepseek.com/anthropic' }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
-          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro
-          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
-          CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-pro
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ vars.ANTHROPIC_MODEL || 'deepseek-v4-pro' }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.ANTHROPIC_MODEL || 'deepseek-v4-pro' }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ vars.CLAUDE_CODE_SUBAGENT_MODEL || vars.ANTHROPIC_MODEL || 'deepseek-v4-flash' }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ vars.CLAUDE_CODE_SUBAGENT_MODEL || vars.ANTHROPIC_MODEL || 'deepseek-v4-pro' }}
+          REVIEWER_MODEL: ${{ vars.ANTHROPIC_MODEL || 'deepseek-v4-pro' }}
+          MECHANIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'deepseek-v4-flash' }}
           CONCLUSION: ${{ steps.gather.outputs.conclusion }}
         run: |
           set -euo pipefail
@@ -207,12 +221,12 @@ jobs:
           rm -f "$DRAFT"
 
           if [ "$CONCLUSION" = "success" ]; then
-            export ANTHROPIC_MODEL=deepseek-v4-pro
+            export ANTHROPIC_MODEL="$REVIEWER_MODEL"
             export CLAUDE_CODE_EFFORT_LEVEL=max
             REVIEW_MODE="full review"
             PROMPT="/code-review"
           else
-            export ANTHROPIC_MODEL=deepseek-v4-flash
+            export ANTHROPIC_MODEL="$MECHANIC_MODEL"
             export CLAUDE_CODE_EFFORT_LEVEL=low
             REVIEW_MODE="mechanic (CI red)"
             PROMPT="CI failed on this PR. The diff at pr.diff and the failing job logs at job_*.log show what broke. Propose minimal, targeted fixes ONLY for the failures — no comprehensive review. Do not fix unrelated issues."
@@ -284,6 +298,12 @@ jobs:
             wrap_envelope
           fi
 
+          # Ship the pre-apply price map (if the repo committed one) in the artifact — the comment
+          # job checks out no code, so this is its only path to the repo's rates (§6.2).
+          if [ -f "$RUNNER_TEMP/prices.json" ]; then
+            cp "$RUNNER_TEMP/prices.json" findings/prices.json
+          fi
+
           echo "has_findings=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
@@ -317,7 +337,7 @@ jobs:
 
       - run: npm install -g @jphutchins/code-review@0.1.0-alpha.1
 
-      # Lock egress — comment job only needs GitHub API
+      # Lock egress — comment job needs the GitHub API + the blob host for artifact download (§8.4)
       - name: Lock network egress
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
@@ -326,6 +346,7 @@ jobs:
             api.github.com:443
             github.com:443
             objects.githubusercontent.com:443
+            *.blob.core.windows.net:443
 
       # code-review post: resolve PR, fetch diff, inline+render, post review (COMMENT),
       # upsert sticky comment. Exit 0 when no PR; non-zero on posting failure.
@@ -347,10 +368,18 @@ jobs:
             EFFORT="low"
           fi
 
+          # Recompute cost from the repo's rates when the review job shipped them; otherwise the
+          # bundled all-zero map applies and `post` warns on stderr (§6.2) — graceful, not an error.
+          PRICES_ARGS=()
+          if [ -f findings/prices.json ]; then
+            PRICES_ARGS=(--prices findings/prices.json)
+          fi
+
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
             --repo "$REPO" \
             --usage findings/envelope.json \
             --effort "$EFFORT" \
             --route "$ROUTE" \
-            --head-branch "$HEAD_BRANCH"
+            --head-branch "$HEAD_BRANCH" \
+            "${PRICES_ARGS[@]}"

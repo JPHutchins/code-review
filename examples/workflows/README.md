@@ -19,10 +19,17 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
    `workflows: ["CI"]` filter to match its `name:`.
 2. Add a repo secret `MODEL_API_KEY` — a **burner key with a hard spend cap** (it is exposed to
    untrusted PR code during the contained phase-2 window).
-3. `workflow_run` only fires from the **default branch** — merge first, then open a test PR. The
+3. Commit `.github/prices.json` (fork [`schema/prices.example.json`](../../schema/prices.example.json))
+   so the cost footer isn't **$0** ([SPEC §6.2](../../SPEC.md#62-price-map)).
+4. `workflow_run` only fires from the **default branch** — merge first, then open a test PR. The
    introducing PR won't review itself.
-4. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
+5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
    ([SPEC §8.4](../../SPEC.md#84-egress-allowlist)).
+
+Backend and model are per-repo **Actions variables** (`ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
+`CLAUDE_CODE_SUBAGENT_MODEL`) — override the defaults without editing the file. Add your ecosystem's
+package registries to `allowed-endpoints` only if the agent should install packages to validate
+findings (the file's own comment marks where).
 
 The approach was proven by a live review on
 [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691); see

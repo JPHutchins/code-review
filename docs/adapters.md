@@ -93,7 +93,7 @@ spend cap, untrusted-markdown rendering).
 
 An error envelope (`is_error`, a non-`"success"` `subtype`, or a non-null `api_error_status`)
 short-circuits before any rung runs — a failed run is never salvaged from a stray block. Triage
-extraction additionally **fails closed**: when nothing validates, `extract --schema triage` still
+extraction additionally **fails closed**: when nothing validates, `extract --kind triage` still
 exits 0 but synthesizes `safe: false` ([SPEC §7.3](../SPEC.md#73-preflight-security-triage)); only
 findings extraction exits non-zero on recovery failure.
 

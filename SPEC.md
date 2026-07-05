@@ -554,7 +554,7 @@ jobs:
       # Deterministic posting (resolves PR from head_sha, validates diff, renders, posts;
       # reads the write token from GH_TOKEN):
       #   code-review post findings/findings.json --repo … --head-sha … --head-branch … \
-      #     --usage … --route … --effort …
+      #     --usage … --route … --effort … --prices …
 ```
 
 The full, copy-paste-ready example lives in [`examples/workflows/review.yaml`](examples/workflows/review.yaml).

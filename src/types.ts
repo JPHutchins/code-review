@@ -50,4 +50,10 @@ export interface RenderInput {
   /** Findings that couldn't be anchored inline (SPEC §5.2 rule 1) — the sticky's only per-finding detail. */
   readonly strays?: readonly Finding[];
   readonly inlineDisposition?: InlineDisposition;
+  /** Workflow run URL (transcript/traces) — populated later by the wiring implementer. Renders a link in the LLM Disclosure aside when present, omitted otherwise. */
+  readonly runUrl?: string;
+  /** URL to the machine-readable findings JSON artifact — populated later by the wiring implementer. Emits a findings-json marker and a short advisory pointing agents at it when present, omitted otherwise. */
+  readonly jsonUrl?: string;
+  /** The inline review's `html_url` — populated later by the wiring implementer, which re-patches the sticky after the review posts. Turns "see the review" into a link when present. */
+  readonly reviewUrl?: string;
 }

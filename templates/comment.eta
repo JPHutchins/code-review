@@ -1,10 +1,17 @@
 <!-- code-review -->
 <!-- reviewed-sha: <%= it.reviewedSha %> -->
+<% if (it.jsonUrl) { -%>
+<!-- code-review:findings-json <%~ it.jsonUrl %> -->
+<% } -%>
 
 ### <%= it.verdictBadge(it.findings.verdict) %>
 
-<% const meta = [] %><% if (it.route) { meta.push('**Route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.usageAvailable) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)) } else { meta.push('_usage unavailable_') } %><%~ meta.join(' · ') %>
+<% const meta = [] %><% if (it.route) { meta.push('**Route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.usageAvailable) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><%~ meta.join(' · ') %>
 
+<% if (it.jsonUrl) { -%>
+> 🤖 Reviewing agents: fetch the structured findings JSON at <%~ it.jsonUrl %> instead of parsing this comment.
+
+<% } -%>
 <%~ it.findings.summary %>
 
 ---
@@ -18,7 +25,7 @@ _No findings — clean review._
 <% } %>
 
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'posted') { %>
-→ <%= it.inlineDisposition.count %> comment<%= it.inlineDisposition.count === 1 ? '' : 's' %> posted inline on `<%= it.inlineDisposition.sha.slice(0, 7) %>` — see the review.
+→ <%= it.inlineDisposition.count %> comment<%= it.inlineDisposition.count === 1 ? '' : 's' %> posted inline on `<%= it.inlineDisposition.sha.slice(0, 7) %>` — <% if (it.reviewUrl) { %>[see the review](<%~ it.reviewUrl %>)<% } else { %>see the review<% } %>.
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'none-in-diff') { %>
 → No inline comments — all findings are outside the diff (listed below).
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'suppressed-existing-review') { %>
@@ -31,7 +38,14 @@ _No findings — clean review._
 These findings are on lines not in the diff, so they can't be anchored as inline comments:
 
 <% it.strays.forEach(function(f) { -%>
-- <%= it.severityEmoji(f.severity) %> `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %>
+- <%= it.severityEmoji(f.severity) %> `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %><% if (typeof f.confidence === "number") { %> · confidence <%= f.confidence %><% } %>
+<% if (f.reasoning) { -%>
+  <details><summary>Reasoning</summary>
+
+  <%= f.reasoning %>
+
+  </details>
+<% } -%>
 <% }) %>
 <% } %>
 
@@ -54,24 +68,22 @@ All <%= it.testReport.total %> tests passed.
 
 ---
 
-<% if (it.usageAvailable && it.costReport.lines.length > 0) { %>
-<sub>
-
-| Model | Input | Output | Cache read | Cache write | Cost |
-|---|--:|--:|--:|--:|--:|
-<% it.costReport.lines.forEach(function(l) { -%>
-| <%= l.model %> | <%= it.formatTokens(l.inputTokens) %> | <%= it.formatTokens(l.outputTokens) %> | <%= it.formatTokens(l.cacheReadTokens) %> | <%= it.formatTokens(l.cacheWriteTokens) %> | <%= it.formatCost(l.costUSD) %> |
-<% }) -%>
-| **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD) %>** |
-
-</sub>
-<% } else if (it.usageAvailable) { %>
-<sub>No per-model usage was recorded for this run.</sub>
-<% } else { %>
-> **Usage/cost unavailable** — the result envelope for this run was missing or malformed.
-<% } %>
-
-> [!NOTE]
+> [!WARNING]
 > **LLM Disclosure** — this review was produced by <%= it.modelNames || "unknown model" %> running
 > headless in an ephemeral, egress-locked CI runner with no write access to the repository. It is
 > advisory and does not block merge.
+>
+<% if (it.usageAvailable && it.costReport.lines.length > 0) { -%>
+> | Model | Input | Output | Cache read | Cache write | Cost |
+> |---|--:|--:|--:|--:|--:|
+<% it.costReport.lines.forEach(function(l) { -%>
+> | <%= l.model %> | <%= it.formatTokens(l.inputTokens) %> | <%= it.formatTokens(l.outputTokens) %> | <%= it.formatTokens(l.cacheReadTokens) %> | <%= it.formatTokens(l.cacheWriteTokens) %> | <%= it.formatCost(l.costUSD) %> |
+<% }) -%>
+> | **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD) %>** |
+<% } else if (it.usageAvailable) { -%>
+> No per-model usage was recorded for this run.
+<% } else { -%>
+> **Usage/cost unavailable** — the result envelope for this run was missing or malformed.
+<% } -%>
+>
+> Generated by [code-review](https://github.com/JPHutchins/code-review)<% if (it.runUrl) { %> · [view the run & traces](<%~ it.runUrl %>)<% } %>.

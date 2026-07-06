@@ -59,6 +59,9 @@ export const render = (input: RenderInput): string => {
     severityCounts: input.severityCounts ?? computeSeverityCounts(input.findings.findings),
     strays: (input.strays ?? []).map(sanitizeFinding),
     inlineDisposition: input.inlineDisposition ?? null,
+    runUrl: input.runUrl ?? null,
+    jsonUrl: input.jsonUrl ?? null,
+    reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
     formatCost: (n: number): string =>

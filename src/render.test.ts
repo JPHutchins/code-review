@@ -131,6 +131,44 @@ describe("render", () => {
     expect(result).toContain("0000000000000000000000000000000000000000");
   });
 
+  describe("findings-json marker and advisory (issue #15)", () => {
+    it("emits the machine-readable marker and a visible advisory when jsonUrl is set", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        jsonUrl: "https://example.com/findings.json",
+      });
+      expect(result).toContain(
+        "<!-- code-review:findings-json https://example.com/findings.json -->",
+      );
+      expect(result).toContain(
+        "Reviewing agents: fetch the structured findings JSON at https://example.com/findings.json",
+      );
+    });
+
+    it("omits the marker and the advisory when jsonUrl is absent", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("findings-json");
+      expect(result).not.toContain("Reviewing agents");
+    });
+
+    it("keeps the <!-- code-review --> marker as the first line even when jsonUrl is set", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        jsonUrl: "https://example.com/findings.json",
+      });
+      expect(result.split("\n")[0]).toBe("<!-- code-review -->");
+    });
+  });
+
   describe("severity counts line (summary-only sticky)", () => {
     it("renders a per-severity count histogram, not a per-finding table", () => {
       const findings = mkFindings([
@@ -213,6 +251,32 @@ describe("render", () => {
       expect(result).toContain("abc123d");
     });
 
+    it("links 'see the review' when reviewUrl is set (issue #11)", () => {
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
+        reviewUrl: "https://github.com/o/r/pull/1#pullrequestreview-1",
+      });
+      expect(result).toContain(
+        "[see the review](https://github.com/o/r/pull/1#pullrequestreview-1)",
+      );
+    });
+
+    it("keeps 'see the review' as plain text when reviewUrl is absent (issue #11)", () => {
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
+      });
+      expect(result).toContain("— see the review.");
+      expect(result).not.toContain("[see the review]");
+    });
+
     it("says no inline comments when all findings are outside the diff", () => {
       const result = render({
         findings,
@@ -285,6 +349,52 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       expect(result).toContain("src/x.ts:10–14");
+    });
+  });
+
+  describe("stray confidence and reasoning fold (issue #16)", () => {
+    it("shows confidence on the bullet line, outside any fold", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ title: "Stray conf", confidence: 0.82 })];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).toContain("confidence 0.82");
+      expect(result).not.toContain("<details>");
+    });
+
+    it("shows a zero confidence (falsy but valid) on the bullet line", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ title: "Stray zero conf", confidence: 0 })];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).toContain("confidence 0");
+    });
+
+    it("renders a collapsible reasoning fold under the bullet when reasoning is present", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ title: "Stray reason", reasoning: "Because X causes Y." })];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).toContain("<details><summary>Reasoning</summary>");
+      expect(result).toContain("Because X causes Y.");
+      expect(result).toContain("</details>");
+    });
+
+    it("keeps confidence out of the fold and reasoning out of the bullet line", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ title: "Stray both", confidence: 0.4, reasoning: "Some justification." }),
+      ];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      const bulletLine = result.split("\n").find((line) => line.includes("Stray both"));
+      expect(bulletLine).toContain("confidence 0.4");
+      expect(bulletLine).not.toContain("Some justification");
+      expect(result).toContain("Some justification.");
+    });
+
+    it("omits confidence and the reasoning fold entirely when neither is present", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ title: "Stray plain" })];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).not.toContain("confidence");
+      expect(result).not.toContain("<details>");
     });
   });
 
@@ -448,6 +558,94 @@ describe("render", () => {
       // still displays the escaped form as "<$0.01".
       expect(result).toContain("&lt;$0.01");
       expect(result).not.toContain("$0.00");
+    });
+  });
+
+  describe("meta line — models and total cost (issue #6)", () => {
+    it("appends models and cost to the meta line when usage is available", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**models:** pro-model");
+      expect(result).toContain("**cost:** $0.06");
+    });
+
+    it("omits models and cost from the meta line when usage is unavailable", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: null, prices, template, route: "full review" });
+      expect(result).not.toContain("**models:**");
+      expect(result).not.toContain("**cost:**");
+    });
+  });
+
+  describe("LLM disclosure aside (issue #8 — [!WARNING], repo link, in-blockquote table)", () => {
+    it("renders a [!WARNING] alert, not the old [!NOTE]", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("> [!WARNING]");
+      expect(result).not.toContain("[!NOTE]");
+    });
+
+    it("links to the code-review repository", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("[code-review](https://github.com/JPHutchins/code-review)");
+    });
+
+    it("no longer renders the cost table in a standalone <sub> block", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).not.toContain("<sub>");
+      expect(result).not.toContain("</sub>");
+    });
+
+    it("links to the workflow run when runUrl is set", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        runUrl: "https://example.com/actions/runs/1",
+      });
+      expect(result).toContain("[view the run & traces](https://example.com/actions/runs/1)");
+    });
+
+    it("omits the run link when runUrl is not set", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("view the run & traces");
+    });
+
+    it("renders a sensible disclosure without a table when the envelope is unavailable", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: null, prices, template });
+      expect(result).toContain("[!WARNING]");
+      expect(result).toContain("Usage/cost unavailable");
+      expect(result).not.toContain("| Model |");
     });
   });
 
@@ -795,14 +993,14 @@ describe("cost-table structural integrity (regression guard for the blank-line-p
   const costTableBlock = (markdown: string): string[] =>
     contiguousBlockFrom(
       markdown,
-      (line) => line.startsWith("| Model |"),
-      (line) => line.startsWith("|"),
+      (line) => line.startsWith("> | Model |"),
+      (line) => line.startsWith("> |"),
     );
 
   it("keeps the separator immediately after the header, with no blank line between", () => {
     const block = costTableBlock(renderCostTable());
-    expect(block[0]).toMatch(/^\| Model \|/);
-    expect(block[1]).toMatch(/^\|---\|/);
+    expect(block[0]).toMatch(/^> \| Model \|/);
+    expect(block[1]).toMatch(/^> \|---\|/);
   });
 
   it("renders the header, separator, every model row, and the Total row as one contiguous run", () => {
@@ -815,14 +1013,27 @@ describe("cost-table structural integrity (regression guard for the blank-line-p
     // header + separator + 3 model rows + Total row
     expect(block).toHaveLength(1 + 1 + 3 + 1);
     expect(block.every((line) => line.trim().length > 0)).toBe(true);
-    expect(block.at(-1)).toMatch(/^\| \*\*Total\*\*/);
+    expect(block.at(-1)).toMatch(/^> \| \*\*Total\*\*/);
   });
 
-  it("gives every row — header, separator, each model, and Total — the same column count", () => {
+  it("gives every row — header, separator, each model, and Total — the same column count, including the blockquote prefix", () => {
     const block = costTableBlock(renderCostTable());
     const counts = block.map(columnCount);
     expect(new Set(counts).size).toBe(1);
     expect(counts[0]).toBe(6);
+    expect(block.every((line) => line.startsWith("> "))).toBe(true);
+  });
+
+  it("keeps the entire disclosure — warning, prose, table, and footer line — as one contiguous blockquote", () => {
+    const markdown = renderCostTable();
+    const block = contiguousBlockFrom(
+      markdown,
+      (line) => line.startsWith("> [!WARNING]"),
+      (line) => line.startsWith(">"),
+    );
+    expect(block.length).toBeGreaterThan(0);
+    expect(block.every((line) => line.startsWith(">"))).toBe(true);
+    expect(block.at(-1)).toMatch(/^> Generated by/);
   });
 });
 

@@ -255,7 +255,11 @@ jobs:
             --strict-mcp-config \
             --output-format json \
             --json-schema "$(code-review print-schema findings)" \
-            --append-system-prompt "You are reviewing a PR inside a throwaway CI runner with no write access to the repo — the change is already applied to the working tree. Validate findings freely: run this project's checks (see its README/contributing docs) and edit or run code as needed to confirm a bug or a candidate fix. When you make a mechanical fix, capture it as the finding's \`patch\` field — a single-hunk unified diff of just that edit (e.g. \`git diff -U3 -- <file>\`) against the current file — instead of hand-authoring \`suggestion\`; the commenter deterministically validates the patch against the real file and lowers it into an exact GitHub suggestion with correct indentation and range, or drops it if it doesn't apply, so a validated \`patch\` beats an error-prone hand-typed \`suggestion\`. Your only deliverable is the review, as structured JSON. Before you finish, write your findings JSON — the object conforming to the findings schema — to the file $DRAFT (this absolute path is outside the repository working tree; write there, not to a same-named file inside the repo). Then run \`code-review validate $DRAFT\` and, if it exits non-zero, fix the file and re-run until it exits 0. $DRAFT is your authoritative deliverable; do not end your turn until it validates." \
+            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your only deliverable is the review as JSON conforming to the findings schema — write it to $DRAFT (an absolute path outside the repo tree), run \`code-review validate $DRAFT\`, and fix-and-revalidate until it exits 0 before ending your turn.
+          Guidance:
+          - Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix.
+          - For a mechanical fix, prefer the finding's \`patch\` field (a single-hunk unified diff of just that edit, e.g. \`git diff -U3 -- <file>\`) over a hand-authored \`suggestion\` — a patch is validated exactly and won't post with broken indentation or range.
+          - The findings schema (provided via --json-schema) documents every field." \
             >envelope.json
 
           # Map the CLI's native envelope onto the abstract, vendor-neutral shape (§6.1) — the
@@ -333,12 +337,13 @@ jobs:
 
           echo "has_findings=true" >> "$GITHUB_OUTPUT"
 
+      # No retention-days: these are small text docs and the traceability links (issues #13/#15)
+      # should outlive a short expiry — keep the repo's default (max) retention.
       - uses: actions/upload-artifact@v7
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-findings
           path: findings/
-          retention-days: 3
 
       # Separate artifact so the transcripts (which can be large) don't bloat the findings download
       # the comment job pulls. Advisory/auditability only — never read by the comment job or any
@@ -348,7 +353,6 @@ jobs:
         with:
           name: code-review-transcript
           path: transcripts/
-          retention-days: 3
 
   # COMMENT — write token, NO agent/PR code, egress-locked to GitHub API.
   # Deterministic: code-review post → gh api (all JSON-safe, no shell interpolation).
@@ -408,17 +412,12 @@ jobs:
             PRICES_ARGS=(--prices findings/prices.json)
           fi
 
-          # Point the sticky's disclosure and the findings-json marker at THIS workflow run — both
-          # the findings and transcript artifacts, plus the raw job logs, live here (issues #6/#8/#15).
-          RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          JSON_URL="${GITHUB_API_URL}/repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/artifacts"
-
           # route/effort come from the envelope the review job stamped (§6.1) — not re-derived here.
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
             --repo "$REPO" \
             --usage findings/envelope.json \
             --head-branch "$HEAD_BRANCH" \
-            --run-url "$RUN_URL" \
-            --json-url "$JSON_URL" \
+            --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}" \
+            --json-url "${GITHUB_API_URL}/repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
             "${PRICES_ARGS[@]}"

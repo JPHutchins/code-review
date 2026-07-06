@@ -89,14 +89,6 @@ links to:
   phases (3-day retention). This is advisory/auditability only: it is never read by the comment job
   and never affects what gets posted.
 
-Before the review agent's findings are posted, the review job resolves any mechanical fix the agent
-captured as a `patch` (a single-hunk unified diff against the PR-head file, in the finding's `patch`
-field) by validating it deterministically against a clean snapshot of the PR-head tree and lowering
-it into an exact GitHub `suggestion` with the correct indentation and line range — or dropping it if
-it doesn't apply cleanly (`lower-suggestions`, [SPEC §5.2 rule 8](SPEC.md#52-inline-review)). A
-`patch` is preferred over a hand-authored `suggestion`, which is prone to wrong indentation or an
-over-wide range.
-
 ## What's here
 
 - **[SPEC.md](SPEC.md)** — the normative, provider-agnostic specification.

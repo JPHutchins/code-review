@@ -47,7 +47,7 @@
             "type": "string",
             "enum": ["RIGHT", "LEFT"],
             "default": "RIGHT",
-            "description": "RIGHT for added/changed lines, LEFT for removed lines; matches the GitHub pulls reviews API."
+            "description": "As in a unified-diff view: RIGHT for added/changed lines, LEFT for removed lines."
           },
           "severity": {
             "type": "string",
@@ -73,7 +73,7 @@
           },
           "suggestion": {
             "type": ["string", "null"],
-            "description": "null = no mechanical fix (render no suggestion block); \"\" (empty string) = delete start_line..end_line (render an empty suggestion block); non-empty = exact replacement text for start_line..end_line (render a GitHub suggestion block). A suggestion spanning more than GitHub's single-block line limit is demoted to the summary."
+            "description": "Proposed replacement text for start_line..end_line: null = no mechanical fix; \"\" (empty string) = the range should be deleted; a non-empty string = the exact, verbatim replacement text, so it must carry correct indentation."
           },
           "confidence": {
             "type": "number",
@@ -83,11 +83,11 @@
           },
           "reasoning": {
             "type": "string",
-            "description": "Optional human/agent-facing rationale for why this finding is sound; used to judge the finding, not rendered as the finding's own explanation (that's `body`)."
+            "description": "Optional rationale/evidence for why the finding holds, so a human or downstream agent can judge its soundness — distinct from `body`, which explains the finding to the reader."
           },
           "patch": {
             "type": "string",
-            "description": "Single-hunk unified diff of an edit the agent actually made to this file, against the PR-head (post-change) content. When present, the review job deterministically validates it against the real file and lowers it to a `suggestion` with exact `start_line`/`end_line` — authoritative over any hand-authored `suggestion` — or drops it (never posts a broken suggestion) if it doesn't apply cleanly."
+            "description": "Optional single-hunk unified diff of a mechanical fix, against this file's post-change (RIGHT-side) content. A machine-verifiable alternative to `suggestion`: because it can be validated exactly against the file, a consumer can derive a precise replacement from it or reject it if it no longer applies — preferred over a hand-authored `suggestion`, which is prone to wrong indentation or an over-wide range."
           }
         }
       }

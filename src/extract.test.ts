@@ -7,6 +7,7 @@ import {
   scanFencedBlocks,
   withDefaultSchemaVersion,
   describeLadderFailure,
+  ladderFailureDiagnostics,
 } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
 
@@ -433,6 +434,33 @@ describe("scanFencedBlocks — line-based fence scanner", () => {
 
   it("returns no blocks for plain prose", () => {
     expect(scanFencedBlocks("just some prose, no fences here")).toEqual([]);
+  });
+});
+
+describe("ladderFailureDiagnostics", () => {
+  it("flags a null structured_output and previews the result — the issue #3 failure shape", () => {
+    // Real shape: --json-schema silently didn't enforce (structured_output null), so the model
+    // guessed a key ("reason" vs "reasons") and the result fails the triage schema on every rung.
+    const native = {
+      structured_output: null,
+      result: JSON.stringify({ safe: true, reason: "looks benign" }),
+    };
+    const diagnostics = ladderFailureDiagnostics({ kind: "triage", native });
+    expect(diagnostics).toContain("structured_output rung: absent (null)");
+    expect(diagnostics).toContain("result rung:");
+    expect(diagnostics).toContain('"reason"');
+  });
+
+  it("notes the agent-file rung for findings and its absence when not provided", () => {
+    const withFile = ladderFailureDiagnostics({
+      kind: "findings",
+      native: { result: "x" },
+      agentFilePath: "/tmp/draft.json",
+    });
+    expect(withFile).toContain("agent-file rung: /tmp/draft.json");
+
+    const withoutFile = ladderFailureDiagnostics({ kind: "findings", native: { result: "x" } });
+    expect(withoutFile).toContain("agent-file rung: no --agent-file given");
   });
 });
 

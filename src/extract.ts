@@ -198,6 +198,36 @@ const scanLine = (state: FenceScanState, line: string): FenceScanState => {
 export const scanFencedBlocks = (text: string): readonly string[] =>
   text.split("\n").reduce(scanLine, { blocks: [], openLength: null, buffer: [] }).blocks;
 
+/** Operator-facing breakdown of what each rung actually saw when recovery fails — for stderr/logs,
+ *  never for the fail-closed reasons (which stay generic). Turns an opaque "no candidate" into an
+ *  actionable trace: a null structured_output points at a CLI not enforcing `--json-schema`. */
+export const ladderFailureDiagnostics = (input: ExtractInput): string => {
+  const native = parseNativeForExtraction(input.native);
+  const preview = (s: string): string => {
+    const flat = s.replace(/\s+/g, " ").trim();
+    return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
+  };
+  const lines: string[] = [];
+  if (input.kind === "findings") {
+    lines.push(
+      input.agentFilePath === undefined
+        ? "agent-file rung: no --agent-file given"
+        : `agent-file rung: ${input.agentFilePath} did not validate (or was unreadable)`,
+    );
+  }
+  lines.push(
+    isNullish(native.structuredOutput)
+      ? "structured_output rung: absent (null) — the CLI's --json-schema likely did not enforce"
+      : "structured_output rung: present but did not validate against the schema",
+  );
+  lines.push(
+    typeof native.result === "string"
+      ? `result rung: ${String(native.result.length)} chars, ${String(scanFencedBlocks(native.result).length)} fenced JSON block(s), none validated; preview: ${preview(native.result)}`
+      : "result rung: absent or not a string",
+  );
+  return lines.join("\n");
+};
+
 /** Render a non-"ok" ladder outcome as a single human-readable message. */
 export const describeLadderFailure = (outcome: Exclude<LadderOutcome, { kind: "ok" }>): string => {
   switch (outcome.kind) {

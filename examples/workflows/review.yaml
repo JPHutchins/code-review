@@ -289,6 +289,12 @@ jobs:
             cp "$RUNNER_TEMP/prices.json" findings/prices.json
           fi
 
+          # Preserve triage output in the artifact so a fail-closed gate is diagnosable offline
+          # (the comment job ignores these; `code-review extract` also traces the miss to the log).
+          for f in triage.json triage.parsed.json; do
+            if [ -f "$f" ]; then cp "$f" findings/; fi
+          done
+
           echo "has_findings=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7

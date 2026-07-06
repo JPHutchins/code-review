@@ -18,7 +18,7 @@ import { post } from "./post.js";
 import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName } from "./adapt.js";
-import { extractStructured, describeLadderFailure } from "./extract.js";
+import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
 import { schemaPathFor } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
@@ -356,15 +356,17 @@ const extractCmd = defineCommand({
   run: async ({ args }) => {
     requireAdapterName(args.adapter);
     const kind = requireExtractSchemaKind(args.kind);
-    const outcome = extractStructured({
-      kind,
-      native: readJSON(args.native),
-      agentFilePath: args["agent-file"],
-    });
+    const input = { kind, native: readJSON(args.native), agentFilePath: args["agent-file"] };
+    const outcome = extractStructured(input);
 
     if (outcome.kind === "ok") {
       process.stdout.write(`${JSON.stringify(outcome.candidate, null, 2)}\n`);
       return;
+    }
+    // A recovery miss is otherwise opaque (only the generic reason reaches the comment); trace what
+    // each rung saw to stderr so the CI log alone explains the failure — no local repro needed.
+    if (outcome.kind === "none" || outcome.kind === "ambiguous") {
+      process.stderr.write(`extract: recovery failed —\n${ladderFailureDiagnostics(input)}\n`);
     }
     if (kind === "triage") {
       process.stdout.write(`${JSON.stringify(failClosedTriage(outcome), null, 2)}\n`);

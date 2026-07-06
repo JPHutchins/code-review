@@ -42,7 +42,9 @@ These findings are on lines not in the diff, so they can't be anchored as inline
 <% if (f.reasoning) { -%>
   <details><summary>Reasoning</summary>
 
-  <%= f.reasoning %>
+<% f.reasoning.split("\n").forEach(function(rl) { -%>
+  <%= rl %>
+<% }) -%>
 
   </details>
 <% } -%>

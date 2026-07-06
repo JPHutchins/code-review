@@ -396,6 +396,29 @@ describe("render", () => {
       expect(result).not.toContain("confidence");
       expect(result).not.toContain("<details>");
     });
+
+    it("indents every line of a multi-paragraph reasoning so continuation lines stay in the fold", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({
+          title: "Stray multi",
+          reasoning: "First paragraph of reasoning.\n\nSecond paragraph.\nWrapped continuation.",
+        }),
+      ];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      const lines = result.split("\n");
+      const openIndex = lines.findIndex((l) => l.includes("<details><summary>Reasoning</summary>"));
+      const closeIndex = lines.findIndex((l, i) => i > openIndex && l.trim() === "</details>");
+      expect(openIndex).toBeGreaterThanOrEqual(0);
+      expect(closeIndex).toBeGreaterThan(openIndex);
+      // A continuation line at column 0 (the bug) would fall out of the list-item fold; every
+      // non-empty content line must carry the 2-space list indent.
+      const contentLines = lines
+        .slice(openIndex + 1, closeIndex)
+        .filter((l) => l.trim().length > 0);
+      expect(contentLines.some((l) => l === "  Second paragraph.")).toBe(true);
+      expect(contentLines.every((l) => l.startsWith("  "))).toBe(true);
+    });
   });
 
   describe("zero findings", () => {

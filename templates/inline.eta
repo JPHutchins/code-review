@@ -17,7 +17,9 @@
 > <details>
 > <summary>Reasoning</summary>
 >
-> <%= it.reasoning %>
+<% it.reasoning.split("\n").forEach(function(rl) { -%>
+> <%= rl %>
+<% }) -%>
 >
 > </details>
 <% } -%>

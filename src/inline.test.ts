@@ -538,6 +538,28 @@ index abc..def 100644
         .every((l) => l.startsWith(">")),
     ).toBe(true);
   });
+
+  it("keeps a multi-paragraph reasoning inside the alert — every fold line is '> '-prefixed", () => {
+    const { comments } = buildInlineComments(
+      findingAt({
+        reasoning: "First paragraph of the reasoning.\n\nSecond paragraph.\nWrapped continuation.",
+      }),
+      diff,
+      { inlineTemplate: bundledInlineTemplate },
+    );
+    const lines = comments[0]!.body.split("\n");
+    const summaryIndex = lines.findIndex((l) => l.includes("<summary>Reasoning</summary>"));
+    const closeIndex = lines.findIndex((l, i) => i > summaryIndex && l.includes("</details>"));
+    expect(summaryIndex).toBeGreaterThanOrEqual(0);
+    expect(closeIndex).toBeGreaterThan(summaryIndex);
+    // Every non-empty line between <summary> and </details> must stay in the blockquote (begin
+    // with the '>' marker) — a continuation line at column 0 would terminate the [!TIP] alert
+    // early (the reported bug). Bare separator lines are '>' (no trailing space), so the
+    // invariant is the '>' marker, not literal '> '.
+    const foldLines = lines.slice(summaryIndex + 1, closeIndex);
+    expect(foldLines.some((l) => l === "> Second paragraph.")).toBe(true);
+    expect(foldLines.filter((l) => l.length > 0).every((l) => l.startsWith(">"))).toBe(true);
+  });
 });
 
 describe("injection resistance", () => {

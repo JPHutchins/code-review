@@ -50,6 +50,7 @@ const FindingShape = t.intersection([
     confidence: Confidence,
     code: t.string,
     code_url: t.string,
+    reasoning: t.string,
   }),
 ]);
 
@@ -142,7 +143,7 @@ export const TestSummaryCodec = t.intersection([
 // The supported-minor allowlist and version dispatch live in the registry (src/registry.ts),
 // which sources its findings entry's defaultVersion from this constant.
 /** Full semver used when an adapter's native output omits `schema_version` (SPEC §6.1). */
-export const DEFAULT_SCHEMA_VERSION = "0.2.0";
+export const DEFAULT_SCHEMA_VERSION = "0.3.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;

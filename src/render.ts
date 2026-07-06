@@ -61,7 +61,8 @@ export const render = (input: RenderInput): string => {
     inlineDisposition: input.inlineDisposition ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
-    formatCost: (n: number): string => (Number.isFinite(n) ? `$${n.toFixed(3)}` : "—"),
+    formatCost: (n: number): string =>
+      Number.isFinite(n) ? (n > 0 && n.toFixed(2) === "0.00" ? "<$0.01" : `$${n.toFixed(2)}`) : "—",
     formatDuration: (ms: number): string => {
       if (!Number.isFinite(ms) || ms < 0) return "—";
       const s = Math.round(ms / 1000);

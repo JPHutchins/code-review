@@ -412,6 +412,43 @@ describe("render", () => {
       const result = render({ findings, envelope, prices, template, route: "full review" });
       expect(result).toContain("2m 5s");
     });
+
+    it("formats cost to two decimal places", () => {
+      // pro-model @ 10,000 in / 2,000 out / 5,000 cache-read / 1,000 cache-write against `prices`
+      // costs 0.0621 USD — a single-model run so the Total row shows the same figure.
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("$0.06");
+      expect(result).not.toContain("$0.0621");
+      expect(result).not.toContain("$0.062");
+    });
+
+    it("renders <$0.01 for a nonzero cost that rounds to $0.00 at two decimals", () => {
+      const envelope: ResultEnvelope = {
+        ...baseEnvelope,
+        models: [
+          mkEntry({
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+          }),
+        ],
+      };
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope, prices, template, route: "full review" });
+      // The cost cell renders through Eta's escaping `<%=` tag (template is out of this task's
+      // scope), so the literal "<" formatCost returns comes through HTML-entity-escaped; GitHub
+      // still displays the escaped form as "<$0.01".
+      expect(result).toContain("&lt;$0.01");
+      expect(result).not.toContain("$0.00");
+    });
   });
 
   describe("LLM disclosure names the models from models[]", () => {

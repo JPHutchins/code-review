@@ -318,11 +318,26 @@ describe("cli — print-schema", () => {
     expect(stderr).toContain("bogus");
   });
 
-  it("--schema-version 0.2 matches the default (latest) output", async () => {
-    const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.2"]);
+  it("--schema-version 0.3 matches the default (latest) output", async () => {
+    const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.3"]);
     const withoutVersion = await runCli(["print-schema", "findings"]);
     expect(withVersion.exitCode).toBeNull();
     expect(withVersion.stdout).toBe(withoutVersion.stdout);
+  });
+
+  it("--schema-version 0.2 prints the frozen v0.2 schema, distinct from the latest", async () => {
+    const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.2"]);
+    const withoutVersion = await runCli(["print-schema", "findings"]);
+    expect(withVersion.exitCode).toBeNull();
+    expect(withVersion.stdout).not.toBe(withoutVersion.stdout);
+    const printed = JSON.parse(withVersion.stdout) as Record<string, unknown>;
+    const canonical = JSON.parse(
+      readFileSync(resolve(repoRoot, "schema", "v0.2", "findings.schema.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    const canonicalWithoutDraft = Object.fromEntries(
+      Object.entries(canonical).filter(([key]) => key !== "$schema"),
+    );
+    expect(printed).toEqual(canonicalWithoutDraft);
   });
 
   it("exits 1 with a clear message for an unsupported --schema-version", async () => {

@@ -65,7 +65,8 @@ ignored); a version outside the supported set degrades to a §5.5 sticky notice.
 | Version | Status | Notes |
 |---|---|---|
 | `v0.1.0` | superseded | Initial schema. Matches the proven camas reference implementation. |
-| `v0.2.0` | **current** | Adds required `schema_version`; optional `code`/`code_url` finding fields; normative `suggestion` `""`/`null` semantics; abstract vendor-neutral envelope (see SPEC §6.1). |
+| `v0.2.0` | superseded | Adds required `schema_version`; optional `code`/`code_url` finding fields; normative `suggestion` `""`/`null` semantics; abstract vendor-neutral envelope (see SPEC §6.1). |
+| `v0.3.0` | **current** | Adds optional `reasoning` finding field. |
 
 ### Price-map schema
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json",
+  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/schema-v0.2.0/schema/findings.schema.json",
   "title": "Code Review — findings",
   "description": "Structured output of an agentic PR review. The review agent emits this object (e.g. via a coding-agent CLI's structured-output mode, such as Claude Code's `--json-schema`, whose result lands in `.structured_output`); a deterministic commenter renders it into a sticky summary comment and inline PR review comments. Agent- and provider-agnostic: any model driven by a compatible CLI adapter may produce it. Kept free of $ref/$defs so the same file works for both JSON-Schema validators and CLI structured-output enforcement.",
   "type": "object",
@@ -80,10 +80,6 @@
             "minimum": 0,
             "maximum": 1,
             "description": "Optional 0..1 confidence; a commenter MAY suppress findings below a configurable threshold to control noise, but MUST NOT suppress a critical-severity finding on confidence alone."
-          },
-          "reasoning": {
-            "type": "string",
-            "description": "Optional human/agent-facing rationale for why this finding is sound; used to judge the finding, not rendered as the finding's own explanation (that's `body`)."
           }
         }
       }

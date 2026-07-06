@@ -202,6 +202,7 @@ Each finding:
 | `body` | `string` | yes | Markdown explanation |
 | `suggestion` | `string \| null` | no | `null` = no mechanical fix; `""` = delete `start_line..end_line`; non-empty = exact replacement for `start_line..end_line` (§5.2.4) |
 | `confidence` | `number` (0..1) | no | For noise suppression; the commenter MAY suppress a finding below a configurable threshold, but MUST NOT suppress a `critical` finding on confidence alone |
+| `reasoning` | `string` | no | Human/agent-facing rationale for why the finding is sound; used to judge the finding, distinct from `body` (the finding's own rendered explanation) |
 
 ### 4.2 Versioning
 
@@ -209,7 +210,7 @@ The schema follows [semver](https://semver.org). The **in-data conformance signa
 `schema_version` field (§4.1): a findings object declares which schema version it conforms to, so a
 commenter can detect a version mismatch rather than silently dropping or misinterpreting fields.
 
-A conforming commenter accepts a configurable allowlist of schema minors (currently `{0.2}`); a
+A conforming commenter accepts a configurable allowlist of schema minors (currently `{0.2, 0.3}`); a
 document declaring a minor outside the allowlist degrades per §5.5 rather than being silently
 accepted or rejected without explanation.
 
@@ -447,6 +448,10 @@ map (§6.2):
 
 Route: full review (all green) · effort: max · turns: 7 · wall: 91s
 ```
+
+Cost figures are rendered to two decimal places (e.g. `$0.06`); a nonzero cost that rounds to
+`$0.00` at that precision renders as `<$0.01` instead, so a real sub-cent cost is never shown as a
+misleading zero.
 
 The footer's `Route` line MUST reflect the actual routing decision (§3.1), not be inferred from
 side-effects such as turn count. The route and effort labels SHOULD come from the envelope's `route`

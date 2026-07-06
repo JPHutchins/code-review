@@ -10,6 +10,7 @@ import {
   ladderFailureDiagnostics,
 } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
+import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = resolvePath(__dirname, "..", "test", "fixtures", "extract-ladder");
@@ -392,7 +393,7 @@ describe("extractStructured — CRLF fenced block (pins incidental behavior)", (
 describe("withDefaultSchemaVersion", () => {
   it("injects the default version when schema_version is absent", () => {
     const result = withDefaultSchemaVersion({ summary: "s" }) as { schema_version: string };
-    expect(result.schema_version).toBe("0.2.0");
+    expect(result.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
   });
 
   it("leaves an explicit schema_version untouched", () => {

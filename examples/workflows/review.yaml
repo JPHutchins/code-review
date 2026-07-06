@@ -57,7 +57,7 @@ jobs:
           node-version: "22"
 
       # Install the CLI and the deterministic commenter.
-      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.5
+      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.6
 
       # Install project deps so the agent can validate findings — swap this for your ecosystem's
       # install command (this repo is npm-based; a Python project would `uv sync`, etc.).
@@ -182,6 +182,16 @@ jobs:
             REASONS="Triage produced a non-boolean safe value (\"$PARSED_SAFE\") — failing closed."
           fi
 
+      # Best-effort capture of the triage agent's full session transcript (prompts + tool results —
+      # the PR code is already public; no secrets live here) for advisory auditability only — it
+      # never affects the review, so a copy miss (e.g. no transcript dir on a skip) must not fail
+      # the job (issue #13).
+      - name: Capture triage transcript
+        if: ${{ always() && steps.gather.outputs.skip != 'true' }}
+        run: |
+          mkdir -p transcripts/triage
+          cp -r "$HOME/.claude/projects/." transcripts/triage/ 2>/dev/null || true
+
       # Phase 2 — Agentic review (throwaway runner, read-only token, bypassPermissions safe)
       - name: Phase 2 — agentic review
         id: review
@@ -231,13 +241,21 @@ jobs:
             exit 0
           fi
 
+          # Snapshot the clean, applied PR-head tree as a throwaway commit BEFORE the agent edits
+          # anything below — the agent runs with bypassPermissions and freely edits/runs code to
+          # validate its findings, so by the time findings exist the tree no longer matches GitHub's
+          # PR-head content. `lower-suggestions` (after the agent runs) validates each finding's
+          # `patch` against the real file on disk, so it needs this exact snapshot to reset to.
+          git -c user.email=code-review@local -c user.name=code-review add -A
+          git -c user.email=code-review@local -c user.name=code-review commit -q -m "pr-head snapshot (for suggestion lowering)"
+
           echo "Review mode: $ROUTE"
           claude -p "$PROMPT" \
             --permission-mode bypassPermissions \
             --strict-mcp-config \
             --output-format json \
             --json-schema "$(code-review print-schema findings)" \
-            --append-system-prompt "You are reviewing a PR inside a throwaway CI runner with no write access to the repo — the change is already applied to the working tree. Validate findings freely: run this project's checks (see its README/contributing docs) and edit or run code as needed to confirm a bug or a candidate fix. Your only deliverable is the review, as structured JSON. Before you finish, write your findings JSON — the object conforming to the findings schema — to the file $DRAFT (this absolute path is outside the repository working tree; write there, not to a same-named file inside the repo). Then run \`code-review validate $DRAFT\` and, if it exits non-zero, fix the file and re-run until it exits 0. $DRAFT is your authoritative deliverable; do not end your turn until it validates." \
+            --append-system-prompt "You are reviewing a PR inside a throwaway CI runner with no write access to the repo — the change is already applied to the working tree. Validate findings freely: run this project's checks (see its README/contributing docs) and edit or run code as needed to confirm a bug or a candidate fix. When you make a mechanical fix, capture it as the finding's \`patch\` field — a single-hunk unified diff of just that edit (e.g. \`git diff -U3 -- <file>\`) against the current file — instead of hand-authoring \`suggestion\`; the commenter deterministically validates the patch against the real file and lowers it into an exact GitHub suggestion with correct indentation and range, or drops it if it doesn't apply, so a validated \`patch\` beats an error-prone hand-typed \`suggestion\`. Your only deliverable is the review, as structured JSON. Before you finish, write your findings JSON — the object conforming to the findings schema — to the file $DRAFT (this absolute path is outside the repository working tree; write there, not to a same-named file inside the repo). Then run \`code-review validate $DRAFT\` and, if it exits non-zero, fix the file and re-run until it exits 0. $DRAFT is your authoritative deliverable; do not end your turn until it validates." \
             >envelope.json
 
           # Map the CLI's native envelope onto the abstract, vendor-neutral shape (§6.1) — the
@@ -248,7 +266,25 @@ jobs:
           mkdir -p findings
           code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" --route "$ROUTE" --effort "$EFFORT" >findings/envelope.json
           jq -c '.findings' findings/envelope.json >findings/findings.json
+
+          # Discard the agent's edits and restore the clean PR-head snapshot — `--hard` doesn't
+          # touch untracked directories, so findings/ (just written) and node_modules/ survive —
+          # then lower each finding's `patch` (if any) against that exact PR-head content (§5.2
+          # rule 8, issue #10). A lowering failure fails this step loudly rather than risk shipping
+          # an un-lowered `patch` field downstream.
+          git reset -q --hard HEAD
+          code-review lower-suggestions findings/findings.json --repo-root . >findings/findings.lowered.json
+          mv findings/findings.lowered.json findings/findings.json
           echo "::endgroup::"
+
+      # Best-effort capture of the review agent's full session transcript — same rationale as the
+      # triage capture above; this run also holds the triage transcript already copied into
+      # transcripts/triage, so transcripts/review is a superset (issue #13).
+      - name: Capture review transcript
+        if: ${{ always() && steps.gather.outputs.skip != 'true' }}
+        run: |
+          mkdir -p transcripts/review
+          cp -r "$HOME/.claude/projects/." transcripts/review/ 2>/dev/null || true
 
       # Assemble findings — every branch below writes BOTH findings/findings.json and a matching
       # abstract envelope (§6.1), so the comment job always has a valid pair to render, even when
@@ -304,6 +340,16 @@ jobs:
           path: findings/
           retention-days: 3
 
+      # Separate artifact so the transcripts (which can be large) don't bloat the findings download
+      # the comment job pulls. Advisory/auditability only — never read by the comment job or any
+      # part of the review decision; safe to skip on a copy miss (`always()` — path may not exist).
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() && steps.gather.outputs.skip != 'true' }}
+        with:
+          name: code-review-transcript
+          path: transcripts/
+          retention-days: 3
+
   # COMMENT — write token, NO agent/PR code, egress-locked to GitHub API.
   # Deterministic: code-review post → gh api (all JSON-safe, no shell interpolation).
   comment:
@@ -326,7 +372,7 @@ jobs:
         with:
           node-version: "22"
 
-      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.5
+      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.6
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download (§8.4).
@@ -349,6 +395,9 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
 
@@ -359,10 +408,17 @@ jobs:
             PRICES_ARGS=(--prices findings/prices.json)
           fi
 
+          # Point the sticky's disclosure and the findings-json marker at THIS workflow run — both
+          # the findings and transcript artifacts, plus the raw job logs, live here (issues #6/#8/#15).
+          RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          JSON_URL="${GITHUB_API_URL}/repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/artifacts"
+
           # route/effort come from the envelope the review job stamped (§6.1) — not re-derived here.
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
             --repo "$REPO" \
             --usage findings/envelope.json \
             --head-branch "$HEAD_BRANCH" \
+            --run-url "$RUN_URL" \
+            --json-url "$JSON_URL" \
             "${PRICES_ARGS[@]}"

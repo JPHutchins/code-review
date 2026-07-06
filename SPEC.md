@@ -619,12 +619,23 @@ jobs:
 
       # Gather review inputs: resolve PR from head_sha, fetch diff (git-diff fallback), context, logs
       # Phase 1: data-only security triage of the diff
-      # Phase 2: if safe, agentic review → abstract envelope (§6.1)
+      # (best-effort: copy the triage agent's session transcript into transcripts/triage — advisory
+      #  only, never fails the job on a copy miss)
+      # Phase 2: if safe — snapshot the applied, clean PR-head tree as a throwaway git commit BEFORE
+      #   the agent edits anything, run the agentic review → abstract envelope (§6.1), then
+      #   `git reset --hard` to that snapshot and lower any finding's `patch` into an exact
+      #   suggestion + range against the restored PR-head content (`lower-suggestions`, §5.2 rule 8)
+      # (best-effort: copy the review agent's session transcript into transcripts/review)
 
       - uses: actions/upload-artifact@v7
         with:
           name: code-review-findings
           path: findings/
+
+      - uses: actions/upload-artifact@v7   # separate artifact — advisory/auditability only, never
+        with:                              # read by the comment job or any posting decision
+          name: code-review-transcript
+          path: transcripts/
 
   comment:
     needs: review
@@ -645,7 +656,10 @@ jobs:
       # Deterministic posting (resolves PR from head_sha, validates diff, renders, posts;
       # reads the write token from GH_TOKEN):
       #   code-review post findings/findings.json --repo … --head-sha … --head-branch … \
-      #     --usage … --prices …   (route/effort come from the envelope — §6.1/§6.3)
+      #     --usage … --prices … --run-url … --json-url …
+      #   (route/effort come from the envelope — §6.1/§6.3; --run-url/--json-url point at THIS
+      #   workflow run — where both artifacts above were uploaded — and feed the sticky's LLM
+      #   Disclosure link and the findings-json marker, §5.1 items 6/7)
 ```
 
 The full, copy-paste-ready example lives in [`examples/workflows/review.yaml`](examples/workflows/review.yaml).

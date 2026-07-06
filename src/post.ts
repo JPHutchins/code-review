@@ -6,10 +6,10 @@
 // failure propagates and exits the process non-zero (never partially posts).
 
 import { readFileSync } from "node:fs";
-import type { InlineComment } from "./types.js";
-import { buildInlineComments, renderStraysSection } from "./inline.js";
+import type { InlineComment, InlineDisposition } from "./types.js";
+import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import { render } from "./render.js";
+import { render, computeSeverityCounts } from "./render.js";
 import {
   ResultEnvelopeCodec,
   PriceMapCodec,
@@ -41,7 +41,6 @@ export interface PostInput {
 
 const DEFAULT_MARKER = "<!-- code-review -->";
 const MAX_SUGGESTION_LINES = 10;
-const REVIEWED_SHA_RE = /<!-- reviewed-sha: ([0-9a-f]{7,40}) -->/;
 
 /** Count lines in a suggestion string (empty suggestion "" = 1 line — delete range). */
 const countSuggestionLines = (text: string): number => text.split("\n").length;
@@ -67,10 +66,6 @@ const checkLongSuggestions = (
   });
   return { comments: adjusted, longFiles };
 };
-
-/** Extract the `<!-- reviewed-sha: <sha> -->` marker from a sticky comment body, if present. */
-const extractReviewedSha = (commentBody: string): string | null =>
-  REVIEWED_SHA_RE.exec(commentBody)?.[1] ?? null;
 
 /** A synthetic findings object used for sticky-only notices (SPEC §5.5). */
 const noticeFindings = (message: string): Findings => ({
@@ -164,7 +159,7 @@ const postInlineReview = async (
   ghApi: GhApi,
 ): Promise<void> => {
   const body = JSON.stringify({
-    body: "",
+    body: `🤖 Automated code review for \`${headSha.slice(0, 7)}\` — verdict, walkthrough, and cost are in the summary comment.`,
     commit_id: headSha,
     event: "COMMENT",
     comments: comments.map((c) => ({
@@ -248,25 +243,29 @@ const upsertSticky = async (
   }
 };
 
-interface BotReview {
+/** A non-dismissed bot-authored review, carrying the commit it reviewed (SPEC §5.2.6 — review
+ *  identity is the reviews API `commit_id`, not the sticky's `reviewed-sha` marker). */
+interface BotReviewRef {
   readonly id: number;
-  readonly login: string;
-  readonly state: string;
+  readonly commitId: string;
 }
 
-const isBotReview = (r: unknown): r is BotReview =>
+const isBotReview = (
+  r: unknown,
+): r is { id: number; user: { login: string }; state: string; commit_id?: unknown } =>
   typeof r === "object" &&
   r !== null &&
   typeof (r as { id?: unknown }).id === "number" &&
   typeof (r as { state?: unknown }).state === "string" &&
   typeof (r as { user?: { login?: unknown } }).user?.login === "string";
 
-const fetchBotReviewIds = async (
+/** List the PR's non-dismissed bot-authored reviews with the SHA each one reviewed. */
+const fetchBotReviews = async (
   repo: string,
   prNumber: number,
   botLogin: string,
   ghApi: GhApi,
-): Promise<readonly number[]> => {
+): Promise<readonly BotReviewRef[]> => {
   const stdout = await ghApi([`repos/${repo}/pulls/${String(prNumber)}/reviews`, "--paginate"]);
   let reviews: unknown;
   try {
@@ -276,19 +275,21 @@ const fetchBotReviewIds = async (
   }
   if (!Array.isArray(reviews)) return [];
   return reviews
-    .filter((r): r is { id: number; user: { login: string }; state: string } => isBotReview(r))
+    .filter(isBotReview)
     .filter((r) => r.user.login === botLogin && r.state !== "DISMISSED")
-    .map((r) => r.id);
+    .map((r) => ({
+      id: r.id,
+      commitId: typeof r.commit_id === "string" ? r.commit_id : "",
+    }));
 };
 
-/** Dismiss prior bot-authored reviews (REC-CO-2). Failures are logged, never fail the job. */
-const dismissPriorBotReviews = async (
+/** Dismiss superseded bot-authored reviews (REC-CO-2). Failures are logged, never fail the job. */
+const dismissReviews = async (
   repo: string,
   prNumber: number,
-  botLogin: string,
+  ids: readonly number[],
   ghApi: GhApi,
 ): Promise<void> => {
-  const ids = await fetchBotReviewIds(repo, prNumber, botLogin, ghApi);
   for (const id of ids) {
     try {
       await ghApi(
@@ -333,8 +334,6 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     DEFAULT_MARKER,
     ghApi,
   );
-  const previousReviewedSha = existingSticky ? extractReviewedSha(existingSticky.body) : null;
-  const isRerunOfSameSha = previousReviewedSha !== null && previousReviewedSha === input.headSha;
 
   const prices = JSON.parse(readFileSync(input.pricesPath, "utf-8")) as unknown;
   const decodedPrices = PriceMapCodec.decode(prices);
@@ -394,6 +393,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       reviewedSha: input.headSha,
       effort: input.effort,
       testReport,
+      inlineDisposition: { kind: "no-envelope" },
     });
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
     process.stderr.write(
@@ -414,42 +414,63 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     );
   }
 
-  let body = render({
-    findings,
-    envelope,
-    prices: decodedPrices.right,
-    template,
-    route: input.route,
-    reviewedSha: input.headSha,
-    effort: input.effort,
-    testReport,
-  });
+  // Fix #5 (SPEC §5.2.6): suppression turns on whether a COMPLETED bot review already exists for
+  // this head SHA — review identity via the reviews API `commit_id` — not on the sticky's marker
+  // (a placeholder/degraded sticky must not claim the SHA). Only relevant when there is an inline
+  // review to post at all.
+  const botReviews =
+    comments.length > 0 ? await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi) : [];
+  const alreadyReviewedThisSha = botReviews.some((r) => r.commitId === input.headSha);
 
-  const straysMd = renderStraysSection(strays);
-  if (straysMd.length > 0) body += straysMd;
+  const inlineDisposition: InlineDisposition | undefined =
+    comments.length > 0
+      ? alreadyReviewedThisSha
+        ? { kind: "suppressed-existing-review", sha: input.headSha }
+        : { kind: "posted", count: comments.length, sha: input.headSha }
+      : strays.length > 0
+        ? { kind: "none-in-diff" }
+        : undefined;
 
-  if (longFiles.length > 0) {
-    body += `\n\n---\n\n> **Note:** ${String(longFiles.length)} suggestion(s) exceeded GitHub's ~10-line inline suggestion limit and were omitted from inline comments. See the findings above for details.\n`;
-  }
+  const body =
+    render({
+      findings,
+      envelope,
+      prices: decodedPrices.right,
+      template,
+      route: input.route,
+      reviewedSha: input.headSha,
+      effort: input.effort,
+      testReport,
+      severityCounts: computeSeverityCounts(findings.findings),
+      strays,
+      inlineDisposition,
+    }) +
+    (longFiles.length > 0
+      ? `\n\n---\n\n> **Note:** ${String(longFiles.length)} suggestion(s) exceeded GitHub's ~10-line inline suggestion limit and were omitted from the inline comments; the affected findings remain in the review.\n`
+      : "");
 
   // Phase 2 (CO-R3): writes — sticky first, inline second; failure exits non-zero.
-  if (!isRerunOfSameSha && previousReviewedSha !== null) {
-    await dismissPriorBotReviews(input.repo, prNumber, input.botLogin, ghApi);
-  }
-
   await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
 
-  if (isRerunOfSameSha) {
+  if (comments.length === 0) return;
+
+  if (alreadyReviewedThisSha) {
     process.stderr.write(
-      `Head SHA ${input.headSha} matches the previous review — updated sticky only, no new inline review\n`,
+      `A completed bot review already exists for ${input.headSha} — updated sticky only, no new inline review\n`,
     );
     return;
   }
 
-  if (comments.length > 0) {
-    await postInlineReview(input.repo, prNumber, input.headSha, comments, ghApi);
-    process.stderr.write(
-      `Posted ${String(comments.length)} inline comments on PR #${String(prNumber)}\n`,
-    );
+  // REC-CO-2: supersede prior bot reviews left on OTHER commits before posting the fresh one.
+  const stalePriorReviewIds = botReviews
+    .filter((r) => r.commitId !== input.headSha)
+    .map((r) => r.id);
+  if (stalePriorReviewIds.length > 0) {
+    await dismissReviews(input.repo, prNumber, stalePriorReviewIds, ghApi);
   }
+
+  await postInlineReview(input.repo, prNumber, input.headSha, comments, ghApi);
+  process.stderr.write(
+    `Posted ${String(comments.length)} inline comments on PR #${String(prNumber)}\n`,
+  );
 };

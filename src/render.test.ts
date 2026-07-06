@@ -67,6 +67,32 @@ const mkFindings = (
   ...overrides,
 });
 
+// Structural (not substring) assertions on rendered markdown — see the describe blocks below that
+// use these. A blank line inserted mid-table (the shipped bug: `<% forEach %>` on its own line
+// under Eta({autoTrim:false}) emitted one before every row) still lets `toContain` checks pass,
+// since the broken table's text is all still present — it's just no longer contiguous rows GitHub
+// recognizes as one table. These helpers make that contiguity itself the assertion.
+
+/** Longest prefix of `items` for which `predicate` holds. */
+const takeWhile = <T>(items: readonly T[], predicate: (item: T) => boolean): T[] => {
+  const stopIndex = items.findIndex((item) => !predicate(item));
+  return stopIndex === -1 ? [...items] : items.slice(0, stopIndex);
+};
+
+/** The contiguous run of lines starting at the first line matching `start`, while `keep` holds. */
+const contiguousBlockFrom = (
+  markdown: string,
+  start: (line: string) => boolean,
+  keep: (line: string) => boolean,
+): string[] => {
+  const lines = markdown.split("\n");
+  const startIndex = lines.findIndex(start);
+  return startIndex === -1 ? [] : takeWhile(lines.slice(startIndex), keep);
+};
+
+/** Cell count of a `|`-delimited markdown table row (the outer pipes contribute no cell). */
+const columnCount = (row: string): number => row.split("|").length - 2;
+
 describe("render", () => {
   it("produces output with the <!-- code-review --> marker", () => {
     const findings = mkFindings([]);
@@ -105,31 +131,13 @@ describe("render", () => {
     expect(result).toContain("0000000000000000000000000000000000000000");
   });
 
-  describe("findings summary table", () => {
-    it("renders a critical finding visibly, not folded in <details>", () => {
-      const findings = mkFindings([
-        mkFinding({ severity: "critical", title: "CRIT-1", start_line: 10 }),
-      ]);
-      const result = render({
-        findings,
-        envelope: baseEnvelope,
-        prices,
-        template,
-        route: "full review",
-      });
-
-      expect(result).toContain("Findings summary");
-      expect(result).not.toContain("<details>");
-      expect(result).toContain("CRIT-1");
-      expect(result).toContain("🔴");
-    });
-
-    it("renders all severity levels in the table", () => {
+  describe("severity counts line (summary-only sticky)", () => {
+    it("renders a per-severity count histogram, not a per-finding table", () => {
       const findings = mkFindings([
         mkFinding({ severity: "critical", title: "CRIT" }),
-        mkFinding({ severity: "major", title: "MAJ" }),
+        mkFinding({ severity: "major", title: "MAJ-a" }),
+        mkFinding({ severity: "major", title: "MAJ-b" }),
         mkFinding({ severity: "minor", title: "MIN" }),
-        mkFinding({ severity: "nit", title: "NIT" }),
       ]);
       const result = render({
         findings,
@@ -139,21 +147,18 @@ describe("render", () => {
         route: "full review",
       });
 
-      expect(result).toContain("🔴");
-      expect(result).toContain("🟠");
-      expect(result).toContain("🔵");
-      expect(result).toContain("⚪");
-      expect(result).toContain("CRIT");
-      expect(result).toContain("MAJ");
-      expect(result).toContain("MIN");
-      expect(result).toContain("NIT");
+      expect(result).toContain("**Findings:**");
+      expect(result).toContain("🔴 1");
+      expect(result).toContain("🟠 2");
+      expect(result).toContain("🔵 1");
+      // The redesigned sticky does not reproduce the per-finding list the review carries.
+      expect(result).not.toContain("| Severity | File | Line | Summary |");
+      expect(result).not.toContain("MAJ-a");
+      expect(result).not.toContain("Findings summary");
     });
 
-    it("shows file count and finding count in summary", () => {
-      const findings = mkFindings([
-        mkFinding({ path: "src/a.ts", title: "A" }),
-        mkFinding({ path: "src/b.ts", title: "B" }),
-      ]);
+    it("omits zero-count severities from the histogram", () => {
+      const findings = mkFindings([mkFinding({ severity: "nit", title: "NIT" })]);
       const result = render({
         findings,
         envelope: baseEnvelope,
@@ -162,39 +167,124 @@ describe("render", () => {
         route: "full review",
       });
 
-      expect(result).toContain("2 findings");
-      expect(result).toContain("2 files");
+      expect(result).toContain("⚪ 1");
+      expect(result).not.toContain("🔴");
+      expect(result).not.toContain("🟠");
+      expect(result).not.toContain("🔵");
     });
 
-    it("shows line range for multi-line findings", () => {
+    it("computes the histogram from findings when no severityCounts override is passed", () => {
       const findings = mkFindings([
-        mkFinding({ start_line: 10, end_line: 42, title: "Range finding" }),
+        mkFinding({ severity: "major", title: "M1" }),
+        mkFinding({ severity: "major", title: "M2" }),
+        mkFinding({ severity: "major", title: "M3" }),
       ]);
-      const result = render({
-        findings,
-        envelope: baseEnvelope,
-        prices,
-        template,
-        route: "full review",
-      });
-
-      expect(result).toContain("10–42");
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("🟠 3");
     });
 
-    it("mentions suggestion count when findings have suggestions", () => {
-      const findings = mkFindings([
-        mkFinding({ suggestion: "fix this", title: "Has suggestion" }),
-        mkFinding({ title: "No suggestion" }),
-      ]);
+    it("uses a passed-in severityCounts override verbatim", () => {
+      const findings = mkFindings([mkFinding({ severity: "minor", title: "one" })]);
       const result = render({
         findings,
         envelope: baseEnvelope,
         prices,
         template,
-        route: "full review",
+        severityCounts: { critical: 2, major: 0, minor: 5, nit: 0 },
       });
+      expect(result).toContain("🔴 2");
+      expect(result).toContain("🔵 5");
+      expect(result).not.toContain("🟠");
+    });
+  });
 
-      expect(result).toContain("1 finding included suggestions");
+  describe("inline-disposition pointer (honesty — fix #2)", () => {
+    const findings = mkFindings([mkFinding({ severity: "minor" })]);
+
+    it("states how many comments were posted inline, on the short SHA", () => {
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        inlineDisposition: { kind: "posted", count: 3, sha: "abc123def456" },
+      });
+      expect(result).toContain("posted inline");
+      expect(result).toContain("abc123d");
+    });
+
+    it("says no inline comments when all findings are outside the diff", () => {
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        inlineDisposition: { kind: "none-in-diff" },
+      });
+      expect(result).toContain("No inline comments");
+      expect(result).not.toContain("posted inline");
+    });
+
+    it("says the inline review was suppressed for an already-reviewed SHA", () => {
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        inlineDisposition: { kind: "suppressed-existing-review", sha: "abc123def456" },
+      });
+      expect(result).toContain("suppressed");
+      expect(result).toContain("abc123d");
+      expect(result).not.toContain("posted inline");
+    });
+
+    it("emits no disposition pointer for no-envelope renders", () => {
+      const result = render({
+        findings,
+        envelope: null,
+        prices,
+        template,
+        inlineDisposition: { kind: "no-envelope" },
+      });
+      expect(result).not.toContain("posted inline");
+      expect(result).not.toContain("suppressed");
+      expect(result).not.toContain("No inline comments");
+    });
+  });
+
+  describe("strays section (only per-finding detail in the sticky)", () => {
+    it("lists strays with severity, path, line, and title plus a not-in-the-diff note", () => {
+      const findings = mkFindings([mkFinding({ severity: "major", title: "in-diff-ish" })]);
+      const strays = [
+        mkFinding({ path: "src/bar.ts", start_line: 100, severity: "major", title: "Stray one" }),
+      ];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
+      });
+      expect(result).toContain("Findings outside the diff");
+      expect(result).toContain("not in the diff");
+      expect(result).toContain("src/bar.ts:100");
+      expect(result).toContain("Stray one");
+    });
+
+    it("renders no strays section when there are none", () => {
+      const findings = mkFindings([mkFinding({ severity: "minor" })]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("Findings outside the diff");
+    });
+
+    it("renders a multi-line stray range", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ path: "src/x.ts", start_line: 10, end_line: 14, title: "range stray" }),
+      ];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).toContain("src/x.ts:10–14");
     });
   });
 
@@ -492,51 +582,21 @@ describe("render", () => {
     });
     expect(result).toContain("LLM Disclosure");
   });
-
-  it("escapes triple backticks in suggestions for safe rendering", () => {
-    const findings = mkFindings([
-      mkFinding({
-        severity: "major",
-        title: "Escaped",
-        body: "Has backticks.",
-        suggestion: "code with ``` backticks",
-      }),
-    ]);
-    const result = render({
-      findings,
-      envelope: baseEnvelope,
-      prices,
-      template,
-      route: "full review",
-    });
-    expect(result).not.toContain("``` backticks```");
-    expect(result).toContain("Escaped");
-  });
 });
 
-describe("sanitization", () => {
-  it("escapes pipe characters in finding titles for table safety", () => {
-    const findings = mkFindings([mkFinding({ severity: "major", title: "Title | with | pipes" })]);
-    const result = render({
-      findings,
-      envelope: baseEnvelope,
-      prices,
-      template,
-      route: "full review",
-    });
+describe("stray sanitization", () => {
+  it("escapes pipe characters in stray titles for table safety", () => {
+    const findings = mkFindings([]);
+    const strays = [mkFinding({ severity: "major", title: "Title | with | pipes" })];
+    const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
     expect(result).toContain("Title \\| with \\| pipes");
     expect(result).not.toContain("Title | with | pipes");
   });
 
-  it("replaces backticks in file paths for inline code span safety", () => {
-    const findings = mkFindings([mkFinding({ path: "src/bad`path`.ts", title: "backtick path" })]);
-    const result = render({
-      findings,
-      envelope: baseEnvelope,
-      prices,
-      template,
-      route: "full review",
-    });
+  it("replaces backticks in stray file paths for inline code span safety", () => {
+    const findings = mkFindings([]);
+    const strays = [mkFinding({ path: "src/bad`path`.ts", title: "backtick path" })];
+    const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
     expect(result).toContain("src/bad-path-.ts");
     expect(result).not.toContain("bad`path`");
   });
@@ -578,28 +638,23 @@ describe("number formatting guards", () => {
 });
 
 describe("severity emoji", () => {
-  it("uses question mark for unknown severity values", () => {
-    const f = mkFindings([
-      { ...mkFinding({ severity: "critical" }), severity: "bogus" as "critical" },
-    ]);
+  it("uses a question mark for an unknown severity surfaced in the strays section", () => {
+    const findings = mkFindings([]);
+    const strays = [{ ...mkFinding({ severity: "critical" }), severity: "bogus" as "critical" }];
     const result = render({
-      findings: f,
+      findings,
       envelope: baseEnvelope,
       prices,
       template,
       route: "full review",
+      strays,
     });
     expect(result).toContain("❓");
   });
-});
 
-describe("severity grouping (REC-CO-1)", () => {
-  it("folds nits, and only nits, into a <details> block", () => {
+  it("does not count an out-of-domain severity in the histogram", () => {
     const findings = mkFindings([
-      mkFinding({ severity: "critical", title: "CRIT" }),
-      mkFinding({ severity: "major", title: "MAJ" }),
-      mkFinding({ severity: "minor", title: "MIN" }),
-      mkFinding({ severity: "nit", title: "NIT" }),
+      { ...mkFinding({ severity: "critical" }), severity: "bogus" as "critical" },
     ]);
     const result = render({
       findings,
@@ -608,37 +663,7 @@ describe("severity grouping (REC-CO-1)", () => {
       template,
       route: "full review",
     });
-
-    expect(result).toContain("<details>");
-    expect(result).toContain("nit");
-
-    const detailsStart = result.indexOf("<details>");
-    const detailsEnd = result.indexOf("</details>");
-    const foldedSection = result.slice(detailsStart, detailsEnd);
-
-    expect(foldedSection).toContain("NIT");
-    expect(foldedSection).not.toContain("CRIT");
-    expect(foldedSection).not.toContain("MAJ");
-    expect(foldedSection).not.toContain("MIN");
-
-    const visibleSection = result.slice(0, detailsStart);
-    expect(visibleSection).toContain("CRIT");
-    expect(visibleSection).toContain("MAJ");
-    expect(visibleSection).toContain("MIN");
-    expect(visibleSection).not.toContain("NIT");
-  });
-
-  it("omits the <details> fold when there are no nits", () => {
-    const findings = mkFindings([mkFinding({ severity: "major", title: "MAJ-ONLY" })]);
-    const result = render({
-      findings,
-      envelope: baseEnvelope,
-      prices,
-      template,
-      route: "full review",
-    });
-    expect(result).not.toContain("<details>");
-    expect(result).toContain("MAJ-ONLY");
+    expect(result).toContain("No findings — clean review");
   });
 });
 
@@ -657,12 +682,12 @@ describe("usage unavailable (envelope missing — SPEC §5.5)", () => {
     expect(result).not.toContain("turns:");
   });
 
-  it("still renders findings and summary when envelope is null", () => {
-    const findings = mkFindings([mkFinding({ title: "Still shown", severity: "major" })], {
+  it("still renders the severity counts and summary when envelope is null", () => {
+    const findings = mkFindings([mkFinding({ title: "Still counted", severity: "major" })], {
       summary: "Real summary text.",
     });
     const result = render({ findings, envelope: null, prices, template, route: "full review" });
-    expect(result).toContain("Still shown");
+    expect(result).toContain("🟠 1");
     expect(result).toContain("Real summary text.");
   });
 
@@ -699,5 +724,111 @@ describe("render — route/effort from the envelope (SSOT)", () => {
   it("omits the Route label when neither an override nor the envelope carries one", () => {
     const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
     expect(result).not.toContain("**Route:**");
+  });
+});
+
+describe("cost-table structural integrity (regression guard for the blank-line-per-row bug)", () => {
+  const pricesMulti: PriceMap = {
+    _updated: "2026-07-03",
+    _unit: "USD per 1M tokens",
+    models: {
+      "model-a": { in: 3.0, out: 15.0, cache_read: 0.3, cache_write: 0.6 },
+      "model-b": { in: 1.0, out: 5.0, cache_read: 0.1, cache_write: 0.2 },
+      "model-c": { in: 0.5, out: 2.5, cache_read: 0.05, cache_write: 0.1 },
+    },
+  };
+
+  const multiModelEnvelope: ResultEnvelope = {
+    ...baseEnvelope,
+    models: [
+      mkEntry({ model: "model-a" }),
+      mkEntry({ model: "model-b", input_tokens: 20000, output_tokens: 3000 }),
+      mkEntry({ model: "model-c", input_tokens: 5000, output_tokens: 500 }),
+    ],
+  };
+
+  const renderCostTable = (): string =>
+    render({
+      findings: mkFindings([]),
+      envelope: multiModelEnvelope,
+      prices: pricesMulti,
+      template,
+    });
+
+  const costTableBlock = (markdown: string): string[] =>
+    contiguousBlockFrom(
+      markdown,
+      (line) => line.startsWith("| Model |"),
+      (line) => line.startsWith("|"),
+    );
+
+  it("keeps the separator immediately after the header, with no blank line between", () => {
+    const block = costTableBlock(renderCostTable());
+    expect(block[0]).toMatch(/^\| Model \|/);
+    expect(block[1]).toMatch(/^\|---\|/);
+  });
+
+  it("renders the header, separator, every model row, and the Total row as one contiguous run", () => {
+    // Regression: under Eta({autoTrim:false}), a `<% forEach %>` on its own line emitted a blank
+    // line before every row, so GitHub saw header+separator, then a blank line, and stopped
+    // parsing the table right there — every row rendered as loose text instead. A contiguous
+    // `|`-line run from the header through Total is exactly the shape that bug could never produce:
+    // the first blank line truncates `contiguousBlockFrom`'s result short of the full row count.
+    const block = costTableBlock(renderCostTable());
+    // header + separator + 3 model rows + Total row
+    expect(block).toHaveLength(1 + 1 + 3 + 1);
+    expect(block.every((line) => line.trim().length > 0)).toBe(true);
+    expect(block.at(-1)).toMatch(/^\| \*\*Total\*\*/);
+  });
+
+  it("gives every row — header, separator, each model, and Total — the same column count", () => {
+    const block = costTableBlock(renderCostTable());
+    const counts = block.map(columnCount);
+    expect(new Set(counts).size).toBe(1);
+    expect(counts[0]).toBe(6);
+  });
+});
+
+describe("summary-only sticky (regression guard against re-adding per-finding tables)", () => {
+  it("renders no per-finding findings table or nits table header, even with mixed severities present", () => {
+    const uniqueBody = "UNIQUE_BODY_MARKER_must_not_leak_into_the_sticky_9f3d";
+    const findings = mkFindings([
+      mkFinding({ severity: "critical", title: "Crit finding", body: uniqueBody }),
+      mkFinding({ severity: "major", title: "Major finding", body: uniqueBody }),
+      mkFinding({ severity: "minor", title: "Minor finding", body: uniqueBody }),
+      mkFinding({ severity: "nit", title: "Nit finding", body: uniqueBody }),
+    ]);
+    const result = render({
+      findings,
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+    });
+
+    expect(result).not.toContain("| Severity | File | Line | Summary |");
+    expect(result).not.toContain("| File | Line | Summary |");
+    // Per-finding body text belongs to the inline review now, not the sticky.
+    expect(result).not.toContain(uniqueBody);
+  });
+});
+
+describe("strays list structural integrity (contiguous bullet run)", () => {
+  it("renders all stray bullets as one contiguous run with no blank line between", () => {
+    const findings = mkFindings([]);
+    const strays = [
+      mkFinding({ path: "src/a.ts", start_line: 1, severity: "critical", title: "Stray A" }),
+      mkFinding({ path: "src/b.ts", start_line: 2, severity: "major", title: "Stray B" }),
+      mkFinding({ path: "src/c.ts", start_line: 3, severity: "minor", title: "Stray C" }),
+    ];
+    const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+
+    const bullets = contiguousBlockFrom(
+      result,
+      (line) => line.startsWith("- "),
+      (line) => line.startsWith("- "),
+    );
+    expect(bullets).toHaveLength(3);
+    expect(bullets.every((line) => line.trim().length > 0)).toBe(true);
   });
 });

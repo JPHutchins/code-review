@@ -296,7 +296,9 @@ describe("post — inline review", () => {
 
     await post(mkInput({}), api);
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     expect(body.event).toBe("COMMENT");
@@ -338,7 +340,9 @@ describe("post — inline review", () => {
 
     await post(mkInput({}), api);
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
   });
 });
@@ -380,7 +384,9 @@ describe("post — suggestion handling", () => {
 
     await post(mkInput({}), api);
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     const commentBody = body.comments[0]?.body ?? "";
@@ -427,7 +433,9 @@ describe("post — suggestion handling", () => {
 
     await post(mkInput({}), api);
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     const commentBody = body.comments[0]?.body ?? "";
@@ -475,7 +483,9 @@ describe("post — suggestion handling", () => {
 
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("exceeds"));
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     const commentBody = body.comments[0]?.body ?? "";
@@ -532,7 +542,14 @@ describe("post — PR resolution", () => {
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/pulls/99/reviews" && a.includes("--input"),
+        match: (a) => a[0] === "repos/owner/repo/pulls/99/reviews" && a.includes("--paginate"),
+        response: "[]",
+      },
+      {
+        match: (a) =>
+          a[0] === "repos/owner/repo/pulls/99/reviews" &&
+          a.includes("--input") &&
+          !a.includes("--paginate"),
         response: "",
       },
     ]);
@@ -688,7 +705,9 @@ describe("post — §5.5 error semantics", () => {
     expect(body.body).toContain("diff for this PR is empty");
     expect(body.body).toContain("💬 comment");
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
 
     exitSpy.mockRestore();
@@ -711,7 +730,9 @@ describe("post — §5.5 error semantics", () => {
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not complete");
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
 
     exitSpy.mockRestore();
@@ -755,7 +776,9 @@ describe("post — §5.5 error semantics", () => {
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
 
     exitSpy.mockRestore();
@@ -782,7 +805,9 @@ describe("post — §5.5 error semantics", () => {
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
 
     exitSpy.mockRestore();
@@ -808,7 +833,9 @@ describe("post — §5.5 error semantics", () => {
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
 
     exitSpy.mockRestore();
@@ -836,7 +863,9 @@ describe("post — §5.5 error semantics", () => {
     expect(body.body).toContain('schema_version "1.0.0"');
     expect(body.body).toContain("does not support");
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
 
     exitSpy.mockRestore();
@@ -862,7 +891,9 @@ describe("post — §5.5 error semantics", () => {
     expect(body.body).toContain("A test summary.");
     expect(body.body).toContain("Usage/cost unavailable");
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
 
     exitSpy.mockRestore();
@@ -879,15 +910,67 @@ describe("post — §5.5 error semantics", () => {
     await expect(post(mkInput({}), api)).rejects.toThrow("exit");
     expect(exitSpy).toHaveBeenCalledWith(0);
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeUndefined();
 
     exitSpy.mockRestore();
   });
 });
 
-describe("post — re-run hygiene (REC-CO-2)", () => {
-  it("updates only the sticky when the head SHA matches the reviewed-sha marker", async () => {
+describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not the sticky marker)", () => {
+  it("fix #5: posts the inline review when the sticky's marker matches the head SHA but no completed bot review exists at it", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        // A placeholder sticky already carrying THIS head SHA in its marker (the #5 trigger).
+        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nplaceholder"}\n`,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
+        response: "",
+      },
+      {
+        // No completed bot review exists at any SHA.
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: "[]",
+      },
+      {
+        match: (a) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" &&
+          a.includes("--input") &&
+          !a.includes("--paginate"),
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+
+    // The real inline review IS posted despite the matching marker (the bug was suppressing it).
+    const inlineCall = calls().find(
+      (c) =>
+        c.args[0] === "repos/owner/repo/pulls/42/reviews" &&
+        c.args.includes("--input") &&
+        !c.args.includes("--paginate"),
+    );
+    expect(inlineCall).toBeDefined();
+    const stickyBody = JSON.parse(patchCall!.stdin!) as CommentBody;
+    expect(stickyBody.body).toContain("posted inline");
+  });
+
+  it("suppresses the inline pass when a completed bot review already exists at the head SHA", async () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
@@ -905,17 +988,34 @@ describe("post — re-run hygiene (REC-CO-2)", () => {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
         response: "",
       },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: JSON.stringify([
+          {
+            id: 555,
+            user: { login: "github-actions[bot]" },
+            state: "COMMENTED",
+            commit_id: "abc123def456",
+          },
+        ]),
+      },
     ]);
 
     await post(mkInput({}), api);
 
     const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
     expect(patchCall).toBeDefined();
+    const stickyBody = JSON.parse(patchCall!.stdin!) as CommentBody;
+    expect(stickyBody.body).toContain("suppressed");
 
-    const reviewsListCall = calls().find((c) =>
-      c.args[0]?.startsWith("repos/owner/repo/pulls/42/reviews"),
+    // No fresh review is posted for a SHA that already has a completed bot review.
+    const inlineCall = calls().find(
+      (c) =>
+        c.args[0] === "repos/owner/repo/pulls/42/reviews" &&
+        c.args.includes("--input") &&
+        !c.args.includes("--paginate"),
     );
-    expect(reviewsListCall).toBeUndefined();
+    expect(inlineCall).toBeUndefined();
   });
 
   it("dismisses prior bot reviews and posts a fresh inline review when the head SHA differs", async () => {
@@ -1090,12 +1190,19 @@ describe("post — CO-R3: never-partially-post ordering", () => {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
         response: "",
       },
-      // Deliberately no mock for the sticky POST — it rejects as "unexpected gh api call".
+      {
+        // The read of existing bot reviews (phase 1) succeeds…
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: "[]",
+      },
+      // …but the sticky POST (first write) has no mock — it rejects as "unexpected gh api call".
     ]);
 
     await expect(post(mkInput({}), api)).rejects.toThrow(/Unexpected gh api call/);
 
-    const inlineCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const inlineCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(inlineCall).toBeUndefined();
   });
 });
@@ -1214,7 +1321,9 @@ describe("post — --inline-template", () => {
 
     await post(mkInput({ inlineTemplatePath }), api);
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     expect(body.comments[0]?.body).toContain("CUSTOM INLINE:");
@@ -1226,7 +1335,9 @@ describe("post — --inline-template", () => {
 
     await post(mkInput({}), api);
 
-    const reviewCall = calls().find((c) => c.args[0] === "repos/owner/repo/pulls/42/reviews");
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     expect(body.comments[0]?.body).toBe("Test body content.");
@@ -1305,5 +1416,92 @@ describe("post — --effort threading", () => {
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("**Route:** mechanic");
     expect(body.body).toContain("**effort:** low");
+  });
+});
+
+describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
+  const okMocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+      response: "",
+    },
+  ];
+
+  const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
+    const stickyCall = calls.find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    return (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+  };
+
+  it("renders a 'posted inline' pointer and NO per-finding findings table for in-diff findings", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({}), api);
+
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("posted inline");
+    expect(body).toContain("abc123d");
+    expect(body).not.toContain("| Severity | File | Line | Summary |");
+    expect(body).not.toContain("Findings summary");
+    // The finding's body text belongs to the inline comment, never the sticky.
+    expect(body).not.toContain("Test body content.");
+  });
+
+  it("renders a 'none-in-diff' pointer and the strays section (only) when all findings are out of diff", async () => {
+    const strayFindings = mkFindings([
+      mkFinding({ start_line: 999, end_line: 999, title: "Out of diff finding" }),
+    ]);
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(strayFindings));
+
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({}), api);
+
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("No inline comments");
+    expect(body).toContain("Findings outside the diff");
+    expect(body).toContain("src/foo.ts:999");
+    expect(body).toContain("Out of diff finding");
+
+    const inlineCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect(inlineCall).toBeUndefined();
+  });
+
+  it("gives the inline review a pointer body, not a duplicate of the walkthrough summary", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({}), api);
+
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect(reviewCall).toBeDefined();
+    const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(body.body).toContain("Automated code review");
+    expect(body.body).toContain("abc123d");
+    expect(body.body).not.toContain("A test summary.");
+    expect(body.commit_id).toBe("abc123def456");
+    expect(body.event).toBe("COMMENT");
   });
 });

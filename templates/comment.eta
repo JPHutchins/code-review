@@ -9,35 +9,30 @@
 
 ---
 
-<% if (it.totalCount > 0) { %>
-#### 📊 Findings summary — <%= it.totalCount %> finding<%= it.totalCount === 1 ? '' : 's' %> on <%= it.fileCount %> file<%= it.fileCount === 1 ? '' : 's' %>
-
-<% if (it.visibleFindings.length > 0) { %>
-| Severity | File | Line | Summary |
-|---|---|---|---|
-<% it.visibleFindings.forEach(function(f) { %>
-| <%= it.severityEmoji(f.severity) %> <%= f.severity %> | `<%= f.path %>` | <%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %> | <%= f.title %> |
-<% }) %>
-
-<% } %>
-<% if (it.nitFindings.length > 0) { %>
-<details>
-<summary>⚪ <%= it.nitFindings.length %> nit<%= it.nitFindings.length === 1 ? '' : 's' %> (folded)</summary>
-
-| File | Line | Summary |
-|---|---|---|
-<% it.nitFindings.forEach(function(f) { %>
-| `<%= f.path %>` | <%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %> | <%= f.title %> |
-<% }) %>
-
-</details>
-<% } %>
-
-<% if (it.suggestionCount > 0) { %>
-<%= it.suggestionCount %> finding<%= it.suggestionCount === 1 ? '' : 's' %> included suggestions — see inline comments for details.
-<% } %>
+<% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
+<% if (findingsTotal > 0) { %>
+<% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
+**Findings:** <%~ parts.join(' · ') %>
 <% } else { %>
 _No findings — clean review._
+<% } %>
+
+<% if (it.inlineDisposition && it.inlineDisposition.kind === 'posted') { %>
+→ <%= it.inlineDisposition.count %> comment<%= it.inlineDisposition.count === 1 ? '' : 's' %> posted inline on `<%= it.inlineDisposition.sha.slice(0, 7) %>` — see the review.
+<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'none-in-diff') { %>
+→ No inline comments — all findings are outside the diff (listed below).
+<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'suppressed-existing-review') { %>
+→ Inline review suppressed — `<%= it.inlineDisposition.sha.slice(0, 7) %>` was already reviewed.
+<% } %>
+
+<% if (it.strays.length > 0) { %>
+#### ⚠️ Findings outside the diff
+
+These findings are on lines not in the diff, so they can't be anchored as inline comments:
+
+<% it.strays.forEach(function(f) { -%>
+- <%= it.severityEmoji(f.severity) %> `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %>
+<% }) %>
 <% } %>
 
 <% if (it.testReport) { %>
@@ -47,7 +42,7 @@ _No findings — clean review._
 <summary>📊 Test results — <%= it.testReport.passed %> passed, <%= it.testReport.failed %> failed</summary>
 
 <% if (it.testReport.failed > 0 && it.testReport.failures) { %>
-<% it.testReport.failures.forEach(function(f) { %>
+<% it.testReport.failures.forEach(function(f) { -%>
 - **<%= f.name %>**<% if (f.message) { %> — <%~ f.message %><% } %>
 <% }) %>
 <% } else { %>
@@ -64,9 +59,9 @@ All <%= it.testReport.total %> tests passed.
 
 | Model | Input | Output | Cache read | Cache write | Cost |
 |---|--:|--:|--:|--:|--:|
-<% it.costReport.lines.forEach(function(l) { %>
+<% it.costReport.lines.forEach(function(l) { -%>
 | <%= l.model %> | <%= it.formatTokens(l.inputTokens) %> | <%= it.formatTokens(l.outputTokens) %> | <%= it.formatTokens(l.cacheReadTokens) %> | <%= it.formatTokens(l.cacheWriteTokens) %> | <%= it.formatCost(l.costUSD) %> |
-<% }) %>
+<% }) -%>
 | **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD) %>** |
 
 </sub>

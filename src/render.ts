@@ -2,8 +2,8 @@
 // Uses Eta templates; pure data-in, string-out — no side effects, no model invocation.
 
 import { Eta } from "eta";
-import type { Finding } from "./schema.js";
-import type { RenderInput } from "./types.js";
+import type { Finding, Severity } from "./schema.js";
+import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
 
 /** Escape triple-backtick sequences to prevent code-block breakout. */
@@ -15,13 +15,27 @@ const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 /** Replace backticks so they don't break inline code spans. */
 const escapeCodeBackticks = (text: string): string => text.replace(/`/g, "-");
 
-/** Sanitize a finding's fields for safe rendering in the summary table. */
+/** Sanitize a finding's fields for safe rendering in the strays section. */
 const sanitizeFinding = (f: Finding): Finding => ({
   ...f,
   title: escapePipes(f.title),
   path: escapeCodeBackticks(f.path),
   suggestion: f.suggestion ? escapeBackticks(f.suggestion) : f.suggestion,
 });
+
+const emptySeverityCounts = (): Record<Severity, number> => ({
+  critical: 0,
+  major: 0,
+  minor: 0,
+  nit: 0,
+});
+
+/** Tally findings by severity for the summary counts line. Ignores out-of-domain severities. */
+export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCounts =>
+  findings.reduce<Record<Severity, number>>(
+    (acc, f) => (f.severity in acc ? { ...acc, [f.severity]: acc[f.severity] + 1 } : acc),
+    emptySeverityCounts(),
+  );
 
 /** Render a code-review comment from findings, envelope, and prices. Pure. */
 export const render = (input: RenderInput): string => {
@@ -32,12 +46,8 @@ export const render = (input: RenderInput): string => {
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
 
-  const findings = input.findings.findings.map(sanitizeFinding);
-  const safeFindings = { ...input.findings, findings };
-  const uniqueFiles = [...new Set(findings.map((f) => f.path))];
-
   return eta.renderString(input.template, {
-    findings: safeFindings,
+    findings: input.findings,
     envelope: input.envelope,
     usageAvailable,
     costReport,
@@ -46,12 +56,9 @@ export const render = (input: RenderInput): string => {
     modelNames,
     testReport: input.testReport ?? null,
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
-    totalCount: findings.length,
-    fileCount: uniqueFiles.length,
-    // REC-CO-1: nits (and only nits) fold into <details>; everything else stays visible.
-    visibleFindings: findings.filter((f) => f.severity !== "nit"),
-    nitFindings: findings.filter((f) => f.severity === "nit"),
-    suggestionCount: findings.filter((f) => f.suggestion).length,
+    severityCounts: input.severityCounts ?? computeSeverityCounts(input.findings.findings),
+    strays: (input.strays ?? []).map(sanitizeFinding),
+    inlineDisposition: input.inlineDisposition ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
     formatCost: (n: number): string => (Number.isFinite(n) ? `$${n.toFixed(3)}` : "—"),

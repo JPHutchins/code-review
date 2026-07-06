@@ -242,15 +242,27 @@ An **issue comment** on the PR, found and updated by a fixed marker:
 The marker MUST be the first line of the rendered comment, so the commenter's upsert (which matches
 on `startswith(marker)` AND bot author) finds the existing comment rather than posting a duplicate.
 
+The sticky is the **cumulative, PR-level state anchor**: its primary job is to carry the
+`reviewed-sha` marker (which drives the incremental/re-run logic of §5.2.6) plus a human summary of
+the run. It MUST NOT duplicate the per-finding detail that the inline review carries (§5.2) — the
+review is the per-finding surface; the sticky summarizes and points at it. The one exception is
+**strays** (findings whose lines are not in the diff, §5.2 rule 1): they have no inline home, so the
+sticky is where their per-finding detail lives.
+
 The summary SHALL include the items below. **Structural items (1, 2, 6) are normative** — a
 conforming commenter MUST render them. **Presentation items (3, 4, 5) are RECOMMENDED shape** — a
-commenter MAY vary their layout, but MUST preserve the information (e.g. findings MUST be grouped by
-severity somewhere; cost MUST appear in a footer somewhere), even if the exact rendering differs.
+commenter MAY vary their layout, but MUST preserve the information (e.g. severity counts MUST appear
+somewhere; cost MUST appear in a footer somewhere), even if the exact rendering differs.
 
 1. A title with a **verdict badge** and **route** line (the route MUST reflect the actual routing
    decision per §3.1, not be inferred from side-effects like turn count).
 2. A markdown walkthrough (the `summary` field).
-3. Findings grouped by severity; nits folded in `<details>`.
+3. A **severity-counts** line (a histogram such as `🔴 0 · 🟠 1 · 🔵 2 · ⚪ 1`), an **honest
+   inline-disposition pointer** stating what actually happened to the inline review (e.g. _N
+   comments posted inline on `<sha>`_, _no inline comments — all findings are outside the diff_, or
+   _inline review suppressed — `<sha>` already reviewed_), and a **strays** section listing the
+   findings that could not be anchored inline. The sticky MUST NOT reproduce the full per-finding
+   list the review carries, and MUST NOT claim inline comments exist when none were posted.
 4. A collapsible **test-results panel** when a test report is provided as input, else a CI job
    summary when one is available. The panel is **format-agnostic**: it consumes any conforming test
    report, not a single fixed format.
@@ -260,7 +272,15 @@ severity somewhere; cost MUST appear in a footer somewhere), even if the exact r
 ### 5.2 Inline review
 
 A **pull request review** (`POST /repos/{owner}/{repo}/pulls/{n}/reviews`) with a `comments[]`
-array. Each finding becomes one inline comment.
+array. Each in-diff finding becomes one inline comment. The review is the **primary per-finding
+detail surface** — the sticky summary (§5.1) points at it rather than reproducing it.
+
+The review's top-level `body` is a short **pointer** (e.g. _"Automated code review for `<sha>` —
+verdict, walkthrough, and cost are in the summary comment."_), NOT a duplicate of the summary. The
+GitHub reviews API requires a review to carry a non-empty `body` OR at least one comment; the
+commenter posts a review only when there is at least one in-diff comment, so the pointer body is
+supplementary. When there are **zero in-diff findings**, no review is posted at all — the sticky's
+strays section (§5.1 item 3) is the sole surface, and its disposition pointer says so.
 
 Rules (these MUST be enforced by the commenter, not the agent):
 
@@ -281,10 +301,16 @@ Rules (these MUST be enforced by the commenter, not the agent):
    the suggestion block. Emitting a payload that would 422 remains prohibited.
 5. **Event.** MUST post as `COMMENT`, never `REQUEST_CHANGES`. The review is advisory and MUST
    never block merge via branch protection.
-6. **Re-run hygiene.** When the head SHA differs from the reviewed-SHA marker, the commenter MUST
-   post a fresh review for the new head SHA and SHOULD dismiss the prior bot-authored review on the
-   same PR. When the head SHA matches (a re-run of the same commit), the commenter SHOULD update
-   only the sticky summary.
+6. **Re-run hygiene (§5.2.6).** Suppression of the inline pass MUST be decided by **review
+   identity** — whether a COMPLETED bot-authored review already exists for the head SHA, read from
+   the reviews API `commit_id` — NOT by the presence of a sticky whose `reviewed-sha` marker matches.
+   A placeholder, degraded, or gate-skipped sticky (§5.5) carries the marker but is not a completed
+   review, and MUST NOT suppress a real review. Concretely: when no non-dismissed bot review has
+   `commit_id == headSha`, the commenter MUST post a fresh review for the head SHA and SHOULD dismiss
+   prior bot-authored reviews left on OTHER commits (a different `commit_id`); when such a review
+   already exists at the head SHA (a genuine re-run of an already-reviewed commit), the commenter
+   SHOULD update only the sticky summary and skip posting a duplicate review. The sticky's
+   `reviewed-sha` marker is refreshed on every run, decoupled from this suppression decision.
 7. **Confidence suppression.** A finding with `confidence` below a configurable threshold (default
    `0.5`) MAY be suppressed from the inline review (demoted to a collapsed summary section, not
    dropped). A `critical`-severity finding MUST NOT be suppressed on confidence alone. The
@@ -329,6 +355,11 @@ or post a misleading comment:
 | PR was closed between trigger and run | Exit zero with a notice; post nothing. |
 | No open PR for the head SHA | Exit zero with a notice; post nothing. |
 | Posting fails (422 from an out-of-diff line, network, auth) | Exit non-zero (REC-CO-3) so the failure is visible; never partially post. |
+
+A degraded sticky (any row above that posts a summary but no inline review) still carries the
+`reviewed-sha` marker for that head SHA, but it is **not** a completed review: it MUST NOT be
+counted as one for the §5.2.6 suppression decision. A later real review at the same head SHA is
+recognized by the absence of a bot review whose `commit_id` matches, and MUST be posted.
 
 ---
 
@@ -695,11 +726,14 @@ A conforming commenter MUST:
 
 A conforming commenter SHOULD:
 
-- **REC-CO-1:** Collapse nit findings in `<details>` (severity folding).
-- **REC-CO-2:** When the head SHA differs from the reviewed-SHA marker, dismiss the prior
-  bot-authored review on the same PR and post a fresh review for the new head SHA; when the head
-  SHA matches (a re-run of the same commit), update only the sticky summary. Dismissal failure
-  (already dismissed, missing scope) MUST be logged and continue — never fail the job on dismissal.
+- **REC-CO-1:** Summarize findings by severity in the sticky (e.g. a severity-counts line) rather
+  than reproducing the per-finding list the inline review already carries (§5.1 item 3).
+- **REC-CO-2:** Decide re-run suppression by review identity (§5.2.6): when no non-dismissed
+  bot-authored review exists for the head SHA (by reviews API `commit_id`), post a fresh review and
+  dismiss prior bot-authored reviews left on OTHER commits; when such a review already exists at the
+  head SHA, update only the sticky summary. A sticky's `reviewed-sha` marker MUST NOT be used as the
+  suppression signal. Dismissal failure (already dismissed, missing scope) MUST be logged and
+  continue — never fail the job on dismissal.
 - **REC-CO-3:** Exit non-zero when posting fails (422, network) so failures are visible; exit zero
   only when there is nothing to post (no open PR). The review check MUST NOT be a required check
   in branch protection — advisory-only is enforced by configuration, not by exit code (§5.2.5).

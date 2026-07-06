@@ -1,7 +1,15 @@
 // Domain types NOT derived from io-ts codecs.
 // For DTO types (Finding, Findings, ResultEnvelope, PriceMap, TestSummary, etc.) import from ./schema.js.
 
-import type { Finding, Findings, Side, ResultEnvelope, PriceMap, TestSummary } from "./schema.js";
+import type {
+  Finding,
+  Findings,
+  Side,
+  Severity,
+  ResultEnvelope,
+  PriceMap,
+  TestSummary,
+} from "./schema.js";
 
 export interface InlineComment {
   readonly path: string;
@@ -17,6 +25,15 @@ export interface InlineResult {
   readonly strays: readonly Finding[];
 }
 
+export type SeverityCounts = Readonly<Record<Severity, number>>;
+
+/** What actually happened to the inline review, so the sticky's pointer states the truth (SPEC §5.1). */
+export type InlineDisposition =
+  | { readonly kind: "posted"; readonly count: number; readonly sha: string }
+  | { readonly kind: "none-in-diff" }
+  | { readonly kind: "suppressed-existing-review"; readonly sha: string }
+  | { readonly kind: "no-envelope" };
+
 export interface RenderInput {
   readonly findings: Findings;
   /** null when the result envelope is unavailable or malformed — renders a "usage unavailable" note. */
@@ -28,4 +45,9 @@ export interface RenderInput {
   readonly route?: string;
   readonly effort?: string;
   readonly testReport?: TestSummary;
+  /** Severity histogram for the summary counts line; derived from `findings` when omitted. */
+  readonly severityCounts?: SeverityCounts;
+  /** Findings that couldn't be anchored inline (SPEC §5.2 rule 1) — the sticky's only per-finding detail. */
+  readonly strays?: readonly Finding[];
+  readonly inlineDisposition?: InlineDisposition;
 }

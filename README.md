@@ -81,13 +81,17 @@ same reviewed PR.
 The review job uploads two artifacts, each visible from the workflow run the sticky's disclosure
 links to:
 
-- **`code-review-findings`** — the findings JSON + result envelope the comment job renders. A
-  reviewing agent (or any downstream tool) SHOULD fetch this structured JSON rather than parse the
-  sticky or inline comments — both carry a `<!-- code-review:findings-json <url> -->` marker plus a
-  visible advisory pointing at it ([SPEC §5.1 item 7](SPEC.md#51-sticky-summary-comment)).
+- **`code-review-findings`** — the findings JSON + result envelope the comment job renders. The
+  sticky comment embeds this same JSON directly, base64-encoded, in an
+  `<!-- code-review:findings-json;base64 <base64> -->` HTML comment — a reviewing agent (or any
+  downstream tool) SHOULD base64-decode and parse that marker rather than parse the comment's prose.
+  Embedding in the comment (rather than only linking the artifact) keeps the pointer from expiring
+  with artifact retention; when the encoded findings are too large to embed, the sticky falls back to
+  a `<!-- code-review:findings-json <url> -->` link marker instead
+  ([SPEC §5.1 item 7](SPEC.md#51-sticky-summary-comment)).
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
-  phases (3-day retention). This is advisory/auditability only: it is never read by the comment job
-  and never affects what gets posted.
+  phases. This is advisory/auditability only: it is never read by the comment job and never affects
+  what gets posted.
 
 ## What's here
 

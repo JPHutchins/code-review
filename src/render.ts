@@ -37,6 +37,9 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
     emptySeverityCounts(),
   );
 
+/** Base64 chars (~30KB JSON); keeps the sticky well under GitHub's 65536-char comment limit. */
+const EMBED_LIMIT = 40000;
+
 /** Render a code-review comment from findings, envelope, and prices. Pure. */
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
@@ -45,6 +48,8 @@ export const render = (input: RenderInput): string => {
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
+  const findingsB64 = Buffer.from(JSON.stringify(input.findings), "utf-8").toString("base64");
+  const embeddedFindings = findingsB64.length <= EMBED_LIMIT ? findingsB64 : null;
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -61,6 +66,7 @@ export const render = (input: RenderInput): string => {
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
+    embeddedFindings,
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

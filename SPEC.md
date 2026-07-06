@@ -275,10 +275,15 @@ somewhere; cost MUST appear in a footer somewhere), even if the exact rendering 
    cost (recomputed per §6.2).
 6. An **LLM Disclosure** aside naming the model(s) used (sourced from the envelope's `models`) and
    carrying the per-model cost breakdown table (§6.3).
-7. When a machine-readable findings JSON artifact URL is available to the commenter, a
-   `<!-- code-review:findings-json <url> -->` marker alongside the `reviewed-sha` marker, plus a
-   short visible advisory pointing reviewing agents at the JSON instead of parsing the comment. Both
-   are omitted when no such URL is available — this item is conditional, not required.
+7. The findings JSON embedded directly in the sticky, alongside the `reviewed-sha` marker: a
+   `<!-- code-review:findings-json;base64 <base64> -->` marker carrying the findings, base64-encoded.
+   A reviewing agent SHOULD decode and parse this marker instead of parsing the comment's prose.
+   Embedding the JSON in the comment (rather than only linking the uploaded artifact) keeps the
+   pointer from expiring with artifact retention — the comment is permanent, the artifact is not.
+   When the encoded payload exceeds a size limit, the commenter falls back to a
+   `<!-- code-review:findings-json <url> -->` marker linking the uploaded artifact instead; when
+   neither an embeddable payload nor a URL is available, the marker is omitted — this item is
+   conditional, not required.
 
 ### 5.2 Inline review
 
@@ -482,9 +487,7 @@ commenter — a link to the run and its traces:
 
 ```
 > [!WARNING]
-> **LLM Disclosure** — this review was produced by <models> running headless in an
-> ephemeral, egress-locked CI runner with no write access to the repository. It is
-> advisory and does not block merge.
+> **LLM Disclosure** — this review was produced by <models>.
 >
 > | Model | Input | Output | Cache read | Cache write | Cost |
 > |---|--:|--:|--:|--:|--:|

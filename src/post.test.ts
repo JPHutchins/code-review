@@ -1800,19 +1800,19 @@ describe("post — --run-url / --json-url threading", () => {
     expect(body).toContain("[view the run & traces](https://ci.example.com/runs/123)");
   });
 
-  it("threads --json-url into the sticky's marker/advisory and each inline comment's first line", async () => {
+  it("threads --json-url into each inline comment's first line; the sticky embeds the findings instead (PR #17 review)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
 
+    // Findings are small enough to embed, so the sticky prefers the embed over the link — see the
+    // size-fallback case below for the jsonUrl link path in the sticky.
     const stickyCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     const stickyBody = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
-    expect(stickyBody).toContain(
-      "<!-- code-review:findings-json https://artifacts.example.com/findings.json -->",
-    );
-    expect(stickyBody).toContain("fetch the structured findings JSON");
+    expect(stickyBody).toContain("<!-- code-review:findings-json;base64 ");
+    expect(stickyBody).not.toContain("fetch the structured findings JSON");
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -1826,7 +1826,33 @@ describe("post — --run-url / --json-url threading", () => {
     ).toBe(true);
   });
 
-  it("omits both the run link and the json marker when neither is given (regression)", async () => {
+  it("falls back to the --json-url link marker in the sticky when the findings are too large to embed (PR #17 review)", async () => {
+    const largeFindings = mkFindings(
+      Array.from({ length: 500 }, (_, i) =>
+        mkFinding({
+          start_line: 10,
+          end_line: 10,
+          title: `Finding ${String(i)}`,
+          body: "x".repeat(200),
+        }),
+      ),
+    );
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(largeFindings));
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const stickyBody = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    expect(stickyBody).toContain(
+      "<!-- code-review:findings-json https://artifacts.example.com/findings.json -->",
+    );
+    expect(stickyBody).not.toContain(";base64");
+  });
+
+  it("omits the run link when it isn't given; the sticky still embeds the findings-json marker unconditionally (regression, PR #17 review)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({}), api);
@@ -1836,6 +1862,7 @@ describe("post — --run-url / --json-url threading", () => {
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toContain("view the run & traces");
-    expect(body).not.toContain("code-review:findings-json");
+    expect(body).toContain("<!-- code-review:findings-json;base64 ");
+    expect(body).not.toContain("<!-- code-review:findings-json http");
   });
 });

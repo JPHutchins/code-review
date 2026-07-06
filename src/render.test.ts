@@ -131,9 +131,36 @@ describe("render", () => {
     expect(result).toContain("0000000000000000000000000000000000000000");
   });
 
-  describe("findings-json marker and advisory (issue #15)", () => {
-    it("emits the machine-readable marker and a visible advisory when jsonUrl is set", () => {
-      const findings = mkFindings([]);
+  describe("findings-json marker (issue #15; embedded base64 — PR #17 review)", () => {
+    it("embeds the findings JSON as base64 and omits the visible advisory", () => {
+      const findings = mkFindings([mkFinding({ severity: "major", title: "M" })]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("<!-- code-review:findings-json;base64 ");
+      expect(result).not.toContain("Reviewing agents: fetch");
+    });
+
+    it("round-trips the exact findings object through the embedded base64 marker", () => {
+      const findings = mkFindings([
+        mkFinding({ severity: "critical", title: "Round-trip me", body: "detail here" }),
+      ]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
+      expect(match).not.toBeNull();
+      const decoded: unknown = JSON.parse(
+        Buffer.from(match?.[1] ?? "", "base64").toString("utf-8"),
+      );
+      expect(decoded).toEqual(findings);
+    });
+
+    it("falls back to the jsonUrl link marker when the embedded payload is too large", () => {
+      const findings = mkFindings(
+        Array.from({ length: 500 }, (_, i) =>
+          mkFinding({
+            title: `Finding ${String(i)}`,
+            body: "x".repeat(200),
+          }),
+        ),
+      );
       const result = render({
         findings,
         envelope: baseEnvelope,
@@ -144,27 +171,25 @@ describe("render", () => {
       expect(result).toContain(
         "<!-- code-review:findings-json https://example.com/findings.json -->",
       );
-      expect(result).toContain(
-        "Reviewing agents: fetch the structured findings JSON at https://example.com/findings.json",
-      );
+      expect(result).not.toContain(";base64");
     });
 
-    it("omits the marker and the advisory when jsonUrl is absent", () => {
-      const findings = mkFindings([]);
+    it("omits both markers when the embedded payload is too large and no jsonUrl is given", () => {
+      const findings = mkFindings(
+        Array.from({ length: 500 }, (_, i) =>
+          mkFinding({
+            title: `Finding ${String(i)}`,
+            body: "x".repeat(200),
+          }),
+        ),
+      );
       const result = render({ findings, envelope: baseEnvelope, prices, template });
       expect(result).not.toContain("findings-json");
-      expect(result).not.toContain("Reviewing agents");
     });
 
-    it("keeps the <!-- code-review --> marker as the first line even when jsonUrl is set", () => {
+    it("keeps the <!-- code-review --> marker as the first line even when embedding findings", () => {
       const findings = mkFindings([]);
-      const result = render({
-        findings,
-        envelope: baseEnvelope,
-        prices,
-        template,
-        jsonUrl: "https://example.com/findings.json",
-      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
       expect(result.split("\n")[0]).toBe("<!-- code-review -->");
     });
   });
@@ -669,6 +694,45 @@ describe("render", () => {
       expect(result).toContain("[!WARNING]");
       expect(result).toContain("Usage/cost unavailable");
       expect(result).not.toContain("| Model |");
+    });
+  });
+
+  describe("LLM disclosure wording is a single line (PR #17 review)", () => {
+    it("renders the simplified one-line disclosure and drops the verbose sentence", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("> **LLM Disclosure** — this review was produced by pro-model.");
+      expect(result).not.toContain("running");
+      expect(result).not.toContain("egress-locked");
+      expect(result).not.toContain("does not block merge");
+    });
+
+    it("still links the repo and the run, and keeps the cost table contiguous", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        runUrl: "https://example.com/actions/runs/1",
+      });
+      expect(result).toContain("[code-review](https://github.com/JPHutchins/code-review)");
+      expect(result).toContain("[view the run & traces](https://example.com/actions/runs/1)");
+
+      const block = contiguousBlockFrom(
+        result,
+        (line) => line.startsWith("> [!WARNING]"),
+        (line) => line.startsWith(">"),
+      );
+      expect(block.length).toBeGreaterThan(0);
+      expect(block.every((line) => line.startsWith(">"))).toBe(true);
+      expect(block.at(-1)).toMatch(/^> _Generated by/);
     });
   });
 

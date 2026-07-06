@@ -51,6 +51,7 @@ const FindingShape = t.intersection([
     code: t.string,
     code_url: t.string,
     reasoning: t.string,
+    patch: t.string,
   }),
 ]);
 

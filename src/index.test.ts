@@ -292,6 +292,121 @@ describe("cli — extract", () => {
   });
 });
 
+describe("cli — lower-suggestions", () => {
+  it("lowers a valid patch to a suggestion + rewritten range, dropping the patch field", async () => {
+    writeFileSync(join(tmpDir, "foo.ts"), "line1\nold line\nline3\n");
+    const findingsPath = join(tmpDir, "findings.json");
+    writeFileSync(
+      findingsPath,
+      JSON.stringify({
+        schema_version: "0.3.0",
+        summary: "s",
+        verdict: "comment",
+        findings: [
+          {
+            path: "foo.ts",
+            start_line: 1,
+            end_line: 1,
+            severity: "minor",
+            title: "t",
+            body: "b",
+            patch: ["@@ -2 +2 @@", "-old line", "+new line"].join("\n"),
+          },
+        ],
+      }),
+    );
+    const { stdout, stderr, exitCode } = await runCli([
+      "lower-suggestions",
+      findingsPath,
+      "--repo-root",
+      tmpDir,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toBe("");
+    const parsed = JSON.parse(stdout) as { findings: Record<string, unknown>[] };
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0]).toEqual({
+      path: "foo.ts",
+      start_line: 2,
+      end_line: 2,
+      severity: "minor",
+      title: "t",
+      body: "b",
+      suggestion: "new line",
+    });
+  });
+
+  it("drops an invalid patch (mismatched context), leaving no suggestion and reporting why on stderr", async () => {
+    writeFileSync(join(tmpDir, "foo.ts"), "line1\nactual line\nline3\n");
+    const findingsPath = join(tmpDir, "findings.json");
+    writeFileSync(
+      findingsPath,
+      JSON.stringify({
+        schema_version: "0.3.0",
+        summary: "s",
+        verdict: "comment",
+        findings: [
+          {
+            path: "foo.ts",
+            start_line: 2,
+            end_line: 2,
+            severity: "minor",
+            title: "t",
+            body: "b",
+            patch: ["@@ -2 +2 @@", "-old line", "+new line"].join("\n"),
+          },
+        ],
+      }),
+    );
+    const { stdout, stderr, exitCode } = await runCli([
+      "lower-suggestions",
+      findingsPath,
+      "--repo-root",
+      tmpDir,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toContain("foo.ts:2");
+    expect(stderr).toContain("patch context does not match the file");
+    const parsed = JSON.parse(stdout) as {
+      findings: { patch?: string; suggestion?: string }[];
+    };
+    expect(parsed.findings[0]?.patch).toBeUndefined();
+    expect(parsed.findings[0]?.suggestion).toBeUndefined();
+  });
+
+  it("passes through a finding with no patch untouched", async () => {
+    const findingsPath = join(tmpDir, "findings.json");
+    writeFileSync(
+      findingsPath,
+      JSON.stringify({
+        schema_version: "0.3.0",
+        summary: "s",
+        verdict: "comment",
+        findings: [
+          {
+            path: "foo.ts",
+            start_line: 1,
+            end_line: 1,
+            severity: "minor",
+            title: "t",
+            body: "b",
+            suggestion: "hand-authored",
+          },
+        ],
+      }),
+    );
+    const { stdout, exitCode } = await runCli([
+      "lower-suggestions",
+      findingsPath,
+      "--repo-root",
+      tmpDir,
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as { findings: { suggestion?: string }[] };
+    expect(parsed.findings[0]?.suggestion).toBe("hand-authored");
+  });
+});
+
 describe("cli — print-schema", () => {
   it.each(["findings", "triage", "prices"] as const)(
     "prints the bundled %s schema with the $schema draft key stripped (so --json-schema enforces)",

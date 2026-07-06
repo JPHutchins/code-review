@@ -203,6 +203,7 @@ Each finding:
 | `suggestion` | `string \| null` | no | `null` = no mechanical fix; `""` = delete `start_line..end_line`; non-empty = exact replacement for `start_line..end_line` (§5.2.4) |
 | `confidence` | `number` (0..1) | no | For noise suppression; the commenter MAY suppress a finding below a configurable threshold, but MUST NOT suppress a `critical` finding on confidence alone |
 | `reasoning` | `string` | no | Human/agent-facing rationale for why the finding is sound; used to judge the finding, distinct from `body` (the finding's own rendered explanation) |
+| `patch` | `string` | no | Single-hunk unified diff of an edit the agent actually made to this file, against the PR-head (post-change) content. Deterministically lowered to a `suggestion` + exact `start_line`/`end_line` (§5.2.8) or dropped — never hand-authored, so it eliminates the wrong-indentation/too-wide-range failure mode a hand-authored `suggestion` is prone to (issue #10) |
 
 ### 4.2 Versioning
 
@@ -337,6 +338,15 @@ Rules (these MUST be enforced by the commenter, not the agent):
    `0.5`) MAY be suppressed from the inline review (demoted to a collapsed summary section, not
    dropped). A `critical`-severity finding MUST NOT be suppressed on confidence alone. The
    threshold SHOULD be configurable by the workflow.
+8. **Patch lowering.** Before this pass runs, the review job MUST resolve any `patch` (§4.1) on a
+   finding: validate it deterministically against the real PR-head file and lower it into an exact
+   `suggestion` + `start_line`/`end_line` (the reference CLI's `lower-suggestions` command). A
+   `patch` that does not apply cleanly (context mismatch, more or fewer than one hunk, a
+   non-contiguous change, a pure insertion, an unreadable file, etc.) MUST be dropped, leaving the
+   finding's `suggestion`/`start_line`/`end_line` exactly as originally authored — never partially
+   applied. A validated `patch` is authoritative over any hand-authored `suggestion` on the same
+   finding. This closes the wrong-indentation / too-wide-range failure mode a hand-authored
+   `suggestion` is prone to (issue #10).
 
 ### 5.3 Trust — author identity, not marker
 

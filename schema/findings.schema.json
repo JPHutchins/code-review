@@ -84,6 +84,10 @@
           "reasoning": {
             "type": "string",
             "description": "Optional human/agent-facing rationale for why this finding is sound; used to judge the finding, not rendered as the finding's own explanation (that's `body`)."
+          },
+          "patch": {
+            "type": "string",
+            "description": "Single-hunk unified diff of an edit the agent actually made to this file, against the PR-head (post-change) content. When present, the review job deterministically validates it against the real file and lowers it to a `suggestion` with exact `start_line`/`end_line` — authoritative over any hand-authored `suggestion` — or drops it (never posts a broken suggestion) if it doesn't apply cleanly."
           }
         }
       }

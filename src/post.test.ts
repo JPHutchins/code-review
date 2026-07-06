@@ -1340,7 +1340,9 @@ describe("post — --inline-template", () => {
     );
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
-    expect(body.comments[0]?.body).toBe("Test body content.");
+    // The built-in path prepends a severity header (issue #12) but stays otherwise plain.
+    // (formatMarkdown, issue #14, ensures exactly one trailing newline.)
+    expect(body.comments[0]?.body).toBe("🔵 **minor** — Test finding\n\nTest body content.\n");
     expect(body.comments[0]?.body).not.toContain("CUSTOM INLINE:");
   });
 });
@@ -1503,5 +1505,337 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     expect(body.body).not.toContain("A test summary.");
     expect(body.commit_id).toBe("abc123def456");
     expect(body.event).toBe("COMMENT");
+  });
+});
+
+describe("post — issue #11: bidirectional links between the sticky and the review", () => {
+  const stickyHtmlUrl = "https://github.com/owner/repo/issues/42#issuecomment-999";
+  const reviewHtmlUrl = "https://github.com/owner/repo/pull/42#pullrequestreview-1";
+
+  it("links the review body to a newly-posted sticky, then re-patches the sticky with a link to the review", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "", // no existing sticky — a new comment is posted
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: JSON.stringify({ id: 999, html_url: stickyHtmlUrl }),
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: "[]",
+      },
+      {
+        match: (a) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" &&
+          a.includes("--input") &&
+          !a.includes("--paginate"),
+        response: JSON.stringify({ html_url: reviewHtmlUrl }),
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
+        response: JSON.stringify({ html_url: stickyHtmlUrl }),
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(reviewBody.body).toContain(`[summary comment](${stickyHtmlUrl})`);
+
+    // Sticky is written twice: the initial POST, then a PATCH linking it to the review.
+    const patchCalls = calls().filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCalls).toHaveLength(1);
+    const patchedBody = JSON.parse(patchCalls[0]!.stdin!) as CommentBody;
+    expect(patchedBody.body).toContain(`[see the review](${reviewHtmlUrl})`);
+  });
+
+  it("re-patches an EXISTING sticky (not just a freshly-posted one) with the review link", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+      },
+      {
+        // A real PATCH to an issue comment returns the full updated comment object (id included).
+        match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
+        response: JSON.stringify({ id: 999, html_url: stickyHtmlUrl }),
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: "[]",
+      },
+      {
+        match: (a) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" &&
+          a.includes("--input") &&
+          !a.includes("--paginate"),
+        response: JSON.stringify({ html_url: reviewHtmlUrl }),
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const patchCalls = calls().filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCalls).toHaveLength(2);
+
+    const firstPatchBody = JSON.parse(patchCalls[0]!.stdin!) as CommentBody;
+    expect(firstPatchBody.body).not.toContain(reviewHtmlUrl);
+
+    const secondPatchBody = JSON.parse(patchCalls[1]!.stdin!) as CommentBody;
+    expect(secondPatchBody.body).toContain(`[see the review](${reviewHtmlUrl})`);
+
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(reviewBody.body).toContain(`[summary comment](${stickyHtmlUrl})`);
+  });
+
+  it("degrades to a plain (non-linked) pointer and skips the re-patch when responses don't carry html_url", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: "", // malformed — no id/html_url to parse
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "", // malformed — no html_url to parse
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(reviewBody.body).toContain("see the summary comment");
+    expect(reviewBody.body).not.toContain("](");
+
+    // No sticky id was ever recovered, so there is nothing to re-patch — no extra call is made
+    // beyond the single initial POST.
+    const stickyWrites = calls().filter(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    expect(stickyWrites).toHaveLength(1);
+  });
+
+  it("logs a warning and does not fail the job when the re-patch call itself rejects", async () => {
+    const calls: RecordedCall[] = [];
+    let stickyPatchCount = 0;
+    const api: GhApi = (args, stdin, env) => {
+      calls.push({ args: [...args], stdin, env });
+      if (args[0]?.startsWith("repos/owner/repo/commits/")) {
+        return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
+      }
+      if (args[0] === "repos/owner/repo/pulls/42" && args.includes("-H")) {
+        return Promise.resolve(inlineDiff);
+      }
+      if (args[0] === "repos/owner/repo/issues/42/comments" && args.includes("--paginate")) {
+        return Promise.resolve(
+          `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nold"}\n`,
+        );
+      }
+      if (args[0] === "repos/owner/repo/issues/comments/999") {
+        stickyPatchCount += 1;
+        return stickyPatchCount === 1
+          ? Promise.resolve(JSON.stringify({ html_url: stickyHtmlUrl }))
+          : Promise.reject(new Error("network hiccup"));
+      }
+      if (args[0] === "repos/owner/repo/pulls/42/reviews" && args.includes("--paginate")) {
+        return Promise.resolve("[]");
+      }
+      if (
+        args[0] === "repos/owner/repo/pulls/42/reviews" &&
+        args.includes("--input") &&
+        !args.includes("--paginate")
+      ) {
+        return Promise.resolve(JSON.stringify({ html_url: reviewHtmlUrl }));
+      }
+      return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
+    };
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("failed to link"));
+    expect(stickyPatchCount).toBe(2);
+
+    stderrSpy.mockRestore();
+  });
+});
+
+describe("post — issue #14: markdown formatting pass before posting", () => {
+  const okMocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+      response: "",
+    },
+  ];
+
+  it("collapses multiple blank lines in the findings summary before posting the sticky", async () => {
+    const findings = mkFindings([mkFinding({ start_line: 10, end_line: 10 })]);
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({ ...findings, summary: "Para one.\n\n\n\nPara two." }),
+    );
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({}), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    expect(body).not.toMatch(/\n\n\n/);
+    expect(body).toContain("Para one.\n\nPara two.");
+  });
+
+  it("collapses multiple blank lines in a finding's body before posting the inline comment", async () => {
+    const findings = mkFindings([
+      mkFinding({ start_line: 10, end_line: 10, body: "Line one.\n\n\n\nLine two." }),
+    ]);
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(findings));
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({}), api);
+
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    const commentBody = body.comments[0]?.body ?? "";
+    expect(commentBody).not.toMatch(/\n\n\n/);
+    expect(commentBody).toContain("Line one.\n\nLine two.");
+  });
+});
+
+describe("post — --run-url / --json-url threading", () => {
+  const okMocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+      response: "",
+    },
+  ];
+
+  it("threads --run-url into the sticky's LLM Disclosure run link", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ runUrl: "https://ci.example.com/runs/123" }), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("[view the run & traces](https://ci.example.com/runs/123)");
+  });
+
+  it("threads --json-url into the sticky's marker/advisory and each inline comment's first line", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const stickyBody = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    expect(stickyBody).toContain(
+      "<!-- code-review:findings-json https://artifacts.example.com/findings.json -->",
+    );
+    expect(stickyBody).toContain("fetch the structured findings JSON");
+
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    const commentBody = reviewBody.comments[0]?.body ?? "";
+    expect(
+      commentBody.startsWith(
+        "<!-- code-review:findings-json https://artifacts.example.com/findings.json -->",
+      ),
+    ).toBe(true);
+  });
+
+  it("omits both the run link and the json marker when neither is given (regression)", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({}), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    expect(body).not.toContain("view the run & traces");
+    expect(body).not.toContain("code-review:findings-json");
   });
 });

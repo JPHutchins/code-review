@@ -176,7 +176,7 @@ const inlineCmd = defineCommand({
     const inlineTemplate = args.template
       ? readFileSync(resolve(args.template), "utf-8")
       : undefined;
-    const { comments, strays } = buildInlineComments(findings.findings, diff, inlineTemplate);
+    const { comments, strays } = buildInlineComments(findings.findings, diff, { inlineTemplate });
     process.stdout.write(
       JSON.stringify({ comments, strays, stray_markdown: renderStraysSection(strays) }, null, 2),
     );
@@ -551,6 +551,16 @@ const postCmd = defineCommand({
       type: "string",
       description: TEST_REPORT_DESCRIPTION,
     },
+    "run-url": {
+      type: "string",
+      description:
+        "Workflow run URL (transcript/traces), rendered as a link in the LLM Disclosure aside",
+    },
+    "json-url": {
+      type: "string",
+      description:
+        "URL to the machine-readable findings JSON artifact, pointed at from the sticky and each inline comment",
+    },
   },
   run: async ({ args }) => {
     await post({
@@ -566,6 +576,8 @@ const postCmd = defineCommand({
       headBranch: args["head-branch"],
       effort: args.effort,
       testReportPath: args["test-report"],
+      runUrl: args["run-url"],
+      jsonUrl: args["json-url"],
     });
   },
 });

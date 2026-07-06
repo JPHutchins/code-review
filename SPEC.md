@@ -286,11 +286,23 @@ array. Each in-diff finding becomes one inline comment. The review is the **prim
 detail surface** — the sticky summary (§5.1) points at it rather than reproducing it.
 
 The review's top-level `body` is a short **pointer** (e.g. _"Automated code review for `<sha>` —
-verdict, walkthrough, and cost are in the summary comment."_), NOT a duplicate of the summary. The
-GitHub reviews API requires a review to carry a non-empty `body` OR at least one comment; the
-commenter posts a review only when there is at least one in-diff comment, so the pointer body is
-supplementary. When there are **zero in-diff findings**, no review is posted at all — the sticky's
-strays section (§5.1 item 3) is the sole surface, and its disposition pointer says so.
+see the summary comment for the verdict, walkthrough, and cost."_), NOT a duplicate of the summary,
+and links to the sticky (§5.1) when its URL is available — the two comments point at each other
+(§5.1 item 3 links back to the review symmetrically). The GitHub reviews API requires a review to
+carry a non-empty `body` OR at least one comment; the commenter posts a review only when there is
+at least one in-diff comment, so the pointer body is supplementary. When there are **zero in-diff
+findings**, no review is posted at all — the sticky's strays section (§5.1 item 3) is the sole
+surface, and its disposition pointer says so.
+
+Each inline comment body opens with a **severity header** (`<emoji> **<severity>** — <title>`,
+using the same emoji mapping as §5.1 item 3) so a reader can triage without opening the sticky,
+followed by the finding's `body` and, when present, its suggestion block. It closes with a
+per-comment **LLM Disclosure** naming the model(s) that produced the finding (sourced the same way
+as §5.1 item 6) and, when the finding carries `confidence`, that figure; when the finding also
+carries `reasoning`, it is rendered in a collapsible fold. When a machine-readable findings JSON
+artifact URL is available (§5.1 item 7), a `<!-- code-review:findings-json <url> -->` marker is
+emitted as the comment's first line — agent-facing and invisible to a human reader — omitted when
+no such URL is available.
 
 Rules (these MUST be enforced by the commenter, not the agent):
 

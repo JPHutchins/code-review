@@ -1,6 +1,17 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildCommentBody, buildInlineComments, renderStraysSection } from "./inline.js";
 import type { Finding } from "./schema.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// The real bundled template — exercises the actual shipped rendering, not a hand-rolled
+// duplicate that drifts (same rationale as post.test.ts's use of the bundled comment.eta).
+const bundledInlineTemplate = readFileSync(
+  resolve(__dirname, "..", "templates", "inline.eta"),
+  "utf-8",
+);
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
   path: "src/foo.ts",
@@ -31,14 +42,14 @@ index abc..def 100644
 `;
 
 describe("buildCommentBody", () => {
-  it("returns just the body when there is no suggestion", () => {
+  it("returns a severity header + body when there is no suggestion", () => {
     const f = mkFinding({ body: "Just a body.", suggestion: undefined });
-    expect(buildCommentBody(f)).toBe("Just a body.");
+    expect(buildCommentBody(f)).toBe("🔵 **minor** — Test finding\n\nJust a body.");
   });
 
-  it("returns just the body when suggestion is null", () => {
+  it("returns a severity header + body when suggestion is null", () => {
     const f = mkFinding({ body: "Just a body.", suggestion: null });
-    expect(buildCommentBody(f)).toBe("Just a body.");
+    expect(buildCommentBody(f)).toBe("🔵 **minor** — Test finding\n\nJust a body.");
   });
 
   it("includes a suggestion block when suggestion is provided", () => {
@@ -61,17 +72,37 @@ describe("buildCommentBody", () => {
     const result = buildCommentBody(f);
     expect(result).toContain("```suggestion");
     expect(result).toContain("// Replace whole block");
-    // Body (empty) is still present, just empty string
-    expect(result.startsWith("\n\n") || result.startsWith("```")).toBe(true);
   });
 
-  it("uses two newlines to separate body and suggestion", () => {
+  it("uses two newlines to separate header, body, and suggestion", () => {
     const f = mkFinding({
       body: "Body text.",
       suggestion: "Fix here.",
     });
     const result = buildCommentBody(f);
-    expect(result).toBe("Body text.\n\n```suggestion\nFix here.\n```");
+    expect(result).toBe(
+      "🔵 **minor** — Test finding\n\nBody text.\n\n```suggestion\nFix here.\n```",
+    );
+  });
+
+  it("prepends the severity header for each severity with the sticky's emoji mapping", () => {
+    expect(buildCommentBody(mkFinding({ severity: "critical" }))).toContain("🔴 **critical** —");
+    expect(buildCommentBody(mkFinding({ severity: "major" }))).toContain("🟠 **major** —");
+    expect(buildCommentBody(mkFinding({ severity: "minor" }))).toContain("🔵 **minor** —");
+    expect(buildCommentBody(mkFinding({ severity: "nit" }))).toContain("⚪ **nit** —");
+  });
+
+  it("emits the findings-json marker as the first line when jsonUrl is given", () => {
+    const f = mkFinding({ body: "Body." });
+    const result = buildCommentBody(f, "https://example.com/findings.json");
+    expect(
+      result.startsWith("<!-- code-review:findings-json https://example.com/findings.json -->"),
+    ).toBe(true);
+  });
+
+  it("omits the findings-json marker when jsonUrl is absent", () => {
+    const f = mkFinding({ body: "Body." });
+    expect(buildCommentBody(f)).not.toContain("code-review:findings-json");
   });
 });
 
@@ -284,7 +315,7 @@ index abc..def 100644
       }),
     ];
 
-    const { comments, strays } = buildInlineComments(findings, diff, inlineTemplate);
+    const { comments, strays } = buildInlineComments(findings, diff, { inlineTemplate });
     expect(comments).toHaveLength(1);
     expect(strays).toHaveLength(0);
     expect(comments[0]!.body).toContain("Custom body text.");
@@ -310,7 +341,7 @@ index abc..def 100644
       }),
     ];
 
-    const { comments } = buildInlineComments(findings, diff, inlineTemplate);
+    const { comments } = buildInlineComments(findings, diff, { inlineTemplate });
     expect(comments[0]!.body).toContain("```suggestion");
     expect(comments[0]!.body).toContain("const result = await fetch();");
     expect(comments[0]!.body).toContain("```");
@@ -335,7 +366,7 @@ index abc..def 100644
       }),
     ];
 
-    const { comments } = buildInlineComments(findings, diff, inlineTemplate);
+    const { comments } = buildInlineComments(findings, diff, { inlineTemplate });
     expect(comments[0]!.body).toContain("```suggestion");
     expect(comments[0]!.body).toContain("```");
     const match = /```suggestion\n([\s\S]*?)\n```/.exec(comments[0]!.body);
@@ -362,7 +393,7 @@ index abc..def 100644
       }),
     ];
 
-    const { comments } = buildInlineComments(findings, diff, inlineTemplate);
+    const { comments } = buildInlineComments(findings, diff, { inlineTemplate });
     expect(comments[0]!.body).not.toContain("```suggestion");
   });
 
@@ -385,10 +416,127 @@ index abc..def 100644
       }),
     ];
 
-    const { comments } = buildInlineComments(findings, diff, inlineTemplate);
+    const { comments } = buildInlineComments(findings, diff, { inlineTemplate });
     // Backticks should be escaped
     expect(comments[0]!.body).toContain("`` ` ``");
     expect(comments[0]!.body).not.toContain("```malicious```");
+  });
+});
+
+describe("buildInlineComments with the bundled inline template (issues #12, #15, #16)", () => {
+  const diff = `diff --git a/src/foo.ts b/src/foo.ts
+index abc..def 100644
+--- a/src/foo.ts
++++ b/src/foo.ts
+@@ -1,1 +1,2 @@
+ line1
++added
+`;
+
+  const findingAt = (overrides: Partial<Finding>): Finding[] => [
+    mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, ...overrides }),
+  ];
+
+  it("renders a severity header at the top, using the sticky's emoji mapping", () => {
+    const { comments } = buildInlineComments(
+      findingAt({ severity: "critical", title: "SQLi" }),
+      diff,
+      { inlineTemplate: bundledInlineTemplate },
+    );
+    expect(comments[0]!.body.startsWith("🔴 **critical** — SQLi")).toBe(true);
+  });
+
+  it("emits the findings-json marker as the very first line when jsonUrl is set", () => {
+    const { comments } = buildInlineComments(findingAt({}), diff, {
+      inlineTemplate: bundledInlineTemplate,
+      jsonUrl: "https://example.com/findings.json",
+    });
+    expect(
+      comments[0]!.body.startsWith(
+        "<!-- code-review:findings-json https://example.com/findings.json -->",
+      ),
+    ).toBe(true);
+  });
+
+  it("omits the findings-json marker when jsonUrl is absent", () => {
+    const { comments } = buildInlineComments(findingAt({}), diff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
+    expect(comments[0]!.body).not.toContain("code-review:findings-json");
+  });
+
+  it("formats multiple models as backtick-wrapped, slash-joined names", () => {
+    const { comments } = buildInlineComments(findingAt({}), diff, {
+      inlineTemplate: bundledInlineTemplate,
+      models: ["deepseek-v4-pro", "deepseek-v4-flash"],
+    });
+    expect(comments[0]!.body).toContain("Generated by `deepseek-v4-pro`/`deepseek-v4-flash`");
+  });
+
+  it('falls back to "an AI model" when no models are known', () => {
+    const { comments } = buildInlineComments(findingAt({}), diff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
+    expect(comments[0]!.body).toContain("Generated by an AI model.");
+  });
+
+  it("appends the confidence clause only when confidence is a number, including 0", () => {
+    const withConfidence = buildInlineComments(findingAt({ confidence: 0.75 }), diff, {
+      inlineTemplate: bundledInlineTemplate,
+    }).comments[0]!.body;
+    expect(withConfidence).toContain("at 0.75 confidence.");
+
+    const zeroConfidence = buildInlineComments(findingAt({ confidence: 0 }), diff, {
+      inlineTemplate: bundledInlineTemplate,
+    }).comments[0]!.body;
+    expect(zeroConfidence).toContain("at 0 confidence.");
+
+    const noConfidence = buildInlineComments(findingAt({}), diff, {
+      inlineTemplate: bundledInlineTemplate,
+    }).comments[0]!.body;
+    expect(noConfidence).not.toContain("confidence.");
+  });
+
+  it("renders a collapsible reasoning fold only when reasoning is present", () => {
+    const withReasoning = buildInlineComments(
+      findingAt({ reasoning: "Because X causes Y." }),
+      diff,
+      { inlineTemplate: bundledInlineTemplate },
+    ).comments[0]!.body;
+    expect(withReasoning).toContain("<details>");
+    expect(withReasoning).toContain("<summary>Reasoning</summary>");
+    expect(withReasoning).toContain("Because X causes Y.");
+    expect(withReasoning).toContain("</details>");
+
+    const withoutReasoning = buildInlineComments(findingAt({}), diff, {
+      inlineTemplate: bundledInlineTemplate,
+    }).comments[0]!.body;
+    expect(withoutReasoning).not.toContain("<details>");
+  });
+
+  it("escapes reasoning so it cannot break out of the fold", () => {
+    const { comments } = buildInlineComments(
+      findingAt({ reasoning: "</details><script>alert(1)</script>" }),
+      diff,
+      { inlineTemplate: bundledInlineTemplate },
+    );
+    expect(comments[0]!.body).not.toContain("</details><script>");
+  });
+
+  it("prefixes every alert line with '>' so the [!TIP] callout renders contiguously", () => {
+    const { comments } = buildInlineComments(
+      findingAt({ confidence: 0.5, reasoning: "Some justification." }),
+      diff,
+      { inlineTemplate: bundledInlineTemplate, models: ["m"] },
+    );
+    const body = comments[0]!.body;
+    const alertBlock = body.slice(body.indexOf("> [!TIP]"));
+    expect(
+      alertBlock
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .every((l) => l.startsWith(">")),
+    ).toBe(true);
   });
 });
 

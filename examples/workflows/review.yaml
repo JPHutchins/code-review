@@ -63,12 +63,15 @@ jobs:
       # install command (this repo is npm-based; a Python project would `uv sync`, etc.).
       # - run: npm ci
 
-      # Lock egress AFTER trusted setup, BEFORE untrusted data (audit first to discover endpoints)
+      # harden-runner arms the egress filter in a Pre step — at job START, before checkout and the
+      # npm install above — so the allowlist must cover EVERY host the job contacts, not just the
+      # agent's traffic. Run egress-policy: audit once to discover the real set, then pin to block.
       - name: Lock network egress
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
+            registry.npmjs.org:443
             api.deepseek.com:443
             api.anthropic.com:443
             github.com:443
@@ -76,10 +79,10 @@ jobs:
             objects.githubusercontent.com:443
             *.blob.core.windows.net:443
             results-receiver.actions.githubusercontent.com:443
-      # The two endpoints above carry artifact download/upload (§8.4). Needed only if the agent
-      # installs packages to validate findings (§8.4) — add the registries for your ecosystem to
-      # the allowed-endpoints list above:
-      #   registry.npmjs.org:443
+      # registry.npmjs.org installs the CLIs; api.<provider> is the model backend; github + objects
+      # + blob + results-receiver cover the GitHub API and artifact up/download (§8.4). If the agent
+      # installs packages to validate findings (or you `uv sync`/`npm ci` project deps in this job),
+      # add your ecosystem's registries here too:
       #   pypi.org:443
       #   files.pythonhosted.org:443
 
@@ -320,12 +323,14 @@ jobs:
 
       - run: npm install -g @jphutchins/code-review@0.1.0-alpha.2
 
-      # Lock egress — comment job needs the GitHub API + the blob host for artifact download (§8.4)
+      # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
+      # for the commenter install above, plus the GitHub API + blob host for artifact download (§8.4).
       - name: Lock network egress
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
           allowed-endpoints: >
+            registry.npmjs.org:443
             api.github.com:443
             github.com:443
             objects.githubusercontent.com:443

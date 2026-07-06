@@ -585,6 +585,7 @@ independently in each job, to avoid split-brain when PR state changes between jo
 token). Run `egress-policy: audit` on a first run to discover the real endpoints, then pin:
 
 ```
+registry.npmjs.org:443          # installs the reference CLIs (both jobs)
 api.<model-provider>.com:443
 api.anthropic.com:443           # the CLI phones home even on non-Anthropic backends
 github.com:443
@@ -594,8 +595,18 @@ objects.githubusercontent.com:443
 results-receiver.actions.githubusercontent.com:443  # artifact upload
 ```
 
-Plus ecosystem registries (pypi.org, npmjs.org, etc.) if the agent needs to install packages to
-validate findings.
+Plus ecosystem registries (pypi.org, files.pythonhosted.org, etc.) when the job installs project
+dependencies or the agent installs packages to validate findings.
+
+A lock enforced by a pre-step (e.g. harden-runner) applies from **job start**, before any setup step
+runs — so the allowlist MUST cover setup traffic (the CLI install, dependency install) too, not only
+the agent's calls. A consequence is that a single job cannot grant a broad setup allowlist and then
+tighten to a minimal one for the untrusted-agent phase; the whole job shares one allowlist. The
+allowlist is therefore not the agent's containment — the read-only token, the capped burner key, and
+the absence of any write/publish credential are (§7.3), with the public comment as the accepted
+residual channel. Splitting setup and the agent into separate jobs (a trusted preparer that hands off
+an artifact to a minimally-scoped agent job) is the only way to give the agent phase a tighter
+allowlist, at the cost of added workflow complexity; it is OPTIONAL.
 
 ### 8.5 Model backend env
 

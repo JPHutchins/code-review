@@ -183,7 +183,6 @@ jobs:
           fi
 
       # Phase 2 — Agentic review (throwaway runner, read-only token, bypassPermissions safe)
-      # Routes: green → full review (max effort), red → mechanic (low effort, flash model)
       - name: Phase 2 — agentic review
         id: review
         if: ${{ steps.gather.outputs.skip != 'true' && steps.triage.outputs.safe == 'true' }}
@@ -210,7 +209,7 @@ jobs:
           # Route + effort are decided once here and stamped into the envelope by `adapt` below,
           # so the comment footer reflects the run instead of re-deriving and risking drift.
           if [ "$CONCLUSION" = "success" ]; then
-            ROUTE="full review"; EFFORT="max"
+            ROUTE="full review"; EFFORT="xhigh"
             PROMPT="/code-review"
           else
             ROUTE="mechanic"; EFFORT="low"

@@ -6,10 +6,11 @@
 // failure propagates and exits the process non-zero (never partially posts).
 
 import { readFileSync } from "node:fs";
-import type { InlineComment, InlineDisposition } from "./types.js";
+import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts } from "./render.js";
+import { formatMarkdown } from "./format.js";
 import {
   ResultEnvelopeCodec,
   PriceMapCodec,
@@ -37,6 +38,11 @@ export interface PostInput {
   readonly headBranch?: string;
   readonly testReportPath?: string;
   readonly effort?: string;
+  /** Workflow run URL, threaded into the sticky's LLM Disclosure aside (SPEC §5.1 item 6). */
+  readonly runUrl?: string;
+  /** Findings-json artifact URL, threaded into the sticky and each inline comment (SPEC §5.1
+   *  item 7, §5.2). */
+  readonly jsonUrl?: string;
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
@@ -151,15 +157,34 @@ const loadTestReport = (path: string): TestSummary | undefined => {
   return decoded.right;
 };
 
+/** Parse an `html_url` field out of a `gh api` JSON response; a malformed or unexpected response
+ *  degrades to undefined rather than throwing — a missing link must never fail the post (§5.5). */
+const parseHtmlUrl = (raw: string): string | undefined => {
+  try {
+    const parsed = JSON.parse(raw) as { html_url?: unknown };
+    return typeof parsed.html_url === "string" ? parsed.html_url : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Post the inline review, pointing its body at the sticky (issue #11) when the sticky's URL is
+ *  known. Returns the review's own `html_url` (undefined on a malformed response) so the caller
+ *  can link the sticky back to it. */
 const postInlineReview = async (
   repo: string,
   prNumber: number,
   headSha: string,
   comments: readonly InlineComment[],
+  stickyUrl: string | undefined,
   ghApi: GhApi,
-): Promise<void> => {
+): Promise<string | undefined> => {
+  const sha7 = headSha.slice(0, 7);
+  const pointer = stickyUrl
+    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
+    : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
   const body = JSON.stringify({
-    body: `🤖 Automated code review for \`${headSha.slice(0, 7)}\` — verdict, walkthrough, and cost are in the summary comment.`,
+    body: pointer,
     commit_id: headSha,
     event: "COMMENT",
     comments: comments.map((c) => ({
@@ -169,10 +194,14 @@ const postInlineReview = async (
       ...(c.start_line !== undefined && c.start_side !== undefined
         ? { start_line: c.start_line, start_side: c.start_side }
         : {}),
-      body: c.body,
+      body: formatMarkdown(c.body),
     })),
   });
-  await ghApi([`repos/${repo}/pulls/${String(prNumber)}/reviews`, "--input", "-"], body);
+  const stdout = await ghApi(
+    [`repos/${repo}/pulls/${String(prNumber)}/reviews`, "--input", "-"],
+    body,
+  );
+  return parseHtmlUrl(stdout);
 };
 
 const findBotComment = async (
@@ -200,16 +229,36 @@ const findBotComment = async (
   return { id: parsed.id, body: parsed.body };
 };
 
+/** Parse an issue-comment create/patch response for `id`/`html_url`; malformed responses degrade
+ *  to null rather than throwing (§5.5, issue #11 ROBUSTNESS — a missing link must never fail the
+ *  post). */
+const parseCommentRef = (
+  raw: string,
+): { readonly id: number; readonly html_url: string } | null => {
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; html_url?: unknown };
+    return typeof parsed.id === "number" && typeof parsed.html_url === "string"
+      ? { id: parsed.id, html_url: parsed.html_url }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 const patchComment = async (
   repo: string,
   commentId: number,
   body: string,
   ghApi: GhApi,
-): Promise<void> => {
-  await ghApi(
+): Promise<{ readonly html_url: string } | null> => {
+  const stdout = await ghApi(
     [`repos/${repo}/issues/comments/${String(commentId)}`, "--input", "-"],
     JSON.stringify({ body }),
   );
+  // Only `html_url` is needed here — the id is already known by the caller — so this doesn't
+  // require `id` in the response the way parseCommentRef (used for a brand-new comment) does.
+  const htmlUrl = parseHtmlUrl(stdout);
+  return htmlUrl !== undefined ? { html_url: htmlUrl } : null;
 };
 
 const postComment = async (
@@ -217,30 +266,35 @@ const postComment = async (
   prNumber: number,
   body: string,
   ghApi: GhApi,
-): Promise<void> => {
-  await ghApi(
+): Promise<{ readonly id: number; readonly html_url: string } | null> => {
+  const stdout = await ghApi(
     [`repos/${repo}/issues/${String(prNumber)}/comments`, "--input", "-"],
     JSON.stringify({ body }),
   );
+  return parseCommentRef(stdout);
 };
 
-/** Upsert the sticky summary — trust by author identity (bot login), not marker alone (§5.3). */
+/** Upsert the sticky summary — trust by author identity (bot login), not marker alone (§5.3).
+ *  Returns the sticky's id + `html_url` (url undefined on a malformed response) so the caller can
+ *  re-patch it with a link to the review once posted (issue #11). Returns null only when a *new*
+ *  comment's response couldn't be parsed at all — there is then no id to re-patch with. */
 const upsertSticky = async (
   repo: string,
   prNumber: number,
   existing: { readonly id: number; readonly body: string } | null,
   body: string,
   ghApi: GhApi,
-): Promise<void> => {
+): Promise<{ readonly id: number; readonly url: string | undefined } | null> => {
   if (existing !== null) {
-    await patchComment(repo, existing.id, body, ghApi);
+    const patched = await patchComment(repo, existing.id, body, ghApi);
     process.stderr.write(
       `Updated sticky comment #${String(existing.id)} on PR #${String(prNumber)}\n`,
     );
-  } else {
-    await postComment(repo, prNumber, body, ghApi);
-    process.stderr.write(`Posted new sticky comment on PR #${String(prNumber)}\n`);
+    return { id: existing.id, url: patched?.html_url };
   }
+  const posted = await postComment(repo, prNumber, body, ghApi);
+  process.stderr.write(`Posted new sticky comment on PR #${String(prNumber)}\n`);
+  return posted ? { id: posted.id, url: posted.html_url } : null;
 };
 
 /** A non-dismissed bot-authored review, carrying the commit it reviewed (SPEC §5.2.6 — review
@@ -346,15 +400,19 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     : undefined;
 
   const renderNotice = (message: string): string =>
-    render({
-      findings: noticeFindings(message),
-      envelope: null,
-      prices: decodedPrices.right,
-      template,
-      route: input.route,
-      reviewedSha: input.headSha,
-      effort: input.effort,
-    });
+    formatMarkdown(
+      render({
+        findings: noticeFindings(message),
+        envelope: null,
+        prices: decodedPrices.right,
+        template,
+        route: input.route,
+        reviewedSha: input.headSha,
+        effort: input.effort,
+        runUrl: input.runUrl,
+        jsonUrl: input.jsonUrl,
+      }),
+    );
 
   if (isEmptyDiff(diff)) {
     await upsertSticky(
@@ -384,17 +442,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
 
   if (envelope === null) {
-    const body = render({
-      findings,
-      envelope: null,
-      prices: decodedPrices.right,
-      template,
-      route: input.route,
-      reviewedSha: input.headSha,
-      effort: input.effort,
-      testReport,
-      inlineDisposition: { kind: "no-envelope" },
-    });
+    const body = formatMarkdown(
+      render({
+        findings,
+        envelope: null,
+        prices: decodedPrices.right,
+        template,
+        route: input.route,
+        reviewedSha: input.headSha,
+        effort: input.effort,
+        testReport,
+        inlineDisposition: { kind: "no-envelope" },
+        runUrl: input.runUrl,
+        jsonUrl: input.jsonUrl,
+      }),
+    );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
     process.stderr.write(
       "Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review\n",
@@ -402,11 +464,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     process.exit(0);
   }
 
-  const { comments: rawComments, strays } = buildInlineComments(
-    findings.findings,
-    diff,
+  const { comments: rawComments, strays } = buildInlineComments(findings.findings, diff, {
     inlineTemplate,
-  );
+    models: envelope.models.map((m) => m.model),
+    jsonUrl: input.jsonUrl,
+  });
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
     process.stderr.write(
@@ -431,26 +493,32 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         ? { kind: "none-in-diff" }
         : undefined;
 
-  const body =
-    render({
-      findings,
-      envelope,
-      prices: decodedPrices.right,
-      template,
-      route: input.route,
-      reviewedSha: input.headSha,
-      effort: input.effort,
-      testReport,
-      severityCounts: computeSeverityCounts(findings.findings),
-      strays,
-      inlineDisposition,
-    }) +
-    (longFiles.length > 0
+  const commonRenderInput: Omit<RenderInput, "reviewUrl"> = {
+    findings,
+    envelope,
+    prices: decodedPrices.right,
+    template,
+    route: input.route,
+    reviewedSha: input.headSha,
+    effort: input.effort,
+    testReport,
+    severityCounts: computeSeverityCounts(findings.findings),
+    strays,
+    inlineDisposition,
+    runUrl: input.runUrl,
+    jsonUrl: input.jsonUrl,
+  };
+  const longFilesNote =
+    longFiles.length > 0
       ? `\n\n---\n\n> **Note:** ${String(longFiles.length)} suggestion(s) exceeded GitHub's ~10-line inline suggestion limit and were omitted from the inline comments; the affected findings remain in the review.\n`
-      : "");
+      : "";
+  // Renders the sticky body; called twice (issue #11) — once before the review exists, once after
+  // (with reviewUrl set) to link the sticky back to it.
+  const renderBody = (reviewUrl?: string): string =>
+    formatMarkdown(render({ ...commonRenderInput, reviewUrl }) + longFilesNote);
 
   // Phase 2 (CO-R3): writes — sticky first, inline second; failure exits non-zero.
-  await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
+  const stickyRef = await upsertSticky(input.repo, prNumber, existingSticky, renderBody(), ghApi);
 
   if (comments.length === 0) return;
 
@@ -469,8 +537,29 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     await dismissReviews(input.repo, prNumber, stalePriorReviewIds, ghApi);
   }
 
-  await postInlineReview(input.repo, prNumber, input.headSha, comments, ghApi);
+  const reviewUrl = await postInlineReview(
+    input.repo,
+    prNumber,
+    input.headSha,
+    comments,
+    stickyRef?.url,
+    ghApi,
+  );
   process.stderr.write(
     `Posted ${String(comments.length)} inline comments on PR #${String(prNumber)}\n`,
   );
+
+  // Issue #11: link the sticky back to the review now that it exists. Best-effort — the sticky
+  // and review are already posted, so a failure here (a bad response, a network hiccup) must
+  // never fail the job; log and move on.
+  if (stickyRef !== null && reviewUrl !== undefined) {
+    try {
+      await patchComment(input.repo, stickyRef.id, renderBody(reviewUrl), ghApi);
+      process.stderr.write(`Linked sticky comment #${String(stickyRef.id)} to the review\n`);
+    } catch (err) {
+      process.stderr.write(
+        `Warning: failed to link the sticky summary to the review: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
 };

@@ -131,6 +131,69 @@ describe("render", () => {
     expect(result).toContain("0000000000000000000000000000000000000000");
   });
 
+  describe("findings-json marker (issue #15; embedded base64 — PR #17 review)", () => {
+    it("embeds the findings JSON as base64 and omits the visible advisory", () => {
+      const findings = mkFindings([mkFinding({ severity: "major", title: "M" })]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("<!-- code-review:findings-json;base64 ");
+      expect(result).not.toContain("Reviewing agents: fetch");
+    });
+
+    it("round-trips the exact findings object through the embedded base64 marker", () => {
+      const findings = mkFindings([
+        mkFinding({ severity: "critical", title: "Round-trip me", body: "detail here" }),
+      ]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
+      expect(match).not.toBeNull();
+      const decoded: unknown = JSON.parse(
+        Buffer.from(match?.[1] ?? "", "base64").toString("utf-8"),
+      );
+      expect(decoded).toEqual(findings);
+    });
+
+    it("falls back to the jsonUrl link marker when the embedded payload is too large", () => {
+      const findings = mkFindings(
+        Array.from({ length: 500 }, (_, i) =>
+          mkFinding({
+            title: `Finding ${String(i)}`,
+            body: "x".repeat(200),
+          }),
+        ),
+      );
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        jsonUrl: "https://example.com/findings.json",
+      });
+      expect(result).toContain(
+        "<!-- code-review:findings-json https://example.com/findings.json -->",
+      );
+      expect(result).not.toContain(";base64");
+    });
+
+    it("omits both markers when the embedded payload is too large and no jsonUrl is given", () => {
+      const findings = mkFindings(
+        Array.from({ length: 500 }, (_, i) =>
+          mkFinding({
+            title: `Finding ${String(i)}`,
+            body: "x".repeat(200),
+          }),
+        ),
+      );
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("findings-json");
+    });
+
+    it("keeps the <!-- code-review --> marker as the first line even when embedding findings", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result.split("\n")[0]).toBe("<!-- code-review -->");
+    });
+  });
+
   describe("severity counts line (summary-only sticky)", () => {
     it("renders a per-severity count histogram, not a per-finding table", () => {
       const findings = mkFindings([
@@ -213,6 +276,32 @@ describe("render", () => {
       expect(result).toContain("abc123d");
     });
 
+    it("links 'see the review' when reviewUrl is set (issue #11)", () => {
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
+        reviewUrl: "https://github.com/o/r/pull/1#pullrequestreview-1",
+      });
+      expect(result).toContain(
+        "[see the review](https://github.com/o/r/pull/1#pullrequestreview-1)",
+      );
+    });
+
+    it("keeps 'see the review' as plain text when reviewUrl is absent (issue #11)", () => {
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
+      });
+      expect(result).toContain("— see the review.");
+      expect(result).not.toContain("[see the review]");
+    });
+
     it("says no inline comments when all findings are outside the diff", () => {
       const result = render({
         findings,
@@ -285,6 +374,75 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       expect(result).toContain("src/x.ts:10–14");
+    });
+  });
+
+  describe("stray confidence and reasoning fold (issue #16)", () => {
+    it("shows confidence on the bullet line, outside any fold", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ title: "Stray conf", confidence: 0.82 })];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).toContain("confidence 0.82");
+      expect(result).not.toContain("<details>");
+    });
+
+    it("shows a zero confidence (falsy but valid) on the bullet line", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ title: "Stray zero conf", confidence: 0 })];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).toContain("confidence 0");
+    });
+
+    it("renders a collapsible reasoning fold under the bullet when reasoning is present", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ title: "Stray reason", reasoning: "Because X causes Y." })];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).toContain("<details><summary>Reasoning</summary>");
+      expect(result).toContain("Because X causes Y.");
+      expect(result).toContain("</details>");
+    });
+
+    it("keeps confidence out of the fold and reasoning out of the bullet line", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ title: "Stray both", confidence: 0.4, reasoning: "Some justification." }),
+      ];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      const bulletLine = result.split("\n").find((line) => line.includes("Stray both"));
+      expect(bulletLine).toContain("confidence 0.4");
+      expect(bulletLine).not.toContain("Some justification");
+      expect(result).toContain("Some justification.");
+    });
+
+    it("omits confidence and the reasoning fold entirely when neither is present", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ title: "Stray plain" })];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result).not.toContain("confidence");
+      expect(result).not.toContain("<details>");
+    });
+
+    it("indents every line of a multi-paragraph reasoning so continuation lines stay in the fold", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({
+          title: "Stray multi",
+          reasoning: "First paragraph of reasoning.\n\nSecond paragraph.\nWrapped continuation.",
+        }),
+      ];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      const lines = result.split("\n");
+      const openIndex = lines.findIndex((l) => l.includes("<details><summary>Reasoning</summary>"));
+      const closeIndex = lines.findIndex((l, i) => i > openIndex && l.trim() === "</details>");
+      expect(openIndex).toBeGreaterThanOrEqual(0);
+      expect(closeIndex).toBeGreaterThan(openIndex);
+      // A continuation line at column 0 (the bug) would fall out of the list-item fold; every
+      // non-empty content line must carry the 2-space list indent.
+      const contentLines = lines
+        .slice(openIndex + 1, closeIndex)
+        .filter((l) => l.trim().length > 0);
+      expect(contentLines.some((l) => l === "  Second paragraph.")).toBe(true);
+      expect(contentLines.every((l) => l.startsWith("  "))).toBe(true);
     });
   });
 
@@ -411,6 +569,170 @@ describe("render", () => {
       const findings = mkFindings([]);
       const result = render({ findings, envelope, prices, template, route: "full review" });
       expect(result).toContain("2m 5s");
+    });
+
+    it("formats cost to two decimal places", () => {
+      // pro-model @ 10,000 in / 2,000 out / 5,000 cache-read / 1,000 cache-write against `prices`
+      // costs 0.0621 USD — a single-model run so the Total row shows the same figure.
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("$0.06");
+      expect(result).not.toContain("$0.0621");
+      expect(result).not.toContain("$0.062");
+    });
+
+    it("renders <$0.01 for a nonzero cost that rounds to $0.00 at two decimals", () => {
+      const envelope: ResultEnvelope = {
+        ...baseEnvelope,
+        models: [
+          mkEntry({
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+          }),
+        ],
+      };
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope, prices, template, route: "full review" });
+      // The cost cell renders through Eta's escaping `<%=` tag (template is out of this task's
+      // scope), so the literal "<" formatCost returns comes through HTML-entity-escaped; GitHub
+      // still displays the escaped form as "<$0.01".
+      expect(result).toContain("&lt;$0.01");
+      expect(result).not.toContain("$0.00");
+    });
+  });
+
+  describe("meta line — models and total cost (issue #6)", () => {
+    it("appends models and cost to the meta line when usage is available", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**models:** pro-model");
+      expect(result).toContain("**cost:** $0.06");
+    });
+
+    it("omits models and cost from the meta line when usage is unavailable", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: null, prices, template, route: "full review" });
+      expect(result).not.toContain("**models:**");
+      expect(result).not.toContain("**cost:**");
+    });
+  });
+
+  describe("LLM disclosure aside (issue #8 — [!WARNING], repo link, in-blockquote table)", () => {
+    it("renders a [!WARNING] alert, not the old [!NOTE]", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("> [!WARNING]");
+      expect(result).not.toContain("[!NOTE]");
+    });
+
+    it("links to the code-review repository", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("[code-review](https://github.com/JPHutchins/code-review)");
+    });
+
+    it("no longer renders the cost table in a standalone <sub> block", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).not.toContain("<sub>");
+      expect(result).not.toContain("</sub>");
+    });
+
+    it("links to the workflow run when runUrl is set", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        runUrl: "https://example.com/actions/runs/1",
+      });
+      expect(result).toContain("[view the run & traces](https://example.com/actions/runs/1)");
+    });
+
+    it("omits the run link when runUrl is not set", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("view the run & traces");
+    });
+
+    it("renders a sensible disclosure without a table when the envelope is unavailable", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: null, prices, template });
+      expect(result).toContain("[!WARNING]");
+      expect(result).toContain("Usage/cost unavailable");
+      expect(result).not.toContain("| Model |");
+    });
+  });
+
+  describe("LLM disclosure wording is a single line (PR #17 review)", () => {
+    it("renders the simplified one-line disclosure and drops the verbose sentence", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("> **LLM Disclosure** — this review was produced by pro-model.");
+      expect(result).not.toContain("running");
+      expect(result).not.toContain("egress-locked");
+      expect(result).not.toContain("does not block merge");
+    });
+
+    it("still links the repo and the run, and keeps the cost table contiguous", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        runUrl: "https://example.com/actions/runs/1",
+      });
+      expect(result).toContain("[code-review](https://github.com/JPHutchins/code-review)");
+      expect(result).toContain("[view the run & traces](https://example.com/actions/runs/1)");
+
+      const block = contiguousBlockFrom(
+        result,
+        (line) => line.startsWith("> [!WARNING]"),
+        (line) => line.startsWith(">"),
+      );
+      expect(block.length).toBeGreaterThan(0);
+      expect(block.every((line) => line.startsWith(">"))).toBe(true);
+      expect(block.at(-1)).toMatch(/^> _Generated by/);
     });
   });
 
@@ -758,14 +1080,14 @@ describe("cost-table structural integrity (regression guard for the blank-line-p
   const costTableBlock = (markdown: string): string[] =>
     contiguousBlockFrom(
       markdown,
-      (line) => line.startsWith("| Model |"),
-      (line) => line.startsWith("|"),
+      (line) => line.startsWith("> | Model |"),
+      (line) => line.startsWith("> |"),
     );
 
   it("keeps the separator immediately after the header, with no blank line between", () => {
     const block = costTableBlock(renderCostTable());
-    expect(block[0]).toMatch(/^\| Model \|/);
-    expect(block[1]).toMatch(/^\|---\|/);
+    expect(block[0]).toMatch(/^> \| Model \|/);
+    expect(block[1]).toMatch(/^> \|---\|/);
   });
 
   it("renders the header, separator, every model row, and the Total row as one contiguous run", () => {
@@ -778,14 +1100,27 @@ describe("cost-table structural integrity (regression guard for the blank-line-p
     // header + separator + 3 model rows + Total row
     expect(block).toHaveLength(1 + 1 + 3 + 1);
     expect(block.every((line) => line.trim().length > 0)).toBe(true);
-    expect(block.at(-1)).toMatch(/^\| \*\*Total\*\*/);
+    expect(block.at(-1)).toMatch(/^> \| \*\*Total\*\*/);
   });
 
-  it("gives every row — header, separator, each model, and Total — the same column count", () => {
+  it("gives every row — header, separator, each model, and Total — the same column count, including the blockquote prefix", () => {
     const block = costTableBlock(renderCostTable());
     const counts = block.map(columnCount);
     expect(new Set(counts).size).toBe(1);
     expect(counts[0]).toBe(6);
+    expect(block.every((line) => line.startsWith("> "))).toBe(true);
+  });
+
+  it("keeps the entire disclosure — warning, prose, table, and footer line — as one contiguous blockquote", () => {
+    const markdown = renderCostTable();
+    const block = contiguousBlockFrom(
+      markdown,
+      (line) => line.startsWith("> [!WARNING]"),
+      (line) => line.startsWith(">"),
+    );
+    expect(block.length).toBeGreaterThan(0);
+    expect(block.every((line) => line.startsWith(">"))).toBe(true);
+    expect(block.at(-1)).toMatch(/^> _Generated by/);
   });
 });
 

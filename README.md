@@ -42,6 +42,7 @@ npx @jphutchins/code-review <subcommand>
 | `inline` | Build the GitHub reviews `comments[]` payload from findings + diff (in-diff validation; strays demote to the summary) |
 | `adapt` | Map a native agent-CLI result envelope onto the abstract SPEC §6.1 envelope |
 | `extract` | Recover findings/triage JSON from a native envelope via the deterministic extraction ladder |
+| `lower-suggestions` | Validate each finding's `patch` against the real PR-head file and lower it to an exact `suggestion` + line range, or drop it |
 | `cost` | Recompute USD cost from the envelope's per-model token counts + a price map |
 | `validate` | Validate findings JSON against the published schema |
 | `print-schema` | Print a bundled schema (findings, triage, prices) |
@@ -74,6 +75,23 @@ PR-reviewed like the rest of the file ([SPEC §8.5](SPEC.md#85-model-backend-env
 endpoint is a per-repo **Actions variable** (`API_BASE_URL`, required, no default); pointing it at
 another provider requires adding that provider's API host to the workflow's egress allowlist in the
 same reviewed PR.
+
+## Artifacts
+
+The review job uploads two artifacts, each visible from the workflow run the sticky's disclosure
+links to:
+
+- **`code-review-findings`** — the findings JSON + result envelope the comment job renders. The
+  sticky comment embeds this same JSON directly, base64-encoded, in an
+  `<!-- code-review:findings-json;base64 <base64> -->` HTML comment — a reviewing agent (or any
+  downstream tool) SHOULD base64-decode and parse that marker rather than parse the comment's prose.
+  Embedding in the comment (rather than only linking the artifact) keeps the pointer from expiring
+  with artifact retention; when the encoded findings are too large to embed, the sticky falls back to
+  a `<!-- code-review:findings-json <url> -->` link marker instead
+  ([SPEC §5.1 item 7](SPEC.md#51-sticky-summary-comment)).
+- **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
+  phases. This is advisory/auditability only: it is never read by the comment job and never affects
+  what gets posted.
 
 ## What's here
 

@@ -202,6 +202,8 @@ Each finding:
 | `body` | `string` | yes | Markdown explanation |
 | `suggestion` | `string \| null` | no | `null` = no mechanical fix; `""` = delete `start_line..end_line`; non-empty = exact replacement for `start_line..end_line` (§5.2.4) |
 | `confidence` | `number` (0..1) | no | For noise suppression; the commenter MAY suppress a finding below a configurable threshold, but MUST NOT suppress a `critical` finding on confidence alone |
+| `reasoning` | `string` | no | Human/agent-facing rationale for why the finding is sound; used to judge the finding, distinct from `body` (the finding's own rendered explanation) |
+| `patch` | `string` | no | Single-hunk unified diff of an edit the agent actually made to this file, against the PR-head (post-change) content. Deterministically lowered to a `suggestion` + exact `start_line`/`end_line` (§5.2.8) or dropped — never hand-authored, so it eliminates the wrong-indentation/too-wide-range failure mode a hand-authored `suggestion` is prone to (issue #10) |
 
 ### 4.2 Versioning
 
@@ -209,7 +211,7 @@ The schema follows [semver](https://semver.org). The **in-data conformance signa
 `schema_version` field (§4.1): a findings object declares which schema version it conforms to, so a
 commenter can detect a version mismatch rather than silently dropping or misinterpreting fields.
 
-A conforming commenter accepts a configurable allowlist of schema minors (currently `{0.2}`); a
+A conforming commenter accepts a configurable allowlist of schema minors (currently `{0.2, 0.3}`); a
 document declaring a minor outside the allowlist degrades per §5.5 rather than being silently
 accepted or rejected without explanation.
 
@@ -260,14 +262,28 @@ somewhere; cost MUST appear in a footer somewhere), even if the exact rendering 
 3. A **severity-counts** line (a histogram such as `🔴 0 · 🟠 1 · 🔵 2 · ⚪ 1`), an **honest
    inline-disposition pointer** stating what actually happened to the inline review (e.g. _N
    comments posted inline on `<sha>`_, _no inline comments — all findings are outside the diff_, or
-   _inline review suppressed — `<sha>` already reviewed_), and a **strays** section listing the
-   findings that could not be anchored inline. The sticky MUST NOT reproduce the full per-finding
-   list the review carries, and MUST NOT claim inline comments exist when none were posted.
+   _inline review suppressed — `<sha>` already reviewed_ — a hyperlink to the review itself when its
+   URL is available), and a **strays** section listing the findings that could not be anchored
+   inline. Each stray MAY carry its `confidence` figure alongside the bullet and, when the finding
+   provides `reasoning`, a collapsible fold containing it. The sticky MUST NOT reproduce the full
+   per-finding list the review carries, and MUST NOT claim inline comments exist when none were
+   posted.
 4. A collapsible **test-results panel** when a test report is provided as input, else a CI job
    summary when one is available. The panel is **format-agnostic**: it consumes any conforming test
    report, not a single fixed format.
-5. A **footer** with the per-model cost table (recomputed per §6.2), duration, and effort.
-6. An **LLM Disclosure** aside naming the model(s) used, sourced from the envelope's `models`.
+5. A **meta line** stating route, effort, turn count, wall-clock duration, model name(s), and total
+   cost (recomputed per §6.2).
+6. An **LLM Disclosure** aside naming the model(s) used (sourced from the envelope's `models`) and
+   carrying the per-model cost breakdown table (§6.3).
+7. The findings JSON embedded directly in the sticky, alongside the `reviewed-sha` marker: a
+   `<!-- code-review:findings-json;base64 <base64> -->` marker carrying the findings, base64-encoded.
+   A reviewing agent SHOULD decode and parse this marker instead of parsing the comment's prose.
+   Embedding the JSON in the comment (rather than only linking the uploaded artifact) keeps the
+   pointer from expiring with artifact retention — the comment is permanent, the artifact is not.
+   When the encoded payload exceeds a size limit, the commenter falls back to a
+   `<!-- code-review:findings-json <url> -->` marker linking the uploaded artifact instead; when
+   neither an embeddable payload nor a URL is available, the marker is omitted — this item is
+   conditional, not required.
 
 ### 5.2 Inline review
 
@@ -276,11 +292,23 @@ array. Each in-diff finding becomes one inline comment. The review is the **prim
 detail surface** — the sticky summary (§5.1) points at it rather than reproducing it.
 
 The review's top-level `body` is a short **pointer** (e.g. _"Automated code review for `<sha>` —
-verdict, walkthrough, and cost are in the summary comment."_), NOT a duplicate of the summary. The
-GitHub reviews API requires a review to carry a non-empty `body` OR at least one comment; the
-commenter posts a review only when there is at least one in-diff comment, so the pointer body is
-supplementary. When there are **zero in-diff findings**, no review is posted at all — the sticky's
-strays section (§5.1 item 3) is the sole surface, and its disposition pointer says so.
+see the summary comment for the verdict, walkthrough, and cost."_), NOT a duplicate of the summary,
+and links to the sticky (§5.1) when its URL is available — the two comments point at each other
+(§5.1 item 3 links back to the review symmetrically). The GitHub reviews API requires a review to
+carry a non-empty `body` OR at least one comment; the commenter posts a review only when there is
+at least one in-diff comment, so the pointer body is supplementary. When there are **zero in-diff
+findings**, no review is posted at all — the sticky's strays section (§5.1 item 3) is the sole
+surface, and its disposition pointer says so.
+
+Each inline comment body opens with a **severity header** (`<emoji> **<severity>** — <title>`,
+using the same emoji mapping as §5.1 item 3) so a reader can triage without opening the sticky,
+followed by the finding's `body` and, when present, its suggestion block. It closes with a
+per-comment **LLM Disclosure** naming the model(s) that produced the finding (sourced the same way
+as §5.1 item 6) and, when the finding carries `confidence`, that figure; when the finding also
+carries `reasoning`, it is rendered in a collapsible fold. When a machine-readable findings JSON
+artifact URL is available (§5.1 item 7), a `<!-- code-review:findings-json <url> -->` marker is
+emitted as the comment's first line — agent-facing and invisible to a human reader — omitted when
+no such URL is available.
 
 Rules (these MUST be enforced by the commenter, not the agent):
 
@@ -315,6 +343,15 @@ Rules (these MUST be enforced by the commenter, not the agent):
    `0.5`) MAY be suppressed from the inline review (demoted to a collapsed summary section, not
    dropped). A `critical`-severity finding MUST NOT be suppressed on confidence alone. The
    threshold SHOULD be configurable by the workflow.
+8. **Patch lowering.** Before this pass runs, the review job MUST resolve any `patch` (§4.1) on a
+   finding: validate it deterministically against the real PR-head file and lower it into an exact
+   `suggestion` + `start_line`/`end_line` (the reference CLI's `lower-suggestions` command). A
+   `patch` that does not apply cleanly (context mismatch, more or fewer than one hunk, a
+   non-contiguous change, a pure insertion, an unreadable file, etc.) MUST be dropped, leaving the
+   finding's `suggestion`/`start_line`/`end_line` exactly as originally authored — never partially
+   applied. A validated `patch` is authoritative over any hand-authored `suggestion` on the same
+   finding. This closes the wrong-indentation / too-wide-range failure mode a hand-authored
+   `suggestion` is prone to (issue #10).
 
 ### 5.3 Trust — author identity, not marker
 
@@ -436,23 +473,38 @@ backends. The recomputed value is the canonical cost.
 
 ### 6.3 Footer
 
-The comment footer SHALL render a per-model table recomputed from `models` (§6.1) against the price
-map (§6.2):
+The comment's meta line SHALL state route, effort, turn count, wall-clock duration, model name(s),
+and total cost (recomputed per §6.2):
 
 ```
-| Model | Input | Output | Cache read | Cache write | Cost |
-|---|---|--:|--:|--:|--:|--:|
-| … | … | … | … | … | $… |
-| **Total** | … | … | … | … | **$…** |
-
-Route: full review (all green) · effort: max · turns: 7 · wall: 91s
+**Route:** full review · **effort:** max · **turns:** 7 · **wall:** 91s · **models:** deepseek-v4-pro, deepseek-v4-flash · **cost:** $0.48
 ```
 
-The footer's `Route` line MUST reflect the actual routing decision (§3.1), not be inferred from
+The per-model cost breakdown lives inside the **LLM Disclosure** aside (§5.1 item 6), rendered as a
+GitHub `[!WARNING]` alert containing a table recomputed from `models` (§6.1) against the price map
+(§6.2), a link to the code-review repository, and — when the workflow run URL is available to the
+commenter — a link to the run and its traces:
+
+```
+> [!WARNING]
+> **LLM Disclosure** — this review was produced by <models>.
+>
+> | Model | Input | Output | Cache read | Cache write | Cost |
+> |---|--:|--:|--:|--:|--:|
+> | … | … | … | … | … | $… |
+> | **Total** | … | … | … | … | **$…** |
+>
+> Generated by [code-review](https://github.com/JPHutchins/code-review) · [view the run & traces](<run-url>).
+```
+
+Cost figures are rendered to two decimal places (e.g. `$0.06`); a nonzero cost that rounds to
+`$0.00` at that precision renders as `<$0.01` instead, so a real sub-cent cost is never shown as a
+misleading zero.
+
+The meta line's `Route` MUST reflect the actual routing decision (§3.1), not be inferred from
 side-effects such as turn count. The route and effort labels SHOULD come from the envelope's `route`
-and `effort` fields (§6.1) — stamped by the agent job that made the decision — so the footer cannot
-drift from the run; a commenter MAY accept an explicit override. Followed by an LLM Disclosure aside
-naming the model(s) from `models`.
+and `effort` fields (§6.1) — stamped by the agent job that made the decision — so the meta line
+cannot drift from the run; a commenter MAY accept an explicit override.
 
 ---
 
@@ -570,12 +622,23 @@ jobs:
 
       # Gather review inputs: resolve PR from head_sha, fetch diff (git-diff fallback), context, logs
       # Phase 1: data-only security triage of the diff
-      # Phase 2: if safe, agentic review → abstract envelope (§6.1)
+      # (best-effort: copy the triage agent's session transcript into transcripts/triage — advisory
+      #  only, never fails the job on a copy miss)
+      # Phase 2: if safe — snapshot the applied, clean PR-head tree as a throwaway git commit BEFORE
+      #   the agent edits anything, run the agentic review → abstract envelope (§6.1), then
+      #   `git reset --hard` to that snapshot and lower any finding's `patch` into an exact
+      #   suggestion + range against the restored PR-head content (`lower-suggestions`, §5.2 rule 8)
+      # (best-effort: copy the review agent's session transcript into transcripts/review)
 
       - uses: actions/upload-artifact@v7
         with:
           name: code-review-findings
           path: findings/
+
+      - uses: actions/upload-artifact@v7   # separate artifact — advisory/auditability only, never
+        with:                              # read by the comment job or any posting decision
+          name: code-review-transcript
+          path: transcripts/
 
   comment:
     needs: review
@@ -596,7 +659,10 @@ jobs:
       # Deterministic posting (resolves PR from head_sha, validates diff, renders, posts;
       # reads the write token from GH_TOKEN):
       #   code-review post findings/findings.json --repo … --head-sha … --head-branch … \
-      #     --usage … --prices …   (route/effort come from the envelope — §6.1/§6.3)
+      #     --usage … --prices … --run-url … --json-url …
+      #   (route/effort come from the envelope — §6.1/§6.3; --run-url/--json-url point at THIS
+      #   workflow run — where both artifacts above were uploaded — and feed the sticky's LLM
+      #   Disclosure link and the findings-json marker, §5.1 items 6/7)
 ```
 
 The full, copy-paste-ready example lives in [`examples/workflows/review.yaml`](examples/workflows/review.yaml).

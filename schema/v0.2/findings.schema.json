@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json",
+  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/schema-v0.2.0/schema/findings.schema.json",
   "title": "Code Review — findings",
   "description": "Structured output of an agentic PR review. The review agent emits this object (e.g. via a coding-agent CLI's structured-output mode, such as Claude Code's `--json-schema`, whose result lands in `.structured_output`); a deterministic commenter renders it into a sticky summary comment and inline PR review comments. Agent- and provider-agnostic: any model driven by a compatible CLI adapter may produce it. Kept free of $ref/$defs so the same file works for both JSON-Schema validators and CLI structured-output enforcement.",
   "type": "object",
@@ -47,7 +47,7 @@
             "type": "string",
             "enum": ["RIGHT", "LEFT"],
             "default": "RIGHT",
-            "description": "As in a unified-diff view: RIGHT for added/changed lines, LEFT for removed lines."
+            "description": "RIGHT for added/changed lines, LEFT for removed lines; matches the GitHub pulls reviews API."
           },
           "severity": {
             "type": "string",
@@ -73,21 +73,13 @@
           },
           "suggestion": {
             "type": ["string", "null"],
-            "description": "Proposed replacement text for start_line..end_line: null = no mechanical fix; \"\" (empty string) = the range should be deleted; a non-empty string = the exact, verbatim replacement text, so it must carry correct indentation."
+            "description": "null = no mechanical fix (render no suggestion block); \"\" (empty string) = delete start_line..end_line (render an empty suggestion block); non-empty = exact replacement text for start_line..end_line (render a GitHub suggestion block). A suggestion spanning more than GitHub's single-block line limit is demoted to the summary."
           },
           "confidence": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
             "description": "Optional 0..1 confidence; a commenter MAY suppress findings below a configurable threshold to control noise, but MUST NOT suppress a critical-severity finding on confidence alone."
-          },
-          "reasoning": {
-            "type": "string",
-            "description": "Optional rationale/evidence for why the finding holds, so a human or downstream agent can judge its soundness — distinct from `body`, which explains the finding to the reader."
-          },
-          "patch": {
-            "type": "string",
-            "description": "Optional single-hunk unified diff of a mechanical fix, against this file's post-change (RIGHT-side) content. A machine-verifiable alternative to `suggestion`: because it can be validated exactly against the file, a consumer can derive a precise replacement from it or reject it if it no longer applies — preferred over a hand-authored `suggestion`, which is prone to wrong indentation or an over-wide range."
           }
         }
       }

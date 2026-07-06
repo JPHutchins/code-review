@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// CLI entry point — citty subcommands for render, inline, post, cost, validate, adapt, extract, print-schema.
+// CLI entry point — citty subcommands for render, inline, post, cost, validate, adapt, extract,
+// lower-suggestions, print-schema.
 
 /* eslint-disable @typescript-eslint/require-await */
 // citty requires async run() even when the body has no explicit await
@@ -13,7 +14,7 @@ import { buildInlineComments, renderStraysSection } from "./inline.js";
 import { computeCost } from "./cost.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { ResultEnvelopeCodec, FindingsCodec, PriceMapCodec, TestSummaryCodec } from "./schema.js";
-import type { Triage } from "./schema.js";
+import type { Triage, Finding } from "./schema.js";
 import { post } from "./post.js";
 import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
@@ -22,6 +23,7 @@ import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } fr
 import type { ExtractKind, LadderOutcome } from "./extract.js";
 import { schemaPathFor } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
+import { lowerPatch } from "./patch.js";
 
 const readJSON = (path: string): unknown => {
   try {
@@ -176,7 +178,7 @@ const inlineCmd = defineCommand({
     const inlineTemplate = args.template
       ? readFileSync(resolve(args.template), "utf-8")
       : undefined;
-    const { comments, strays } = buildInlineComments(findings.findings, diff, inlineTemplate);
+    const { comments, strays } = buildInlineComments(findings.findings, diff, { inlineTemplate });
     process.stdout.write(
       JSON.stringify({ comments, strays, stray_markdown: renderStraysSection(strays) }, null, 2),
     );
@@ -376,6 +378,83 @@ const extractCmd = defineCommand({
   },
 });
 
+/** `finding` with its `patch` field removed — a fresh shallow copy, `finding` itself untouched. */
+const withoutPatch = (finding: Finding): Finding => {
+  const copy = { ...finding };
+  delete copy.patch;
+  return copy;
+};
+
+/** A file's lines, LF-split and without a trailing-newline artifact entry; null when unreadable. */
+const readFileLines = (path: string): readonly string[] | null => {
+  try {
+    const rawLines = readFileSync(path, "utf-8").split("\n");
+    return rawLines.length > 0 && rawLines[rawLines.length - 1] === ""
+      ? rawLines.slice(0, -1)
+      : rawLines;
+  } catch {
+    return null;
+  }
+};
+
+/** Lower one finding's `patch` (when present) into a `suggestion` + exact range, validated against
+ *  the real file at `<repoRoot>/<finding.path>`; drop the patch (logging why to stderr) when the
+ *  file can't be read or the patch doesn't apply cleanly. Findings without a `patch` pass through
+ *  untouched. Never throws. */
+const lowerFinding = (finding: Finding, repoRoot: string): Finding => {
+  if (finding.patch === undefined) return finding;
+  const base = withoutPatch(finding);
+  const lines = readFileLines(resolve(repoRoot, finding.path));
+  if (lines === null) {
+    process.stderr.write(
+      `lower-suggestions: ${finding.path}: could not read file at "${repoRoot}" — dropping patch\n`,
+    );
+    return base;
+  }
+  const result = lowerPatch(finding.patch, lines);
+  if (result.kind === "drop") {
+    process.stderr.write(
+      `lower-suggestions: ${finding.path}:${String(finding.start_line)}: ${result.reason} — dropping patch\n`,
+    );
+    return base;
+  }
+  return {
+    ...base,
+    suggestion: result.suggestion,
+    start_line: result.startLine,
+    end_line: result.endLine,
+  };
+};
+
+const lowerSuggestionsCmd = defineCommand({
+  meta: {
+    name: "lower-suggestions",
+    description:
+      "Validate each finding's patch against the real PR-head tree and lower it to an exact suggestion + range, or drop it (issue #10)",
+  },
+  args: {
+    findings: {
+      type: "positional",
+      description: "Path to findings JSON",
+      required: true,
+    },
+    "repo-root": {
+      type: "string",
+      description:
+        "Directory to resolve each finding's path against — the review job's checked-out, clean PR-head tree (default: .)",
+    },
+  },
+  run: async ({ args }) => {
+    const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
+    const repoRoot = args["repo-root"] ? resolve(args["repo-root"]) : process.cwd();
+    const lowered = {
+      ...findings,
+      findings: findings.findings.map((f) => lowerFinding(f, repoRoot)),
+    };
+    process.stdout.write(`${JSON.stringify(lowered, null, 2)}\n`);
+  },
+});
+
 /** Narrow to a known adapter name, or fail with a clear message (never falls through). */
 const requireAdapterName = (name: string): AdapterName => {
   if (isAdapterName(name)) return name;
@@ -551,6 +630,16 @@ const postCmd = defineCommand({
       type: "string",
       description: TEST_REPORT_DESCRIPTION,
     },
+    "run-url": {
+      type: "string",
+      description:
+        "Workflow run URL (transcript/traces), rendered as a link in the LLM Disclosure aside",
+    },
+    "json-url": {
+      type: "string",
+      description:
+        "URL to the machine-readable findings JSON artifact, pointed at from the sticky and each inline comment",
+    },
   },
   run: async ({ args }) => {
     await post({
@@ -566,6 +655,8 @@ const postCmd = defineCommand({
       headBranch: args["head-branch"],
       effort: args.effort,
       testReportPath: args["test-report"],
+      runUrl: args["run-url"],
+      jsonUrl: args["json-url"],
     });
   },
 });
@@ -575,7 +666,7 @@ export const main = defineCommand({
     name: "code-review",
     version: packageVersion,
     description:
-      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, cost, and validate findings JSON",
+      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, lower-suggestions, cost, and validate findings JSON",
   },
   subCommands: {
     gather: gatherCmd,
@@ -586,6 +677,7 @@ export const main = defineCommand({
     validate: validateCmd,
     adapt: adaptCmd,
     extract: extractCmd,
+    "lower-suggestions": lowerSuggestionsCmd,
     "print-schema": printSchemaCmd,
   },
 });

@@ -1,5 +1,6 @@
 // Version-aware schema registry: maps each schema kind's supported major.minor(s) to a bundled
-// schema file, io-ts codec, and upcast normalizer (identity today — no second version exists yet).
+// schema file, io-ts codec, and upcast normalizer (identity for every entry today — findings' 0.2
+// and 0.3 minors share one shape-compatible codec, so neither needs an upcast).
 // `resolve` is pure (no IO); `schemaPathFor` only computes a path string from the tables below.
 //
 // This module imports from schema.ts (codecs, DEFAULT_SCHEMA_VERSION), never the reverse — schema.ts
@@ -31,7 +32,8 @@ interface VersionEntry<K extends SchemaKind, A> {
   /** path relative to schema/: flat name for the latest entry, "v<minor>/…" once frozen. */
   readonly schemaFile: string;
   readonly codec: Decoder<unknown, A> & Encoder<A, unknown>;
-  /** upcast to the latest shape for this kind; identity while only one version is supported. */
+  /** upcast to the latest shape for this kind; identity when the codec already accepts both
+   *  shapes (e.g. an additive minor whose new field is optional). */
   readonly normalize: (decoded: A) => DecodedFor[K];
   readonly latest: boolean;
 }
@@ -50,12 +52,20 @@ const identity = <A>(decoded: A): A => decoded;
 
 const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
-    minor: "0.2",
+    minor: "0.3",
     defaultVersion: DEFAULT_SCHEMA_VERSION,
     schemaFile: "findings.schema.json",
     codec: FindingsCodec,
     normalize: identity,
     latest: true,
+  },
+  {
+    minor: "0.2",
+    defaultVersion: "0.2.0",
+    schemaFile: "v0.2/findings.schema.json",
+    codec: FindingsCodec,
+    normalize: identity,
+    latest: false,
   },
 ];
 

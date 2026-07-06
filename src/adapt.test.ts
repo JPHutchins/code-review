@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { adapt, isAdapterName } from "./adapt.js";
-import { ResultEnvelopeCodec } from "./schema.js";
+import { ResultEnvelopeCodec, DEFAULT_SCHEMA_VERSION } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixturePath = resolve(
@@ -105,7 +105,7 @@ describe("adapt — claude-code", () => {
     expect(result.right.findings.schema_version).toBe("0.2.0");
   });
 
-  it("defaults schema_version to 0.2.0 when structured_output omits it", () => {
+  it("defaults schema_version to DEFAULT_SCHEMA_VERSION when structured_output omits it", () => {
     const native = JSON.parse(JSON.stringify(nativeFixture)) as {
       structured_output: Record<string, unknown>;
     };
@@ -113,8 +113,8 @@ describe("adapt — claude-code", () => {
     const result = adapt("claude-code", native);
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
-    expect(result.right.schema_version).toBe("0.2.0");
-    expect(result.right.findings.schema_version).toBe("0.2.0");
+    expect(result.right.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
+    expect(result.right.findings.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
   });
 
   it("returns Left when structured_output does not conform to the findings schema", () => {

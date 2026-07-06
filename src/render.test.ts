@@ -434,7 +434,11 @@ describe("render", () => {
       const findings = mkFindings([]);
       const result = render({ findings, envelope, prices, template, route: "full review" });
       expect(result).toContain("<!-- code-review -->");
-      expect(result).toContain("Total");
+      // No per-model table at all — its empty body otherwise leaves a blank line that splits the
+      // markdown table (the malformed-comment bug on skipped/error envelopes).
+      expect(result).toContain("No per-model usage was recorded");
+      expect(result).not.toContain("| Model | Input |");
+      expect(result).not.toMatch(/\|---\|--:.*\n\s*\n\s*\| \*\*Total\*\*/);
     });
   });
 

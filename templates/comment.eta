@@ -59,7 +59,7 @@ All <%= it.testReport.total %> tests passed.
 
 ---
 
-<% if (it.usageAvailable) { %>
+<% if (it.usageAvailable && it.costReport.lines.length > 0) { %>
 <sub>
 
 | Model | Input | Output | Cache read | Cache write | Cost |
@@ -70,6 +70,8 @@ All <%= it.testReport.total %> tests passed.
 | **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD) %>** |
 
 </sub>
+<% } else if (it.usageAvailable) { %>
+<sub>No per-model usage was recorded for this run.</sub>
 <% } else { %>
 > **Usage/cost unavailable** — the result envelope for this run was missing or malformed.
 <% } %>

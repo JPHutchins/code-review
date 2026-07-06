@@ -172,7 +172,11 @@ logs for the mechanic, no prior-review context for the first run).
 
 The canonical schema is [`schema/findings.schema.json`](schema/findings.schema.json) — JSON Schema
 2020-12, inlined (no `$ref`/`$defs`/`$id` fragments) so the same file works for both JSON-Schema
-validators and CLI structured-output enforcement (e.g. `claude -p --json-schema`).
+validators and CLI structured-output enforcement. A CLI's `--json-schema` form additionally MUST omit
+the top-level `$schema` draft keyword: some CLIs (observed: `claude -p --json-schema`) silently
+disable enforcement — returning a null structured output with no error — when it is present. The
+canonical file keeps `$schema` for validators; the reference CLI's `print-schema` strips it from the
+form handed to `--json-schema`.
 
 ### 4.1 Shape
 
@@ -715,7 +719,8 @@ A conforming findings schema MUST:
 
 - **REQ-SC-1:** Be a valid JSON Schema (2020-12).
 - **REQ-SC-2:** Be inlined (no `$ref`/`$defs`/`$id` fragments) so it works for both validators and
-  CLI structured-output enforcement.
+  CLI structured-output enforcement. The form handed to a CLI's `--json-schema` MUST omit the
+  top-level `$schema` draft keyword (§4) — some CLIs silently disable enforcement when it is present.
 - **REQ-SC-3:** Follow semantic versioning; each version SHALL have a distinct, stable `$id` URI.
 - **REQ-SC-4:** Require at minimum `schema_version`, `summary`, `verdict`, `findings`; each finding
   MUST require `path`, `start_line`, `end_line`, `severity`, `title`, and `body`.

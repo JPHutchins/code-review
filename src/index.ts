@@ -404,7 +404,8 @@ const requireSchemaPath = (kind: SchemaKind, version: string | undefined): strin
 const printSchemaCmd = defineCommand({
   meta: {
     name: "print-schema",
-    description: "Print a bundled schema JSON",
+    description:
+      "Print a bundled schema JSON, ready to hand to a CLI's --json-schema (the $schema draft declaration is stripped)",
   },
   args: {
     name: {
@@ -420,7 +421,15 @@ const printSchemaCmd = defineCommand({
   run: async ({ args }) => {
     const schemaKind = requireSchemaKind(args.name);
     const schemaPath = requireSchemaPath(schemaKind, args["schema-version"]);
-    process.stdout.write(readFileSync(schemaPath, "utf-8"));
+    const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as Record<string, unknown>;
+    // `claude -p --json-schema` silently disables structured-output enforcement when the schema
+    // carries a top-level `$schema` draft declaration — `structured_output` comes back null and the
+    // model guesses field names. The canonical file keeps `$schema` for validators; the form handed
+    // to a CLI must omit it. `$id`/`title` are tolerated and kept.
+    const enforcementSchema = Object.fromEntries(
+      Object.entries(schema).filter(([key]) => key !== "$schema"),
+    );
+    process.stdout.write(`${JSON.stringify(enforcementSchema, null, 2)}\n`);
   },
 });
 

@@ -294,12 +294,21 @@ describe("cli — extract", () => {
 
 describe("cli — print-schema", () => {
   it.each(["findings", "triage", "prices"] as const)(
-    "prints the bundled %s schema",
+    "prints the bundled %s schema with the $schema draft key stripped (so --json-schema enforces)",
     async (name) => {
       const { stdout, exitCode } = await runCli(["print-schema", name]);
       expect(exitCode).toBeNull();
-      const expected = readFileSync(resolve(repoRoot, "schema", `${name}.schema.json`), "utf-8");
-      expect(stdout).toBe(expected);
+      const printed = JSON.parse(stdout) as Record<string, unknown>;
+      const canonical = JSON.parse(
+        readFileSync(resolve(repoRoot, "schema", `${name}.schema.json`), "utf-8"),
+      ) as Record<string, unknown>;
+      expect(canonical["$schema"]).toBeDefined();
+      expect(printed["$schema"]).toBeUndefined();
+      // Everything but $schema is preserved verbatim ($id, title, properties, …).
+      const canonicalWithoutDraft = Object.fromEntries(
+        Object.entries(canonical).filter(([key]) => key !== "$schema"),
+      );
+      expect(printed).toEqual(canonicalWithoutDraft);
     },
   );
 

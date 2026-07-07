@@ -70,3 +70,18 @@ export const projectPatch = (patch: string | undefined): PatchProjection => {
 
 /** Confidence, always at 2 decimal places (issue #26 — `1` renders `1.00`, `0.6` renders `0.60`). */
 export const formatConfidence = (n: number): string => n.toFixed(2);
+
+/** The review-object body: the shared findings-json marker (when present) followed by a one-line
+ *  pointer to the sticky summary, linking to it when its URL is known. The single source of truth
+ *  for this body, shared by the commenter (post.ts) and the `preview` command. Pure. */
+export const reviewBodyPointer = (
+  headSha: string,
+  stickyUrl: string | undefined,
+  marker: string,
+): string => {
+  const sha7 = headSha.slice(0, 7);
+  const linkLine = stickyUrl
+    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
+    : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
+  return marker ? `${marker}\n\n${linkLine}` : linkLine;
+};

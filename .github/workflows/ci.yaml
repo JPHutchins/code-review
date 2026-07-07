@@ -42,4 +42,4 @@ jobs:
       - name: Template preview → job summary
         if: ${{ always() }}
         continue-on-error: true
-        run: bash scripts/preview.sh >> "$GITHUB_STEP_SUMMARY"
+        run: npx tsx scripts/preview.ts >> "$GITHUB_STEP_SUMMARY"

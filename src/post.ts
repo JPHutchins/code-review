@@ -11,7 +11,7 @@ import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts } from "./render.js";
 import { formatMarkdown } from "./format.js";
-import { findingsPointer } from "./surface.js";
+import { findingsPointer, reviewBodyPointer } from "./surface.js";
 import { ResultEnvelopeCodec, PriceMapCodec, TestSummaryCodec, noticeFindings } from "./schema.js";
 import type { Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
@@ -178,11 +178,7 @@ const postInlineReview = async (
   marker: string,
   ghApi: GhApi,
 ): Promise<string | undefined> => {
-  const sha7 = headSha.slice(0, 7);
-  const linkLine = stickyUrl
-    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
-    : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
-  const pointer = marker ? `${marker}\n\n${linkLine}` : linkLine;
+  const pointer = reviewBodyPointer(headSha, stickyUrl, marker);
   const body = JSON.stringify({
     body: pointer,
     commit_id: headSha,

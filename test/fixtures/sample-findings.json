@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.2.0",
+  "schema_version": "0.4.0",
   "summary": "Adds a retry wrapper comment and updates the config type. The change is focused and minimal.",
   "verdict": "comment",
   "findings": [
@@ -12,8 +12,9 @@
       "code": "widened-type",
       "code_url": "https://example.com/rules/widened-type",
       "title": "timeout type changed from number to number | string",
-      "body": "Changing `timeout` from `number` to `number | string` widens the type. Callers that assumed a number will now need coercion. Consider adding a `parseTimeout` helper at the edge instead.",
-      "suggestion": "  timeout: number;",
+      "description": "Changing `timeout` from `number` to `number | string` widens the type. Callers that assumed a number will now need coercion.",
+      "recommendation": "Keep `timeout: number` and add a `parseTimeout` helper at the edge that coerces string inputs.",
+      "reasoning": "Every call site that does arithmetic on `timeout` now type-errors or silently coerces; the diff widens the type without updating those callers.",
       "confidence": 0.85
     },
     {
@@ -23,8 +24,8 @@
       "side": "RIGHT",
       "severity": "nit",
       "title": "Vague comment: 'retry wrapper'",
-      "body": "The comment `// retry wrapper` doesn't explain what is wrapped or why. Consider a more descriptive comment linking to the retry logic above.",
-      "suggestion": null,
+      "description": "The comment `// retry wrapper` doesn't explain what is wrapped or why.",
+      "reasoning": "A future reader can't tell from the comment what the wrapper retries or under what conditions; the retry logic is several lines above.",
       "confidence": 0.6
     },
     {
@@ -34,8 +35,8 @@
       "side": "RIGHT",
       "severity": "minor",
       "title": "__all__ should include all public names",
-      "body": "If `LegacyClient` is still part of the public API, it should be in `__all__`. If not, remove the import.",
-      "suggestion": null,
+      "description": "If `LegacyClient` is still part of the public API, it should be in `__all__`. If not, remove the import.",
+      "reasoning": "The import is present but absent from `__all__`, so `from pkg import *` won't export it — a likely oversight given it's imported at the package root.",
       "confidence": 0.7
     },
     {
@@ -45,8 +46,8 @@
       "side": "RIGHT",
       "severity": "minor",
       "title": "This line is NOT in the diff — should be demoted",
-      "body": "This finding anchors to a line that is not in the diff. The inline command must demote it to the summary.",
-      "suggestion": null,
+      "description": "This finding anchors to a line that is not in the diff. The inline command must demote it to the summary.",
+      "reasoning": "The anchored line falls outside every diff hunk, so it cannot be posted as an inline comment and must appear in the strays section instead.",
       "confidence": 0.5
     }
   ]

@@ -5,9 +5,8 @@ import { Eta } from "eta";
 import type { Finding, Severity } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
-
-/** Escape triple-backtick sequences to prevent code-block breakout. */
-const escapeBackticks = (text: string): string => text.replace(/```/g, "`` ` ``");
+import { severityEmoji, findingsPointer, projectPatch } from "./surface.js";
+import type { PatchProjection } from "./surface.js";
 
 /** Escape pipe characters so they don't break markdown table columns. */
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
@@ -15,12 +14,15 @@ const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 /** Replace backticks so they don't break inline code spans. */
 const escapeCodeBackticks = (text: string): string => text.replace(/`/g, "-");
 
-/** Sanitize a finding's fields for safe rendering in the strays section. */
-const sanitizeFinding = (f: Finding): Finding => ({
+/** A stray finding with its sanitized fields plus its projected patch block for the strays list. */
+type StrayView = Finding & { readonly patchProjection: PatchProjection };
+
+/** Sanitize a stray finding's fields and attach its patch projection for the strays section. */
+const sanitizeFinding = (f: Finding): StrayView => ({
   ...f,
   title: escapePipes(f.title),
   path: escapeCodeBackticks(f.path),
-  suggestion: f.suggestion ? escapeBackticks(f.suggestion) : f.suggestion,
+  patchProjection: projectPatch(f.patch),
 });
 
 const emptySeverityCounts = (): Record<Severity, number> => ({
@@ -37,25 +39,22 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
     emptySeverityCounts(),
   );
 
-/** Base64 chars (~30KB JSON); keeps the sticky well under GitHub's 65536-char comment limit. */
-const EMBED_LIMIT = 40000;
-
 /** Render a code-review comment from findings, envelope, and prices. Pure. */
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
   const usageAvailable = input.envelope !== null;
   const costReport = input.envelope ? computeCost(input.envelope.models, input.prices) : null;
+  const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
-  const findingsB64 = Buffer.from(JSON.stringify(input.findings), "utf-8").toString("base64");
-  const embeddedFindings = findingsB64.length <= EMBED_LIMIT ? findingsB64 : null;
 
   return eta.renderString(input.template, {
     findings: input.findings,
     envelope: input.envelope,
     usageAvailable,
     costReport,
+    pricesProvided,
     route,
     effort,
     modelNames,
@@ -66,12 +65,20 @@ export const render = (input: RenderInput): string => {
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
-    embeddedFindings,
-    reviewUrl: input.reviewUrl ?? null,
+    findingsPointer: findingsPointer(input.findings, input.jsonUrl),
+    reviewUrl: input.crossLinks?.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
+    // Cost cells render N/A (never a false $0.00) when no real price map was provided — there are
+    // real tokens spent, we simply have no rates to price them (SPEC §6.2).
     formatCost: (n: number): string =>
-      Number.isFinite(n) ? (n > 0 && n.toFixed(2) === "0.00" ? "<$0.01" : `$${n.toFixed(2)}`) : "—",
+      !pricesProvided
+        ? "N/A"
+        : Number.isFinite(n)
+          ? n > 0 && n.toFixed(2) === "0.00"
+            ? "<$0.01"
+            : `$${n.toFixed(2)}`
+          : "—",
     formatDuration: (ms: number): string => {
       if (!Number.isFinite(ms) || ms < 0) return "—";
       const s = Math.round(ms / 1000);
@@ -89,19 +96,6 @@ export const render = (input: RenderInput): string => {
           return `❓ ${v}`;
       }
     },
-    severityEmoji: (s: string): string => {
-      switch (s) {
-        case "critical":
-          return "🔴";
-        case "major":
-          return "🟠";
-        case "minor":
-          return "🔵";
-        case "nit":
-          return "⚪";
-        default:
-          return "❓";
-      }
-    },
+    severityEmoji,
   });
 };

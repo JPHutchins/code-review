@@ -9,7 +9,7 @@
   "ttft_stream_ms": 1204,
   "time_to_request_ms": 142,
   "num_turns": 2,
-  "result": "Draft (ignore, has a trailing comma):\n\n```json\n{\n  \"summary\": \"oops\",\n  \"verdict\": \"comment\",\n}\n```\n\nFinal version:\n\n```json\n{\n  \"schema_version\": \"0.2.0\",\n  \"summary\": \"Adds input validation to the upload handler.\",\n  \"verdict\": \"comment\",\n  \"findings\": [\n    {\n      \"path\": \"src/upload.ts\",\n      \"start_line\": 10,\n      \"end_line\": 12,\n      \"side\": \"RIGHT\",\n      \"severity\": \"minor\",\n      \"title\": \"Missing null check\",\n      \"body\": \"The `file` parameter may be undefined; add a guard before use.\",\n      \"suggestion\": null,\n      \"confidence\": 0.7\n    }\n  ]\n}\n```",
+  "result": "Draft (ignore, has a trailing comma):\n\n```json\n{\n  \"summary\": \"oops\",\n  \"verdict\": \"comment\",\n}\n```\n\nFinal version:\n\n```json\n{\n  \"schema_version\": \"0.4.0\",\n  \"summary\": \"Adds input validation to the upload handler.\",\n  \"verdict\": \"comment\",\n  \"findings\": [\n    {\n      \"path\": \"src/upload.ts\",\n      \"start_line\": 10,\n      \"end_line\": 12,\n      \"side\": \"RIGHT\",\n      \"severity\": \"minor\",\n      \"title\": \"Missing null check\",\n      \"description\": \"The `file` parameter may be undefined; add a guard before use.\",\n      \"reasoning\": \"The handler dereferences `file` before any null check, and the caller can pass undefined.\",\n      \"confidence\": 0.7\n    }\n  ]\n}\n```",
   "stop_reason": "end_turn",
   "session_id": "00000000-0000-4000-8000-000000000000",
   "total_cost_usd": 0.0123,

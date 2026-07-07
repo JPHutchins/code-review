@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CLI entry point — citty subcommands for render, inline, post, cost, validate, adapt, extract,
-// lower-suggestions, print-schema.
+// validate-patches, print-schema, stop-gate.
 
 /* eslint-disable @typescript-eslint/require-await */
 // citty requires async run() even when the body has no explicit await
@@ -21,9 +21,17 @@ import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName } from "./adapt.js";
 import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
-import { schemaPathFor } from "./registry.js";
+import { schemaPathFor, declaredVersion } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
-import { lowerPatch } from "./patch.js";
+import { validatePatch } from "./patch.js";
+import {
+  decideGate,
+  draftState,
+  readNudges,
+  bumpNudges,
+  defaultHookCommand,
+  stopHookSettings,
+} from "./stop-gate.js";
 
 const readJSON = (path: string): unknown => {
   try {
@@ -71,13 +79,26 @@ const packageVersion = (
 const resolveTemplatePath = (templateArg: string | undefined): string =>
   templateArg ? resolve(templateArg) : bundledPath("templates", "comment.eta");
 
+/** `--inline-template` defaults to the bundled inline template when omitted (inline.eta is the
+ *  per-surface SSOT — issue #22 — mirroring resolveTemplatePath's sticky default). */
+const resolveInlineTemplatePath = (templateArg: string | undefined): string =>
+  templateArg ? resolve(templateArg) : bundledPath("templates", "inline.eta");
+
+/** Price-map resolution with explicit provenance: `provided` is a real caller-supplied map,
+ *  `absent` is the bundled all-zero example standing in for one (loaded only to satisfy the codec /
+ *  computeCost shape). The render layer is TOLD which, so it reports cost as N/A rather than a false
+ *  $0.00 when absent (SPEC §6.2) — never inferring it from the path. */
+type PriceResolution =
+  | { readonly kind: "provided"; readonly path: string }
+  | { readonly kind: "absent"; readonly path: string };
+
 /** `--prices` defaults to the bundled (all-zero) example prices when omitted, with a warning. */
-const resolvePricesPath = (pricesArg: string | undefined): string => {
-  if (pricesArg) return resolve(pricesArg);
+const resolvePrices = (pricesArg: string | undefined): PriceResolution => {
+  if (pricesArg) return { kind: "provided", path: resolve(pricesArg) };
   process.stderr.write(
-    "code-review: no --prices given — using the bundled example prices (all zero); cost figures will be $0\n",
+    "code-review: no --prices given — cost will be reported as N/A (no price map to recompute from)\n",
   );
-  return bundledPath("schema", "prices.example.json");
+  return { kind: "absent", path: bundledPath("schema", "prices.example.json") };
 };
 
 const TEST_REPORT_DESCRIPTION =
@@ -131,8 +152,8 @@ const renderCmd = defineCommand({
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
     const envelope = decode(ResultEnvelopeCodec.decode(readJSON(args.usage)), "envelope");
     const templatePath = resolveTemplatePath(args.template);
-    const pricesPath = resolvePricesPath(args.prices);
-    const prices = decode(PriceMapCodec.decode(readJSON(pricesPath)), "prices");
+    const priceResolution = resolvePrices(args.prices);
+    const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
     const template = readFileSync(templatePath, "utf-8");
     const testReport = args["test-report"]
       ? decode(TestSummaryCodec.decode(readJSON(args["test-report"])), "test report")
@@ -141,6 +162,7 @@ const renderCmd = defineCommand({
       findings,
       envelope,
       prices,
+      pricesProvided: priceResolution.kind === "provided",
       template,
       reviewedSha: args["reviewed-sha"],
       route: args.route,
@@ -169,16 +191,17 @@ const inlineCmd = defineCommand({
     },
     template: {
       type: "string",
-      description: "Path to inline comment Eta template (default: built-in format)",
+      description: "Path to inline comment Eta template (default: bundled templates/inline.eta)",
     },
   },
   run: async ({ args }) => {
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
     const diff = readFileSync(resolve(args.diff), "utf-8");
-    const inlineTemplate = args.template
-      ? readFileSync(resolve(args.template), "utf-8")
-      : undefined;
-    const { comments, strays } = buildInlineComments(findings.findings, diff, { inlineTemplate });
+    const inlineTemplate = readFileSync(resolveInlineTemplatePath(args.template), "utf-8");
+    const { comments, strays } = buildInlineComments(findings.findings, diff, {
+      inlineTemplate,
+      findings,
+    });
     process.stdout.write(
       JSON.stringify({ comments, strays, stray_markdown: renderStraysSection(strays) }, null, 2),
     );
@@ -210,19 +233,11 @@ const costCmd = defineCommand({
   },
 });
 
-/** A document's declared `schema_version`, when present as a string (mirrors registry.ts's check). */
-const declaredSchemaVersion = (raw: unknown): string | undefined =>
-  typeof raw === "object" && raw !== null && "schema_version" in raw
-    ? typeof raw.schema_version === "string"
-      ? raw.schema_version
-      : undefined
-    : undefined;
-
 /** The version to derive when neither --schema nor --schema-version is given: findings carries its
  *  version in-data; triage/prices have no in-data signal (see registry.ts), so undefined selects the
  *  registry default (latest) for the kind. */
 const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefined =>
-  kind === "findings" ? declaredSchemaVersion(raw) : undefined;
+  kind === "findings" ? declaredVersion(raw) : undefined;
 
 const validateCmd = defineCommand({
   meta: {
@@ -397,40 +412,35 @@ const readFileLines = (path: string): readonly string[] | null => {
   }
 };
 
-/** Lower one finding's `patch` (when present) into a `suggestion` + exact range, validated against
- *  the real file at `<repoRoot>/<finding.path>`; drop the patch (logging why to stderr) when the
- *  file can't be read or the patch doesn't apply cleanly. Findings without a `patch` pass through
- *  untouched. Never throws. */
-const lowerFinding = (finding: Finding, repoRoot: string): Finding => {
-  if (finding.patch === undefined) return finding;
-  const base = withoutPatch(finding);
+/** Validate one finding's `patch` (when present) against the real file at `<repoRoot>/<finding.path>`,
+ *  aligning the finding's `start_line`/`end_line` to the patch's removed range and KEEPING the patch
+ *  for the renderer to project. Drop the patch (logging why to stderr) when the file can't be read
+ *  or the patch doesn't apply cleanly — the finding survives without it, never writing a suggestion.
+ *  A finding with no patch passes through untouched. Never throws. */
+const validateFinding = (finding: Finding, repoRoot: string): Finding => {
+  if (finding.patch === undefined || finding.patch === null) return finding;
   const lines = readFileLines(resolve(repoRoot, finding.path));
   if (lines === null) {
     process.stderr.write(
-      `lower-suggestions: ${finding.path}: could not read file at "${repoRoot}" — dropping patch\n`,
+      `validate-patches: ${finding.path}: could not read file at "${repoRoot}" — dropping patch\n`,
     );
-    return base;
+    return withoutPatch(finding);
   }
-  const result = lowerPatch(finding.patch, lines);
-  if (result.kind === "drop") {
+  const result = validatePatch(finding.patch, lines);
+  if ("kind" in result) {
     process.stderr.write(
-      `lower-suggestions: ${finding.path}:${String(finding.start_line)}: ${result.reason} — dropping patch\n`,
+      `validate-patches: ${finding.path}:${String(finding.start_line)}: ${result.reason} — dropping patch\n`,
     );
-    return base;
+    return withoutPatch(finding);
   }
-  return {
-    ...base,
-    suggestion: result.suggestion,
-    start_line: result.startLine,
-    end_line: result.endLine,
-  };
+  return { ...finding, start_line: result.startLine, end_line: result.endLine };
 };
 
-const lowerSuggestionsCmd = defineCommand({
+const validatePatchesCmd = defineCommand({
   meta: {
-    name: "lower-suggestions",
+    name: "validate-patches",
     description:
-      "Validate each finding's patch against the real PR-head tree and lower it to an exact suggestion + range, or drop it (issue #10)",
+      "Validate each finding's patch against the real PR-head tree, aligning the finding's range to it and keeping the patch, or dropping the patch (issue #10)",
   },
   args: {
     findings: {
@@ -447,11 +457,11 @@ const lowerSuggestionsCmd = defineCommand({
   run: async ({ args }) => {
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
     const repoRoot = args["repo-root"] ? resolve(args["repo-root"]) : process.cwd();
-    const lowered = {
+    const validated = {
       ...findings,
-      findings: findings.findings.map((f) => lowerFinding(f, repoRoot)),
+      findings: findings.findings.map((f) => validateFinding(f, repoRoot)),
     };
-    process.stdout.write(`${JSON.stringify(lowered, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(validated, null, 2)}\n`);
   },
 });
 
@@ -511,6 +521,111 @@ const printSchemaCmd = defineCommand({
       Object.entries(schema).filter(([key]) => key !== "$schema"),
     );
     process.stdout.write(`${JSON.stringify(enforcementSchema, null, 2)}\n`);
+  },
+});
+
+const MAX_NUDGES_DEFAULT = 5;
+
+/** Drain the Stop-hook payload delivered on stdin so the caller never sees EPIPE; its content is
+ *  not needed — the decision comes from the draft on disk. Skips draining on a TTY (an interactive,
+ *  manual run with nothing piped in) since readFileSync(0) would otherwise block forever waiting
+ *  for EOF that never comes; absent/empty piped stdin otherwise is fine. */
+const drainStdin = (): void => {
+  if (process.stdin.isTTY) return;
+  try {
+    readFileSync(0);
+  } catch {
+    // no stdin
+  }
+};
+
+const parseNonNegativeInt = (raw: string | undefined, fallback: number): number => {
+  if (raw === undefined) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+};
+
+const stopGateCmd = defineCommand({
+  meta: {
+    name: "stop-gate",
+    description:
+      "Claude Code Stop-hook gate: refuse to let the agent end its turn until --draft validates against the schema (bounded by --max-nudges). With --print-settings, emit the --settings JSON that wires this as the Stop hook.",
+  },
+  args: {
+    draft: {
+      type: "string",
+      description: "Path to the findings document the agent must produce and keep valid",
+      required: true,
+    },
+    kind: {
+      type: "string",
+      description:
+        "Schema kind to validate against: findings | triage | prices (default: findings)",
+    },
+    schema: { type: "string", description: "Path to a schema file (wins over --kind)" },
+    "schema-version": {
+      type: "string",
+      description: "Schema major.minor to validate against (default: the draft's declared version)",
+    },
+    "max-nudges": {
+      type: "string",
+      description: `Times to block before relenting so the step fails downstream as before (default: ${String(MAX_NUDGES_DEFAULT)})`,
+    },
+    counter: {
+      type: "string",
+      description: "Path for the nudge counter (default: <draft>.nudges)",
+    },
+    "print-settings": {
+      type: "boolean",
+      description: "Print the Stop-hook settings JSON that wires this gate, then exit",
+    },
+  },
+  run: async ({ args }) => {
+    const draftPath = resolve(args.draft);
+
+    if (args["print-settings"]) {
+      const command = defaultHookCommand(draftPath, {
+        kind: args.kind,
+        schema: args.schema,
+        schemaVersion: args["schema-version"],
+        maxNudges: args["max-nudges"],
+        counter: args.counter,
+      });
+      process.stdout.write(`${JSON.stringify(stopHookSettings(command))}\n`);
+      return;
+    }
+
+    drainStdin();
+
+    const kind = requireSchemaKind(args.kind || "findings");
+    const maxNudges = parseNonNegativeInt(args["max-nudges"], MAX_NUDGES_DEFAULT);
+    const counterPath = args.counter ? resolve(args.counter) : `${draftPath}.nudges`;
+
+    // schemaPathFor throws (rather than the process-exiting requireSchemaPath) so that a draft
+    // declaring an unsupported schema_version is caught by draftState and treated as invalid —
+    // i.e. a block with a helpful message — instead of crashing the hook and letting the agent stop.
+    const state = draftState(draftPath, (parsed) =>
+      args.schema
+        ? resolve(args.schema)
+        : schemaPathFor(kind, args["schema-version"] || derivedSchemaVersion(kind, parsed)),
+    );
+
+    const nudges = readNudges(counterPath);
+    const decision = decideGate(state, nudges, maxNudges, draftPath, kind);
+    if (decision.kind === "block") {
+      // Write the block to stdout BEFORE bumping the counter, and never let a counter-write
+      // failure suppress a block that's already been written — the gate must fail open only on
+      // its own budget being spent, never on an unrelated filesystem error (issue: bump-before-
+      // write could silently drop the block if the write itself throws).
+      process.stdout.write(`${JSON.stringify({ decision: "block", reason: decision.reason })}\n`);
+      try {
+        bumpNudges(counterPath);
+      } catch (err) {
+        process.stderr.write(
+          `stop-gate: failed to update the nudge counter at ${counterPath}: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }
   },
 });
 
@@ -606,7 +721,7 @@ const postCmd = defineCommand({
     },
     "inline-template": {
       type: "string",
-      description: "Path to inline comment Eta template (default: built-in format)",
+      description: "Path to inline comment Eta template (default: bundled templates/inline.eta)",
     },
     route: {
       type: "string",
@@ -642,15 +757,17 @@ const postCmd = defineCommand({
     },
   },
   run: async ({ args }) => {
+    const priceResolution = resolvePrices(args.prices);
     await post({
       repo: args.repo,
       headSha: args["head-sha"],
       botLogin: args["bot-login"] || "github-actions[bot]",
       findingsPath: args.findings,
       envelopePath: args.usage,
-      pricesPath: resolvePricesPath(args.prices),
+      pricesPath: priceResolution.path,
+      pricesProvided: priceResolution.kind === "provided",
       templatePath: resolveTemplatePath(args.template),
-      inlineTemplatePath: args["inline-template"] ? resolve(args["inline-template"]) : undefined,
+      inlineTemplatePath: resolveInlineTemplatePath(args["inline-template"]),
       route: args.route,
       headBranch: args["head-branch"],
       effort: args.effort,
@@ -666,7 +783,7 @@ export const main = defineCommand({
     name: "code-review",
     version: packageVersion,
     description:
-      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, lower-suggestions, cost, and validate findings JSON",
+      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, validate, and stop-gate findings JSON",
   },
   subCommands: {
     gather: gatherCmd,
@@ -677,8 +794,9 @@ export const main = defineCommand({
     validate: validateCmd,
     adapt: adaptCmd,
     extract: extractCmd,
-    "lower-suggestions": lowerSuggestionsCmd,
+    "validate-patches": validatePatchesCmd,
     "print-schema": printSchemaCmd,
+    "stop-gate": stopGateCmd,
   },
 });
 

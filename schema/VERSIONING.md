@@ -66,7 +66,8 @@ ignored); a version outside the supported set degrades to a §5.5 sticky notice.
 |---|---|---|
 | `v0.1.0` | superseded | Initial schema. Matches the proven camas reference implementation. |
 | `v0.2.0` | superseded | Adds required `schema_version`; optional `code`/`code_url` finding fields; normative `suggestion` `""`/`null` semantics; abstract vendor-neutral envelope (see SPEC §6.1). |
-| `v0.3.0` | **current** | Adds optional `reasoning` finding field. |
+| `v0.3.0` | superseded | Adds optional `reasoning` finding field. |
+| `v0.4.0` | **current** | Breaking: renames finding `body` → `description`; makes `reasoning` and `confidence` **required**; adds optional `recommendation` (prose fix); removes the free-text `suggestion` field (a `patch`, now `string \| null`, is the sole mechanical fix, projected into a suggestion by the commenter). The CLI supports only `0.4` — `0.2`/`0.3` documents cannot supply the now-required `reasoning`/`confidence`, so they degrade to a §5.5 unsupported-version notice rather than being upcast. |
 
 ### Price-map schema
 

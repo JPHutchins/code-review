@@ -199,11 +199,11 @@ Each finding:
 | `code` | `string` | no | Stable rule identifier (e.g. `"null-check-missing"`) for rule-based filtering, suppression, and cross-run dedup |
 | `code_url` | `string` | no | URL documenting the rule named by `code` |
 | `title` | `string` | yes | One-line summary |
-| `body` | `string` | yes | Markdown explanation |
-| `suggestion` | `string \| null` | no | `null` = no mechanical fix; `""` = delete `start_line..end_line`; non-empty = exact replacement for `start_line..end_line` (§5.2.4) |
-| `confidence` | `number` (0..1) | no | For noise suppression; the commenter MAY suppress a finding below a configurable threshold, but MUST NOT suppress a `critical` finding on confidence alone |
-| `reasoning` | `string` | no | Human/agent-facing rationale for why the finding is sound; used to judge the finding, distinct from `body` (the finding's own rendered explanation) |
-| `patch` | `string` | no | Single-hunk unified diff of an edit the agent actually made to this file, against the PR-head (post-change) content. Deterministically lowered to a `suggestion` + exact `start_line`/`end_line` (§5.2.8) or dropped — never hand-authored, so it eliminates the wrong-indentation/too-wide-range failure mode a hand-authored `suggestion` is prone to (issue #10) |
+| `description` | `string` | yes | Markdown explanation of what is wrong; rendered as the inline comment body |
+| `recommendation` | `string` | no | Markdown prose describing what to do about the finding, in human terms — distinct from `patch` (a machine-applicable diff). Use it when the fix is best explained rather than mechanically applied, or to accompany a `patch` with rationale |
+| `confidence` | `number` (0..1) | yes | For noise suppression; the commenter MAY suppress a finding below a configurable threshold, but MUST NOT suppress a `critical` finding on confidence alone |
+| `reasoning` | `string` | yes | Human/agent-facing rationale for why the finding is sound; used to judge the finding, distinct from `description` (the finding's own rendered explanation) |
+| `patch` | `string \| null` | no | Single-hunk unified diff of an edit the agent actually made to this file, against the PR-head (post-change) content, or `null` for no mechanical fix. Validated exactly against the file and deterministically projected into a suggestion (§5.2.8) or dropped — never hand-authored, so it eliminates the wrong-indentation/too-wide-range failure mode (issue #10) |
 
 ### 4.2 Versioning
 
@@ -211,9 +211,12 @@ The schema follows [semver](https://semver.org). The **in-data conformance signa
 `schema_version` field (§4.1): a findings object declares which schema version it conforms to, so a
 commenter can detect a version mismatch rather than silently dropping or misinterpreting fields.
 
-A conforming commenter accepts a configurable allowlist of schema minors (currently `{0.2, 0.3}`); a
+A conforming commenter accepts a configurable allowlist of schema minors (currently `{0.4}`); a
 document declaring a minor outside the allowlist degrades per §5.5 rather than being silently
-accepted or rejected without explanation.
+accepted or rejected without explanation. The `0.4` shape makes `description`, `reasoning`, and
+`confidence` required and drops the free-text `suggestion` field (a `patch` is the sole mechanical
+fix); a `0.2`/`0.3` document — which cannot supply a `reasoning`/`confidence` the shape now requires
+— therefore degrades per §5.5 rather than being upcast.
 
 The schema file's `$id` URI is the schema's own identity, distinct from a finding's
 `schema_version`:
@@ -283,7 +286,12 @@ somewhere; cost MUST appear in a footer somewhere), even if the exact rendering 
    When the encoded payload exceeds a size limit, the commenter falls back to a
    `<!-- code-review:findings-json <url> -->` marker linking the uploaded artifact instead; when
    neither an embeddable payload nor a URL is available, the marker is omitted — this item is
-   conditional, not required.
+   conditional, not required. When present, the marker is preceded on its own line by a fixed
+   `<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read
+   schema_version first. -->` directive, so an agent landing on any ONE of the three surfaces
+   below (this sticky, an inline comment, or the review body) still knows to decode it. The
+   serialization (embed-or-url, plus the directive) is identical across all three — a single
+   pointer format, not a per-surface variant.
 
 ### 5.2 Inline review
 
@@ -291,10 +299,13 @@ A **pull request review** (`POST /repos/{owner}/{repo}/pulls/{n}/reviews`) with 
 array. Each in-diff finding becomes one inline comment. The review is the **primary per-finding
 detail surface** — the sticky summary (§5.1) points at it rather than reproducing it.
 
-The review's top-level `body` is a short **pointer** (e.g. _"Automated code review for `<sha>` —
-see the summary comment for the verdict, walkthrough, and cost."_), NOT a duplicate of the summary,
-and links to the sticky (§5.1) when its URL is available — the two comments point at each other
-(§5.1 item 3 links back to the review symmetrically). The GitHub reviews API requires a review to
+The review's top-level `body` opens with the same findings-json marker as §5.1 item 7 (the whole
+findings document, not merely a per-comment one), followed by a short **pointer** (e.g. _"Automated
+code review for `<sha>` — see the summary comment for the verdict, walkthrough, and cost."_), NOT a
+duplicate of the summary, and links to the sticky (§5.1) when its URL is available — the two
+comments point at each other (§5.1 item 3 links back to the review symmetrically, and ONLY once the
+review is confirmed to exist — the sticky MUST NOT claim "see the review" before the review has
+actually been posted). The GitHub reviews API requires a review to
 carry a non-empty `body` OR at least one comment; the commenter posts a review only when there is
 at least one in-diff comment, so the pointer body is supplementary. When there are **zero in-diff
 findings**, no review is posted at all — the sticky's strays section (§5.1 item 3) is the sole
@@ -302,13 +313,13 @@ surface, and its disposition pointer says so.
 
 Each inline comment body opens with a **severity header** (`<emoji> **<severity>** — <title>`,
 using the same emoji mapping as §5.1 item 3) so a reader can triage without opening the sticky,
-followed by the finding's `body` and, when present, its suggestion block. It closes with a
-per-comment **LLM Disclosure** naming the model(s) that produced the finding (sourced the same way
-as §5.1 item 6) and, when the finding carries `confidence`, that figure; when the finding also
-carries `reasoning`, it is rendered in a collapsible fold. When a machine-readable findings JSON
-artifact URL is available (§5.1 item 7), a `<!-- code-review:findings-json <url> -->` marker is
-emitted as the comment's first line — agent-facing and invisible to a human reader — omitted when
-no such URL is available.
+followed by the finding's `description`, its `recommendation` prose when present, and — when the
+finding carries a `patch` — the block projected from it (§5.2.8). It closes with a per-comment **LLM
+Disclosure** naming the model(s) that produced the finding (sourced the same way as §5.1 item 6) and
+its `confidence`, with `reasoning` in a collapsible fold (both are always present as of the `0.4`
+shape). The same findings-json marker as §5.1 item 7 (embed-or-url, with the AGENTS directive) is
+emitted as the comment's first line — agent-facing and invisible to a human reader — omitted when no
+findings document is available to embed or point at.
 
 Rules (these MUST be enforced by the commenter, not the agent):
 
@@ -320,13 +331,13 @@ Rules (these MUST be enforced by the commenter, not the agent):
 2. **Use absolute `line` + `side`** (`RIGHT` for additions), plus `start_line`/`start_side` for
    multi-line ranges. The deprecated `position` (diff-offset) field MUST NOT be used.
 3. **`commit_id`** MUST be the reviewed head SHA (`workflow_run.head_sha`).
-4. **Suggestions** are a fenced `suggestion` block inside the comment `body`, replacing exactly
-   `start_line..end_line`. A finding's `suggestion` field has three distinct semantics: `null` — no
-   mechanical fix, render no block; `""` (empty string) — delete the range, render an empty
-   suggestion block; non-empty — replace the range with the given text. A suggestion spanning more
-   than GitHub's single-block line limit MUST be stripped (never emitted) and reported (a warning,
-   with the stripped suggestion noted in the summary); the inline comment MAY be retained without
-   the suggestion block. Emitting a payload that would 422 remains prohibited.
+4. **Suggestions** are a fenced `suggestion` block inside the comment body, replacing exactly
+   `start_line..end_line`. The commenter derives it by projecting a validated `patch` (§5.2.8) — a
+   findings object no longer carries a free-text `suggestion` field. An all-deletion patch projects
+   to an empty suggestion block (delete the range). A suggestion spanning more than GitHub's
+   single-block line limit MUST be stripped (never emitted) and reported (a warning noted in the
+   summary); the inline comment MAY be retained without the block. Emitting a payload that would 422
+   remains prohibited.
 5. **Event.** MUST post as `COMMENT`, never `REQUEST_CHANGES`. The review is advisory and MUST
    never block merge via branch protection.
 6. **Re-run hygiene (§5.2.6).** Suppression of the inline pass MUST be decided by **review
@@ -343,15 +354,17 @@ Rules (these MUST be enforced by the commenter, not the agent):
    `0.5`) MAY be suppressed from the inline review (demoted to a collapsed summary section, not
    dropped). A `critical`-severity finding MUST NOT be suppressed on confidence alone. The
    threshold SHOULD be configurable by the workflow.
-8. **Patch lowering.** Before this pass runs, the review job MUST resolve any `patch` (§4.1) on a
-   finding: validate it deterministically against the real PR-head file and lower it into an exact
-   `suggestion` + `start_line`/`end_line` (the reference CLI's `lower-suggestions` command). A
-   `patch` that does not apply cleanly (context mismatch, more or fewer than one hunk, a
-   non-contiguous change, a pure insertion, an unreadable file, etc.) MUST be dropped, leaving the
-   finding's `suggestion`/`start_line`/`end_line` exactly as originally authored — never partially
-   applied. A validated `patch` is authoritative over any hand-authored `suggestion` on the same
-   finding. This closes the wrong-indentation / too-wide-range failure mode a hand-authored
-   `suggestion` is prone to (issue #10).
+8. **Patch validation & projection.** In two deterministic steps: (a) before this pass, the review
+   job validates any `patch` (§4.1) against the real PR-head file — aligning the finding's
+   `start_line`/`end_line` to the patch's removed range and **keeping** the patch (the reference
+   CLI's `validate-patches` command); a `patch` that does not apply cleanly (context mismatch, more
+   or fewer than one hunk, a non-contiguous change, a pure insertion, an unreadable file, etc.) is
+   dropped, leaving the finding without a patch — never partially applied. (b) At render time the
+   commenter **projects** a kept patch into a fenced `suggestion` block (its added lines), anchored
+   at the aligned range; a patch that cannot be projected falls back to a raw fenced `patch` block
+   (non-lossy). Because the patch is machine-generated and validated exactly, this closes the
+   wrong-indentation / too-wide-range failure mode a hand-authored suggestion is prone to (issue
+   #10).
 
 ### 5.3 Trust — author identity, not marker
 
@@ -522,7 +535,7 @@ cannot drift from the run; a commenter MAY accept an explicit override.
 |---|---|
 | PR diff prompts model to exfiltrate secrets | Preflight triage (§7.3); read-only token; egress lock; spend cap |
 | Model output contains injection payloads | Commenter is deterministic; all text JSON-escaped before API call |
-| Model output injects into the review itself (a finding body aimed at the maintainer — "ignore previous instructions", phishing links) | Findings `body` is untrusted text rendered as markdown; treated as any PR comment; GitHub's renderer strips scripts (defense-in-depth) |
+| Model output injects into the review itself (a finding description aimed at the maintainer — "ignore previous instructions", phishing links) | A finding's `description` is untrusted text rendered as markdown; treated as any PR comment; GitHub's renderer strips scripts (defense-in-depth) |
 | Injected extra JSON block in agent output (append-a-block to smuggle a differing verdict) | Extraction ladder (§6.1) requires exactly-one validating candidate; ambiguous output fails closed (findings: non-zero exit; triage: `safe:false`) |
 | Fork PR redirects review to wrong target | PR number resolved from trusted `head_sha` + disambiguated by `head_branch`; CI event is not fork-controlled (§8.3) |
 | Prior review marker spoofed by fork author | Trust by author identity (bot login), not by marker (§5.3) |
@@ -626,8 +639,9 @@ jobs:
       #  only, never fails the job on a copy miss)
       # Phase 2: if safe — snapshot the applied, clean PR-head tree as a throwaway git commit BEFORE
       #   the agent edits anything, run the agentic review → abstract envelope (§6.1), then
-      #   `git reset --hard` to that snapshot and lower any finding's `patch` into an exact
-      #   suggestion + range against the restored PR-head content (`lower-suggestions`, §5.2 rule 8)
+      #   `git reset --hard` to that snapshot and validate any finding's `patch` against the
+      #   restored PR-head content — aligning the range and keeping it, or dropping it
+      #   (`validate-patches`, §5.2 rule 8); the commenter later projects it into a suggestion
       # (best-effort: copy the review agent's session transcript into transcripts/review)
 
       - uses: actions/upload-artifact@v7
@@ -782,10 +796,10 @@ A conforming commenter MUST:
   (§5.1, §6.1).
 
 - **REQ-CO-11:** Set the inline review's `commit_id` to the reviewed head SHA (§5.2.3).
-- **REQ-CO-12:** Render each suggestion as a fenced `suggestion` block inside the comment `body`,
-  replacing exactly `start_line..end_line`; a `null` suggestion renders no block, an empty-string
-  suggestion (`""`) renders a deletion block, and a non-empty suggestion renders a replacement
-  (§4.1, §5.2.4).
+- **REQ-CO-12:** Project a finding's validated `patch` into a fenced `suggestion` block inside the
+  comment body, replacing exactly `start_line..end_line`; an all-deletion patch renders a deletion
+  block, and a patch that cannot be projected falls back to a raw fenced `patch` block. A finding
+  with no `patch` renders neither (§4.1, §5.2.4, §5.2.8).
 - **REQ-CO-13:** Strip (never emit) a suggestion block that spans more than GitHub's single-block
   line limit, report it (a warning, with the stripped suggestion noted in the summary), and MAY
   retain the inline comment without it — never emit a review payload that will 422.
@@ -823,9 +837,11 @@ A conforming findings schema MUST:
   top-level `$schema` draft keyword (§4) — some CLIs silently disable enforcement when it is present.
 - **REQ-SC-3:** Follow semantic versioning; each version SHALL have a distinct, stable `$id` URI.
 - **REQ-SC-4:** Require at minimum `schema_version`, `summary`, `verdict`, `findings`; each finding
-  MUST require `path`, `start_line`, `end_line`, `severity`, `title`, and `body`.
-- **REQ-SC-5:** Declare `suggestion` as `string | null` with `""` (delete) and non-empty (replace)
-  both valid; `null` (no fix) is the only absence sentinel.
+  MUST require `path`, `start_line`, `end_line`, `severity`, `title`, `description`, `reasoning`, and
+  `confidence`.
+- **REQ-SC-5:** Declare `patch` as `string | null` — a single-hunk unified diff, or `null` for no
+  mechanical fix; the commenter validates and projects it (§5.2.8) rather than trusting a hand-authored
+  replacement.
 - **REQ-SC-6:** Constrain both `start_line` and `end_line` `>= 1` in the schema; the schema MAY
   approximate the cross-field `end_line >= start_line` invariant where the schema language allows,
   but the invariant MUST be enforced by the runtime codecs.

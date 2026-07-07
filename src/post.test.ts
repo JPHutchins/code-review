@@ -24,12 +24,14 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   end_line: 10,
   severity: "minor",
   title: "Test finding",
-  body: "Test body content.",
+  description: "Test description content.",
+  reasoning: "Test reasoning content.",
+  confidence: 0.7,
   ...overrides,
 });
 
 const mkFindings = (findings: Finding[]): Findings => ({
-  schema_version: "0.2.0",
+  schema_version: "0.4.0",
   summary: "A test summary.",
   verdict: "comment",
   findings,
@@ -45,9 +47,9 @@ const mkEntry = (overrides: Partial<ModelUsageEntry>): ModelUsageEntry => ({
 });
 
 const baseEnvelope: ResultEnvelope = {
-  schema_version: "0.2.0",
+  schema_version: "0.4.0",
   findings: {
-    schema_version: "0.2.0",
+    schema_version: "0.4.0",
     summary: "test summary",
     verdict: "comment",
     findings: [],
@@ -66,9 +68,11 @@ const prices: PriceMap = {
   },
 };
 
-// The real bundled template — exercises the actual shipped rendering (null-envelope
-// degradation, severity grouping, effort segment), not a hand-rolled duplicate that drifts.
+// The real bundled templates — exercise the actual shipped rendering (null-envelope degradation,
+// severity grouping, effort segment, the inline disclosure fold), not hand-rolled duplicates that
+// drift.
 const template = readFileSync(resolve(__dirname, "..", "templates", "comment.eta"), "utf-8");
+const inlineTemplate = readFileSync(resolve(__dirname, "..", "templates", "inline.eta"), "utf-8");
 
 const inlineDiff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
@@ -91,6 +95,7 @@ beforeEach(() => {
   writeFileSync(join(tmpDir, "envelope.json"), JSON.stringify(baseEnvelope));
   writeFileSync(join(tmpDir, "prices.json"), JSON.stringify(prices));
   writeFileSync(join(tmpDir, "comment.eta"), template);
+  writeFileSync(join(tmpDir, "inline.eta"), inlineTemplate);
 });
 
 afterEach(() => {
@@ -110,7 +115,9 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   findingsPath: join(tmpDir, "findings.json"),
   envelopePath: join(tmpDir, "envelope.json"),
   pricesPath: join(tmpDir, "prices.json"),
+  pricesProvided: true,
   templatePath: join(tmpDir, "comment.eta"),
+  inlineTemplatePath: join(tmpDir, "inline.eta"),
   route: "full review",
   ...overrides,
 });
@@ -347,14 +354,14 @@ describe("post — inline review", () => {
   });
 });
 
-describe("post — suggestion handling", () => {
-  it('suggestion "" produces a deletion suggestion block', async () => {
+describe("post — suggestion handling (projected from a finding's patch)", () => {
+  it("an all-deletion patch produces an empty (deletion) suggestion block", async () => {
     const findings = mkFindings([
       mkFinding({
         start_line: 10,
         end_line: 10,
-        body: "Delete this line.",
-        suggestion: "",
+        description: "Delete this line.",
+        patch: ["@@ -10,1 +10,0 @@", "-old"].join("\n"),
       }),
     ]);
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(findings));
@@ -397,13 +404,12 @@ describe("post — suggestion handling", () => {
     expect(suggestionMatch![1]).toBe("");
   });
 
-  it("suggestion null produces no suggestion block", async () => {
+  it("a finding with no patch produces no suggestion block", async () => {
     const findings = mkFindings([
       mkFinding({
         start_line: 10,
         end_line: 10,
-        body: "Just a note.",
-        suggestion: null,
+        description: "Just a note.",
       }),
     ]);
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(findings));
@@ -442,14 +448,14 @@ describe("post — suggestion handling", () => {
     expect(commentBody).not.toContain("```suggestion");
   });
 
-  it("warns and demotes a >10-line suggestion rather than posting it inline", async () => {
-    const longSuggestion = Array.from({ length: 15 }, (_, i) => `line ${String(i)}`).join("\n");
+  it("warns and demotes a >10-line projected suggestion rather than posting it inline", async () => {
+    const longAdded = Array.from({ length: 15 }, (_, i) => `line ${String(i)}`);
     const findings = mkFindings([
       mkFinding({
         start_line: 10,
         end_line: 10,
-        body: "Large replacement.",
-        suggestion: longSuggestion,
+        description: "Large replacement.",
+        patch: ["@@ -10 +10,15 @@", "-old", ...longAdded.map((l) => `+${l}`)].join("\n"),
       }),
     ]);
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(findings));
@@ -788,7 +794,7 @@ describe("post — §5.5 error semantics", () => {
     const findings = mkFindings([mkFinding({})]);
     writeFileSync(
       join(tmpDir, "findings.json"),
-      JSON.stringify({ ...findings, schema_version: "0.2" }),
+      JSON.stringify({ ...findings, schema_version: "0.4" }),
     );
     const { api, calls } = mkMockGhApi(mkBaseMocks());
 
@@ -955,8 +961,10 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
 
     await post(mkInput({}), api);
 
-    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
-    expect(patchCall).toBeDefined();
+    // Two PATCHes land on the existing sticky: the initial pass (no disposition claim yet) and,
+    // once the review is actually posted, the confirmed "posted inline" disposition (issue #21).
+    const patchCalls = calls().filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCalls).toHaveLength(2);
 
     // The real inline review IS posted despite the matching marker (the bug was suppressing it).
     const inlineCall = calls().find(
@@ -966,8 +974,8 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         !c.args.includes("--paginate"),
     );
     expect(inlineCall).toBeDefined();
-    const stickyBody = JSON.parse(patchCall!.stdin!) as CommentBody;
-    expect(stickyBody.body).toContain("posted inline");
+    const finalStickyBody = JSON.parse(patchCalls[1]!.stdin!) as CommentBody;
+    expect(finalStickyBody.body).toContain("posted inline");
   });
 
   it("suppresses the inline pass when a completed bot review already exists at the head SHA", async () => {
@@ -1315,7 +1323,7 @@ describe("post — --inline-template", () => {
 
   it("renders inline comment bodies with a custom Eta template", async () => {
     const inlineTemplatePath = join(tmpDir, "inline.eta");
-    writeFileSync(inlineTemplatePath, "CUSTOM INLINE: <%~ it.body %>");
+    writeFileSync(inlineTemplatePath, "CUSTOM INLINE: <%~ it.description %>");
 
     const { api, calls } = mkMockGhApi(inlineMocks);
 
@@ -1327,10 +1335,10 @@ describe("post — --inline-template", () => {
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     expect(body.comments[0]?.body).toContain("CUSTOM INLINE:");
-    expect(body.comments[0]?.body).toContain("Test body content.");
+    expect(body.comments[0]?.body).toContain("Test description content.");
   });
 
-  it("uses the built-in inline format when --inline-template is omitted (regression)", async () => {
+  it("uses the bundled inline.eta template — with its [!TIP] disclosure — when --inline-template is omitted (issue #22 regression)", async () => {
     const { api, calls } = mkMockGhApi(inlineMocks);
 
     await post(mkInput({}), api);
@@ -1340,10 +1348,15 @@ describe("post — --inline-template", () => {
     );
     expect(reviewCall).toBeDefined();
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
-    // The built-in path prepends a severity header (issue #12) but stays otherwise plain.
-    // (formatMarkdown, issue #14, ensures exactly one trailing newline.)
-    expect(body.comments[0]?.body).toBe("🔵 **minor** — Test finding\n\nTest body content.\n");
-    expect(body.comments[0]?.body).not.toContain("CUSTOM INLINE:");
+    const commentBody = body.comments[0]?.body ?? "";
+    // The bundled default is inline.eta itself (not a plain built-in string) — it prepends a
+    // severity header (issue #12) AND the [!TIP] disclosure fold (issue #16/#22), so the
+    // disclosure is no longer reachable only via an explicit --inline-template.
+    expect(commentBody).toContain("🔵 **minor** — Test finding");
+    expect(commentBody).toContain("Test description content.");
+    expect(commentBody).toContain("> [!TIP]");
+    expect(commentBody).toContain("Generated by");
+    expect(commentBody).not.toContain("CUSTOM INLINE:");
   });
 });
 
@@ -1439,6 +1452,13 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     {
       match: (a: readonly string[]) =>
         a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: JSON.stringify({
+        id: 999,
+        html_url: "https://github.com/owner/repo/issues/42#issuecomment-999",
+      }),
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
       response: "",
     },
     {
@@ -1447,11 +1467,17 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     },
   ];
 
+  // The sticky's TRUE final content — its first write never claims "posted" (issue #21), so
+  // callers that care about the confirmed disposition need the LAST write, whichever endpoint
+  // it landed on (the initial POST, or the follow-up PATCH once the review is confirmed).
   const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
-    const stickyCall = calls.find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    const stickyCalls = calls.filter(
+      (c) =>
+        c.stdin !== undefined &&
+        (c.args[0] === "repos/owner/repo/issues/42/comments" ||
+          c.args[0] === "repos/owner/repo/issues/comments/999"),
     );
-    return (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    return (JSON.parse(stickyCalls.at(-1)!.stdin!) as CommentBody).body;
   };
 
   it("renders a 'posted inline' pointer and NO per-finding findings table for in-diff findings", async () => {
@@ -1464,8 +1490,8 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     expect(body).toContain("abc123d");
     expect(body).not.toContain("| Severity | File | Line | Summary |");
     expect(body).not.toContain("Findings summary");
-    // The finding's body text belongs to the inline comment, never the sticky.
-    expect(body).not.toContain("Test body content.");
+    // The finding's description text belongs to the inline comment, never the sticky.
+    expect(body).not.toContain("Test description content.");
   });
 
   it("renders a 'none-in-diff' pointer and the strays section (only) when all findings are out of diff", async () => {
@@ -1505,6 +1531,20 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     expect(body.body).not.toContain("A test summary.");
     expect(body.commit_id).toBe("abc123def456");
     expect(body.event).toBe("COMMENT");
+  });
+
+  it("prepends the findings-json marker to the review body itself, not just the sticky and inline comments (issue #19)", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({}), api);
+
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(body.body.startsWith("<!-- AGENTS: STOP")).toBe(true);
+    expect(body.body).toContain("<!-- code-review:findings-json;base64 ");
+    expect(body.body).toContain("Automated code review");
   });
 });
 
@@ -1743,9 +1783,9 @@ describe("post — issue #14: markdown formatting pass before posting", () => {
     expect(body).toContain("Para one.\n\nPara two.");
   });
 
-  it("collapses multiple blank lines in a finding's body before posting the inline comment", async () => {
+  it("collapses multiple blank lines in a finding's description before posting the inline comment", async () => {
     const findings = mkFindings([
-      mkFinding({ start_line: 10, end_line: 10, body: "Line one.\n\n\n\nLine two." }),
+      mkFinding({ start_line: 10, end_line: 10, description: "Line one.\n\n\n\nLine two." }),
     ]);
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(findings));
     const { api, calls } = mkMockGhApi(okMocks);
@@ -1800,13 +1840,13 @@ describe("post — --run-url / --json-url threading", () => {
     expect(body).toContain("[view the run & traces](https://ci.example.com/runs/123)");
   });
 
-  it("threads --json-url into each inline comment's first line; the sticky embeds the findings instead (PR #17 review)", async () => {
+  it("embeds the same findings-json marker on the sticky and each inline comment when small enough (issue #19 — one serializer, all surfaces)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
 
-    // Findings are small enough to embed, so the sticky prefers the embed over the link — see the
-    // size-fallback case below for the jsonUrl link path in the sticky.
+    // Findings are small enough to embed, so every surface prefers the embed over the link — see
+    // the size-fallback case below for the jsonUrl link path.
     const stickyCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
@@ -1819,11 +1859,9 @@ describe("post — --run-url / --json-url threading", () => {
     );
     const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     const commentBody = reviewBody.comments[0]?.body ?? "";
-    expect(
-      commentBody.startsWith(
-        "<!-- code-review:findings-json https://artifacts.example.com/findings.json -->",
-      ),
-    ).toBe(true);
+    expect(commentBody.startsWith("<!-- AGENTS: STOP")).toBe(true);
+    expect(commentBody).toContain("<!-- code-review:findings-json;base64 ");
+    expect(commentBody).not.toContain("https://artifacts.example.com/findings.json");
   });
 
   it("falls back to the --json-url link marker in the sticky when the findings are too large to embed (PR #17 review)", async () => {
@@ -1833,7 +1871,7 @@ describe("post — --run-url / --json-url threading", () => {
           start_line: 10,
           end_line: 10,
           title: `Finding ${String(i)}`,
-          body: "x".repeat(200),
+          description: "x".repeat(200),
         }),
       ),
     );
@@ -1864,5 +1902,66 @@ describe("post — --run-url / --json-url threading", () => {
     expect(body).not.toContain("view the run & traces");
     expect(body).toContain("<!-- code-review:findings-json;base64 ");
     expect(body).not.toContain("<!-- code-review:findings-json http");
+  });
+});
+
+describe("post — absent price map renders cost as N/A with a footnote (SPEC §6.2)", () => {
+  const okMocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+      response: "",
+    },
+  ];
+
+  const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
+    const stickyCall = calls.find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    return (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+  };
+
+  it("renders cost cells as N/A (never $0.00) and a footnote linking SPEC §6.2 when pricesProvided is false", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ pricesProvided: false }), api);
+
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("**cost:** N/A");
+    expect(body).not.toContain("$0.00");
+    expect(body).toContain(
+      "[No `.github/prices.json`](https://github.com/JPHutchins/code-review/blob/main/SPEC.md#62-price-map)",
+    );
+    // The per-model cost column is N/A too — real token counts still render (they need no rates).
+    expect(body).toContain("| N/A |");
+    expect(body).toContain("10,000");
+  });
+
+  it("renders real cost figures and no footnote when a real price map is provided", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ pricesProvided: true }), api);
+
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("**cost:** $");
+    expect(body).not.toContain("N/A");
+    expect(body).not.toContain("No `.github/prices.json`");
   });
 });

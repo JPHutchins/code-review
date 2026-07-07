@@ -9,7 +9,7 @@
   "ttft_stream_ms": 1204,
   "time_to_request_ms": 142,
   "num_turns": 2,
-  "result": "First pass:\n\n```json\n{\n  \"schema_version\": \"0.2.0\",\n  \"summary\": \"Adds input validation to the upload handler.\",\n  \"verdict\": \"comment\",\n  \"findings\": []\n}\n```\n\nRestating the same answer verbatim:\n\n```json\n{\n  \"schema_version\": \"0.2.0\",\n  \"summary\": \"Adds input validation to the upload handler.\",\n  \"verdict\": \"comment\",\n  \"findings\": []\n}\n```",
+  "result": "First pass:\n\n```json\n{\n  \"schema_version\": \"0.4.0\",\n  \"summary\": \"Adds input validation to the upload handler.\",\n  \"verdict\": \"comment\",\n  \"findings\": []\n}\n```\n\nRestating the same answer verbatim:\n\n```json\n{\n  \"schema_version\": \"0.4.0\",\n  \"summary\": \"Adds input validation to the upload handler.\",\n  \"verdict\": \"comment\",\n  \"findings\": []\n}\n```",
   "stop_reason": "end_turn",
   "session_id": "00000000-0000-4000-8000-000000000000",
   "total_cost_usd": 0.0123,

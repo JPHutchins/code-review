@@ -9,7 +9,7 @@
   "ttft_stream_ms": 1204,
   "time_to_request_ms": 142,
   "num_turns": 2,
-  "result": "Fenced answer (should be ignored — the agent-file wins):\n\n```json\n{\n  \"schema_version\": \"0.2.0\",\n  \"summary\": \"No issues found — the change looks safe to merge.\",\n  \"verdict\": \"approve\",\n  \"findings\": []\n}\n```",
+  "result": "Fenced answer (should be ignored — the agent-file wins):\n\n```json\n{\n  \"schema_version\": \"0.4.0\",\n  \"summary\": \"No issues found — the change looks safe to merge.\",\n  \"verdict\": \"approve\",\n  \"findings\": []\n}\n```",
   "stop_reason": "end_turn",
   "session_id": "00000000-0000-4000-8000-000000000000",
   "total_cost_usd": 0.0123,

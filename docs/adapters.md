@@ -36,8 +36,11 @@ presentation and posting are the commenter's job (SPEC §2.3, and §9.1 REQ-RA-3
 `--output-format json` envelope onto the abstract envelope, delegating `findings` recovery to the
 extraction ladder (`code-review extract`, below). [`src/adapt.ts`](../src/adapt.ts) is the mapping:
 `modelUsage` → `models[]`, `num_turns` → `turns`, `duration_ms` → `duration_ms`, `total_cost_usd` →
-`vendor_cost_usd`. `findings` and `schema_version` come from the ladder; every other envelope field
-always comes from the native envelope itself. A real captured native envelope lives at
+`vendor_cost_usd`. `findings` and `schema_version` come from the ladder when it recovers a candidate;
+every other envelope field always comes from the native envelope itself, unconditionally — a ladder
+miss degrades to an empty `findings: []` with a "did not complete" summary, never to a discarded
+envelope, so the run's real telemetry (models, turns, duration, cost) is never lost to a findings
+recovery failure. A real captured native envelope lives at
 [`test/fixtures/native-claude-code-envelope.json`](../test/fixtures/native-claude-code-envelope.json).
 
 ### Invocation shape

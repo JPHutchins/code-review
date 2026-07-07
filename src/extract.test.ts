@@ -181,7 +181,7 @@ describe("extractStructured — rung order (ruling 1)", () => {
     const native = {
       ...(loadFixture("f02-pure-json-result.json") as Record<string, unknown>),
       structured_output: {
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "from structured_output",
         verdict: "approve",
         findings: [],
@@ -196,7 +196,7 @@ describe("extractStructured — rung order (ruling 1)", () => {
   it("REGRESSION: --agent-file wins over a disagreeing structured_output, not just a disagreeing fence", () => {
     const native = {
       structured_output: {
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "from structured_output — must lose to the agent file",
         verdict: "approve",
         findings: [],
@@ -221,7 +221,7 @@ describe("extractStructured — error-envelope short-circuit (ruling 2)", () => 
       is_error: true,
       subtype: "error_max_turns",
       structured_output: {
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "s",
         verdict: "comment",
         findings: [],
@@ -235,7 +235,7 @@ describe("extractStructured — error-envelope short-circuit (ruling 2)", () => 
     const native = {
       subtype: "error_during_execution",
       structured_output: {
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "s",
         verdict: "comment",
         findings: [],
@@ -264,7 +264,7 @@ describe("extractStructured — ajv candidate gate (ruling 3)", () => {
   it("REGRESSION: a findings candidate with one extra top-level key is rejected", () => {
     const native = {
       structured_output: {
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "s",
         verdict: "comment",
         findings: [],
@@ -282,7 +282,7 @@ describe("extractStructured — ajv candidate gate (ruling 3)", () => {
   it("REGRESSION: a findings candidate with an extra key at a nested finding-item level is rejected", () => {
     const native = {
       structured_output: {
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "s",
         verdict: "comment",
         findings: [
@@ -292,7 +292,9 @@ describe("extractStructured — ajv candidate gate (ruling 3)", () => {
             end_line: 1,
             severity: "minor",
             title: "t",
-            body: "b",
+            description: "d",
+            reasoning: "r",
+            confidence: 0.5,
             unexpected: "field",
           },
         ],
@@ -305,7 +307,7 @@ describe("extractStructured — ajv candidate gate (ruling 3)", () => {
   it("io-ts-only invariant (end_line >= start_line) rejects a candidate ajv alone would accept", () => {
     const native = {
       structured_output: {
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "s",
         verdict: "comment",
         findings: [
@@ -315,7 +317,9 @@ describe("extractStructured — ajv candidate gate (ruling 3)", () => {
             end_line: 1,
             severity: "minor",
             title: "t",
-            body: "b",
+            description: "d",
+            reasoning: "r",
+            confidence: 0.5,
           },
         ],
       },
@@ -375,7 +379,7 @@ describe("extractStructured — exact duplicates collapse before the ambiguity c
 describe("extractStructured — CRLF fenced block (pins incidental behavior)", () => {
   it("recovers a valid candidate from a fenced block using CRLF line endings", () => {
     const findingsJson = JSON.stringify({
-      schema_version: "0.2.0",
+      schema_version: "0.4.0",
       summary: "CRLF fence.",
       verdict: "comment",
       findings: [],

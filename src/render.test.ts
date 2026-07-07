@@ -33,9 +33,9 @@ const mkEntry = (overrides: Partial<ModelUsageEntry>): ModelUsageEntry => ({
 });
 
 const baseEnvelope: ResultEnvelope = {
-  schema_version: "0.2.0",
+  schema_version: "0.4.0",
   findings: {
-    schema_version: "0.2.0",
+    schema_version: "0.4.0",
     summary: "test summary",
     verdict: "comment",
     findings: [],
@@ -52,7 +52,9 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   end_line: 42,
   severity: "minor",
   title: "Test finding",
-  body: "Test body content.",
+  description: "Test description content.",
+  reasoning: "Test reasoning content.",
+  confidence: 0.7,
   ...overrides,
 });
 
@@ -60,7 +62,7 @@ const mkFindings = (
   findings: Finding[],
   overrides?: Partial<Omit<Findings, "findings">>,
 ): Findings => ({
-  schema_version: "0.2.0",
+  schema_version: "0.4.0",
   summary: "A test summary.",
   verdict: "comment",
   findings,
@@ -141,7 +143,7 @@ describe("render", () => {
 
     it("round-trips the exact findings object through the embedded base64 marker", () => {
       const findings = mkFindings([
-        mkFinding({ severity: "critical", title: "Round-trip me", body: "detail here" }),
+        mkFinding({ severity: "critical", title: "Round-trip me", description: "detail here" }),
       ]);
       const result = render({ findings, envelope: baseEnvelope, prices, template });
       const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
@@ -157,7 +159,7 @@ describe("render", () => {
         Array.from({ length: 500 }, (_, i) =>
           mkFinding({
             title: `Finding ${String(i)}`,
-            body: "x".repeat(200),
+            description: "x".repeat(200),
           }),
         ),
       );
@@ -179,7 +181,7 @@ describe("render", () => {
         Array.from({ length: 500 }, (_, i) =>
           mkFinding({
             title: `Finding ${String(i)}`,
-            body: "x".repeat(200),
+            description: "x".repeat(200),
           }),
         ),
       );
@@ -283,7 +285,7 @@ describe("render", () => {
         prices,
         template,
         inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
-        reviewUrl: "https://github.com/o/r/pull/1#pullrequestreview-1",
+        crossLinks: { reviewUrl: "https://github.com/o/r/pull/1#pullrequestreview-1" },
       });
       expect(result).toContain(
         "[see the review](https://github.com/o/r/pull/1#pullrequestreview-1)",
@@ -377,23 +379,24 @@ describe("render", () => {
     });
   });
 
-  describe("stray confidence and reasoning fold (issue #16)", () => {
-    it("shows confidence on the bullet line, outside any fold", () => {
+  describe("stray confidence and reasoning fold (issue #16; both required in 0.4)", () => {
+    it("shows confidence on the bullet line, outside the fold", () => {
       const findings = mkFindings([]);
       const strays = [mkFinding({ title: "Stray conf", confidence: 0.82 })];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result).toContain("confidence 0.82");
-      expect(result).not.toContain("<details>");
+      const bulletLine = result.split("\n").find((line) => line.includes("Stray conf"));
+      expect(bulletLine).toContain("confidence 0.82");
     });
 
     it("shows a zero confidence (falsy but valid) on the bullet line", () => {
       const findings = mkFindings([]);
       const strays = [mkFinding({ title: "Stray zero conf", confidence: 0 })];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result).toContain("confidence 0");
+      const bulletLine = result.split("\n").find((line) => line.includes("Stray zero conf"));
+      expect(bulletLine).toContain("confidence 0");
     });
 
-    it("renders a collapsible reasoning fold under the bullet when reasoning is present", () => {
+    it("renders a collapsible reasoning fold under the bullet (reasoning is always present)", () => {
       const findings = mkFindings([]);
       const strays = [mkFinding({ title: "Stray reason", reasoning: "Because X causes Y." })];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
@@ -414,12 +417,38 @@ describe("render", () => {
       expect(result).toContain("Some justification.");
     });
 
-    it("omits confidence and the reasoning fold entirely when neither is present", () => {
+    it("renders a **Recommended fix:** line only when the stray carries a recommendation", () => {
       const findings = mkFindings([]);
-      const strays = [mkFinding({ title: "Stray plain" })];
+      const withRec = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays: [mkFinding({ title: "Stray rec", recommendation: "Guard the input." })],
+      });
+      expect(withRec).toContain("**Recommended fix:** Guard the input.");
+
+      const withoutRec = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays: [mkFinding({ title: "Stray no rec" })],
+      });
+      expect(withoutRec).not.toContain("Recommended fix:");
+    });
+
+    it("projects a stray's patch into a ```suggestion block", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({
+          title: "Stray patch",
+          patch: ["@@ -2 +2 @@", "-old", "+fixed line"].join("\n"),
+        }),
+      ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result).not.toContain("confidence");
-      expect(result).not.toContain("<details>");
+      expect(result).toContain("```suggestion");
+      expect(result).toContain("fixed line");
     });
 
     it("indents every line of a multi-paragraph reasoning so continuation lines stay in the fold", () => {
@@ -628,6 +657,94 @@ describe("render", () => {
       const result = render({ findings, envelope: null, prices, template, route: "full review" });
       expect(result).not.toContain("**models:**");
       expect(result).not.toContain("**cost:**");
+    });
+  });
+
+  describe("absent price map → N/A cost + footnote (SPEC §6.2)", () => {
+    it("renders every cost cell as N/A (never $0.00) when pricesProvided is false", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: false,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**cost:** N/A");
+      expect(result).not.toContain("$0.00");
+      expect(result).not.toContain("$0.06");
+      // The per-model and Total Cost cells are N/A too.
+      expect(result).toContain("| N/A |");
+    });
+
+    it("still renders the real token counts — those need no price map", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: false,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("10,000");
+      expect(result).toContain("2,000");
+    });
+
+    it("emits a footnote hyperlinking SPEC §6.2 when pricesProvided is false", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: false,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain(
+        "[No `.github/prices.json`](https://github.com/JPHutchins/code-review/blob/main/SPEC.md#62-price-map)",
+      );
+    });
+
+    it("keeps the footnote inside the disclosure blockquote so the [!WARNING] alert stays contiguous", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: false,
+        template,
+        route: "full review",
+      });
+      const footnoteLine = result.split("\n").find((l) => l.includes("No `.github/prices.json`"));
+      expect(footnoteLine).toBeDefined();
+      expect(footnoteLine!.startsWith(">")).toBe(true);
+    });
+
+    it("renders real $ costs and NO footnote when pricesProvided is true (or omitted)", () => {
+      const findings = mkFindings([]);
+      const provided = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(provided).toContain("**cost:** $0.06");
+      expect(provided).not.toContain("N/A");
+      expect(provided).not.toContain("No `.github/prices.json`");
+
+      const omitted = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(omitted).not.toContain("No `.github/prices.json`");
+      expect(omitted).toContain("**cost:** $0.06");
     });
   });
 
@@ -1126,12 +1243,12 @@ describe("cost-table structural integrity (regression guard for the blank-line-p
 
 describe("summary-only sticky (regression guard against re-adding per-finding tables)", () => {
   it("renders no per-finding findings table or nits table header, even with mixed severities present", () => {
-    const uniqueBody = "UNIQUE_BODY_MARKER_must_not_leak_into_the_sticky_9f3d";
+    const uniqueBody = "UNIQUE_DESCRIPTION_MARKER_must_not_leak_into_the_sticky_9f3d";
     const findings = mkFindings([
-      mkFinding({ severity: "critical", title: "Crit finding", body: uniqueBody }),
-      mkFinding({ severity: "major", title: "Major finding", body: uniqueBody }),
-      mkFinding({ severity: "minor", title: "Minor finding", body: uniqueBody }),
-      mkFinding({ severity: "nit", title: "Nit finding", body: uniqueBody }),
+      mkFinding({ severity: "critical", title: "Crit finding", description: uniqueBody }),
+      mkFinding({ severity: "major", title: "Major finding", description: uniqueBody }),
+      mkFinding({ severity: "minor", title: "Minor finding", description: uniqueBody }),
+      mkFinding({ severity: "nit", title: "Nit finding", description: uniqueBody }),
     ]);
     const result = render({
       findings,
@@ -1143,13 +1260,13 @@ describe("summary-only sticky (regression guard against re-adding per-finding ta
 
     expect(result).not.toContain("| Severity | File | Line | Summary |");
     expect(result).not.toContain("| File | Line | Summary |");
-    // Per-finding body text belongs to the inline review now, not the sticky.
+    // Per-finding description text belongs to the inline review now, not the sticky.
     expect(result).not.toContain(uniqueBody);
   });
 });
 
-describe("strays list structural integrity (contiguous bullet run)", () => {
-  it("renders all stray bullets as one contiguous run with no blank line between", () => {
+describe("strays list structural integrity", () => {
+  it("renders every stray as a bullet immediately followed by its reasoning fold (no blank line splitting a bullet from its own content)", () => {
     const findings = mkFindings([]);
     const strays = [
       mkFinding({ path: "src/a.ts", start_line: 1, severity: "critical", title: "Stray A" }),
@@ -1157,13 +1274,19 @@ describe("strays list structural integrity (contiguous bullet run)", () => {
       mkFinding({ path: "src/c.ts", start_line: 3, severity: "minor", title: "Stray C" }),
     ];
     const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+    const lines = result.split("\n");
 
-    const bullets = contiguousBlockFrom(
-      result,
-      (line) => line.startsWith("- "),
-      (line) => line.startsWith("- "),
+    // All three bullets render (reasoning is always present, so each bullet now carries a fold —
+    // the bullets are no longer one contiguous run, which is the intended 0.4 structure).
+    const bulletIdxs = lines.reduce<number[]>(
+      (acc, line, i) => (line.startsWith("- ") ? [...acc, i] : acc),
+      [],
     );
-    expect(bullets).toHaveLength(3);
-    expect(bullets.every((line) => line.trim().length > 0)).toBe(true);
+    expect(bulletIdxs).toHaveLength(3);
+    // The Eta blank-line-per-row bug would insert a blank line right under a bullet; here each
+    // bullet is immediately followed by its indented <details> fold.
+    for (const i of bulletIdxs) {
+      expect(lines[i + 1]?.trim()).toMatch(/^<details>/);
+    }
   });
 });

@@ -1,6 +1,8 @@
 // Version-aware schema registry: maps each schema kind's supported major.minor(s) to a bundled
-// schema file, io-ts codec, and upcast normalizer (identity for every entry today — findings' 0.2
-// and 0.3 minors share one shape-compatible codec, so neither needs an upcast).
+// schema file, io-ts codec, and upcast normalizer (identity for every entry today). Findings is a
+// single current minor (0.4): the 0.4 shape REQUIRES `reasoning`/`confidence`, which cannot be
+// honestly upcast from a 0.2/0.3 document (a confidence score cannot be fabricated), so those older
+// minors are dropped from the table and now degrade to the §5.5 unsupported-version notice.
 // `resolve` is pure (no IO); `schemaPathFor` only computes a path string from the tables below.
 //
 // This module imports from schema.ts (codecs, DEFAULT_SCHEMA_VERSION), never the reverse — schema.ts
@@ -52,20 +54,12 @@ const identity = <A>(decoded: A): A => decoded;
 
 const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
-    minor: "0.3",
+    minor: "0.4",
     defaultVersion: DEFAULT_SCHEMA_VERSION,
     schemaFile: "findings.schema.json",
     codec: FindingsCodec,
     normalize: identity,
     latest: true,
-  },
-  {
-    minor: "0.2",
-    defaultVersion: "0.2.0",
-    schemaFile: "v0.2/findings.schema.json",
-    codec: FindingsCodec,
-    normalize: identity,
-    latest: false,
   },
 ];
 
@@ -115,7 +109,7 @@ const describeValidationError = (e: ValidationError): string => {
 const formatErrors = (errors: Errors): readonly string[] => errors.map(describeValidationError);
 
 /** The declared `schema_version` of a raw document, when present as a string. */
-const declaredVersion = (raw: unknown): string | undefined =>
+export const declaredVersion = (raw: unknown): string | undefined =>
   typeof raw === "object" && raw !== null && "schema_version" in raw
     ? typeof raw.schema_version === "string"
       ? raw.schema_version

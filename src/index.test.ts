@@ -74,6 +74,94 @@ const runCli = async (
   return { stdout, stderr, exitCode };
 };
 
+describe("cli — stop-gate", () => {
+  it("prints Stop-hook settings that wire the gate to this draft", async () => {
+    const { stdout, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      "/tmp/findings-draft.json",
+      "--print-settings",
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as {
+      hooks: { Stop: { hooks: { type: string; command: string }[] }[] };
+    };
+    const command = parsed.hooks.Stop[0]?.hooks[0]?.command;
+    expect(command).toContain("stop-gate");
+    expect(command).toContain("--draft '/tmp/findings-draft.json'");
+  });
+
+  it("--print-settings also propagates --schema and --counter, not just kind/schema-version/max-nudges", async () => {
+    const { stdout, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      "/tmp/findings-draft.json",
+      "--schema",
+      "/tmp/custom.schema.json",
+      "--counter",
+      "/tmp/findings-draft.json.nudges",
+      "--print-settings",
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as {
+      hooks: { Stop: { hooks: { type: string; command: string }[] }[] };
+    };
+    const command = parsed.hooks.Stop[0]?.hooks[0]?.command;
+    expect(command).toContain("--schema '/tmp/custom.schema.json'");
+    expect(command).toContain("--counter '/tmp/findings-draft.json.nudges'");
+  });
+
+  it("names the given --kind (not a hardcoded 'findings') in the block reason", async () => {
+    const draftPath = join(tmpDir, "triage-draft.json"); // never written — present:false
+    const { stdout, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      draftPath,
+      "--kind",
+      "triage",
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as { decision: string; reason: string };
+    expect(parsed.decision).toBe("block");
+    expect(parsed.reason).toContain("triage document");
+    expect(parsed.reason).toContain("print-schema triage");
+    expect(parsed.reason).toContain(`validate ${draftPath} --kind triage`);
+  });
+
+  it("still emits the block to stdout even when the nudge counter can't be written (block-then-bump ordering)", async () => {
+    const draftPath = join(tmpDir, "missing-draft.json"); // never written — present:false
+    const counterAsDir = join(tmpDir, "counter-is-a-directory");
+    mkdirSync(counterAsDir);
+    const { stdout, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      draftPath,
+      "--counter",
+      counterAsDir,
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as { decision: string; reason: string };
+    expect(parsed.decision).toBe("block");
+  });
+
+  it("allows and exits cleanly on a TTY with no piped stdin (drainStdin must not block forever)", async () => {
+    const draftPath = join(tmpDir, "valid-draft.json");
+    writeFileSync(
+      draftPath,
+      JSON.stringify({ schema_version: "0.4.0", summary: "s", verdict: "approve", findings: [] }),
+    );
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    try {
+      const { stdout, exitCode } = await runCli(["stop-gate", "--draft", draftPath]);
+      expect(exitCode).toBeNull();
+      expect(stdout).toBe("");
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
+    }
+  });
+});
+
 describe("cli — adapt", () => {
   it("maps a native Claude Code envelope onto the abstract envelope and round-trips it", async () => {
     const { stdout, exitCode } = await runCli([
@@ -99,7 +187,7 @@ describe("cli — adapt", () => {
     expect(stderr).toContain("opencode");
   });
 
-  it("exits 1 with a clear message when structured_output is invalid", async () => {
+  it("exits 0 with empty findings + real telemetry when structured_output is invalid (issue #18 — telemetry survives a ladder miss)", async () => {
     const badPath = join(tmpDir, "bad-native.json");
     writeFileSync(
       badPath,
@@ -110,9 +198,11 @@ describe("cli — adapt", () => {
         structured_output: { not: "findings shaped" },
       }),
     );
-    const { stderr, exitCode } = await runCli(["adapt", badPath, "--adapter", "claude-code"]);
-    expect(exitCode).toBe(1);
-    expect(stderr).toContain("findings schema");
+    const { stdout, exitCode } = await runCli(["adapt", badPath, "--adapter", "claude-code"]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as { findings: { findings: unknown[] }; turns: number };
+    expect(parsed.findings.findings).toEqual([]);
+    expect(parsed.turns).toBe(1);
   });
 
   it("--agent-file wins over a disagreeing fenced block in the native envelope's result", async () => {
@@ -143,7 +233,7 @@ describe("cli — extract", () => {
     expect(exitCode).toBeNull();
     const parsed = JSON.parse(stdout) as { summary: string; schema_version: string };
     expect(parsed.summary).toBe("Adds input validation to the upload handler.");
-    expect(parsed.schema_version).toBe("0.2.0");
+    expect(parsed.schema_version).toBe("0.4.0");
   });
 
   it("findings: two differing valid fenced blocks (fixture 6) are ambiguous, exit non-zero", async () => {
@@ -292,74 +382,60 @@ describe("cli — extract", () => {
   });
 });
 
-describe("cli — lower-suggestions", () => {
-  it("lowers a valid patch to a suggestion + rewritten range, dropping the patch field", async () => {
+describe("cli — validate-patches", () => {
+  const mkFindingsDoc = (finding: Record<string, unknown>): string =>
+    JSON.stringify({
+      schema_version: "0.4.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "foo.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "minor",
+          title: "t",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          ...finding,
+        },
+      ],
+    });
+
+  it("aligns the finding's range to a valid patch and KEEPS the patch (never writes a suggestion)", async () => {
     writeFileSync(join(tmpDir, "foo.ts"), "line1\nold line\nline3\n");
     const findingsPath = join(tmpDir, "findings.json");
-    writeFileSync(
-      findingsPath,
-      JSON.stringify({
-        schema_version: "0.3.0",
-        summary: "s",
-        verdict: "comment",
-        findings: [
-          {
-            path: "foo.ts",
-            start_line: 1,
-            end_line: 1,
-            severity: "minor",
-            title: "t",
-            body: "b",
-            patch: ["@@ -2 +2 @@", "-old line", "+new line"].join("\n"),
-          },
-        ],
-      }),
-    );
+    const patch = ["@@ -2 +2 @@", "-old line", "+new line"].join("\n");
+    writeFileSync(findingsPath, mkFindingsDoc({ start_line: 1, end_line: 1, patch }));
+
     const { stdout, stderr, exitCode } = await runCli([
-      "lower-suggestions",
+      "validate-patches",
       findingsPath,
       "--repo-root",
       tmpDir,
     ]);
     expect(exitCode).toBeNull();
     expect(stderr).toBe("");
-    const parsed = JSON.parse(stdout) as { findings: Record<string, unknown>[] };
+    const parsed = JSON.parse(stdout) as {
+      findings: { start_line: number; end_line: number; patch?: string; suggestion?: unknown }[];
+    };
     expect(parsed.findings).toHaveLength(1);
-    expect(parsed.findings[0]).toEqual({
-      path: "foo.ts",
-      start_line: 2,
-      end_line: 2,
-      severity: "minor",
-      title: "t",
-      body: "b",
-      suggestion: "new line",
-    });
+    // Range aligned to the patch's removed line; the patch is kept for the renderer to project.
+    expect(parsed.findings[0]?.start_line).toBe(2);
+    expect(parsed.findings[0]?.end_line).toBe(2);
+    expect(parsed.findings[0]?.patch).toBe(patch);
+    expect(parsed.findings[0]?.suggestion).toBeUndefined();
   });
 
-  it("drops an invalid patch (mismatched context), leaving no suggestion and reporting why on stderr", async () => {
+  it("drops an invalid patch (mismatched context), keeping the finding and reporting why on stderr", async () => {
     writeFileSync(join(tmpDir, "foo.ts"), "line1\nactual line\nline3\n");
     const findingsPath = join(tmpDir, "findings.json");
-    writeFileSync(
-      findingsPath,
-      JSON.stringify({
-        schema_version: "0.3.0",
-        summary: "s",
-        verdict: "comment",
-        findings: [
-          {
-            path: "foo.ts",
-            start_line: 2,
-            end_line: 2,
-            severity: "minor",
-            title: "t",
-            body: "b",
-            patch: ["@@ -2 +2 @@", "-old line", "+new line"].join("\n"),
-          },
-        ],
-      }),
-    );
+    const patch = ["@@ -2 +2 @@", "-old line", "+new line"].join("\n");
+    writeFileSync(findingsPath, mkFindingsDoc({ start_line: 2, end_line: 2, patch }));
+
     const { stdout, stderr, exitCode } = await runCli([
-      "lower-suggestions",
+      "validate-patches",
       findingsPath,
       "--repo-root",
       tmpDir,
@@ -367,43 +443,29 @@ describe("cli — lower-suggestions", () => {
     expect(exitCode).toBeNull();
     expect(stderr).toContain("foo.ts:2");
     expect(stderr).toContain("patch context does not match the file");
-    const parsed = JSON.parse(stdout) as {
-      findings: { patch?: string; suggestion?: string }[];
-    };
+    const parsed = JSON.parse(stdout) as { findings: { patch?: string; title?: string }[] };
+    // The finding survives; only its (unappliable) patch is dropped.
+    expect(parsed.findings).toHaveLength(1);
     expect(parsed.findings[0]?.patch).toBeUndefined();
-    expect(parsed.findings[0]?.suggestion).toBeUndefined();
+    expect(parsed.findings[0]?.title).toBe("t");
   });
 
   it("passes through a finding with no patch untouched", async () => {
     const findingsPath = join(tmpDir, "findings.json");
-    writeFileSync(
-      findingsPath,
-      JSON.stringify({
-        schema_version: "0.3.0",
-        summary: "s",
-        verdict: "comment",
-        findings: [
-          {
-            path: "foo.ts",
-            start_line: 1,
-            end_line: 1,
-            severity: "minor",
-            title: "t",
-            body: "b",
-            suggestion: "hand-authored",
-          },
-        ],
-      }),
-    );
+    writeFileSync(findingsPath, mkFindingsDoc({ start_line: 1, end_line: 1 }));
+
     const { stdout, exitCode } = await runCli([
-      "lower-suggestions",
+      "validate-patches",
       findingsPath,
       "--repo-root",
       tmpDir,
     ]);
     expect(exitCode).toBeNull();
-    const parsed = JSON.parse(stdout) as { findings: { suggestion?: string }[] };
-    expect(parsed.findings[0]?.suggestion).toBe("hand-authored");
+    const parsed = JSON.parse(stdout) as {
+      findings: { start_line: number; patch?: string }[];
+    };
+    expect(parsed.findings[0]?.start_line).toBe(1);
+    expect(parsed.findings[0]?.patch).toBeUndefined();
   });
 });
 
@@ -433,26 +495,23 @@ describe("cli — print-schema", () => {
     expect(stderr).toContain("bogus");
   });
 
-  it("--schema-version 0.3 matches the default (latest) output", async () => {
-    const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.3"]);
+  it("--schema-version 0.4 matches the default (latest) output", async () => {
+    const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.4"]);
     const withoutVersion = await runCli(["print-schema", "findings"]);
     expect(withVersion.exitCode).toBeNull();
     expect(withVersion.stdout).toBe(withoutVersion.stdout);
   });
 
-  it("--schema-version 0.2 prints the frozen v0.2 schema, distinct from the latest", async () => {
-    const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.2"]);
-    const withoutVersion = await runCli(["print-schema", "findings"]);
-    expect(withVersion.exitCode).toBeNull();
-    expect(withVersion.stdout).not.toBe(withoutVersion.stdout);
-    const printed = JSON.parse(withVersion.stdout) as Record<string, unknown>;
-    const canonical = JSON.parse(
-      readFileSync(resolve(repoRoot, "schema", "v0.2", "findings.schema.json"), "utf-8"),
-    ) as Record<string, unknown>;
-    const canonicalWithoutDraft = Object.fromEntries(
-      Object.entries(canonical).filter(([key]) => key !== "$schema"),
-    );
-    expect(printed).toEqual(canonicalWithoutDraft);
+  it("exits 1 for a now-dropped older --schema-version (0.2 is no longer supported)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "print-schema",
+      "findings",
+      "--schema-version",
+      "0.2",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Unsupported findings schema version");
+    expect(stderr).toContain("0.4");
   });
 
   it("exits 1 with a clear message for an unsupported --schema-version", async () => {
@@ -464,7 +523,7 @@ describe("cli — print-schema", () => {
     ]);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("Unsupported findings schema version");
-    expect(stderr).toContain("0.2");
+    expect(stderr).toContain("0.4");
   });
 });
 

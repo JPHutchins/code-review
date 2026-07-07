@@ -8,23 +8,35 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolvePath(__dirname, "..");
 
 const validFindings = {
-  schema_version: "0.2.0",
+  schema_version: "0.4.0",
   summary: "A summary.",
   verdict: "comment",
   findings: [],
 };
 
+/** A finding conforming to the 0.4 shape — reasoning + confidence are required. */
+const validFinding = {
+  path: "src/foo.ts",
+  start_line: 1,
+  end_line: 1,
+  severity: "minor",
+  title: "t",
+  description: "d",
+  reasoning: "Flagged because the same pattern caused a bug in a prior PR.",
+  confidence: 0.5,
+};
+
 describe('resolve("findings", ...)', () => {
-  it("resolves a supported version to ok with the decoded, normalized value", () => {
+  it("resolves the supported version to ok with the decoded, normalized value", () => {
     const result = resolve("findings", validFindings);
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
-    expect(result.version).toBe("0.2.0");
+    expect(result.version).toBe("0.4.0");
     expect(result.value.summary).toBe("A summary.");
   });
 
   it("ignores the patch component when dispatching", () => {
-    const result = resolve("findings", { ...validFindings, schema_version: "0.2.99" });
+    const result = resolve("findings", { ...validFindings, schema_version: "0.4.99" });
     expect(result.kind).toBe("ok");
   });
 
@@ -33,11 +45,11 @@ describe('resolve("findings", ...)', () => {
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
     expect(result.version).toBe("1.0.0");
-    expect(result.supported).toEqual(["0.3", "0.2"]);
+    expect(result.supported).toEqual(["0.4"]);
   });
 
   it("returns invalid-shape for a supported version with a malformed body", () => {
-    const result = resolve("findings", { schema_version: "0.2.0", summary: "s" });
+    const result = resolve("findings", { schema_version: "0.4.0", summary: "s" });
     expect(result.kind).toBe("invalid-shape");
     if (result.kind !== "invalid-shape") return;
     expect(result.errors.length).toBeGreaterThan(0);
@@ -55,68 +67,69 @@ describe('resolve("findings", ...)', () => {
     expect(resolve("findings", "not an object").kind).toBe("missing-version");
   });
 
-  it("does not confuse '0.20.x' with the supported '0.2' minor (majorMinor dispatch precision)", () => {
-    const r1 = resolve("findings", { ...validFindings, schema_version: "0.20.0" });
+  it("does not confuse '0.40.x' with the supported '0.4' minor (majorMinor dispatch precision)", () => {
+    const r1 = resolve("findings", { ...validFindings, schema_version: "0.40.0" });
     expect(r1.kind).toBe("unsupported-version");
-    if (r1.kind === "unsupported-version") expect(r1.version).toBe("0.20.0");
+    if (r1.kind === "unsupported-version") expect(r1.version).toBe("0.40.0");
 
-    const r2 = resolve("findings", { ...validFindings, schema_version: "0.20" });
+    const r2 = resolve("findings", { ...validFindings, schema_version: "0.40" });
     expect(r2.kind).toBe("unsupported-version");
   });
 
   it("F3: rejects a schema_version missing the patch component, even though its major.minor is supported", () => {
-    const result = resolve("findings", { ...validFindings, schema_version: "0.2" });
+    const result = resolve("findings", { ...validFindings, schema_version: "0.4" });
     expect(result.kind).toBe("invalid-shape");
   });
 
   it("F3: rejects a schema_version with a superfluous extra component", () => {
-    const result = resolve("findings", { ...validFindings, schema_version: "0.2.0.0" });
+    const result = resolve("findings", { ...validFindings, schema_version: "0.4.0.0" });
     expect(result.kind).toBe("invalid-shape");
   });
 
   it("F3: still accepts a full patch version (regression guard against over-tightening)", () => {
-    expect(resolve("findings", { ...validFindings, schema_version: "0.2.0" }).kind).toBe("ok");
-    expect(resolve("findings", { ...validFindings, schema_version: "0.2.7" }).kind).toBe("ok");
+    expect(resolve("findings", { ...validFindings, schema_version: "0.4.0" }).kind).toBe("ok");
+    expect(resolve("findings", { ...validFindings, schema_version: "0.4.7" }).kind).toBe("ok");
   });
 });
 
-describe('resolve("findings", ...) — 0.3 adds optional `reasoning` (issue #16)', () => {
-  it("resolves a 0.3.0 doc whose finding includes reasoning to ok", () => {
-    const result = resolve("findings", {
-      ...validFindings,
-      schema_version: "0.3.0",
-      findings: [
-        {
-          path: "src/foo.ts",
-          start_line: 1,
-          end_line: 1,
-          severity: "minor",
-          title: "t",
-          body: "b",
-          reasoning: "Flagged because the same pattern caused a bug in a prior PR.",
-        },
-      ],
-    });
+describe('resolve("findings", ...) — 0.4 requires reasoning + confidence (schema 0.4.0)', () => {
+  it("resolves a 0.4.0 doc whose finding carries description, reasoning, and confidence to ok", () => {
+    const result = resolve("findings", { ...validFindings, findings: [validFinding] });
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
-    expect(result.version).toBe("0.3.0");
+    expect(result.version).toBe("0.4.0");
     expect(result.value.findings[0]?.reasoning).toBe(
       "Flagged because the same pattern caused a bug in a prior PR.",
     );
+    expect(result.value.findings[0]?.confidence).toBe(0.5);
   });
 
-  it("still resolves an older 0.2.0 doc without reasoning to ok (backward compat)", () => {
-    const result = resolve("findings", validFindings);
-    expect(result.kind).toBe("ok");
-    if (result.kind !== "ok") return;
-    expect(result.version).toBe("0.2.0");
+  it("returns invalid-shape for a 0.4.0 finding missing the now-required reasoning", () => {
+    const withoutReasoning: Record<string, unknown> = { ...validFinding };
+    Reflect.deleteProperty(withoutReasoning, "reasoning");
+    const result = resolve("findings", { ...validFindings, findings: [withoutReasoning] });
+    expect(result.kind).toBe("invalid-shape");
   });
 
-  it("returns unsupported-version for a version outside both supported minors", () => {
-    const result = resolve("findings", { ...validFindings, schema_version: "9.9.0" });
+  it("returns invalid-shape for a 0.4.0 finding missing the now-required confidence", () => {
+    const withoutConfidence: Record<string, unknown> = { ...validFinding };
+    Reflect.deleteProperty(withoutConfidence, "confidence");
+    const result = resolve("findings", { ...validFindings, findings: [withoutConfidence] });
+    expect(result.kind).toBe("invalid-shape");
+  });
+
+  it("degrades a 0.2.0 document to unsupported-version — it can't honestly upcast to the 0.4 shape", () => {
+    const result = resolve("findings", { ...validFindings, schema_version: "0.2.0" });
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
-    expect(result.supported).toEqual(["0.3", "0.2"]);
+    expect(result.supported).toEqual(["0.4"]);
+  });
+
+  it("degrades a 0.3.0 document to unsupported-version too", () => {
+    const result = resolve("findings", { ...validFindings, schema_version: "0.3.0" });
+    expect(result.kind).toBe("unsupported-version");
+    if (result.kind !== "unsupported-version") return;
+    expect(result.supported).toEqual(["0.4"]);
   });
 });
 
@@ -165,20 +178,19 @@ describe("schemaPathFor", () => {
   });
 
   it("resolves the latest minor (with or without patch) to the same flat file", () => {
-    expect(schemaPathFor("findings", "0.3")).toBe(schemaPathFor("findings"));
-    expect(schemaPathFor("findings", "0.3.7")).toBe(schemaPathFor("findings"));
+    expect(schemaPathFor("findings", "0.4")).toBe(schemaPathFor("findings"));
+    expect(schemaPathFor("findings", "0.4.7")).toBe(schemaPathFor("findings"));
   });
 
-  it("resolves the frozen 0.2 minor to its own bundled file, distinct from the flat latest", () => {
-    const frozen = schemaPathFor("findings", "0.2");
-    expect(frozen).toBe(resolvePath(repoRoot, "schema", "v0.2", "findings.schema.json"));
-    expect(frozen).not.toBe(schemaPathFor("findings"));
-    expect(schemaPathFor("findings", "0.2.7")).toBe(frozen);
+  it("throws for a now-dropped older minor (0.2 is no longer supported)", () => {
+    expect(() => schemaPathFor("findings", "0.2")).toThrow(
+      /Unsupported findings schema version "0.2" — supported: 0.4/,
+    );
   });
 
   it("throws a clear error listing supported versions for an unsupported version", () => {
     expect(() => schemaPathFor("findings", "9.9")).toThrow(
-      /Unsupported findings schema version "9.9" — supported: 0.3, 0.2/,
+      /Unsupported findings schema version "9.9" — supported: 0.4/,
     );
   });
 
@@ -190,8 +202,8 @@ describe("schemaPathFor", () => {
 
 describe("defaultVersion / supportedVersions", () => {
   it("report today's supported entries per kind", () => {
-    expect(defaultVersion("findings")).toBe("0.3.0");
-    expect(supportedVersions("findings")).toEqual(["0.3", "0.2"]);
+    expect(defaultVersion("findings")).toBe("0.4.0");
+    expect(supportedVersions("findings")).toEqual(["0.4"]);
     expect(defaultVersion("triage")).toBe("0.1.0");
     expect(supportedVersions("triage")).toEqual(["0.1"]);
     expect(defaultVersion("prices")).toBe("0.1.0");

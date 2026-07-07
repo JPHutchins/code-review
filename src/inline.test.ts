@@ -234,10 +234,9 @@ index abc..def 100644
     buildInlineComments(findingAt(overrides), diff, { inlineTemplate: bundledInlineTemplate })
       .comments[0]!.body;
 
-  it("renders the title on its own line, followed by an emoji + confidence info line (issue #27)", () => {
+  it("renders a single header line — emoji, bold title, then confidence (issue #27)", () => {
     const body = bodyOf({ severity: "critical", title: "SQLi", confidence: 0.5 });
-    expect(body.startsWith("**SQLi**\n")).toBe(true);
-    expect(body).toContain("🔴 · 0.50 confidence");
+    expect(body.startsWith("🔴 **SQLi** · 0.50 confidence\n")).toBe(true);
   });
 
   it("renders the finding's description", () => {

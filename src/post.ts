@@ -44,6 +44,10 @@ export interface PostInput {
    *  comment, and the review body itself) when the embedded form is too large (SPEC §5.1 item 7,
    *  §5.2, issue #19). */
   readonly jsonUrl?: string;
+  /** Preformatted UTC post time, rendered on the sticky's dedicated "Reviewed `<sha>` · <postedAt>"
+   *  line (issue #28) — computed by the caller (index.ts's post command) via `formatUtc`, not here,
+   *  so `post()` stays a thin, testable pass-through of the timestamp into `render()`. */
+  readonly postedAt?: string;
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
@@ -406,6 +410,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         effort: input.effort,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
+        postedAt: input.postedAt,
       }),
     );
 
@@ -451,6 +456,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
+        postedAt: input.postedAt,
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
@@ -512,6 +518,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,
     findingsPointer: findingsMarker,
+    postedAt: input.postedAt,
   };
   const longFilesNote =
     longFiles.length > 0

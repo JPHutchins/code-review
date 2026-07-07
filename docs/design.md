@@ -44,7 +44,7 @@ implement the whole thing. A machine-readable test report (camas emits one via i
 [Ctrf effect](https://github.com/JPHutchins/camas/blob/main/src/camas/effect/ctrf.py)) is **optional
 enrichment** layered on top — sharper mechanic fixes and richer green-path evidence when present, with
 failing-job logs covering the absence. It must never become a requirement. The normative trigger and
-routing contract is [`SPEC.md` §3](../SPEC.md#3-trigger--routing).
+routing contract is [`SPEC.md` §3.1](../SPEC.md#31-trigger--routing).
 
 ---
 
@@ -61,8 +61,8 @@ why the spend cap — not the gate — is the real backstop.
 That reasoning is what forces the **two-job split**: the job that holds the write token (the commenter)
 runs no model and no PR code, and the job that runs the model holds only a read-only token. The split
 *is* the boundary. The normative threat model and required controls are
-[`SPEC.md` §7](../SPEC.md#7-threat-model--required-controls); the conformance requirements are
-[`SPEC.md` §9](../SPEC.md#9-conformance).
+[`SPEC.md` §4](../SPEC.md#4-threat-model--required-controls); the conformance requirements are
+[`SPEC.md` §5](../SPEC.md#5-conformance).
 
 ---
 
@@ -72,13 +72,14 @@ Two independent motivations converge on the same shape: the agent emits **data**
 commenter owns **presentation and posting**.
 
 The security motivation is injection safety — model output must never be string-concatenated into a
-shell command or an API body near a write token (§5.4). The correctness motivation is that the fiddly,
+shell command or an API body near a write token (§4.4). The correctness motivation is that the fiddly,
 must-not-get-wrong logic — validating each finding's line against the diff hunks so an out-of-diff
 comment doesn't 422 the *entire* review, mapping to the modern `line`/`side` API, sizing suggestion
 blocks — is deterministic work no model should do. Both point at: structured findings in, rendered
-markdown out. The inline-posting rules that make this correct are normative in
-[`SPEC.md` §5.2](../SPEC.md#52-inline-review); the implementation is [`src/inline.ts`](../src/inline.ts),
-[`src/render.ts`](../src/render.ts), and [`src/post.ts`](../src/post.ts).
+markdown out. The commenter's principles (deterministic, truthful, no claim of an unposted surface)
+are normative in [`SPEC.md` §3.3](../SPEC.md#33-the-commenter); these inline-posting mechanics are
+owned by [`src/inline.ts`](../src/inline.ts), [`src/render.ts`](../src/render.ts), and
+[`src/post.ts`](../src/post.ts).
 
 ### Why an extraction ladder, and not just `--json-schema`
 
@@ -93,7 +94,7 @@ agent-written self-validated file → structured output → pure-JSON result →
 and failing closed for triage. Preferring an agent-written file (written to a path *outside* the
 worktree) also closes the door on a PR planting a same-named findings file inside the repo. The ladder
 is [`src/extract.ts`](../src/extract.ts); the native→abstract envelope mapping is
-[`src/adapt.ts`](../src/adapt.ts); the contract is [`SPEC.md` §6.1](../SPEC.md#61-result-envelope) and
+[`src/adapt.ts`](../src/adapt.ts); the contract is [`SPEC.md` §3.2](../SPEC.md#32-the-deliverable) and
 [`docs/adapters.md`](adapters.md).
 
 ### Why recompute cost instead of trusting the CLI
@@ -103,7 +104,7 @@ simply wrong for a DeepSeek or any other non-Anthropic backend. The commenter th
 from the per-model token counts against a date-stamped price map, and reports (never silently zeroes) a
 model the map doesn't price — a stale price map should be visible, not invisible. Subagent models show
 up as their own entries, which is how per-model reporting including subagents works. See
-[`SPEC.md` §6.2](../SPEC.md#62-price-map) and [`src/cost.ts`](../src/cost.ts).
+[`SPEC.md` §4.4](../SPEC.md#44-required-controls-conformance) and [`src/cost.ts`](../src/cost.ts).
 
 ---
 
@@ -162,11 +163,11 @@ to iterate the working implementation; this repo is the spec/schema/helpers the 
 to.
 
 **What has shipped since the extraction.** The abstract, vendor-neutral result envelope
-([`SPEC.md` §6.1](../SPEC.md#61-result-envelope), [`src/adapt.ts`](../src/adapt.ts)) and the
+([`SPEC.md` §3.2](../SPEC.md#32-the-deliverable), [`src/adapt.ts`](../src/adapt.ts)) and the
 extraction ladder above ([`src/extract.ts`](../src/extract.ts)); a version-aware schema registry that
 dispatches on a document's `schema_version` against a supported allowlist
 ([`src/registry.ts`](../src/registry.ts), [`schema/VERSIONING.md`](../schema/VERSIONING.md); findings
-schema is now `0.2.0`); a CLI with `render`/`inline`/`post`/`adapt`/`cost`/`validate`/`print-schema`/`extract`
+schema is now `0.4.0`); a CLI with `render`/`inline`/`post`/`adapt`/`cost`/`validate`/`print-schema`/`extract`
 subcommands ([`src/index.ts`](../src/index.ts)), published to npm as `@jphutchins/code-review` via OIDC
 trusted publishing ([`.github/workflows/release.yaml`](../.github/workflows/release.yaml)); and the
 single-file reference workflow ([`examples/workflows/review.yaml`](../examples/workflows/review.yaml)).

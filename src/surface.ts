@@ -60,10 +60,13 @@ export type PatchProjection =
   | { readonly kind: "none" };
 
 /** Project a finding's `patch` into a template-ready {@link PatchProjection}. Pure. */
-export const projectPatch = (patch: string | null | undefined): PatchProjection => {
-  if (patch === null || patch === undefined) return { kind: "none" };
+export const projectPatch = (patch: string | undefined): PatchProjection => {
+  if (patch === undefined) return { kind: "none" };
   const lowered = patchToSuggestion(patch);
   return typeof lowered === "string"
     ? { kind: "suggestion", text: escapeFence(lowered) }
     : { kind: "patch", raw: escapeFence(patch) };
 };
+
+/** Confidence, always at 2 decimal places (issue #26 — `1` renders `1.00`, `0.6` renders `0.60`). */
+export const formatConfidence = (n: number): string => n.toFixed(2);

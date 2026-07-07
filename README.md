@@ -25,8 +25,9 @@ the security boundary, and the cost.
 ## The CLI
 
 The npm package is the **deterministic commenter** — the presentation and posting layer that no
-model should do, plus the adapter glue between an agent CLI's native output and the spec's abstract
-envelope ([SPEC §6.1](SPEC.md#61-result-envelope)).
+model should do, plus the adapter glue between an agent CLI's native output and the abstract result
+envelope defined in [`src/schema.ts`](src/schema.ts) (the deliverable of
+[SPEC §3.2](SPEC.md#32-the-deliverable)).
 
 ```sh
 npm install -g @jphutchins/code-review
@@ -40,7 +41,7 @@ npx @jphutchins/code-review <subcommand>
 | `gather` | Resolve the PR from the CI head SHA and gather the review inputs (diff with git-diff fallback, PR context, prior bot review, failing-job logs) into the workspace for the agent |
 | `render` | Render the sticky-comment markdown from findings + usage + prices |
 | `inline` | Build the GitHub reviews `comments[]` payload from findings + diff (in-diff validation; strays demote to the summary) |
-| `adapt` | Map a native agent-CLI result envelope onto the abstract SPEC §6.1 envelope |
+| `adapt` | Map a native agent-CLI result envelope onto the abstract result envelope (`src/schema.ts`) |
 | `extract` | Recover findings/triage JSON from a native envelope via the deterministic extraction ladder |
 | `validate-patches` | Validate each finding's `patch` against the real PR-head file, aligning the finding's line range to it and keeping the patch (projected into a suggestion at render time), or dropping the patch |
 | `cost` | Recompute USD cost from the envelope's per-model token counts + a price map |
@@ -63,16 +64,17 @@ in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the ad
    letting the CLI pick where your key gets sent.
 3. Commit `.github/prices.json` (fork [schema/prices.example.json](schema/prices.example.json) and
    fill in your provider's per-token rates) — without it the cost footer renders **$0**
-   ([SPEC §6.2](SPEC.md#62-price-map)).
+   ([SPEC §4.4](SPEC.md#44-required-controls-conformance)).
 4. Merge to your default branch first — `workflow_run` only fires from the default branch, so the
    introducing PR won't review itself — then open a test PR.
 5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
-   ([SPEC §8.4](SPEC.md#84-egress-allowlist)).
+   ([SPEC Appendix A](SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
 
 Every model knob is committed step `env` on the workflow's triage and review steps — models,
 efforts, the subagent model, and the tier aliases, right where each is consumed — edited and
-PR-reviewed like the rest of the file ([SPEC §8.5](SPEC.md#85-model-backend-env)). Only the backend
-endpoint is a per-repo **Actions variable** (`API_BASE_URL`, required, no default); pointing it at
+PR-reviewed like the rest of the file (implementation detail the spec deliberately leaves to this
+repo — see [SPEC Appendix A](SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
+Only the backend endpoint is a per-repo **Actions variable** (`API_BASE_URL`, required, no default); pointing it at
 another provider requires adding that provider's API host to the workflow's egress allowlist in the
 same reviewed PR.
 
@@ -87,8 +89,8 @@ links to:
   downstream tool) SHOULD base64-decode and parse that marker rather than parse the comment's prose.
   Embedding in the comment (rather than only linking the artifact) keeps the pointer from expiring
   with artifact retention; when the encoded findings are too large to embed, the sticky falls back to
-  a `<!-- code-review:findings-json <url> -->` link marker instead
-  ([SPEC §5.1 item 7](SPEC.md#51-sticky-summary-comment)).
+  a `<!-- code-review:findings-json <url> -->` link marker instead — the shared serializer is
+  [`src/surface.ts`](src/surface.ts).
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
   phases. This is advisory/auditability only: it is never read by the comment job and never affects
   what gets posted.

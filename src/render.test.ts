@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
+import { formatConfidence } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -95,6 +96,24 @@ const contiguousBlockFrom = (
 /** Cell count of a `|`-delimited markdown table row (the outer pipes contribute no cell). */
 const columnCount = (row: string): number => row.split("|").length - 2;
 
+describe("formatConfidence (issue #26 — always 2 decimal places)", () => {
+  it("pads a whole number to 2 decimal places", () => {
+    expect(formatConfidence(1)).toBe("1.00");
+  });
+
+  it("pads a single decimal place", () => {
+    expect(formatConfidence(0.6)).toBe("0.60");
+  });
+
+  it("truncates nothing already at 2 decimal places", () => {
+    expect(formatConfidence(0.75)).toBe("0.75");
+  });
+
+  it("formats zero", () => {
+    expect(formatConfidence(0)).toBe("0.00");
+  });
+});
+
 describe("render", () => {
   it("produces output with the <!-- code-review --> marker", () => {
     const findings = mkFindings([]);
@@ -131,6 +150,30 @@ describe("render", () => {
       route: "full review",
     });
     expect(result).toContain("0000000000000000000000000000000000000000");
+  });
+
+  describe("sticky posted-at line (issue #28)", () => {
+    it("renders 'Reviewed `<short-sha>` · <postedAt>' right under the verdict heading when postedAt is set", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        reviewedSha: "abc123def456",
+        postedAt: "2026-07-07 18:42 UTC",
+      });
+      expect(result).toContain("Reviewed `abc123d` · 2026-07-07 18:42 UTC");
+      const lines = result.split("\n");
+      const headingIndex = lines.findIndex((l) => l.startsWith("### "));
+      expect(lines[headingIndex + 1]).toBe("Reviewed `abc123d` · 2026-07-07 18:42 UTC");
+    });
+
+    it("omits the Reviewed line entirely when postedAt is not provided", () => {
+      const findings = mkFindings([]);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("Reviewed `");
+    });
   });
 
   describe("findings-json marker (issue #15; embedded base64 — PR #17 review)", () => {
@@ -388,12 +431,12 @@ describe("render", () => {
       expect(bulletLine).toContain("confidence 0.82");
     });
 
-    it("shows a zero confidence (falsy but valid) on the bullet line", () => {
+    it("shows a zero confidence (falsy but valid) on the bullet line, at 2 decimal places (issue #26)", () => {
       const findings = mkFindings([]);
       const strays = [mkFinding({ title: "Stray zero conf", confidence: 0 })];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const bulletLine = result.split("\n").find((line) => line.includes("Stray zero conf"));
-      expect(bulletLine).toContain("confidence 0");
+      expect(bulletLine).toContain("confidence 0.00");
     });
 
     it("renders a collapsible reasoning fold under the bullet (reasoning is always present)", () => {
@@ -412,7 +455,7 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const bulletLine = result.split("\n").find((line) => line.includes("Stray both"));
-      expect(bulletLine).toContain("confidence 0.4");
+      expect(bulletLine).toContain("confidence 0.40");
       expect(bulletLine).not.toContain("Some justification");
       expect(result).toContain("Some justification.");
     });
@@ -703,7 +746,7 @@ describe("render", () => {
         route: "full review",
       });
       expect(result).toContain(
-        "[No `.github/prices.json`](https://github.com/JPHutchins/code-review/blob/main/SPEC.md#62-price-map)",
+        "[No `.github/prices.json`](https://github.com/JPHutchins/code-review/blob/main/schema/prices.example.json)",
       );
     });
 

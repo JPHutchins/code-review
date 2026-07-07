@@ -62,7 +62,7 @@ describe("validateAgainstSchema", () => {
         patch: ["@@ -10 +10 @@", "-old", "+new"].join("\n"),
         confidence: 0.5,
       }),
-      finding({ path: "src/b.ts", start_line: 20, end_line: 20, side: "RIGHT", patch: null }),
+      finding({ path: "src/b.ts", start_line: 20, end_line: 20, side: "RIGHT" }),
     ]);
     const result = validateAgainstSchema(full, schemaPath);
     expect(result.valid).toBe(true);
@@ -254,7 +254,7 @@ describe("FindingsCodec (io-ts round-trip)", () => {
           description: "Memory leak detected.",
           reasoning: "The handle is opened but never closed on the error path.",
           confidence: 0.99,
-          patch: null,
+          patch: "@@ -5 +5 @@\n-leak()\n+leak(); handle.close();",
         },
       ],
     };
@@ -297,13 +297,13 @@ describe("FindingCodec — end_line >= start_line (REQ-SC-6)", () => {
   });
 });
 
-describe("FindingCodec — patch is string | null (0.4)", () => {
+describe("FindingCodec — patch is a plain string, never null (0.4)", () => {
   it("accepts a string patch", () => {
     expect(FindingCodec.decode(finding({ patch: "@@ -1 +1 @@\n-a\n+b" }))._tag).toBe("Right");
   });
 
-  it("accepts a null patch", () => {
-    expect(FindingCodec.decode(finding({ patch: null }))._tag).toBe("Right");
+  it("rejects a null patch (0.4 dropped the null variant — omit the field instead)", () => {
+    expect(FindingCodec.decode(finding({ patch: null }))._tag).toBe("Left");
   });
 
   it("accepts an absent patch", () => {

@@ -79,6 +79,11 @@ const packageVersion = (
 const resolveTemplatePath = (templateArg: string | undefined): string =>
   templateArg ? resolve(templateArg) : bundledPath("templates", "comment.eta");
 
+/** `--inline-template` defaults to the bundled inline template when omitted (inline.eta is the
+ *  per-surface SSOT — issue #22 — mirroring resolveTemplatePath's sticky default). */
+const resolveInlineTemplatePath = (templateArg: string | undefined): string =>
+  templateArg ? resolve(templateArg) : bundledPath("templates", "inline.eta");
+
 /** `--prices` defaults to the bundled (all-zero) example prices when omitted, with a warning. */
 const resolvePricesPath = (pricesArg: string | undefined): string => {
   if (pricesArg) return resolve(pricesArg);
@@ -177,16 +182,17 @@ const inlineCmd = defineCommand({
     },
     template: {
       type: "string",
-      description: "Path to inline comment Eta template (default: built-in format)",
+      description: "Path to inline comment Eta template (default: bundled templates/inline.eta)",
     },
   },
   run: async ({ args }) => {
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
     const diff = readFileSync(resolve(args.diff), "utf-8");
-    const inlineTemplate = args.template
-      ? readFileSync(resolve(args.template), "utf-8")
-      : undefined;
-    const { comments, strays } = buildInlineComments(findings.findings, diff, { inlineTemplate });
+    const inlineTemplate = readFileSync(resolveInlineTemplatePath(args.template), "utf-8");
+    const { comments, strays } = buildInlineComments(findings.findings, diff, {
+      inlineTemplate,
+      findings,
+    });
     process.stdout.write(
       JSON.stringify({ comments, strays, stray_markdown: renderStraysSection(strays) }, null, 2),
     );
@@ -704,7 +710,7 @@ const postCmd = defineCommand({
     },
     "inline-template": {
       type: "string",
-      description: "Path to inline comment Eta template (default: built-in format)",
+      description: "Path to inline comment Eta template (default: bundled templates/inline.eta)",
     },
     route: {
       type: "string",
@@ -748,7 +754,7 @@ const postCmd = defineCommand({
       envelopePath: args.usage,
       pricesPath: resolvePricesPath(args.prices),
       templatePath: resolveTemplatePath(args.template),
-      inlineTemplatePath: args["inline-template"] ? resolve(args["inline-template"]) : undefined,
+      inlineTemplatePath: resolveInlineTemplatePath(args["inline-template"]),
       route: args.route,
       headBranch: args["head-branch"],
       effort: args.effort,

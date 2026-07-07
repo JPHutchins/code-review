@@ -283,7 +283,7 @@ describe("render", () => {
         prices,
         template,
         inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
-        reviewUrl: "https://github.com/o/r/pull/1#pullrequestreview-1",
+        crossLinks: { reviewUrl: "https://github.com/o/r/pull/1#pullrequestreview-1" },
       });
       expect(result).toContain(
         "[see the review](https://github.com/o/r/pull/1#pullrequestreview-1)",

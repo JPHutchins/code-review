@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildCommentBody, buildInlineComments, renderStraysSection } from "./inline.js";
-import type { Finding } from "./schema.js";
+import { buildInlineComments, renderStraysSection } from "./inline.js";
+import type { Finding, Findings } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The real bundled template — exercises the actual shipped rendering, not a hand-rolled
@@ -21,6 +21,15 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   title: "Test finding",
   body: "Test body content.",
   ...overrides,
+});
+
+/** A full findings document wrapping the given findings — needed to exercise the findings-json
+ *  marker (issue #19), which embeds the whole document, not a single finding. */
+const mkFindingsDoc = (findings: readonly Finding[]): Findings => ({
+  schema_version: "0.2.0",
+  summary: "A test summary.",
+  verdict: "comment",
+  findings: [...findings],
 });
 
 const inlineDiff = `diff --git a/src/foo.ts b/src/foo.ts
@@ -41,77 +50,14 @@ index abc..def 100644
 +added24
 `;
 
-describe("buildCommentBody", () => {
-  it("returns a severity header + body when there is no suggestion", () => {
-    const f = mkFinding({ body: "Just a body.", suggestion: undefined });
-    expect(buildCommentBody(f)).toBe("🔵 **minor** — Test finding\n\nJust a body.");
-  });
-
-  it("returns a severity header + body when suggestion is null", () => {
-    const f = mkFinding({ body: "Just a body.", suggestion: null });
-    expect(buildCommentBody(f)).toBe("🔵 **minor** — Test finding\n\nJust a body.");
-  });
-
-  it("includes a suggestion block when suggestion is provided", () => {
-    const f = mkFinding({
-      body: "Consider this change.",
-      suggestion: "const x: number = 42;",
-    });
-    const result = buildCommentBody(f);
-    expect(result).toContain("Consider this change.");
-    expect(result).toContain("```suggestion");
-    expect(result).toContain("const x: number = 42;");
-    expect(result).toContain("```");
-  });
-
-  it("handles empty body with suggestion", () => {
-    const f = mkFinding({
-      body: "",
-      suggestion: "// Replace whole block",
-    });
-    const result = buildCommentBody(f);
-    expect(result).toContain("```suggestion");
-    expect(result).toContain("// Replace whole block");
-  });
-
-  it("uses two newlines to separate header, body, and suggestion", () => {
-    const f = mkFinding({
-      body: "Body text.",
-      suggestion: "Fix here.",
-    });
-    const result = buildCommentBody(f);
-    expect(result).toBe(
-      "🔵 **minor** — Test finding\n\nBody text.\n\n```suggestion\nFix here.\n```",
-    );
-  });
-
-  it("prepends the severity header for each severity with the sticky's emoji mapping", () => {
-    expect(buildCommentBody(mkFinding({ severity: "critical" }))).toContain("🔴 **critical** —");
-    expect(buildCommentBody(mkFinding({ severity: "major" }))).toContain("🟠 **major** —");
-    expect(buildCommentBody(mkFinding({ severity: "minor" }))).toContain("🔵 **minor** —");
-    expect(buildCommentBody(mkFinding({ severity: "nit" }))).toContain("⚪ **nit** —");
-  });
-
-  it("emits the findings-json marker as the first line when jsonUrl is given", () => {
-    const f = mkFinding({ body: "Body." });
-    const result = buildCommentBody(f, "https://example.com/findings.json");
-    expect(
-      result.startsWith("<!-- code-review:findings-json https://example.com/findings.json -->"),
-    ).toBe(true);
-  });
-
-  it("omits the findings-json marker when jsonUrl is absent", () => {
-    const f = mkFinding({ body: "Body." });
-    expect(buildCommentBody(f)).not.toContain("code-review:findings-json");
-  });
-});
-
 describe("buildInlineComments", () => {
   it("includes in-diff findings as comments", () => {
     const findings: Finding[] = [
       mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "on-line10" }),
     ];
-    const { comments, strays } = buildInlineComments(findings, inlineDiff);
+    const { comments, strays } = buildInlineComments(findings, inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments).toHaveLength(1);
     expect(comments[0]!.path).toBe("src/foo.ts");
     expect(comments[0]!.line).toBe(10);
@@ -123,7 +69,9 @@ describe("buildInlineComments", () => {
     const findings: Finding[] = [
       mkFinding({ path: "src/foo.ts", start_line: 999, end_line: 999, title: "stray" }),
     ];
-    const { comments, strays } = buildInlineComments(findings, inlineDiff);
+    const { comments, strays } = buildInlineComments(findings, inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments).toHaveLength(0);
     expect(strays).toHaveLength(1);
     expect(strays[0]!.title).toBe("stray");
@@ -138,7 +86,9 @@ describe("buildInlineComments", () => {
         title: "multi-line",
       }),
     ];
-    const { comments } = buildInlineComments(findings, inlineDiff);
+    const { comments } = buildInlineComments(findings, inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments).toHaveLength(1);
     expect(comments[0]!.line).toBe(24); // end_line
     expect(comments[0]!.start_line).toBe(22); // start_line
@@ -154,7 +104,9 @@ describe("buildInlineComments", () => {
         title: "single-line",
       }),
     ];
-    const { comments } = buildInlineComments(findings, inlineDiff);
+    const { comments } = buildInlineComments(findings, inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments).toHaveLength(1);
     expect(comments[0]!.start_line).toBeUndefined();
     expect(comments[0]!.start_side).toBeUndefined();
@@ -170,7 +122,9 @@ describe("buildInlineComments", () => {
         title: "left-side",
       }),
     ];
-    const { comments } = buildInlineComments(findings, inlineDiff);
+    const { comments } = buildInlineComments(findings, inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments).toHaveLength(1);
     expect(comments[0]!.side).toBe("LEFT");
   });
@@ -184,7 +138,9 @@ describe("buildInlineComments", () => {
         side: undefined,
       }),
     ];
-    const { comments } = buildInlineComments(findings, inlineDiff);
+    const { comments } = buildInlineComments(findings, inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments[0]!.side).toBe("RIGHT");
   });
 
@@ -198,7 +154,9 @@ describe("buildInlineComments", () => {
         suggestion: "const x = 1;",
       }),
     ];
-    const { comments } = buildInlineComments(findings, inlineDiff);
+    const { comments } = buildInlineComments(findings, inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments[0]!.body).toContain("Use const.");
     expect(comments[0]!.body).toContain("const x = 1;");
     expect(comments[0]!.body).toContain("```suggestion");
@@ -210,7 +168,9 @@ describe("buildInlineComments", () => {
       mkFinding({ start_line: 22, title: "also-in-diff" }),
       mkFinding({ start_line: 50, title: "stray-50" }),
     ];
-    const { comments, strays } = buildInlineComments(findings, inlineDiff);
+    const { comments, strays } = buildInlineComments(findings, inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments).toHaveLength(2);
     expect(strays).toHaveLength(1);
     expect(strays[0]!.title).toBe("stray-50");
@@ -423,7 +383,7 @@ index abc..def 100644
   });
 });
 
-describe("buildInlineComments with the bundled inline template (issues #12, #15, #16)", () => {
+describe("buildInlineComments with the bundled inline template (issues #12, #15, #16, #22)", () => {
   const diff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
 --- a/src/foo.ts
@@ -444,25 +404,6 @@ index abc..def 100644
       { inlineTemplate: bundledInlineTemplate },
     );
     expect(comments[0]!.body.startsWith("🔴 **critical** — SQLi")).toBe(true);
-  });
-
-  it("emits the findings-json marker as the very first line when jsonUrl is set", () => {
-    const { comments } = buildInlineComments(findingAt({}), diff, {
-      inlineTemplate: bundledInlineTemplate,
-      jsonUrl: "https://example.com/findings.json",
-    });
-    expect(
-      comments[0]!.body.startsWith(
-        "<!-- code-review:findings-json https://example.com/findings.json -->",
-      ),
-    ).toBe(true);
-  });
-
-  it("omits the findings-json marker when jsonUrl is absent", () => {
-    const { comments } = buildInlineComments(findingAt({}), diff, {
-      inlineTemplate: bundledInlineTemplate,
-    });
-    expect(comments[0]!.body).not.toContain("code-review:findings-json");
   });
 
   it("formats multiple models as backtick-wrapped, slash-joined names", () => {
@@ -562,6 +503,90 @@ index abc..def 100644
   });
 });
 
+describe("findings-json marker on inline comments (issue #19 — shared serializer)", () => {
+  const diff = `diff --git a/src/foo.ts b/src/foo.ts
+index abc..def 100644
+--- a/src/foo.ts
++++ b/src/foo.ts
+@@ -1,1 +1,2 @@
+ line1
++added
+`;
+
+  const findingAt = (overrides: Partial<Finding>): Finding[] => [
+    mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, ...overrides }),
+  ];
+
+  it("embeds the findings JSON as base64 as the very first line when a findings document is given", () => {
+    const findings = findingAt({});
+    const { comments } = buildInlineComments(findings, diff, {
+      inlineTemplate: bundledInlineTemplate,
+      findings: mkFindingsDoc(findings),
+    });
+    expect(comments[0]!.body.startsWith("<!-- AGENTS: STOP")).toBe(true);
+    expect(comments[0]!.body).toContain("<!-- code-review:findings-json;base64 ");
+  });
+
+  it("round-trips the exact findings document through the embedded base64 marker", () => {
+    const findings = findingAt({ title: "Round-trip me" });
+    const doc = mkFindingsDoc(findings);
+    const { comments } = buildInlineComments(findings, diff, {
+      inlineTemplate: bundledInlineTemplate,
+      findings: doc,
+    });
+    const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(comments[0]!.body);
+    expect(match).not.toBeNull();
+    const decoded: unknown = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8"));
+    expect(decoded).toEqual(doc);
+  });
+
+  it("falls back to the jsonUrl link marker when the embedded payload is too large", () => {
+    const large = Array.from({ length: 500 }, (_, i) =>
+      mkFinding({
+        path: "src/foo.ts",
+        start_line: 2,
+        end_line: 2,
+        title: `Finding ${String(i)}`,
+        body: "x".repeat(200),
+      }),
+    );
+    const { comments } = buildInlineComments(large, diff, {
+      inlineTemplate: bundledInlineTemplate,
+      findings: mkFindingsDoc(large),
+      jsonUrl: "https://example.com/findings.json",
+    });
+    expect(comments[0]!.body).toContain(
+      "<!-- code-review:findings-json https://example.com/findings.json -->",
+    );
+    expect(comments[0]!.body).not.toContain(";base64");
+  });
+
+  it("omits the marker entirely when the embedded payload is too large and no jsonUrl is given", () => {
+    const large = Array.from({ length: 500 }, (_, i) =>
+      mkFinding({
+        path: "src/foo.ts",
+        start_line: 2,
+        end_line: 2,
+        title: `Finding ${String(i)}`,
+        body: "x".repeat(200),
+      }),
+    );
+    const { comments } = buildInlineComments(large, diff, {
+      inlineTemplate: bundledInlineTemplate,
+      findings: mkFindingsDoc(large),
+    });
+    expect(comments[0]!.body).not.toContain("findings-json");
+  });
+
+  it("omits the marker when no findings document is given, even if jsonUrl is set", () => {
+    const { comments } = buildInlineComments(findingAt({}), diff, {
+      inlineTemplate: bundledInlineTemplate,
+      jsonUrl: "https://example.com/findings.json",
+    });
+    expect(comments[0]!.body).not.toContain("code-review:findings-json");
+  });
+});
+
 describe("injection resistance", () => {
   it("handles pipe characters in finding title without breaking table", () => {
     const diff = `diff --git a/src/foo.ts b/src/foo.ts
@@ -582,7 +607,9 @@ index abc..def 100644
       }),
     ];
 
-    const { comments } = buildInlineComments(findings, diff);
+    const { comments } = buildInlineComments(findings, diff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments).toHaveLength(1);
     expect(comments[0]!.body).toContain("Body text.");
   });
@@ -605,7 +632,9 @@ index abc..def 100644
       }),
     ];
 
-    const { comments } = buildInlineComments(findings, diff);
+    const { comments } = buildInlineComments(findings, diff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     expect(comments[0]!.body).toContain("inline code");
     expect(comments[0]!.body).toContain("a fence");
   });
@@ -628,7 +657,9 @@ index abc..def 100644
       }),
     ];
 
-    const { comments } = buildInlineComments(findings, diff);
+    const { comments } = buildInlineComments(findings, diff, {
+      inlineTemplate: bundledInlineTemplate,
+    });
     // Body is passed through as-is (GitHub sanitizes)
     expect(comments[0]!.body).toContain("<script>");
   });

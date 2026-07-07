@@ -34,6 +34,13 @@ export type InlineDisposition =
   | { readonly kind: "suppressed-existing-review"; readonly sha: string }
   | { readonly kind: "no-envelope" };
 
+/** The sticky↔review hyperlinks (issue #21) — each populated only once its target is known to
+ *  actually exist, never optimistically. */
+export interface CrossLinks {
+  readonly stickyUrl?: string;
+  readonly reviewUrl?: string;
+}
+
 export interface RenderInput {
   readonly findings: Findings;
   /** null when the result envelope is unavailable or malformed — renders a "usage unavailable" note. */
@@ -52,8 +59,10 @@ export interface RenderInput {
   readonly inlineDisposition?: InlineDisposition;
   /** Workflow run URL (transcript/traces) — populated later by the wiring implementer. Renders a link in the LLM Disclosure aside when present, omitted otherwise. */
   readonly runUrl?: string;
-  /** URL to the machine-readable findings JSON artifact — populated later by the wiring implementer. Emits a findings-json marker and a short advisory pointing agents at it when present, omitted otherwise. */
+  /** URL to the machine-readable findings JSON artifact — the findings-json marker's fallback when
+   *  the embedded form is too large (issue #19). */
   readonly jsonUrl?: string;
-  /** The inline review's `html_url` — populated later by the wiring implementer, which re-patches the sticky after the review posts. Turns "see the review" into a link when present. */
-  readonly reviewUrl?: string;
+  /** The sticky↔review hyperlinks (issue #21) — `reviewUrl` turns "see the review" into a link
+   *  once the review is known to exist; populated by the wiring implementer's post-review pass. */
+  readonly crossLinks?: CrossLinks;
 }

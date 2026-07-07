@@ -6,11 +6,12 @@
 // failure propagates and exits the process non-zero (never partially posts).
 
 import { readFileSync } from "node:fs";
-import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
+import type { CrossLinks, InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts } from "./render.js";
 import { formatMarkdown } from "./format.js";
+import { findingsPointer } from "./surface.js";
 import {
   ResultEnvelopeCodec,
   PriceMapCodec,
@@ -32,7 +33,7 @@ export interface PostInput {
   readonly envelopePath: string;
   readonly pricesPath: string;
   readonly templatePath: string;
-  readonly inlineTemplatePath?: string;
+  readonly inlineTemplatePath: string;
   /** Overrides the envelope's route (SPEC §6.1) when set; otherwise the envelope is the source. */
   readonly route?: string;
   readonly headBranch?: string;
@@ -40,8 +41,9 @@ export interface PostInput {
   readonly effort?: string;
   /** Workflow run URL, threaded into the sticky's LLM Disclosure aside (SPEC §5.1 item 6). */
   readonly runUrl?: string;
-  /** Findings-json artifact URL, threaded into the sticky and each inline comment (SPEC §5.1
-   *  item 7, §5.2). */
+  /** Findings-json artifact URL — the marker's fallback on every surface (sticky, each inline
+   *  comment, and the review body itself) when the embedded form is too large (SPEC §5.1 item 7,
+   *  §5.2, issue #19). */
   readonly jsonUrl?: string;
 }
 
@@ -169,20 +171,25 @@ const parseHtmlUrl = (raw: string): string | undefined => {
 };
 
 /** Post the inline review, pointing its body at the sticky (issue #11) when the sticky's URL is
- *  known. Returns the review's own `html_url` (undefined on a malformed response) so the caller
- *  can link the sticky back to it. */
+ *  known, and prepending the findings-json marker (issue #19) so the review body carries it too.
+ *  Returns the review's own `html_url` (undefined on a malformed response) so the caller can link
+ *  the sticky back to it. */
 const postInlineReview = async (
   repo: string,
   prNumber: number,
   headSha: string,
   comments: readonly InlineComment[],
-  stickyUrl: string | undefined,
+  crossLinks: CrossLinks,
+  findings: Findings,
+  jsonUrl: string | undefined,
   ghApi: GhApi,
 ): Promise<string | undefined> => {
   const sha7 = headSha.slice(0, 7);
-  const pointer = stickyUrl
-    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
+  const linkLine = crossLinks.stickyUrl
+    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${crossLinks.stickyUrl}) for the verdict, walkthrough, and cost.`
     : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
+  const marker = findingsPointer(findings, jsonUrl);
+  const pointer = marker ? `${marker}\n\n${linkLine}` : linkLine;
   const body = JSON.stringify({
     body: pointer,
     commit_id: headSha,
@@ -395,9 +402,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     throw new Error(`Price map at ${input.pricesPath} does not match the expected shape`);
   }
   const template = readFileSync(input.templatePath, "utf-8");
-  const inlineTemplate = input.inlineTemplatePath
-    ? readFileSync(input.inlineTemplatePath, "utf-8")
-    : undefined;
+  const inlineTemplate = readFileSync(input.inlineTemplatePath, "utf-8");
 
   const renderNotice = (message: string): string =>
     formatMarkdown(
@@ -468,6 +473,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     inlineTemplate,
     models: envelope.models.map((m) => m.model),
     jsonUrl: input.jsonUrl,
+    findings,
   });
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
@@ -484,16 +490,20 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     comments.length > 0 ? await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi) : [];
   const alreadyReviewedThisSha = botReviews.some((r) => r.commitId === input.headSha);
 
-  const inlineDisposition: InlineDisposition | undefined =
+  // Issue #21: the "posted — see the review" disposition is constructed ONLY from the actual
+  // postInlineReview result below, never optimistically — a review that doesn't yet exist (or
+  // never will, if this process dies before posting it) must never be claimed. Everything knowable
+  // from reads alone (suppression, no-in-diff-findings) is truthful up front and stays as-is.
+  const initialDisposition: InlineDisposition | undefined =
     comments.length > 0
       ? alreadyReviewedThisSha
         ? { kind: "suppressed-existing-review", sha: input.headSha }
-        : { kind: "posted", count: comments.length, sha: input.headSha }
+        : undefined
       : strays.length > 0
         ? { kind: "none-in-diff" }
         : undefined;
 
-  const commonRenderInput: Omit<RenderInput, "reviewUrl"> = {
+  const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "crossLinks"> = {
     findings,
     envelope,
     prices: decodedPrices.right,
@@ -504,7 +514,6 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     testReport,
     severityCounts: computeSeverityCounts(findings.findings),
     strays,
-    inlineDisposition,
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,
   };
@@ -512,13 +521,23 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     longFiles.length > 0
       ? `\n\n---\n\n> **Note:** ${String(longFiles.length)} suggestion(s) exceeded GitHub's ~10-line inline suggestion limit and were omitted from the inline comments; the affected findings remain in the review.\n`
       : "";
-  // Renders the sticky body; called twice (issue #11) — once before the review exists, once after
-  // (with reviewUrl set) to link the sticky back to it.
-  const renderBody = (reviewUrl?: string): string =>
-    formatMarkdown(render({ ...commonRenderInput, reviewUrl }) + longFilesNote);
+  // Renders the sticky body; called twice (issue #11) — once before the review exists (no
+  // disposition claim beyond what reads already confirmed), once after (with the confirmed
+  // disposition + reviewUrl) to report the truth and link the sticky back to the review.
+  const renderBody = (
+    inlineDisposition: InlineDisposition | undefined,
+    crossLinks?: CrossLinks,
+  ): string =>
+    formatMarkdown(render({ ...commonRenderInput, inlineDisposition, crossLinks }) + longFilesNote);
 
   // Phase 2 (CO-R3): writes — sticky first, inline second; failure exits non-zero.
-  const stickyRef = await upsertSticky(input.repo, prNumber, existingSticky, renderBody(), ghApi);
+  const stickyRef = await upsertSticky(
+    input.repo,
+    prNumber,
+    existingSticky,
+    renderBody(initialDisposition),
+    ghApi,
+  );
 
   if (comments.length === 0) return;
 
@@ -542,19 +561,32 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     prNumber,
     input.headSha,
     comments,
-    stickyRef?.url,
+    { stickyUrl: stickyRef?.url },
+    findings,
+    input.jsonUrl,
     ghApi,
   );
   process.stderr.write(
     `Posted ${String(comments.length)} inline comments on PR #${String(prNumber)}\n`,
   );
 
-  // Issue #11: link the sticky back to the review now that it exists. Best-effort — the sticky
-  // and review are already posted, so a failure here (a bad response, a network hiccup) must
-  // never fail the job; log and move on.
-  if (stickyRef !== null && reviewUrl !== undefined) {
+  // Issue #11/#21: now that postInlineReview has actually resolved, the sticky can truthfully
+  // report the review — with a link when reviewUrl parsed, as plain text otherwise (still true:
+  // the review was posted; only its URL is unknown). Best-effort — the sticky and review are
+  // already posted, so a failure here (a bad response, a network hiccup) must never fail the job.
+  if (stickyRef !== null) {
+    const confirmedDisposition: InlineDisposition = {
+      kind: "posted",
+      count: comments.length,
+      sha: input.headSha,
+    };
     try {
-      await patchComment(input.repo, stickyRef.id, renderBody(reviewUrl), ghApi);
+      await patchComment(
+        input.repo,
+        stickyRef.id,
+        renderBody(confirmedDisposition, { reviewUrl }),
+        ghApi,
+      );
       process.stderr.write(`Linked sticky comment #${String(stickyRef.id)} to the review\n`);
     } catch (err) {
       process.stderr.write(

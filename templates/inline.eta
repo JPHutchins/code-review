@@ -1,5 +1,5 @@
-<% if (it.jsonUrl) { -%>
-<!-- code-review:findings-json <%~ it.jsonUrl %> -->
+<% if (it.findingsPointer) { -%>
+<%~ it.findingsPointer %>
 <% } -%>
 <%= it.severityEmoji(it.severity) %> **<%= it.severity %>** — <%= it.title %>
 

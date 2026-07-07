@@ -117,7 +117,7 @@ describe("cli — adapt", () => {
     expect(stderr).toContain("opencode");
   });
 
-  it("exits 1 with a clear message when structured_output is invalid", async () => {
+  it("exits 0 with empty findings + real telemetry when structured_output is invalid (issue #18 — telemetry survives a ladder miss)", async () => {
     const badPath = join(tmpDir, "bad-native.json");
     writeFileSync(
       badPath,
@@ -128,9 +128,11 @@ describe("cli — adapt", () => {
         structured_output: { not: "findings shaped" },
       }),
     );
-    const { stderr, exitCode } = await runCli(["adapt", badPath, "--adapter", "claude-code"]);
-    expect(exitCode).toBe(1);
-    expect(stderr).toContain("findings schema");
+    const { stdout, exitCode } = await runCli(["adapt", badPath, "--adapter", "claude-code"]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as { findings: { findings: unknown[] }; turns: number };
+    expect(parsed.findings.findings).toEqual([]);
+    expect(parsed.turns).toBe(1);
   });
 
   it("--agent-file wins over a disagreeing fenced block in the native envelope's result", async () => {

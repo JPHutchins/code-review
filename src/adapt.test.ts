@@ -117,13 +117,20 @@ describe("adapt — claude-code", () => {
     expect(result.right.findings.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
   });
 
-  it("returns Left when structured_output does not conform to the findings schema", () => {
+  it("returns Right with empty findings and real telemetry when structured_output does not conform to the findings schema (issue #18)", () => {
     const native = JSON.parse(JSON.stringify(nativeFixture)) as {
       structured_output: unknown;
     };
     native.structured_output = { not: "findings shaped" };
     const result = adapt("claude-code", native);
-    expect(result._tag).toBe("Left");
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.findings.findings).toEqual([]);
+    expect(result.right.findings.summary).toContain("did not complete");
+    // Telemetry survives the ladder miss — it comes from the native envelope unconditionally.
+    expect(result.right.turns).toBe(9);
+    expect(result.right.duration_ms).toBe(87000);
+    expect(result.right.models.length).toBeGreaterThan(0);
   });
 
   it("returns Left when the native envelope does not match the Claude Code output shape", () => {
@@ -131,9 +138,27 @@ describe("adapt — claude-code", () => {
     expect(result._tag).toBe("Left");
   });
 
-  it("returns Left when the ladder recovers nothing (structured_output absent, prose-only result)", () => {
+  it("returns Right with empty findings and real telemetry when the ladder recovers nothing (structured_output absent, prose-only result) — issue #18", () => {
     const result = adapt("claude-code", loadLadderFixture("f08-prose-only.json"));
-    expect(result._tag).toBe("Left");
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.findings.findings).toEqual([]);
+    expect(result.right.findings.verdict).toBe("comment");
+    expect(result.right.findings.summary).toContain("did not complete");
+    // Real telemetry from the native envelope survives the ladder miss (issue #18) — this is the
+    // ladder-miss-WITH-usage regression test: no findings, but the run's actual usage is not lost.
+    expect(result.right.turns).toBe(2);
+    expect(result.right.duration_ms).toBe(8123);
+    expect(result.right.vendor_cost_usd).toBe(0.0123);
+    expect(result.right.models).toEqual([
+      {
+        model: "deepseek-v4-pro",
+        input_tokens: 512,
+        output_tokens: 340,
+        cache_read_tokens: 1200,
+        cache_write_tokens: 0,
+      },
+    ]);
   });
 });
 

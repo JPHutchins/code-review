@@ -283,7 +283,12 @@ somewhere; cost MUST appear in a footer somewhere), even if the exact rendering 
    When the encoded payload exceeds a size limit, the commenter falls back to a
    `<!-- code-review:findings-json <url> -->` marker linking the uploaded artifact instead; when
    neither an embeddable payload nor a URL is available, the marker is omitted — this item is
-   conditional, not required.
+   conditional, not required. When present, the marker is preceded on its own line by a fixed
+   `<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read
+   schema_version first. -->` directive, so an agent landing on any ONE of the three surfaces
+   below (this sticky, an inline comment, or the review body) still knows to decode it. The
+   serialization (embed-or-url, plus the directive) is identical across all three — a single
+   pointer format, not a per-surface variant.
 
 ### 5.2 Inline review
 
@@ -291,10 +296,13 @@ A **pull request review** (`POST /repos/{owner}/{repo}/pulls/{n}/reviews`) with 
 array. Each in-diff finding becomes one inline comment. The review is the **primary per-finding
 detail surface** — the sticky summary (§5.1) points at it rather than reproducing it.
 
-The review's top-level `body` is a short **pointer** (e.g. _"Automated code review for `<sha>` —
-see the summary comment for the verdict, walkthrough, and cost."_), NOT a duplicate of the summary,
-and links to the sticky (§5.1) when its URL is available — the two comments point at each other
-(§5.1 item 3 links back to the review symmetrically). The GitHub reviews API requires a review to
+The review's top-level `body` opens with the same findings-json marker as §5.1 item 7 (the whole
+findings document, not merely a per-comment one), followed by a short **pointer** (e.g. _"Automated
+code review for `<sha>` — see the summary comment for the verdict, walkthrough, and cost."_), NOT a
+duplicate of the summary, and links to the sticky (§5.1) when its URL is available — the two
+comments point at each other (§5.1 item 3 links back to the review symmetrically, and ONLY once the
+review is confirmed to exist — the sticky MUST NOT claim "see the review" before the review has
+actually been posted). The GitHub reviews API requires a review to
 carry a non-empty `body` OR at least one comment; the commenter posts a review only when there is
 at least one in-diff comment, so the pointer body is supplementary. When there are **zero in-diff
 findings**, no review is posted at all — the sticky's strays section (§5.1 item 3) is the sole
@@ -305,10 +313,9 @@ using the same emoji mapping as §5.1 item 3) so a reader can triage without ope
 followed by the finding's `body` and, when present, its suggestion block. It closes with a
 per-comment **LLM Disclosure** naming the model(s) that produced the finding (sourced the same way
 as §5.1 item 6) and, when the finding carries `confidence`, that figure; when the finding also
-carries `reasoning`, it is rendered in a collapsible fold. When a machine-readable findings JSON
-artifact URL is available (§5.1 item 7), a `<!-- code-review:findings-json <url> -->` marker is
-emitted as the comment's first line — agent-facing and invisible to a human reader — omitted when
-no such URL is available.
+carries `reasoning`, it is rendered in a collapsible fold. The same findings-json marker as §5.1
+item 7 (embed-or-url, with the AGENTS directive) is emitted as the comment's first line — agent-facing
+and invisible to a human reader — omitted when no findings document is available to embed or point at.
 
 Rules (these MUST be enforced by the commenter, not the agent):
 

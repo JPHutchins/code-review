@@ -1,9 +1,7 @@
 <!-- code-review -->
 <!-- reviewed-sha: <%= it.reviewedSha %> -->
-<% if (it.embeddedFindings) { -%>
-<!-- code-review:findings-json;base64 <%~ it.embeddedFindings %> -->
-<% } else if (it.jsonUrl) { -%>
-<!-- code-review:findings-json <%~ it.jsonUrl %> -->
+<% if (it.findingsPointer) { -%>
+<%~ it.findingsPointer %>
 <% } -%>
 
 ### <%= it.verdictBadge(it.findings.verdict) %>

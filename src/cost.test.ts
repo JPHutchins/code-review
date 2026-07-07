@@ -195,4 +195,34 @@ describe("computeCost", () => {
     expect(report.totalCostUSD).toBe(0);
     expect(report.lines[0]!.costUSD).toBe(0);
   });
+
+  it("stays provenance-agnostic: an absent map is fed as the bundled all-zero example, so costs are numeric zeros here — the render layer, not computeCost, decides to show N/A (SPEC §6.2)", () => {
+    const bundledExampleShaped: PriceMap = {
+      _updated: "2026-07-03",
+      _unit: "USD per 1M tokens",
+      models: {
+        "pro-model": { in: 0, out: 0, cache_read: 0, cache_write: 0 },
+      },
+    };
+    const report = computeCost(
+      [
+        mkEntry({
+          model: "pro-model",
+          input_tokens: 84_201,
+          output_tokens: 6_540,
+          cache_read_tokens: 61_020,
+        }),
+      ],
+      bundledExampleShaped,
+    );
+
+    // Token totals are real regardless of the price map — they need no rates.
+    expect(report.totalInputTokens).toBe(84_201);
+    expect(report.totalOutputTokens).toBe(6_540);
+    expect(report.totalCacheReadTokens).toBe(61_020);
+    // costUSD is a plain number (0), never a sentinel like "N/A": computeCost has no notion of
+    // provenance; the render layer owns the N/A presentation decision.
+    expect(typeof report.totalCostUSD).toBe("number");
+    expect(report.totalCostUSD).toBe(0);
+  });
 });

@@ -84,13 +84,21 @@ const resolveTemplatePath = (templateArg: string | undefined): string =>
 const resolveInlineTemplatePath = (templateArg: string | undefined): string =>
   templateArg ? resolve(templateArg) : bundledPath("templates", "inline.eta");
 
+/** Price-map resolution with explicit provenance: `provided` is a real caller-supplied map,
+ *  `absent` is the bundled all-zero example standing in for one (loaded only to satisfy the codec /
+ *  computeCost shape). The render layer is TOLD which, so it reports cost as N/A rather than a false
+ *  $0.00 when absent (SPEC §6.2) — never inferring it from the path. */
+type PriceResolution =
+  | { readonly kind: "provided"; readonly path: string }
+  | { readonly kind: "absent"; readonly path: string };
+
 /** `--prices` defaults to the bundled (all-zero) example prices when omitted, with a warning. */
-const resolvePricesPath = (pricesArg: string | undefined): string => {
-  if (pricesArg) return resolve(pricesArg);
+const resolvePrices = (pricesArg: string | undefined): PriceResolution => {
+  if (pricesArg) return { kind: "provided", path: resolve(pricesArg) };
   process.stderr.write(
-    "code-review: no --prices given — using the bundled example prices (all zero); cost figures will be $0\n",
+    "code-review: no --prices given — cost will be reported as N/A (no price map to recompute from)\n",
   );
-  return bundledPath("schema", "prices.example.json");
+  return { kind: "absent", path: bundledPath("schema", "prices.example.json") };
 };
 
 const TEST_REPORT_DESCRIPTION =
@@ -144,8 +152,8 @@ const renderCmd = defineCommand({
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
     const envelope = decode(ResultEnvelopeCodec.decode(readJSON(args.usage)), "envelope");
     const templatePath = resolveTemplatePath(args.template);
-    const pricesPath = resolvePricesPath(args.prices);
-    const prices = decode(PriceMapCodec.decode(readJSON(pricesPath)), "prices");
+    const priceResolution = resolvePrices(args.prices);
+    const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
     const template = readFileSync(templatePath, "utf-8");
     const testReport = args["test-report"]
       ? decode(TestSummaryCodec.decode(readJSON(args["test-report"])), "test report")
@@ -154,6 +162,7 @@ const renderCmd = defineCommand({
       findings,
       envelope,
       prices,
+      pricesProvided: priceResolution.kind === "provided",
       template,
       reviewedSha: args["reviewed-sha"],
       route: args.route,
@@ -753,13 +762,15 @@ const postCmd = defineCommand({
     },
   },
   run: async ({ args }) => {
+    const priceResolution = resolvePrices(args.prices);
     await post({
       repo: args.repo,
       headSha: args["head-sha"],
       botLogin: args["bot-login"] || "github-actions[bot]",
       findingsPath: args.findings,
       envelopePath: args.usage,
-      pricesPath: resolvePricesPath(args.prices),
+      pricesPath: priceResolution.path,
+      pricesProvided: priceResolution.kind === "provided",
       templatePath: resolveTemplatePath(args.template),
       inlineTemplatePath: resolveInlineTemplatePath(args["inline-template"]),
       route: args.route,

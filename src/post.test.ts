@@ -113,6 +113,7 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   findingsPath: join(tmpDir, "findings.json"),
   envelopePath: join(tmpDir, "envelope.json"),
   pricesPath: join(tmpDir, "prices.json"),
+  pricesProvided: true,
   templatePath: join(tmpDir, "comment.eta"),
   inlineTemplatePath: join(tmpDir, "inline.eta"),
   route: "full review",
@@ -1900,5 +1901,66 @@ describe("post — --run-url / --json-url threading", () => {
     expect(body).not.toContain("view the run & traces");
     expect(body).toContain("<!-- code-review:findings-json;base64 ");
     expect(body).not.toContain("<!-- code-review:findings-json http");
+  });
+});
+
+describe("post — absent price map renders cost as N/A with a footnote (SPEC §6.2)", () => {
+  const okMocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+      response: "",
+    },
+  ];
+
+  const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
+    const stickyCall = calls.find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    return (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+  };
+
+  it("renders cost cells as N/A (never $0.00) and a footnote linking SPEC §6.2 when pricesProvided is false", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ pricesProvided: false }), api);
+
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("**cost:** N/A");
+    expect(body).not.toContain("$0.00");
+    expect(body).toContain(
+      "[No `.github/prices.json`](https://github.com/JPHutchins/code-review/blob/main/SPEC.md#62-price-map)",
+    );
+    // The per-model cost column is N/A too — real token counts still render (they need no rates).
+    expect(body).toContain("| N/A |");
+    expect(body).toContain("10,000");
+  });
+
+  it("renders real cost figures and no footnote when a real price map is provided", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ pricesProvided: true }), api);
+
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("**cost:** $");
+    expect(body).not.toContain("N/A");
+    expect(body).not.toContain("No `.github/prices.json`");
   });
 });

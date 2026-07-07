@@ -43,6 +43,7 @@ export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
   const usageAvailable = input.envelope !== null;
   const costReport = input.envelope ? computeCost(input.envelope.models, input.prices) : null;
+  const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
@@ -52,6 +53,7 @@ export const render = (input: RenderInput): string => {
     envelope: input.envelope,
     usageAvailable,
     costReport,
+    pricesProvided,
     route,
     effort,
     modelNames,
@@ -66,8 +68,16 @@ export const render = (input: RenderInput): string => {
     reviewUrl: input.crossLinks?.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
+    // Cost cells render N/A (never a false $0.00) when no real price map was provided — there are
+    // real tokens spent, we simply have no rates to price them (SPEC §6.2).
     formatCost: (n: number): string =>
-      Number.isFinite(n) ? (n > 0 && n.toFixed(2) === "0.00" ? "<$0.01" : `$${n.toFixed(2)}`) : "—",
+      !pricesProvided
+        ? "N/A"
+        : Number.isFinite(n)
+          ? n > 0 && n.toFixed(2) === "0.00"
+            ? "<$0.01"
+            : `$${n.toFixed(2)}`
+          : "—",
     formatDuration: (ms: number): string => {
       if (!Number.isFinite(ms) || ms < 0) return "—";
       const s = Math.round(ms / 1000);

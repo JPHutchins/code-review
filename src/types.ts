@@ -46,6 +46,11 @@ export interface RenderInput {
   /** null when the result envelope is unavailable or malformed — renders a "usage unavailable" note. */
   readonly envelope: ResultEnvelope | null;
   readonly prices: PriceMap;
+  /** Whether `prices` is a real, caller-supplied price map (`true`) or the bundled all-zero example
+   *  standing in for an absent one (`false`). An explicit signal the render layer is TOLD — never
+   *  inferred from the map's contents or path — so cost renders as `N/A` (never a false `$0.00`)
+   *  with a "no price map" footnote when absent (SPEC §6.2). Omitted ⇒ treated as provided. */
+  readonly pricesProvided?: boolean;
   readonly template: string;
   readonly reviewedSha?: string;
   /** Overrides the envelope's `route`/`effort` (SPEC §6.1) when set; otherwise the envelope is the source. */

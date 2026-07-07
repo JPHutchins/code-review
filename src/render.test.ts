@@ -631,6 +631,94 @@ describe("render", () => {
     });
   });
 
+  describe("absent price map → N/A cost + footnote (SPEC §6.2)", () => {
+    it("renders every cost cell as N/A (never $0.00) when pricesProvided is false", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: false,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**cost:** N/A");
+      expect(result).not.toContain("$0.00");
+      expect(result).not.toContain("$0.06");
+      // The per-model and Total Cost cells are N/A too.
+      expect(result).toContain("| N/A |");
+    });
+
+    it("still renders the real token counts — those need no price map", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: false,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("10,000");
+      expect(result).toContain("2,000");
+    });
+
+    it("emits a footnote hyperlinking SPEC §6.2 when pricesProvided is false", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: false,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain(
+        "[No `.github/prices.json`](https://github.com/JPHutchins/code-review/blob/main/SPEC.md#62-price-map)",
+      );
+    });
+
+    it("keeps the footnote inside the disclosure blockquote so the [!WARNING] alert stays contiguous", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: false,
+        template,
+        route: "full review",
+      });
+      const footnoteLine = result.split("\n").find((l) => l.includes("No `.github/prices.json`"));
+      expect(footnoteLine).toBeDefined();
+      expect(footnoteLine!.startsWith(">")).toBe(true);
+    });
+
+    it("renders real $ costs and NO footnote when pricesProvided is true (or omitted)", () => {
+      const findings = mkFindings([]);
+      const provided = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(provided).toContain("**cost:** $0.06");
+      expect(provided).not.toContain("N/A");
+      expect(provided).not.toContain("No `.github/prices.json`");
+
+      const omitted = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(omitted).not.toContain("No `.github/prices.json`");
+      expect(omitted).toContain("**cost:** $0.06");
+    });
+  });
+
   describe("LLM disclosure aside (issue #8 — [!WARNING], repo link, in-blockquote table)", () => {
     it("renders a [!WARNING] alert, not the old [!NOTE]", () => {
       const findings = mkFindings([]);

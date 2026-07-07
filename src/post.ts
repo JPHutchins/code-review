@@ -32,6 +32,10 @@ export interface PostInput {
   readonly findingsPath: string;
   readonly envelopePath: string;
   readonly pricesPath: string;
+  /** Whether `pricesPath` is a real caller-supplied price map or the bundled all-zero example
+   *  standing in for an absent one — threaded to the render layer so cost shows N/A, not a false
+   *  $0.00, when absent (SPEC §6.2). */
+  readonly pricesProvided: boolean;
   readonly templatePath: string;
   readonly inlineTemplatePath: string;
   /** Overrides the envelope's route (SPEC §6.1) when set; otherwise the envelope is the source. */
@@ -410,6 +414,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         findings: noticeFindings(message),
         envelope: null,
         prices: decodedPrices.right,
+        pricesProvided: input.pricesProvided,
         template,
         route: input.route,
         reviewedSha: input.headSha,
@@ -452,6 +457,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         findings,
         envelope: null,
         prices: decodedPrices.right,
+        pricesProvided: input.pricesProvided,
         template,
         route: input.route,
         reviewedSha: input.headSha,
@@ -507,6 +513,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     findings,
     envelope,
     prices: decodedPrices.right,
+    pricesProvided: input.pricesProvided,
     template,
     route: input.route,
     reviewedSha: input.headSha,

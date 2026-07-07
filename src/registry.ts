@@ -115,7 +115,7 @@ const describeValidationError = (e: ValidationError): string => {
 const formatErrors = (errors: Errors): readonly string[] => errors.map(describeValidationError);
 
 /** The declared `schema_version` of a raw document, when present as a string. */
-const declaredVersion = (raw: unknown): string | undefined =>
+export const declaredVersion = (raw: unknown): string | undefined =>
   typeof raw === "object" && raw !== null && "schema_version" in raw
     ? typeof raw.schema_version === "string"
       ? raw.schema_version

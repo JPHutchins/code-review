@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,15 +31,15 @@ describe("decideGate", () => {
   };
 
   it("allows when the draft is valid", () => {
-    expect(decideGate(valid, 0, 5, "/d.json")).toEqual({ kind: "allow" });
+    expect(decideGate(valid, 0, 5, "/d.json", "findings")).toEqual({ kind: "allow" });
   });
 
   it("allows once the nudge budget is spent, even if still invalid", () => {
-    expect(decideGate(invalid, 5, 5, "/d.json").kind).toBe("allow");
+    expect(decideGate(invalid, 5, 5, "/d.json", "findings").kind).toBe("allow");
   });
 
   it("blocks a missing draft with a reason that names it", () => {
-    const d = decideGate(missing, 0, 5, "/d.json");
+    const d = decideGate(missing, 0, 5, "/d.json", "findings");
     expect(d.kind).toBe("block");
     if (d.kind === "block") {
       expect(d.reason).toContain("does not exist");
@@ -48,9 +48,28 @@ describe("decideGate", () => {
   });
 
   it("blocks an invalid draft and surfaces the validator errors", () => {
-    const d = decideGate(invalid, 1, 5, "/d.json");
+    const d = decideGate(invalid, 1, 5, "/d.json", "findings");
     expect(d.kind).toBe("block");
     if (d.kind === "block") expect(d.reason).toContain("must be equal to one of");
+  });
+
+  it("names the given kind (not a hardcoded 'findings') in the schema/document wording", () => {
+    const d = decideGate(missing, 0, 5, "/d.json", "triage");
+    expect(d.kind).toBe("block");
+    if (d.kind === "block") {
+      expect(d.reason).toContain("triage document");
+      expect(d.reason).toContain("triage schema");
+      expect(d.reason).not.toContain("findings");
+    }
+  });
+
+  it("reprompts the output-format contract: print-schema and validate --kind, both naming the kind", () => {
+    const d = decideGate(invalid, 1, 5, "/tmp/findings-draft.json", "prices");
+    expect(d.kind).toBe("block");
+    if (d.kind === "block") {
+      expect(d.reason).toContain("print-schema prices");
+      expect(d.reason).toContain("validate /tmp/findings-draft.json --kind prices");
+    }
   });
 });
 
@@ -115,6 +134,27 @@ describe("draftState", () => {
     expect(s.valid).toBe(false);
     expect(s.errors.some((e) => e.includes("Unsupported"))).toBe(true);
   });
+
+  it("treats a non-ENOENT read failure (e.g. EISDIR) as present-but-invalid with the real error, not as merely 'missing'", () => {
+    const aDirectory = join(dir, "not-a-file");
+    mkdirSync(aDirectory);
+    const s = draftState(aDirectory, useFindingsSchema);
+    expect(s.present).toBe(true);
+    expect(s.valid).toBe(false);
+    expect(s.errors).toHaveLength(1);
+    expect(s.errors[0]).not.toBe("");
+  });
+
+  it("treats a validator crash (e.g. an unparseable schema file) as invalid, not a crash", () => {
+    const p = join(dir, "ok2.json");
+    writeFileSync(p, JSON.stringify(validDoc));
+    const badSchemaPath = join(dir, "bad-schema.json");
+    writeFileSync(badSchemaPath, "{ not valid json");
+    const s = draftState(p, () => badSchemaPath);
+    expect(s.present).toBe(true);
+    expect(s.valid).toBe(false);
+    expect(s.errors[0]).toContain("Invalid JSON in schema file");
+  });
 });
 
 describe("nudge counter", () => {
@@ -132,9 +172,9 @@ describe("nudge counter", () => {
 
   it("bumps and reads back monotonically", () => {
     const p = join(dir, "n");
-    bumpNudges(p, readNudges(p));
+    bumpNudges(p);
     expect(readNudges(p)).toBe(1);
-    bumpNudges(p, readNudges(p));
+    bumpNudges(p);
     expect(readNudges(p)).toBe(2);
   });
 
@@ -169,6 +209,15 @@ describe("defaultHookCommand", () => {
     expect(c).toContain("--kind 'findings'");
     expect(c).toContain("--schema-version '0.3'");
     expect(c).toContain("--max-nudges '3'");
+  });
+
+  it("propagates --schema and --counter too", () => {
+    const c = defaultHookCommand("/t/d.json", {
+      schema: "/t/custom.schema.json",
+      counter: "/t/d.json.nudges",
+    });
+    expect(c).toContain("--schema '/t/custom.schema.json'");
+    expect(c).toContain("--counter '/t/d.json.nudges'");
   });
 });
 

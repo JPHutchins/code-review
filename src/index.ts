@@ -21,7 +21,7 @@ import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName } from "./adapt.js";
 import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
-import { schemaPathFor } from "./registry.js";
+import { schemaPathFor, declaredVersion } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
 import { lowerPatch } from "./patch.js";
 import {
@@ -224,19 +224,11 @@ const costCmd = defineCommand({
   },
 });
 
-/** A document's declared `schema_version`, when present as a string (mirrors registry.ts's check). */
-const declaredSchemaVersion = (raw: unknown): string | undefined =>
-  typeof raw === "object" && raw !== null && "schema_version" in raw
-    ? typeof raw.schema_version === "string"
-      ? raw.schema_version
-      : undefined
-    : undefined;
-
 /** The version to derive when neither --schema nor --schema-version is given: findings carries its
  *  version in-data; triage/prices have no in-data signal (see registry.ts), so undefined selects the
  *  registry default (latest) for the kind. */
 const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefined =>
-  kind === "findings" ? declaredSchemaVersion(raw) : undefined;
+  kind === "findings" ? declaredVersion(raw) : undefined;
 
 const validateCmd = defineCommand({
   meta: {
@@ -531,8 +523,11 @@ const printSchemaCmd = defineCommand({
 const MAX_NUDGES_DEFAULT = 5;
 
 /** Drain the Stop-hook payload delivered on stdin so the caller never sees EPIPE; its content is
- *  not needed — the decision comes from the draft on disk. Absent stdin (a manual run) is fine. */
+ *  not needed — the decision comes from the draft on disk. Skips draining on a TTY (an interactive,
+ *  manual run with nothing piped in) since readFileSync(0) would otherwise block forever waiting
+ *  for EOF that never comes; absent/empty piped stdin otherwise is fine. */
 const drainStdin = (): void => {
+  if (process.stdin.isTTY) return;
   try {
     readFileSync(0);
   } catch {
@@ -587,8 +582,10 @@ const stopGateCmd = defineCommand({
     if (args["print-settings"]) {
       const command = defaultHookCommand(draftPath, {
         kind: args.kind,
+        schema: args.schema,
         schemaVersion: args["schema-version"],
         maxNudges: args["max-nudges"],
+        counter: args.counter,
       });
       process.stdout.write(`${JSON.stringify(stopHookSettings(command))}\n`);
       return;
@@ -610,10 +607,20 @@ const stopGateCmd = defineCommand({
     );
 
     const nudges = readNudges(counterPath);
-    const decision = decideGate(state, nudges, maxNudges, draftPath);
+    const decision = decideGate(state, nudges, maxNudges, draftPath, kind);
     if (decision.kind === "block") {
-      bumpNudges(counterPath, nudges);
+      // Write the block to stdout BEFORE bumping the counter, and never let a counter-write
+      // failure suppress a block that's already been written — the gate must fail open only on
+      // its own budget being spent, never on an unrelated filesystem error (issue: bump-before-
+      // write could silently drop the block if the write itself throws).
       process.stdout.write(`${JSON.stringify({ decision: "block", reason: decision.reason })}\n`);
+      try {
+        bumpNudges(counterPath);
+      } catch (err) {
+        process.stderr.write(
+          `stop-gate: failed to update the nudge counter at ${counterPath}: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
     }
   },
 });

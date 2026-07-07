@@ -90,6 +90,76 @@ describe("cli — stop-gate", () => {
     expect(command).toContain("stop-gate");
     expect(command).toContain("--draft '/tmp/findings-draft.json'");
   });
+
+  it("--print-settings also propagates --schema and --counter, not just kind/schema-version/max-nudges", async () => {
+    const { stdout, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      "/tmp/findings-draft.json",
+      "--schema",
+      "/tmp/custom.schema.json",
+      "--counter",
+      "/tmp/findings-draft.json.nudges",
+      "--print-settings",
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as {
+      hooks: { Stop: { hooks: { type: string; command: string }[] }[] };
+    };
+    const command = parsed.hooks.Stop[0]?.hooks[0]?.command;
+    expect(command).toContain("--schema '/tmp/custom.schema.json'");
+    expect(command).toContain("--counter '/tmp/findings-draft.json.nudges'");
+  });
+
+  it("names the given --kind (not a hardcoded 'findings') in the block reason", async () => {
+    const draftPath = join(tmpDir, "triage-draft.json"); // never written — present:false
+    const { stdout, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      draftPath,
+      "--kind",
+      "triage",
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as { decision: string; reason: string };
+    expect(parsed.decision).toBe("block");
+    expect(parsed.reason).toContain("triage document");
+    expect(parsed.reason).toContain("print-schema triage");
+    expect(parsed.reason).toContain(`validate ${draftPath} --kind triage`);
+  });
+
+  it("still emits the block to stdout even when the nudge counter can't be written (block-then-bump ordering)", async () => {
+    const draftPath = join(tmpDir, "missing-draft.json"); // never written — present:false
+    const counterAsDir = join(tmpDir, "counter-is-a-directory");
+    mkdirSync(counterAsDir);
+    const { stdout, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      draftPath,
+      "--counter",
+      counterAsDir,
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as { decision: string; reason: string };
+    expect(parsed.decision).toBe("block");
+  });
+
+  it("allows and exits cleanly on a TTY with no piped stdin (drainStdin must not block forever)", async () => {
+    const draftPath = join(tmpDir, "valid-draft.json");
+    writeFileSync(
+      draftPath,
+      JSON.stringify({ schema_version: "0.3.0", summary: "s", verdict: "approve", findings: [] }),
+    );
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    try {
+      const { stdout, exitCode } = await runCli(["stop-gate", "--draft", draftPath]);
+      expect(exitCode).toBeNull();
+      expect(stdout).toBe("");
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
+    }
+  });
 });
 
 describe("cli — adapt", () => {

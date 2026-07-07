@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CLI entry point — citty subcommands for render, inline, post, cost, validate, adapt, extract,
-// lower-suggestions, print-schema.
+// lower-suggestions, print-schema, stop-gate.
 
 /* eslint-disable @typescript-eslint/require-await */
 // citty requires async run() even when the body has no explicit await
@@ -24,6 +24,14 @@ import type { ExtractKind, LadderOutcome } from "./extract.js";
 import { schemaPathFor } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
 import { lowerPatch } from "./patch.js";
+import {
+  decideGate,
+  draftState,
+  readNudges,
+  bumpNudges,
+  defaultHookCommand,
+  stopHookSettings,
+} from "./stop-gate.js";
 
 const readJSON = (path: string): unknown => {
   try {
@@ -514,6 +522,96 @@ const printSchemaCmd = defineCommand({
   },
 });
 
+const MAX_NUDGES_DEFAULT = 5;
+
+/** Drain the Stop-hook payload delivered on stdin so the caller never sees EPIPE; its content is
+ *  not needed — the decision comes from the draft on disk. Absent stdin (a manual run) is fine. */
+const drainStdin = (): void => {
+  try {
+    readFileSync(0);
+  } catch {
+    // no stdin
+  }
+};
+
+const parseNonNegativeInt = (raw: string | undefined, fallback: number): number => {
+  if (raw === undefined) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+};
+
+const stopGateCmd = defineCommand({
+  meta: {
+    name: "stop-gate",
+    description:
+      "Claude Code Stop-hook gate: refuse to let the agent end its turn until --draft validates against the schema (bounded by --max-nudges). With --print-settings, emit the --settings JSON that wires this as the Stop hook.",
+  },
+  args: {
+    draft: {
+      type: "string",
+      description: "Path to the findings document the agent must produce and keep valid",
+      required: true,
+    },
+    kind: {
+      type: "string",
+      description:
+        "Schema kind to validate against: findings | triage | prices (default: findings)",
+    },
+    schema: { type: "string", description: "Path to a schema file (wins over --kind)" },
+    "schema-version": {
+      type: "string",
+      description: "Schema major.minor to validate against (default: the draft's declared version)",
+    },
+    "max-nudges": {
+      type: "string",
+      description: `Times to block before relenting so the step fails downstream as before (default: ${MAX_NUDGES_DEFAULT})`,
+    },
+    counter: {
+      type: "string",
+      description: "Path for the nudge counter (default: <draft>.nudges)",
+    },
+    "print-settings": {
+      type: "boolean",
+      description: "Print the Stop-hook settings JSON that wires this gate, then exit",
+    },
+  },
+  run: async ({ args }) => {
+    const draftPath = resolve(args.draft);
+
+    if (args["print-settings"]) {
+      const command = defaultHookCommand(draftPath, {
+        kind: args.kind,
+        schemaVersion: args["schema-version"],
+        maxNudges: args["max-nudges"],
+      });
+      process.stdout.write(`${JSON.stringify(stopHookSettings(command))}\n`);
+      return;
+    }
+
+    drainStdin();
+
+    const kind = requireSchemaKind(args.kind || "findings");
+    const maxNudges = parseNonNegativeInt(args["max-nudges"], MAX_NUDGES_DEFAULT);
+    const counterPath = args.counter ? resolve(args.counter) : `${draftPath}.nudges`;
+
+    // schemaPathFor throws (rather than the process-exiting requireSchemaPath) so that a draft
+    // declaring an unsupported schema_version is caught by draftState and treated as invalid —
+    // i.e. a block with a helpful message — instead of crashing the hook and letting the agent stop.
+    const state = draftState(draftPath, (parsed) =>
+      args.schema
+        ? resolve(args.schema)
+        : schemaPathFor(kind, args["schema-version"] || derivedSchemaVersion(kind, parsed)),
+    );
+
+    const nudges = readNudges(counterPath);
+    const decision = decideGate(state, nudges, maxNudges, draftPath);
+    if (decision.kind === "block") {
+      bumpNudges(counterPath, nudges);
+      process.stdout.write(`${JSON.stringify({ decision: "block", reason: decision.reason })}\n`);
+    }
+  },
+});
+
 const gatherCmd = defineCommand({
   meta: {
     name: "gather",
@@ -666,7 +764,7 @@ export const main = defineCommand({
     name: "code-review",
     version: packageVersion,
     description:
-      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, lower-suggestions, cost, and validate findings JSON",
+      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, lower-suggestions, cost, validate, and stop-gate findings JSON",
   },
   subCommands: {
     gather: gatherCmd,
@@ -679,6 +777,7 @@ export const main = defineCommand({
     extract: extractCmd,
     "lower-suggestions": lowerSuggestionsCmd,
     "print-schema": printSchemaCmd,
+    "stop-gate": stopGateCmd,
   },
 });
 

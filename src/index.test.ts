@@ -74,6 +74,24 @@ const runCli = async (
   return { stdout, stderr, exitCode };
 };
 
+describe("cli — stop-gate", () => {
+  it("prints Stop-hook settings that wire the gate to this draft", async () => {
+    const { stdout, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      "/tmp/findings-draft.json",
+      "--print-settings",
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as {
+      hooks: { Stop: { hooks: { type: string; command: string }[] }[] };
+    };
+    const command = parsed.hooks.Stop[0]?.hooks[0]?.command;
+    expect(command).toContain("stop-gate");
+    expect(command).toContain("--draft '/tmp/findings-draft.json'");
+  });
+});
+
 describe("cli — adapt", () => {
   it("maps a native Claude Code envelope onto the abstract envelope and round-trips it", async () => {
     const { stdout, exitCode } = await runCli([

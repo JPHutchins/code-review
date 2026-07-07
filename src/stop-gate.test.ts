@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const findingsSchema = resolve(__dirname, "..", "schema", "findings.schema.json");
 const useFindingsSchema = (): string => findingsSchema;
 
-const validDoc = { schema_version: "0.2.0", summary: "ok", verdict: "approve", findings: [] };
+const validDoc = { schema_version: "0.4.0", summary: "ok", verdict: "approve", findings: [] };
 
 describe("decideGate", () => {
   const valid: DraftState = { present: true, valid: true, errors: [] };

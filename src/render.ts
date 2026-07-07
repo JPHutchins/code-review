@@ -5,10 +5,8 @@ import { Eta } from "eta";
 import type { Finding, Severity } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
-import { severityEmoji, findingsPointer } from "./surface.js";
-
-/** Escape triple-backtick sequences to prevent code-block breakout. */
-const escapeBackticks = (text: string): string => text.replace(/```/g, "`` ` ``");
+import { severityEmoji, findingsPointer, projectPatch } from "./surface.js";
+import type { PatchProjection } from "./surface.js";
 
 /** Escape pipe characters so they don't break markdown table columns. */
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
@@ -16,12 +14,15 @@ const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 /** Replace backticks so they don't break inline code spans. */
 const escapeCodeBackticks = (text: string): string => text.replace(/`/g, "-");
 
-/** Sanitize a finding's fields for safe rendering in the strays section. */
-const sanitizeFinding = (f: Finding): Finding => ({
+/** A stray finding with its sanitized fields plus its projected patch block for the strays list. */
+type StrayView = Finding & { readonly patchProjection: PatchProjection };
+
+/** Sanitize a stray finding's fields and attach its patch projection for the strays section. */
+const sanitizeFinding = (f: Finding): StrayView => ({
   ...f,
   title: escapePipes(f.title),
   path: escapeCodeBackticks(f.path),
-  suggestion: f.suggestion ? escapeBackticks(f.suggestion) : f.suggestion,
+  patchProjection: projectPatch(f.patch),
 });
 
 const emptySeverityCounts = (): Record<Severity, number> => ({

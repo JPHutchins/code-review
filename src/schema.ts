@@ -42,16 +42,16 @@ const FindingShape = t.intersection([
     end_line: LineNumber,
     severity: SeverityCodec,
     title: t.string,
-    body: t.string,
+    description: t.string,
+    reasoning: t.string,
+    confidence: Confidence,
   }),
   t.partial({
     side: SideCodec,
-    suggestion: t.union([t.string, t.null]),
-    confidence: Confidence,
     code: t.string,
     code_url: t.string,
-    reasoning: t.string,
-    patch: t.string,
+    recommendation: t.string,
+    patch: t.union([t.string, t.null]),
   }),
 ]);
 
@@ -144,7 +144,7 @@ export const TestSummaryCodec = t.intersection([
 // The supported-minor allowlist and version dispatch live in the registry (src/registry.ts),
 // which sources its findings entry's defaultVersion from this constant.
 /** Full semver used when an adapter's native output omits `schema_version` (SPEC §6.1). */
-export const DEFAULT_SCHEMA_VERSION = "0.3.0";
+export const DEFAULT_SCHEMA_VERSION = "0.4.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;

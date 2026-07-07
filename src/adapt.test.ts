@@ -101,8 +101,8 @@ describe("adapt — claude-code", () => {
     const result = adapt("claude-code", nativeFixture);
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
-    expect(result.right.schema_version).toBe("0.2.0");
-    expect(result.right.findings.schema_version).toBe("0.2.0");
+    expect(result.right.schema_version).toBe("0.4.0");
+    expect(result.right.findings.schema_version).toBe("0.4.0");
   });
 
   it("defaults schema_version to DEFAULT_SCHEMA_VERSION when structured_output omits it", () => {
@@ -214,7 +214,7 @@ describe("adapt — claude-code — extraction ladder integration", () => {
       num_turns: 1,
       duration_ms: 1000,
       structured_output: {
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "from structured_output — must lose to the agent file",
         verdict: "approve",
         findings: [],

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CLI entry point — citty subcommands for render, inline, post, cost, validate, adapt, extract,
-// lower-suggestions, print-schema, stop-gate.
+// validate-patches, print-schema, stop-gate.
 
 /* eslint-disable @typescript-eslint/require-await */
 // citty requires async run() even when the body has no explicit await
@@ -23,7 +23,7 @@ import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } fr
 import type { ExtractKind, LadderOutcome } from "./extract.js";
 import { schemaPathFor, declaredVersion } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
-import { lowerPatch } from "./patch.js";
+import { validatePatch } from "./patch.js";
 import {
   decideGate,
   draftState,
@@ -412,40 +412,35 @@ const readFileLines = (path: string): readonly string[] | null => {
   }
 };
 
-/** Lower one finding's `patch` (when present) into a `suggestion` + exact range, validated against
- *  the real file at `<repoRoot>/<finding.path>`; drop the patch (logging why to stderr) when the
- *  file can't be read or the patch doesn't apply cleanly. Findings without a `patch` pass through
- *  untouched. Never throws. */
-const lowerFinding = (finding: Finding, repoRoot: string): Finding => {
-  if (finding.patch === undefined) return finding;
-  const base = withoutPatch(finding);
+/** Validate one finding's `patch` (when present) against the real file at `<repoRoot>/<finding.path>`,
+ *  aligning the finding's `start_line`/`end_line` to the patch's removed range and KEEPING the patch
+ *  for the renderer to project. Drop the patch (logging why to stderr) when the file can't be read
+ *  or the patch doesn't apply cleanly — the finding survives without it, never writing a suggestion.
+ *  A finding with no patch passes through untouched. Never throws. */
+const validateFinding = (finding: Finding, repoRoot: string): Finding => {
+  if (finding.patch === undefined || finding.patch === null) return finding;
   const lines = readFileLines(resolve(repoRoot, finding.path));
   if (lines === null) {
     process.stderr.write(
-      `lower-suggestions: ${finding.path}: could not read file at "${repoRoot}" — dropping patch\n`,
+      `validate-patches: ${finding.path}: could not read file at "${repoRoot}" — dropping patch\n`,
     );
-    return base;
+    return withoutPatch(finding);
   }
-  const result = lowerPatch(finding.patch, lines);
-  if (result.kind === "drop") {
+  const result = validatePatch(finding.patch, lines);
+  if ("kind" in result) {
     process.stderr.write(
-      `lower-suggestions: ${finding.path}:${String(finding.start_line)}: ${result.reason} — dropping patch\n`,
+      `validate-patches: ${finding.path}:${String(finding.start_line)}: ${result.reason} — dropping patch\n`,
     );
-    return base;
+    return withoutPatch(finding);
   }
-  return {
-    ...base,
-    suggestion: result.suggestion,
-    start_line: result.startLine,
-    end_line: result.endLine,
-  };
+  return { ...finding, start_line: result.startLine, end_line: result.endLine };
 };
 
-const lowerSuggestionsCmd = defineCommand({
+const validatePatchesCmd = defineCommand({
   meta: {
-    name: "lower-suggestions",
+    name: "validate-patches",
     description:
-      "Validate each finding's patch against the real PR-head tree and lower it to an exact suggestion + range, or drop it (issue #10)",
+      "Validate each finding's patch against the real PR-head tree, aligning the finding's range to it and keeping the patch, or dropping the patch (issue #10)",
   },
   args: {
     findings: {
@@ -462,11 +457,11 @@ const lowerSuggestionsCmd = defineCommand({
   run: async ({ args }) => {
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
     const repoRoot = args["repo-root"] ? resolve(args["repo-root"]) : process.cwd();
-    const lowered = {
+    const validated = {
       ...findings,
-      findings: findings.findings.map((f) => lowerFinding(f, repoRoot)),
+      findings: findings.findings.map((f) => validateFinding(f, repoRoot)),
     };
-    process.stdout.write(`${JSON.stringify(lowered, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(validated, null, 2)}\n`);
   },
 });
 
@@ -788,7 +783,7 @@ export const main = defineCommand({
     name: "code-review",
     version: packageVersion,
     description:
-      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, lower-suggestions, cost, validate, and stop-gate findings JSON",
+      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, validate, and stop-gate findings JSON",
   },
   subCommands: {
     gather: gatherCmd,
@@ -799,7 +794,7 @@ export const main = defineCommand({
     validate: validateCmd,
     adapt: adaptCmd,
     extract: extractCmd,
-    "lower-suggestions": lowerSuggestionsCmd,
+    "validate-patches": validatePatchesCmd,
     "print-schema": printSchemaCmd,
     "stop-gate": stopGateCmd,
   },

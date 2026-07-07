@@ -244,10 +244,10 @@ jobs:
           # Snapshot the clean, applied PR-head tree as a throwaway commit BEFORE the agent edits
           # anything below — the agent runs with bypassPermissions and freely edits/runs code to
           # validate its findings, so by the time findings exist the tree no longer matches GitHub's
-          # PR-head content. `lower-suggestions` (after the agent runs) validates each finding's
+          # PR-head content. `validate-patches` (after the agent runs) validates each finding's
           # `patch` against the real file on disk, so it needs this exact snapshot to reset to.
           git -c user.email=code-review@local -c user.name=code-review add -A
-          git -c user.email=code-review@local -c user.name=code-review commit -q -m "pr-head snapshot (for suggestion lowering)"
+          git -c user.email=code-review@local -c user.name=code-review commit -q -m "pr-head snapshot (for patch validation)"
 
           echo "Review mode: $ROUTE"
           claude -p "$PROMPT" \
@@ -258,7 +258,8 @@ jobs:
             --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your only deliverable is the review as JSON conforming to the findings schema — write it to $DRAFT (an absolute path outside the repo tree), run \`code-review validate $DRAFT\`, and fix-and-revalidate until it exits 0 before ending your turn.
           Guidance:
           - Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix.
-          - For a mechanical fix, prefer the finding's \`patch\` field (a single-hunk unified diff of just that edit, e.g. \`git diff -U3 -- <file>\`) over a hand-authored \`suggestion\` — a patch is validated exactly and won't post with broken indentation or range.
+          - Each finding needs \`description\` (what's wrong, markdown), \`reasoning\` (why it holds — required), and \`confidence\` (0..1 — required). Optionally add \`recommendation\` (prose describing the fix in human terms).
+          - For a mechanical fix, also include the finding's \`patch\` field: a single-hunk unified diff of just that edit against the current file (e.g. \`git diff -U3 -- <file>\`). A patch is validated exactly against the file and projected into a suggestion, so it won't post with broken indentation or an over-wide range.
           - The findings schema (provided via --json-schema) documents every field." \
             >envelope.json
 
@@ -273,12 +274,12 @@ jobs:
 
           # Discard the agent's edits and restore the clean PR-head snapshot — `--hard` doesn't
           # touch untracked directories, so findings/ (just written) and node_modules/ survive —
-          # then lower each finding's `patch` (if any) against that exact PR-head content (§5.2
-          # rule 8, issue #10). A lowering failure fails this step loudly rather than risk shipping
-          # an un-lowered `patch` field downstream.
+          # then validate each finding's `patch` (if any) against that exact PR-head content: align
+          # the finding's range to the patch and keep it, or drop the patch (§5.2 rule 8, issue #10).
+          # The commenter later projects a kept patch into a suggestion.
           git reset -q --hard HEAD
-          code-review lower-suggestions findings/findings.json --repo-root . >findings/findings.lowered.json
-          mv findings/findings.lowered.json findings/findings.json
+          code-review validate-patches findings/findings.json --repo-root . >findings/findings.validated.json
+          mv findings/findings.validated.json findings/findings.json
           echo "::endgroup::"
 
       # Best-effort capture of the review agent's full session transcript — same rationale as the

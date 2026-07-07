@@ -42,7 +42,7 @@ npx @jphutchins/code-review <subcommand>
 | `inline` | Build the GitHub reviews `comments[]` payload from findings + diff (in-diff validation; strays demote to the summary) |
 | `adapt` | Map a native agent-CLI result envelope onto the abstract SPEC §6.1 envelope |
 | `extract` | Recover findings/triage JSON from a native envelope via the deterministic extraction ladder |
-| `lower-suggestions` | Validate each finding's `patch` against the real PR-head file and lower it to an exact `suggestion` + line range, or drop it |
+| `validate-patches` | Validate each finding's `patch` against the real PR-head file, aligning the finding's line range to it and keeping the patch (projected into a suggestion at render time), or dropping the patch |
 | `cost` | Recompute USD cost from the envelope's per-model token counts + a price map |
 | `validate` | Validate findings JSON against the published schema |
 | `print-schema` | Print a bundled schema (findings, triage, prices) |

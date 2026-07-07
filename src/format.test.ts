@@ -10,7 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const template = readFileSync(resolve(__dirname, "..", "templates", "comment.eta"), "utf-8");
 
 const mkFindings = (overrides?: Partial<Findings>): Findings => ({
-  schema_version: "0.3.0",
+  schema_version: "0.4.0",
   summary: "A test summary.",
   verdict: "comment",
   findings: [],
@@ -89,7 +89,7 @@ describe("formatMarkdown", () => {
       },
     };
     const multiModelEnvelope: ResultEnvelope = {
-      schema_version: "0.3.0",
+      schema_version: "0.4.0",
       findings: mkFindings(),
       models: [
         mkEntry({ model: "model-a" }),

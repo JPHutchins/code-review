@@ -1,8 +1,9 @@
 // Shared render-surface primitives — the single source of truth for the bits every render surface
-// (sticky, inline comment, review body) must agree on: the severity→emoji mapping and the
-// machine-readable findings-json pointer (issue #19). Pure; no side effects.
+// (sticky, inline comment, review body) must agree on: the severity→emoji mapping, the
+// machine-readable findings-json pointer (issue #19), and the patch→suggestion projection. Pure.
 
 import type { Findings } from "./schema.js";
+import { patchToSuggestion } from "./patch.js";
 
 /** Severity → emoji, used by every render surface (sticky, inline, strays). */
 export const severityEmoji = (s: string): string => {
@@ -44,4 +45,25 @@ export const findingsPointer = (
         ? `<!-- code-review:findings-json ${jsonUrl} -->`
         : "";
   return marker ? `${AGENTS_STOP_DIRECTIVE}\n${marker}` : "";
+};
+
+/** Escape triple-backtick sequences so fenced content can't break out of its block. */
+const escapeFence = (text: string): string => text.replace(/```/g, "`` ` ``");
+
+/** How a finding's `patch` renders on a surface (JP's core design): a GitHub ```suggestion when the
+ *  patch lowers to replacement text (anchored at the finding's already-aligned range), a raw
+ *  ```patch fallback when it can't lower (non-lossy — the diff still reaches the reader), or nothing
+ *  when the finding carries no patch. Fenced content is backtick-escaped against breakout. */
+export type PatchProjection =
+  | { readonly kind: "suggestion"; readonly text: string }
+  | { readonly kind: "patch"; readonly raw: string }
+  | { readonly kind: "none" };
+
+/** Project a finding's `patch` into a template-ready {@link PatchProjection}. Pure. */
+export const projectPatch = (patch: string | null | undefined): PatchProjection => {
+  if (patch === null || patch === undefined) return { kind: "none" };
+  const lowered = patchToSuggestion(patch);
+  return typeof lowered === "string"
+    ? { kind: "suggestion", text: escapeFence(lowered) }
+    : { kind: "patch", raw: escapeFence(patch) };
 };

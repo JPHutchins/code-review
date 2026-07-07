@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.2.0",
+  "schema_version": "0.4.0",
   "summary": "Authoritative: from the agent-written file.",
   "verdict": "comment",
   "findings": [
@@ -10,8 +10,8 @@
       "side": "RIGHT",
       "severity": "minor",
       "title": "Missing null check",
-      "body": "The `file` parameter may be undefined; add a guard before use.",
-      "suggestion": null,
+      "description": "The `file` parameter may be undefined; add a guard before use.",
+      "reasoning": "The handler dereferences `file` before any null check, and the caller can pass undefined.",
       "confidence": 0.7
     }
   ]

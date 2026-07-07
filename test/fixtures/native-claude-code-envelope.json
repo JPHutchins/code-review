@@ -27,7 +27,7 @@
   "num_turns": 9,
   "duration_ms": 87000,
   "structured_output": {
-    "schema_version": "0.2.0",
+    "schema_version": "0.4.0",
     "summary": "Adds a retry wrapper around the upload client and threads a timeout through the config.",
     "verdict": "comment",
     "findings": [
@@ -40,8 +40,8 @@
         "code": "widened-type",
         "code_url": "https://example.com/rules/widened-type",
         "title": "timeout type changed from number to number | string",
-        "body": "Widens the type; callers that assumed a number now need coercion.",
-        "suggestion": null,
+        "description": "Widens the type; callers that assumed a number now need coercion.",
+        "reasoning": "Callers doing arithmetic on the timeout now type-error or silently coerce; the diff widens the type without updating them.",
         "confidence": 0.85
       }
     ]

@@ -3,12 +3,9 @@
 
 import { Eta } from "eta";
 import { partitionFindings, indexDiff, defaultSide } from "./diff.js";
-import { severityEmoji, findingsPointer } from "./surface.js";
+import { severityEmoji, findingsPointer, projectPatch } from "./surface.js";
 import type { Finding, Findings } from "./schema.js";
 import type { InlineComment, InlineResult } from "./types.js";
-
-/** Escape triple-backtick sequences inside suggestion text to prevent code-block breakout. */
-const escapeBackticks = (text: string): string => text.replace(/```/g, "`` ` ``");
 
 /** Backtick-wrapped, `/`-joined model names for the disclosure line (issue #16), falling back to
  *  a plain phrase when no models are known. */
@@ -17,7 +14,9 @@ const formatModels = (models: readonly string[]): string =>
 
 /** Render a finding's inline comment body via the inline Eta template (bundled by default — see
  *  resolveInlineTemplatePath, index.ts). The template is the SSOT for all body text — severity
- *  header, finding body, suggestion, and the [!TIP] disclosure fold; TS supplies only data. */
+ *  header, description, recommendation, the projected patch block, and the [!TIP] disclosure fold;
+ *  TS supplies only data. The patch is projected here (never a `suggestion` field — that field is
+ *  gone as of schema 0.4). */
 const renderCommentBody = (
   f: Finding,
   eta: Eta,
@@ -30,8 +29,7 @@ const renderCommentBody = (
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   eta.renderString(template, {
     ...f,
-    suggestion:
-      f.suggestion !== null && f.suggestion !== undefined ? escapeBackticks(f.suggestion) : null,
+    patchProjection: projectPatch(f.patch),
     severityEmoji,
     modelsText,
     jsonUrl: jsonUrl ?? null,

@@ -128,11 +128,11 @@ describe("cli — stop-gate", () => {
     expect(parsed.reason).toContain(`validate ${draftPath} --kind triage`);
   });
 
-  it("still emits the block to stdout even when the nudge counter can't be written (block-then-bump ordering)", async () => {
-    const draftPath = join(tmpDir, "missing-draft.json"); // never written — present:false
-    const counterAsDir = join(tmpDir, "counter-is-a-directory");
+  it("ALLOWS (no block) and logs when the nudge counter can't be persisted — never an unbounded block loop (CRITICAL)", async () => {
+    const draftPath = join(tmpDir, "missing-draft.json"); // never written — would otherwise block
+    const counterAsDir = join(tmpDir, "counter-is-a-directory"); // write to a dir → EISDIR
     mkdirSync(counterAsDir);
-    const { stdout, exitCode } = await runCli([
+    const { stdout, stderr, exitCode } = await runCli([
       "stop-gate",
       "--draft",
       draftPath,
@@ -140,8 +140,36 @@ describe("cli — stop-gate", () => {
       counterAsDir,
     ]);
     expect(exitCode).toBeNull();
-    const parsed = JSON.parse(stdout) as { decision: string; reason: string };
-    expect(parsed.decision).toBe("block");
+    // No block JSON — a block we can't bound would loop forever, so we allow the stop instead.
+    expect(stdout).toBe("");
+    expect(stderr).toContain("cannot persist nudge counter");
+    expect(stderr).toContain("unbounded block loop");
+  });
+
+  it("rejects --max-nudges 0 — a disabled gate must be explicit, not a silent 0 (major)", async () => {
+    const draftPath = join(tmpDir, "d.json");
+    const { stderr, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      draftPath,
+      "--max-nudges",
+      "0",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain(">= 1");
+  });
+
+  it("rejects a loosely-parseable --max-nudges like '5abc' (strict integer parse) (major)", async () => {
+    const draftPath = join(tmpDir, "d.json");
+    const { stderr, exitCode } = await runCli([
+      "stop-gate",
+      "--draft",
+      draftPath,
+      "--max-nudges",
+      "5abc",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("non-negative integer");
   });
 
   it("allows and exits cleanly on a TTY with no piped stdin (drainStdin must not block forever)", async () => {

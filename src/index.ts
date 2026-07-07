@@ -529,7 +529,10 @@ const MAX_NUDGES_DEFAULT = 5;
 /** Drain the Stop-hook payload delivered on stdin so the caller never sees EPIPE; its content is
  *  not needed — the decision comes from the draft on disk. Skips draining on a TTY (an interactive,
  *  manual run with nothing piped in) since readFileSync(0) would otherwise block forever waiting
- *  for EOF that never comes; absent/empty piped stdin otherwise is fine. */
+ *  for EOF that never comes; absent/empty piped stdin otherwise is fine.
+ *  DEFERRED (known low-risk edge): a pipe held open without data + EOF could still block here, but
+ *  the real Stop hook writes its payload then closes (EOF), and the TTY case is guarded above, so
+ *  the held-open-forever case isn't the production path. Revisit only if hangs are observed. */
 const drainStdin = (): void => {
   if (process.stdin.isTTY) return;
   try {
@@ -539,10 +542,20 @@ const drainStdin = (): void => {
   }
 };
 
-const parseNonNegativeInt = (raw: string | undefined, fallback: number): number => {
-  if (raw === undefined) return fallback;
+/** Parse `--max-nudges`: a strict positive integer (`>= 1`). A loose `Number.parseInt` accepts
+ *  `"5abc"`/`"0x5"` and `0 >= 0` allows on the first call — both silently DISABLE the gate. Reject
+ *  anything not matching `^\d+$`, and reject `< 1`, loudly: a gate that never blocks must be an
+ *  explicit choice (omit the hook), never a typo. */
+const requireMaxNudges = (raw: string | undefined): number => {
+  if (raw === undefined) return MAX_NUDGES_DEFAULT;
+  if (!/^\d+$/.test(raw)) {
+    fail(`--max-nudges must be a non-negative integer; got "${raw}"`);
+  }
   const n = Number.parseInt(raw, 10);
-  return Number.isInteger(n) && n >= 0 ? n : fallback;
+  if (n < 1) {
+    fail(`--max-nudges must be >= 1 — a gate that never blocks must be omitted, not set to ${raw}`);
+  }
+  return n;
 };
 
 const stopGateCmd = defineCommand({
@@ -598,7 +611,7 @@ const stopGateCmd = defineCommand({
     drainStdin();
 
     const kind = requireSchemaKind(args.kind || "findings");
-    const maxNudges = parseNonNegativeInt(args["max-nudges"], MAX_NUDGES_DEFAULT);
+    const maxNudges = requireMaxNudges(args["max-nudges"]);
     const counterPath = args.counter ? resolve(args.counter) : `${draftPath}.nudges`;
 
     // schemaPathFor throws (rather than the process-exiting requireSchemaPath) so that a draft
@@ -613,18 +626,19 @@ const stopGateCmd = defineCommand({
     const nudges = readNudges(counterPath);
     const decision = decideGate(state, nudges, maxNudges, draftPath, kind);
     if (decision.kind === "block") {
-      // Write the block to stdout BEFORE bumping the counter, and never let a counter-write
-      // failure suppress a block that's already been written — the gate must fail open only on
-      // its own budget being spent, never on an unrelated filesystem error (issue: bump-before-
-      // write could silently drop the block if the write itself throws).
-      process.stdout.write(`${JSON.stringify({ decision: "block", reason: decision.reason })}\n`);
+      // CRITICAL ordering: bump the counter FIRST, and emit the block ONLY after the increment is
+      // durably persisted. If the write fails, do NOT block — a block we can't bound loops forever
+      // (the counter never advances → `nudges >= maxNudges` is never reached). Allow the stop and
+      // log: a missed nudge is far less bad than an unbounded block loop.
       try {
-        bumpNudges(counterPath);
+        bumpNudges(counterPath, nudges);
       } catch (err) {
         process.stderr.write(
-          `stop-gate: failed to update the nudge counter at ${counterPath}: ${err instanceof Error ? err.message : String(err)}\n`,
+          `stop-gate: cannot persist nudge counter at ${counterPath} → allowing to avoid an unbounded block loop: ${err instanceof Error ? err.message : String(err)}\n`,
         );
+        return;
       }
+      process.stdout.write(`${JSON.stringify({ decision: "block", reason: decision.reason })}\n`);
     }
   },
 });

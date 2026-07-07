@@ -148,6 +148,16 @@ export const DEFAULT_SCHEMA_VERSION = "0.4.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
+
+/** A valid, empty-findings document carrying `summary` as its only content — the single shape used
+ *  for a sticky-only notice (post.ts, SPEC §5.5) and a "did not complete" degraded envelope
+ *  (adapt.ts, issue #18). Callers supply the fully-formatted markdown summary. */
+export const noticeFindings = (summary: string): Findings => ({
+  schema_version: DEFAULT_SCHEMA_VERSION,
+  summary,
+  verdict: "comment",
+  findings: [],
+});
 export type Triage = t.TypeOf<typeof TriageCodec>;
 export type Severity = t.TypeOf<typeof SeverityCodec>;
 export type Side = t.TypeOf<typeof SideCodec>;

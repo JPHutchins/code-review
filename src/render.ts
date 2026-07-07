@@ -65,8 +65,8 @@ export const render = (input: RenderInput): string => {
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
-    findingsPointer: findingsPointer(input.findings, input.jsonUrl),
-    reviewUrl: input.crossLinks?.reviewUrl ?? null,
+    findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
+    reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
     // Cost cells render N/A (never a false $0.00) when no real price map was provided — there are

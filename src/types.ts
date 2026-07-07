@@ -34,13 +34,6 @@ export type InlineDisposition =
   | { readonly kind: "suppressed-existing-review"; readonly sha: string }
   | { readonly kind: "no-envelope" };
 
-/** The sticky↔review hyperlinks (issue #21) — each populated only once its target is known to
- *  actually exist, never optimistically. */
-export interface CrossLinks {
-  readonly stickyUrl?: string;
-  readonly reviewUrl?: string;
-}
-
 export interface RenderInput {
   readonly findings: Findings;
   /** null when the result envelope is unavailable or malformed — renders a "usage unavailable" note. */
@@ -67,7 +60,11 @@ export interface RenderInput {
   /** URL to the machine-readable findings JSON artifact — the findings-json marker's fallback when
    *  the embedded form is too large (issue #19). */
   readonly jsonUrl?: string;
-  /** The sticky↔review hyperlinks (issue #21) — `reviewUrl` turns "see the review" into a link
-   *  once the review is known to exist; populated by the wiring implementer's post-review pass. */
-  readonly crossLinks?: CrossLinks;
+  /** Precomputed findings-json marker (issue #19) — when set, used verbatim instead of recomputing
+   *  from `findings`/`jsonUrl`, so `post()` base64-encodes the findings once and reuses it across
+   *  surfaces. An empty string is a valid value (no marker). Omitted ⇒ computed here. */
+  readonly findingsPointer?: string;
+  /** The inline review's `html_url` (issue #21) — turns "see the review" into a link once the
+   *  review is known to exist; populated by the wiring implementer's post-review pass. */
+  readonly reviewUrl?: string;
 }

@@ -22,12 +22,15 @@ const useFindingsSchema = (): string => findingsSchema;
 const validDoc = { schema_version: "0.4.0", summary: "ok", verdict: "approve", findings: [] };
 
 describe("decideGate", () => {
-  const valid: DraftState = { present: true, valid: true, errors: [] };
-  const missing: DraftState = { present: false, valid: false, errors: [] };
+  const valid: DraftState = { kind: "valid" };
+  const missing: DraftState = { kind: "missing" };
   const invalid: DraftState = {
-    present: true,
-    valid: false,
+    kind: "invalid",
     errors: ["/verdict must be equal to one of the allowed values"],
+  };
+  const unreadable: DraftState = {
+    kind: "unreadable",
+    error: "EISDIR: illegal operation on a directory",
   };
 
   it("allows when the draft is valid", () => {
@@ -51,6 +54,16 @@ describe("decideGate", () => {
     const d = decideGate(invalid, 1, 5, "/d.json", "findings");
     expect(d.kind).toBe("block");
     if (d.kind === "block") expect(d.reason).toContain("must be equal to one of");
+  });
+
+  it("blocks an UNREADABLE draft honestly — 'could not be read', never 'does not validate'", () => {
+    const d = decideGate(unreadable, 0, 5, "/d.json", "findings");
+    expect(d.kind).toBe("block");
+    if (d.kind === "block") {
+      expect(d.reason).toContain("could not be read");
+      expect(d.reason).toContain("EISDIR");
+      expect(d.reason).not.toContain("does not validate against");
+    }
   });
 
   it("names the given kind (not a hardcoded 'findings') in the schema/document wording", () => {
@@ -82,46 +95,41 @@ describe("draftState", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("reports a missing file as not present", () => {
-    expect(draftState(join(dir, "nope.json"), useFindingsSchema)).toEqual({
-      present: false,
-      valid: false,
-      errors: [],
-    });
+  it("reports a missing file as kind:missing", () => {
+    expect(draftState(join(dir, "nope.json"), useFindingsSchema)).toEqual({ kind: "missing" });
   });
 
-  it("reports invalid JSON as present but not valid", () => {
+  it("reports invalid JSON as kind:invalid with a 'not valid JSON' error", () => {
     const p = join(dir, "bad.json");
     writeFileSync(p, "{ not json");
     const s = draftState(p, useFindingsSchema);
-    expect(s.present).toBe(true);
-    expect(s.valid).toBe(false);
-    expect(s.errors[0]).toContain("not valid JSON");
+    expect(s.kind).toBe("invalid");
+    if (s.kind === "invalid") expect(s.errors[0]).toContain("not valid JSON");
   });
 
   it("validates a well-formed findings document", () => {
     const p = join(dir, "ok.json");
     writeFileSync(p, JSON.stringify(validDoc));
-    expect(draftState(p, useFindingsSchema).valid).toBe(true);
+    expect(draftState(p, useFindingsSchema).kind).toBe("valid");
   });
 
-  it("surfaces schema errors for a malformed findings document", () => {
+  it("surfaces schema errors for a malformed findings document as kind:invalid", () => {
     const p = join(dir, "malformed.json");
     writeFileSync(
       p,
       JSON.stringify({
-        schema_version: "0.2.0",
+        schema_version: "0.4.0",
         summary: "x",
         verdict: "approve",
         findings: "nope",
       }),
     );
     const s = draftState(p, useFindingsSchema);
-    expect(s.valid).toBe(false);
-    expect(s.errors.length).toBeGreaterThan(0);
+    expect(s.kind).toBe("invalid");
+    if (s.kind === "invalid") expect(s.errors.length).toBeGreaterThan(0);
   });
 
-  it("treats an unsupported declared schema_version as invalid, not a crash", () => {
+  it("treats an unsupported declared schema_version as kind:invalid, not a crash", () => {
     const p = join(dir, "badver.json");
     writeFileSync(
       p,
@@ -130,30 +138,26 @@ describe("draftState", () => {
     const s = draftState(p, (parsed) =>
       schemaPathFor("findings", (parsed as { schema_version?: string }).schema_version),
     );
-    expect(s.present).toBe(true);
-    expect(s.valid).toBe(false);
-    expect(s.errors.some((e) => e.includes("Unsupported"))).toBe(true);
+    expect(s.kind).toBe("invalid");
+    if (s.kind === "invalid") expect(s.errors.some((e) => e.includes("Unsupported"))).toBe(true);
   });
 
-  it("treats a non-ENOENT read failure (e.g. EISDIR) as present-but-invalid with the real error, not as merely 'missing'", () => {
+  it("treats a non-ENOENT read failure (e.g. EISDIR) as kind:unreadable with the real error, not missing/invalid", () => {
     const aDirectory = join(dir, "not-a-file");
     mkdirSync(aDirectory);
     const s = draftState(aDirectory, useFindingsSchema);
-    expect(s.present).toBe(true);
-    expect(s.valid).toBe(false);
-    expect(s.errors).toHaveLength(1);
-    expect(s.errors[0]).not.toBe("");
+    expect(s.kind).toBe("unreadable");
+    if (s.kind === "unreadable") expect(s.error).not.toBe("");
   });
 
-  it("treats a validator crash (e.g. an unparseable schema file) as invalid, not a crash", () => {
+  it("treats a validator crash (e.g. an unparseable schema file) as kind:invalid, not a crash", () => {
     const p = join(dir, "ok2.json");
     writeFileSync(p, JSON.stringify(validDoc));
     const badSchemaPath = join(dir, "bad-schema.json");
     writeFileSync(badSchemaPath, "{ not valid json");
     const s = draftState(p, () => badSchemaPath);
-    expect(s.present).toBe(true);
-    expect(s.valid).toBe(false);
-    expect(s.errors[0]).toContain("Invalid JSON in schema file");
+    expect(s.kind).toBe("invalid");
+    if (s.kind === "invalid") expect(s.errors[0]).toContain("Invalid JSON in schema file");
   });
 });
 
@@ -170,11 +174,11 @@ describe("nudge counter", () => {
     expect(readNudges(join(dir, "n"))).toBe(0);
   });
 
-  it("bumps and reads back monotonically", () => {
+  it("writes current + 1 and reads back monotonically", () => {
     const p = join(dir, "n");
-    bumpNudges(p);
+    bumpNudges(p, readNudges(p));
     expect(readNudges(p)).toBe(1);
-    bumpNudges(p);
+    bumpNudges(p, readNudges(p));
     expect(readNudges(p)).toBe(2);
   });
 

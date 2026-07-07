@@ -6,17 +6,38 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { validateAgainstSchema } from "./validate.js";
 
-/** Validation state of the agent's draft deliverable at the moment it tries to stop. */
-export interface DraftState {
-  readonly present: boolean;
-  readonly valid: boolean;
-  readonly errors: readonly string[];
-}
+/** Validation state of the agent's draft deliverable at the moment it tries to stop. A sum type so
+ *  `decideGate` can reprompt precisely per case — critically, distinguishing an UNREADABLE file
+ *  (EACCES/EISDIR) from an INVALID one, since "does not validate against the schema" is a lie when
+ *  the file could not even be read. */
+export type DraftState =
+  | { readonly kind: "missing" }
+  | { readonly kind: "unreadable"; readonly error: string }
+  | { readonly kind: "invalid"; readonly errors: readonly string[] }
+  | { readonly kind: "valid" };
 
 /** A Stop-hook outcome: `block` feeds `reason` back to the agent so it keeps working; `allow`
  *  lets the turn end. */
 export type GateDecision =
   { readonly kind: "allow" } | { readonly kind: "block"; readonly reason: string };
+
+/** The precise "what's wrong" clause per non-valid draft state — honest about unreadable vs invalid. */
+const whatsWrong = (
+  state: Exclude<DraftState, { kind: "valid" }>,
+  draftPath: string,
+  kind: string,
+): string => {
+  switch (state.kind) {
+    case "missing":
+      return `${draftPath} does not exist yet`;
+    case "unreadable":
+      return `${draftPath} could not be read: ${state.error}`;
+    case "invalid":
+      return `${draftPath} does not validate against the ${kind} schema:\n${state.errors
+        .map((e) => `  - ${e}`)
+        .join("\n")}`;
+  }
+};
 
 /** The settings shape Claude Code reads from a `--settings` file to wire a Stop hook command. */
 export interface StopHookSettings {
@@ -37,17 +58,12 @@ export const decideGate = (
   draftPath: string,
   kind: string,
 ): GateDecision => {
-  if (state.valid) return { kind: "allow" };
+  if (state.kind === "valid") return { kind: "allow" };
   if (nudges >= maxNudges) return { kind: "allow" };
-  const whatsWrong = !state.present
-    ? `${draftPath} does not exist yet`
-    : `${draftPath} does not validate against the ${kind} schema:\n${state.errors
-        .map((e) => `  - ${e}`)
-        .join("\n")}`;
   return {
     kind: "block",
     reason: [
-      `This review is not complete — ${whatsWrong}`,
+      `This review is not complete — ${whatsWrong(state, draftPath, kind)}`,
       `The only deliverable is a ${kind} document that validates against the ${kind} schema — run "code-review print-schema ${kind}" to see the exact shape.`,
       `Write it to ${draftPath}, then run "code-review validate ${draftPath} --kind ${kind}" until it exits 0 before ending your turn.`,
     ].join("\n"),
@@ -67,21 +83,16 @@ export const draftState = (
     raw = readFileSync(draftPath, "utf-8");
   } catch (err) {
     if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { present: false, valid: false, errors: [] };
+      return { kind: "missing" };
     }
-    return {
-      present: true,
-      valid: false,
-      errors: [err instanceof Error ? err.message : String(err)],
-    };
+    return { kind: "unreadable", error: err instanceof Error ? err.message : String(err) };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
     return {
-      present: true,
-      valid: false,
+      kind: "invalid",
       errors: [`not valid JSON: ${err instanceof Error ? err.message : String(err)}`],
     };
   }
@@ -89,20 +100,13 @@ export const draftState = (
   try {
     schemaPath = resolveSchema(parsed);
   } catch (err) {
-    return {
-      present: true,
-      valid: false,
-      errors: [err instanceof Error ? err.message : String(err)],
-    };
+    return { kind: "invalid", errors: [err instanceof Error ? err.message : String(err)] };
   }
   try {
-    return { present: true, ...validateAgainstSchema(parsed, schemaPath) };
+    const { valid, errors } = validateAgainstSchema(parsed, schemaPath);
+    return valid ? { kind: "valid" } : { kind: "invalid", errors };
   } catch (err) {
-    return {
-      present: true,
-      valid: false,
-      errors: [err instanceof Error ? err.message : String(err)],
-    };
+    return { kind: "invalid", errors: [err instanceof Error ? err.message : String(err)] };
   }
 };
 
@@ -117,9 +121,12 @@ export const readNudges = (counterPath: string): number => {
   }
 };
 
-/** Read-increment-write the nudge counter. */
-export const bumpNudges = (counterPath: string): void => {
-  writeFileSync(counterPath, `${String(readNudges(counterPath) + 1)}\n`);
+/** Persist the incremented nudge count (`current + 1`). The caller reads `current` immediately
+ *  prior (via `readNudges`) and passes it here, so there is no second read to go stale. May throw
+ *  on a write failure — the caller decides how to handle that (index.ts allows the stop rather than
+ *  emit an unbounded block). */
+export const bumpNudges = (counterPath: string, current: number): void => {
+  writeFileSync(counterPath, `${String(current + 1)}\n`);
 };
 
 /** POSIX single-quote a string for safe embedding in a hook command line. */

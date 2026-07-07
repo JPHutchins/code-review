@@ -6,18 +6,13 @@
 // failure propagates and exits the process non-zero (never partially posts).
 
 import { readFileSync } from "node:fs";
-import type { CrossLinks, InlineComment, InlineDisposition, RenderInput } from "./types.js";
+import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import { findingsPointer } from "./surface.js";
-import {
-  ResultEnvelopeCodec,
-  PriceMapCodec,
-  TestSummaryCodec,
-  DEFAULT_SCHEMA_VERSION,
-} from "./schema.js";
+import { ResultEnvelopeCodec, PriceMapCodec, TestSummaryCodec, noticeFindings } from "./schema.js";
 import type { Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -78,14 +73,6 @@ const checkLongSuggestions = (
   });
   return { comments: adjusted, longFiles };
 };
-
-/** A synthetic findings object used for sticky-only notices (SPEC §5.5). */
-const noticeFindings = (message: string): Findings => ({
-  schema_version: DEFAULT_SCHEMA_VERSION,
-  summary: `### ⚠️ ${message}`,
-  verdict: "comment",
-  findings: [],
-});
 
 // Loaders below never throw on untrusted artifacts (SPEC §5.5) — malformed input degrades to a
 // tagged result the caller renders as a notice, rather than crashing the post.
@@ -175,24 +162,22 @@ const parseHtmlUrl = (raw: string): string | undefined => {
 };
 
 /** Post the inline review, pointing its body at the sticky (issue #11) when the sticky's URL is
- *  known, and prepending the findings-json marker (issue #19) so the review body carries it too.
- *  Returns the review's own `html_url` (undefined on a malformed response) so the caller can link
- *  the sticky back to it. */
+ *  known, and prepending the precomputed findings-json marker (issue #19) so the review body
+ *  carries it too. Returns the review's own `html_url` (undefined on a malformed response) so the
+ *  caller can link the sticky back to it. */
 const postInlineReview = async (
   repo: string,
   prNumber: number,
   headSha: string,
   comments: readonly InlineComment[],
-  crossLinks: CrossLinks,
-  findings: Findings,
-  jsonUrl: string | undefined,
+  stickyUrl: string | undefined,
+  marker: string,
   ghApi: GhApi,
 ): Promise<string | undefined> => {
   const sha7 = headSha.slice(0, 7);
-  const linkLine = crossLinks.stickyUrl
-    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${crossLinks.stickyUrl}) for the verdict, walkthrough, and cost.`
+  const linkLine = stickyUrl
+    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
     : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
-  const marker = findingsPointer(findings, jsonUrl);
   const pointer = marker ? `${marker}\n\n${linkLine}` : linkLine;
   const body = JSON.stringify({
     body: pointer,
@@ -411,7 +396,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const renderNotice = (message: string): string =>
     formatMarkdown(
       render({
-        findings: noticeFindings(message),
+        findings: noticeFindings(`### ⚠️ ${message}`),
         envelope: null,
         prices: decodedPrices.right,
         pricesProvided: input.pricesProvided,
@@ -475,11 +460,14 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     process.exit(0);
   }
 
+  // Issue #19 + review fix #5: base64-encode the findings ONCE and reuse the marker across every
+  // surface (both sticky renders, each inline comment, the review body) instead of recomputing it.
+  const findingsMarker = findingsPointer(findings, input.jsonUrl);
+
   const { comments: rawComments, strays } = buildInlineComments(findings.findings, diff, {
     inlineTemplate,
     models: envelope.models.map((m) => m.model),
-    jsonUrl: input.jsonUrl,
-    findings,
+    findingsPointer: findingsMarker,
   });
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
@@ -509,7 +497,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         ? { kind: "none-in-diff" }
         : undefined;
 
-  const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "crossLinks"> = {
+  const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
     envelope,
     prices: decodedPrices.right,
@@ -523,6 +511,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     strays,
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,
+    findingsPointer: findingsMarker,
   };
   const longFilesNote =
     longFiles.length > 0
@@ -533,9 +522,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // disposition + reviewUrl) to report the truth and link the sticky back to the review.
   const renderBody = (
     inlineDisposition: InlineDisposition | undefined,
-    crossLinks?: CrossLinks,
+    reviewUrl?: string,
   ): string =>
-    formatMarkdown(render({ ...commonRenderInput, inlineDisposition, crossLinks }) + longFilesNote);
+    formatMarkdown(render({ ...commonRenderInput, inlineDisposition, reviewUrl }) + longFilesNote);
 
   // Phase 2 (CO-R3): writes — sticky first, inline second; failure exits non-zero.
   const stickyRef = await upsertSticky(
@@ -568,9 +557,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     prNumber,
     input.headSha,
     comments,
-    { stickyUrl: stickyRef?.url },
-    findings,
-    input.jsonUrl,
+    stickyRef?.url,
+    findingsMarker,
     ghApi,
   );
   process.stderr.write(
@@ -591,7 +579,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(confirmedDisposition, { reviewUrl }),
+        renderBody(confirmedDisposition, reviewUrl),
         ghApi,
       );
       process.stderr.write(`Linked sticky comment #${String(stickyRef.id)} to the review\n`);

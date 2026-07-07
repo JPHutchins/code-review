@@ -6,7 +6,7 @@ import * as t from "io-ts";
 import type { Either } from "fp-ts/Either";
 import { resolve } from "./registry.js";
 import { extractStructured, describeLadderFailure } from "./extract.js";
-import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
+import { DEFAULT_SCHEMA_VERSION, noticeFindings } from "./schema.js";
 import type { Findings, ModelUsageEntry, ResultEnvelope } from "./schema.js";
 
 // No value-level import from fp-ts (a bare "fp-ts/Either" subpath import breaks under strict
@@ -91,15 +91,6 @@ const findingsOutcome = (
       };
 };
 
-/** A fail-open findings document for the telemetry-only case (SPEC §6.1 — never `Left`; the run's
- *  real telemetry must survive even when no findings could be recovered, issue #18). */
-const notCompletedFindings = (reason: string): Findings => ({
-  schema_version: DEFAULT_SCHEMA_VERSION,
-  summary: `### ⚠️ Review did not complete\n\n${reason}`,
-  verdict: "comment",
-  findings: [],
-});
-
 /** Map Claude Code's native `--output-format json` envelope onto the abstract envelope (SPEC §6.1).
  *  `findings` and `schema_version` come from the extraction ladder when it recovers a candidate;
  *  every other envelope field (models, turns, duration, vendor cost) always comes from the native
@@ -128,7 +119,7 @@ const adaptClaudeCode = (
     case "telemetry-only":
       return right({
         schema_version: DEFAULT_SCHEMA_VERSION,
-        findings: notCompletedFindings(outcome.reason),
+        findings: noticeFindings(`### ⚠️ Review did not complete\n\n${outcome.reason}`),
         ...telemetry,
       });
   }

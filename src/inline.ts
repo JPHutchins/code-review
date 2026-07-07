@@ -48,6 +48,9 @@ export interface InlineContext {
   /** The full findings document, embedded (or pointed at) via the shared marker (#19); omitted
    *  when the caller has no whole document to embed (the marker is then omitted too). */
   readonly findings?: Findings;
+  /** Precomputed findings-json marker (#19) — when set, used verbatim instead of recomputing from
+   *  `findings`/`jsonUrl`, so `post()` base64-encodes the findings once and reuses it here. */
+  readonly findingsPointer?: string;
 }
 
 /** Build the GitHub reviews API comments[] array from in-diff findings. Strays are demoted. */
@@ -61,7 +64,8 @@ export const buildInlineComments = (
   const { inDiff, strays } = partitionFindings(findings, index);
   const eta = new Eta({ autoTrim: false });
   const modelsText = formatModels(models);
-  const pointer = fullFindings ? findingsPointer(fullFindings, jsonUrl) : "";
+  const pointer =
+    context.findingsPointer ?? (fullFindings ? findingsPointer(fullFindings, jsonUrl) : "");
 
   const comments: InlineComment[] = inDiff.map((f) => {
     const comment: InlineComment = {

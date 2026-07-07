@@ -564,7 +564,7 @@ const stopGateCmd = defineCommand({
     },
     "max-nudges": {
       type: "string",
-      description: `Times to block before relenting so the step fails downstream as before (default: ${MAX_NUDGES_DEFAULT})`,
+      description: `Times to block before relenting so the step fails downstream as before (default: ${String(MAX_NUDGES_DEFAULT)})`,
     },
     counter: {
       type: "string",

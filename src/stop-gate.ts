@@ -94,7 +94,7 @@ export const readNudges = (counterPath: string): number => {
 };
 
 export const bumpNudges = (counterPath: string, current: number): void => {
-  writeFileSync(counterPath, `${current + 1}\n`);
+  writeFileSync(counterPath, `${String(current + 1)}\n`);
 };
 
 /** POSIX single-quote a string for safe embedding in a hook command line. */

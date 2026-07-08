@@ -415,10 +415,11 @@ const readFileLines = (path: string): readonly string[] | null => {
 };
 
 /** Validate one finding's `patch` (when present) against the real file at `<repoRoot>/<finding.path>`,
- *  aligning the finding's `start_line`/`end_line` to the patch's removed range and KEEPING the patch
- *  for the renderer to project. Drop the patch (logging why to stderr) when the file can't be read
- *  or the patch doesn't apply cleanly — the finding survives without it, never writing a suggestion.
- *  A finding with no patch passes through untouched. Never throws. */
+ *  aligning the finding's `start_line`/`end_line` to the patch's removed range when it anchors one, or
+ *  keeping the patch as-is when it's a pure insertion with no range to anchor — either way the patch
+ *  is KEPT for the renderer to project. Drop the patch (logging why to stderr) when the file can't be
+ *  read or the patch doesn't apply cleanly — the finding survives without it, never writing a
+ *  suggestion. A finding with no patch passes through untouched. Never throws. */
 const validateFinding = (finding: Finding, repoRoot: string): Finding => {
   if (finding.patch === undefined) return finding;
   const lines = readFileLines(resolve(repoRoot, finding.path));
@@ -429,20 +430,26 @@ const validateFinding = (finding: Finding, repoRoot: string): Finding => {
     return withoutPatch(finding);
   }
   const result = validatePatch(finding.patch, lines);
-  if ("kind" in result) {
-    process.stderr.write(
-      `validate-patches: ${finding.path}:${String(finding.start_line)}: ${result.reason} — dropping patch\n`,
-    );
-    return withoutPatch(finding);
+  switch (result.kind) {
+    case "anchored":
+      return { ...finding, start_line: result.startLine, end_line: result.endLine };
+    case "keep":
+      // Applies cleanly but has no removed range to anchor a suggestion — leave the finding's own
+      // start_line/end_line as the inline anchor; the renderer projects the patch to a ```patch block.
+      return finding;
+    case "drop":
+      process.stderr.write(
+        `validate-patches: ${finding.path}:${String(finding.start_line)}: ${result.reason} — dropping patch\n`,
+      );
+      return withoutPatch(finding);
   }
-  return { ...finding, start_line: result.startLine, end_line: result.endLine };
 };
 
 const validatePatchesCmd = defineCommand({
   meta: {
     name: "validate-patches",
     description:
-      "Validate each finding's patch against the real PR-head tree, aligning the finding's range to it and keeping the patch, or dropping the patch (issue #10)",
+      "Validate each finding's patch against the real PR-head tree, aligning the finding's range and keeping the patch when it anchors, keeping it unaligned when it's a pure insertion, or dropping it when it doesn't apply (issue #10)",
   },
   args: {
     findings: {

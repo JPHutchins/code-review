@@ -5,9 +5,13 @@
 // caused by hand-authored suggestions with wrong indentation or too-wide ranges. Assumes LF line
 // endings (the review runs on Linux); CRLF handling is out of scope.
 
-/** The file-anchored range a patch's removed lines occupy — what a suggestion replaces. */
+/** The outcome of validating a patch against the PR-head file: `anchored` when it applies and has a
+ *  removed range a suggestion can replace; `keep` when it applies but has no removed range to anchor
+ *  (a pure insertion) — the patch survives for the renderer's ```patch fallback; `drop` when it
+ *  doesn't apply or isn't a usable single-hunk change at all. */
 export type ValidateResult =
-  | { readonly startLine: number; readonly endLine: number }
+  | { readonly kind: "anchored"; readonly startLine: number; readonly endLine: number }
+  | { readonly kind: "keep"; readonly reason: string }
   | { readonly kind: "drop"; readonly reason: string };
 
 /** The replacement text a patch's added lines carry — a suggestion's body. */
@@ -85,6 +89,11 @@ const drop = (reason: string): { readonly kind: "drop"; readonly reason: string 
   reason,
 });
 
+const keep = (reason: string): { readonly kind: "keep"; readonly reason: string } => ({
+  kind: "keep",
+  reason,
+});
+
 type ParsedHunk =
   | { readonly kind: "ok"; readonly oldStart: number; readonly body: readonly BodyLine[] }
   | { readonly kind: "drop"; readonly reason: string };
@@ -121,9 +130,10 @@ const parseHunk = (patch: string): ParsedHunk => {
 };
 
 /** The issue-#10 guard: confirm a single-hunk unified diff still applies to the PR-head file
- *  (`fileLines`, 0-indexed lines WITHOUT trailing newlines) and return the exact
- *  `start_line..end_line` its removed lines occupy — for aligning the finding's range. Drops on a
- *  context mismatch, a non-contiguous change, or a change with no removed lines to anchor. Pure. */
+ *  (`fileLines`, 0-indexed lines WITHOUT trailing newlines) and, when it does, anchor it — returning
+ *  the exact `start_line..end_line` its removed lines occupy for aligning the finding's range, or
+ *  `keep` when it applies but is a pure insertion with no removed range to anchor. Drops on a context
+ *  mismatch, a non-contiguous change, or a hunk with no changes at all. Pure. */
 export const validatePatch = (patch: string, fileLines: readonly string[]): ValidateResult => {
   const parsed = parseHunk(patch);
   if (parsed.kind === "drop") return parsed;
@@ -147,12 +157,14 @@ export const validatePatch = (patch: string, fileLines: readonly string[]): Vali
   const removedCount = body.filter((l) => l.kind === "removed").length;
   const addedCount = body.filter((l) => l.kind === "added").length;
   if (removedCount === 0 && addedCount === 0) return drop("hunk contains no changes");
-  if (removedCount === 0) return drop("pure insertion has no range to anchor a suggestion");
+  if (removedCount === 0) {
+    return keep("pure insertion applies cleanly but has no removed range to anchor a suggestion");
+  }
 
   const { firstRemoved, lastRemoved } = removedRange(body, oldStart);
   if (firstRemoved === null || lastRemoved === null) return drop("malformed hunk body");
 
-  return { startLine: firstRemoved, endLine: lastRemoved };
+  return { kind: "anchored", startLine: firstRemoved, endLine: lastRemoved };
 };
 
 /** Project a single-hunk unified diff into a GitHub suggestion's replacement text (the added lines

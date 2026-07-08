@@ -5,13 +5,13 @@ describe("validatePatch — range from the removed lines (needs the file)", () =
   it("returns the exact 1-line range for a 1-line replace that matches the file", () => {
     const fileLines = ["line1", "line2", "old line", "line4", "line5"];
     const patch = ["@@ -3 +3 @@", "-old line", "+new line"].join("\n");
-    expect(validatePatch(patch, fileLines)).toEqual({ startLine: 3, endLine: 3 });
+    expect(validatePatch(patch, fileLines)).toEqual({ kind: "anchored", startLine: 3, endLine: 3 });
   });
 
   it("returns the removed-line range for a 2-old/3-new replace", () => {
     const fileLines = ["line1", "line2", "old A", "old B", "line5"];
     const patch = ["@@ -3,2 +3,3 @@", "-old A", "-old B", "+new A", "+new B", "+new C"].join("\n");
-    expect(validatePatch(patch, fileLines)).toEqual({ startLine: 3, endLine: 4 });
+    expect(validatePatch(patch, fileLines)).toEqual({ kind: "anchored", startLine: 3, endLine: 4 });
   });
 
   it("uses only the removed lines' range, not the surrounding context", () => {
@@ -19,43 +19,44 @@ describe("validatePatch — range from the removed lines (needs the file)", () =
     const patch = ["@@ -1,3 +1,3 @@", " ctx before", "-old line", "+new line", " ctx after"].join(
       "\n",
     );
-    expect(validatePatch(patch, fileLines)).toEqual({ startLine: 2, endLine: 2 });
+    expect(validatePatch(patch, fileLines)).toEqual({ kind: "anchored", startLine: 2, endLine: 2 });
   });
 
   it("returns the removed range for a pure deletion", () => {
     const fileLines = ["a", "b", "c", "d"];
     const patch = ["@@ -2,2 +1,0 @@", "-b", "-c"].join("\n");
-    expect(validatePatch(patch, fileLines)).toEqual({ startLine: 2, endLine: 3 });
+    expect(validatePatch(patch, fileLines)).toEqual({ kind: "anchored", startLine: 2, endLine: 3 });
   });
 
-  it("drops a pure insertion — there is no removed range to anchor", () => {
+  it("keeps a pure insertion that applies cleanly — there is no removed range to anchor, but the patch is kept", () => {
     const fileLines = ["a", "b", "c"];
     const patch = ["@@ -1,0 +2,1 @@", "+inserted"].join("\n");
     const result = validatePatch(patch, fileLines);
-    expect("kind" in result && result.kind).toBe("drop");
-    if ("kind" in result) expect(result.reason).toContain("pure insertion");
+    expect(result.kind).toBe("keep");
+    if (result.kind === "keep") expect(result.reason).toContain("pure insertion");
   });
 
   it("drops when the patch's context/removed lines don't match the file exactly", () => {
     const fileLines = ["a", "b", "c"];
     const patch = ["@@ -2 +2 @@", "-WRONG", "+new"].join("\n");
     const result = validatePatch(patch, fileLines);
-    expect("kind" in result && result.kind).toBe("drop");
-    if ("kind" in result) expect(result.reason).toContain("patch context does not match the file");
+    expect(result.kind).toBe("drop");
+    if (result.kind === "drop")
+      expect(result.reason).toContain("patch context does not match the file");
   });
 
   it("drops when the hunk range runs past the end of the file", () => {
     const fileLines = ["a", "b"];
     const patch = ["@@ -5 +5 @@", "-x", "+y"].join("\n");
-    expect("kind" in validatePatch(patch, fileLines)).toBe(true);
+    expect(validatePatch(patch, fileLines).kind).toBe("drop");
   });
 
   it("drops a patch with more than one hunk", () => {
     const fileLines = ["a", "b", "c", "d"];
     const patch = ["@@ -1 +1 @@", "-a", "+A", "@@ -3 +3 @@", "-c", "+C"].join("\n");
     const result = validatePatch(patch, fileLines);
-    expect("kind" in result && result.kind).toBe("drop");
-    if ("kind" in result) expect(result.reason).toContain("expected exactly one hunk, got 2");
+    expect(result.kind).toBe("drop");
+    if (result.kind === "drop") expect(result.reason).toContain("expected exactly one hunk, got 2");
   });
 
   it("drops a non-contiguous change (a context line between two removed/added groups)", () => {
@@ -64,20 +65,20 @@ describe("validatePatch — range from the removed lines (needs the file)", () =
       "\n",
     );
     const result = validatePatch(patch, fileLines);
-    expect("kind" in result && result.kind).toBe("drop");
-    if ("kind" in result) expect(result.reason).toContain("not a single contiguous block");
+    expect(result.kind).toBe("drop");
+    if (result.kind === "drop") expect(result.reason).toContain("not a single contiguous block");
   });
 
   it("drops a patch with no hunk header at all", () => {
     const result = validatePatch("not a real diff\njust text", ["a", "b"]);
-    expect("kind" in result && result.kind).toBe("drop");
-    if ("kind" in result) expect(result.reason).toContain("expected exactly one hunk, got 0");
+    expect(result.kind).toBe("drop");
+    if (result.kind === "drop") expect(result.reason).toContain("expected exactly one hunk, got 0");
   });
 
   it("drops a hunk body line with no recognizable marker, never throwing", () => {
     const patch = ["@@ -1 +1 @@", "garbled"].join("\n");
     expect(() => validatePatch(patch, ["a"])).not.toThrow();
-    expect("kind" in validatePatch(patch, ["a"])).toBe(true);
+    expect(validatePatch(patch, ["a"]).kind).toBe("drop");
   });
 
   it("ignores file-header lines and a trailing no-newline marker", () => {
@@ -92,7 +93,16 @@ describe("validatePatch — range from the removed lines (needs the file)", () =
       "+new line",
       "\\ No newline at end of file",
     ].join("\n");
-    expect(validatePatch(patch, fileLines)).toEqual({ startLine: 1, endLine: 1 });
+    expect(validatePatch(patch, fileLines)).toEqual({ kind: "anchored", startLine: 1, endLine: 1 });
+  });
+
+  it("drops a genuine context mismatch even when the hunk is a pure insertion (context, not shape, decides drop vs keep)", () => {
+    const fileLines = ["a", "WRONG", "c"];
+    const patch = ["@@ -1,2 +1,3 @@", " a", "+inserted", " b"].join("\n");
+    const result = validatePatch(patch, fileLines);
+    expect(result.kind).toBe("drop");
+    if (result.kind === "drop")
+      expect(result.reason).toContain("patch context does not match the file");
   });
 });
 

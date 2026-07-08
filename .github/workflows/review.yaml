@@ -60,8 +60,14 @@ jobs:
         with:
           node-version: "22"
 
-      # Install the CLI and the deterministic commenter.
-      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.9
+      # Install the agent CLI. TEMP (alpha.10 dogfood — revert after): build @jphutchins/code-review
+      # from feat/38 source (cloned to $RUNNER_TEMP, outside the workspace) instead of the released
+      # alpha.9, so the review runs the unreleased code + wiring.
+      - run: npm install -g @anthropic-ai/claude-code@2.1.197
+      - run: |
+          git clone --depth 1 --branch feat/38-budget-discipline \
+            https://github.com/JPHutchins/code-review "$RUNNER_TEMP/cr-src"
+          (cd "$RUNNER_TEMP/cr-src" && npm ci && npx tsup && npm install -g .)
 
       # Install project deps so the agent can validate findings (run the checks / confirm fixes).
       - run: npm ci
@@ -254,20 +260,29 @@ jobs:
           git -c user.email=code-review@local -c user.name=code-review add -A
           git -c user.email=code-review@local -c user.name=code-review commit -q -m "pr-head snapshot (for patch validation)"
 
-          # Wire the deliverable gate as a Claude Code Stop hook (issue #29): the agent cannot end its
-          # turn until $DRAFT validates against the findings schema, bounded by --max-nudges. The
-          # settings file lives in $RUNNER_TEMP, OUTSIDE the checked-out worktree, so a PR diff can
-          # neither define nor disable the gate.
-          code-review stop-gate --draft "$DRAFT" --kind findings --print-settings \
-            >"$RUNNER_TEMP/review-settings.json"
-
-          # Bound the agent's wall clock per route (issue #25): a review must never run until the job
-          # is hard-killed mid-flight, which loses both the review and its cost record. `timeout` sends
-          # SIGTERM at the budget and SIGKILL after a grace period; an overrun (124/137) is a warning,
-          # not a step failure — the pipeline proceeds with whatever the agent emitted, and `adapt`
-          # below preserves its usage/cost even when the deliverable itself is incomplete.
+          # Bound the agent's wall clock per route (issue #25). This wall is both the in-flight budget
+          # the hooks steer on and the `timeout` backstop below.
           if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; else AGENT_WALL=24m; fi
 
+          # Compose the review agent's hooks into one settings file (issues #29, #38), written to
+          # $RUNNER_TEMP OUTSIDE the checked-out worktree so a PR diff can neither define nor disable
+          # them: the Stop gate refuses to end the turn until $DRAFT validates against the findings
+          # schema; the budget hooks steer the agent to converge as it nears $AGENT_WALL (PostToolBatch)
+          # and, close to the wall, deny every tool but reading and writing/validating $DRAFT
+          # (PreToolUse forced convergence). --prices makes the steer report real spend; add
+          # --budget-usd for a dollar ceiling on the cost axis.
+          BUDGET_PRICES=()
+          if [ -f "$RUNNER_TEMP/prices.json" ]; then
+            BUDGET_PRICES=(--prices "$RUNNER_TEMP/prices.json")
+          fi
+          code-review print-settings --draft "$DRAFT" --kind findings --wall "$AGENT_WALL" \
+            "${BUDGET_PRICES[@]}" \
+            >"$RUNNER_TEMP/review-settings.json"
+
+          # `timeout` is the hard backstop beneath the hooks: SIGTERM at the wall, SIGKILL after a grace
+          # period; an overrun (124/137) is a warning, not a step failure — the pipeline proceeds with
+          # whatever the agent emitted, and `adapt` preserves its usage/cost even when the deliverable
+          # is incomplete (issue #39 keeps a truncated envelope from crashing that path).
           echo "Review mode: $ROUTE (wall budget: $AGENT_WALL)"
           set +e
           timeout --kill-after=60s "$AGENT_WALL" \
@@ -411,7 +426,11 @@ jobs:
         with:
           node-version: "22"
 
-      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.9
+      # TEMP (alpha.10 dogfood — revert after): build the commenter from feat/38 source, matching the review job.
+      - run: |
+          git clone --depth 1 --branch feat/38-budget-discipline \
+            https://github.com/JPHutchins/code-review "$RUNNER_TEMP/cr-src"
+          (cd "$RUNNER_TEMP/cr-src" && npm ci && npx tsup && npm install -g .)
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download (§8.4).

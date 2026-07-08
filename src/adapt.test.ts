@@ -245,6 +245,14 @@ describe("adapt — claude-code — absent native envelope (issue #39)", () => {
     expect(ResultEnvelopeCodec.decode(result.right)._tag).toBe("Right");
   });
 
+  it("treats a literal JSON null native the same as absent (degrades, never a hard Left)", () => {
+    const result = adapt("claude-code", null);
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.models).toEqual([]);
+    expect(result.right.findings.summary).toContain("did not complete");
+  });
+
   it("still recovers findings from --agent-file when the native envelope is absent — a checkpointed $DRAFT survives the cutoff", () => {
     const result = adapt("claude-code", undefined, ladderFixturePath("f11-agent-file.json"));
     expect(result._tag).toBe("Right");

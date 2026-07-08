@@ -1,7 +1,7 @@
 // Adapter: maps a coding-agent CLI's native result envelope onto the abstract
 // result envelope (SPEC §6.1). Claude Code is the reference adapter — see docs/adapters.md.
-// A present-but-wrong-shaped native surfaces as a Left; an *absent* native (undefined — the caller
-// could not read/parse it, e.g. a wall-clock timeout killed `claude -p` mid-flush, issue #39)
+// A present-but-wrong-shaped native surfaces as a Left; an *absent* native (undefined or null — the
+// caller could not read/parse it, e.g. a wall-clock timeout killed `claude -p` mid-flush, issue #39)
 // degrades to a no-telemetry envelope that still recovers findings from --agent-file. Never throws.
 
 import * as t from "io-ts";
@@ -67,7 +67,7 @@ export interface RunMeta {
   readonly effort?: string;
 }
 
-/** The extraction ladder's outcome, reduced to what adaptClaudeCode needs: either a materialized
+/** The extraction ladder's outcome, reduced to what `buildEnvelope` needs: either a materialized
  *  findings document, or a reason findings are unavailable. Never a reason to drop telemetry
  *  (issue #18) — every ladder outcome maps onto a *findings* result, not a fatal one. */
 type FindingsOutcome =
@@ -150,9 +150,10 @@ const buildEnvelope = (
 
 /** Map a native agent-CLI result envelope onto the abstract envelope (SPEC §6.1). `agentFilePath`
  *  is meaningful only for the findings recovery (a documented no-op otherwise). A `native` of
- *  `undefined` means the caller could not read/parse the envelope (empty/truncated — issue #39):
- *  rather than fail the run, the adapter emits a no-telemetry envelope and still recovers findings
- *  from --agent-file. A *present* but wrong-shaped native is still a Left (a real adapter mismatch). */
+ *  `undefined` or `null` means the caller could not read/parse the envelope (empty/truncated, or a
+ *  literal JSON `null` — issue #39): rather than fail the run, the adapter emits a no-telemetry
+ *  envelope and still recovers findings from --agent-file. A *present* but wrong-shaped native is
+ *  still a Left (a real adapter mismatch). */
 export const adapt = (
   adapterName: AdapterName,
   native: unknown,
@@ -162,7 +163,7 @@ export const adapt = (
   switch (adapterName) {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exhaustive by design; AdapterName grows (e.g. "opencode") without collapsing this switch to an if
     case "claude-code": {
-      if (native === undefined)
+      if (native === undefined || native === null)
         return right(buildEnvelope(absentTelemetry(meta), undefined, agentFilePath));
       const decoded = ClaudeCodeEnvelopeCodec.decode(native);
       if (decoded._tag === "Left")

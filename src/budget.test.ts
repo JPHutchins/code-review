@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   decideBudget,
-  isConvergenceTool,
+  blockedDuringConvergence,
   budgetMessage,
   evaluateBudgetHook,
   parseWallMs,
@@ -11,13 +11,14 @@ import {
   type BudgetParams,
 } from "./budget.js";
 
+// Flat reserves default to 0 here so the fraction alone drives — the flat-floor behaviour is
+// exercised by its own tests below.
 const inputs = (o: Partial<BudgetInputs>): BudgetInputs => ({
   spentUsd: null,
   budgetUsd: null,
   elapsedMs: null,
   wallMs: null,
-  softFrac: 0.7,
-  hardFrac: 0.9,
+  reserve: { frac: 0.15, flatUsd: 0, flatMs: 0 },
   ...o,
 });
 
@@ -38,12 +39,10 @@ describe("decideBudget", () => {
     expect(decideBudget(inputs({ elapsedMs: 950, wallMs: 1000 })).kind).toBe("hard");
   });
 
-  it("takes the further-along axis when both are known (either limit converges the agent)", () => {
-    const phase = decideBudget(
-      inputs({ spentUsd: 0.2, budgetUsd: 1, elapsedMs: 950, wallMs: 1000 }),
-    );
-    expect(phase.kind).toBe("hard");
-    if (phase.kind !== "ok") expect(phase.fraction).toBeCloseTo(0.95, 5);
+  it("takes the more-severe axis when both are known (either limit converges the agent)", () => {
+    expect(
+      decideBudget(inputs({ spentUsd: 0.2, budgetUsd: 1, elapsedMs: 950, wallMs: 1000 })).kind,
+    ).toBe("hard");
   });
 
   it("disables the cost axis when the budget is zero (no divide-by-zero, no false 'infinite' spend)", () => {
@@ -56,31 +55,39 @@ describe("decideBudget", () => {
       decideBudget(inputs({ spentUsd: null, budgetUsd: 1, elapsedMs: 950, wallMs: 1000 })).kind,
     ).toBe("hard");
   });
+
+  it("lets the flat floor force convergence when a tiny budget can't cover the wind-down reserve", () => {
+    // 60s wall, but a 2-minute flat floor means less than the reserve remains from the start.
+    const r = { frac: 0.15, flatUsd: 0.02, flatMs: 120_000 };
+    expect(decideBudget(inputs({ elapsedMs: 5_000, wallMs: 60_000, reserve: r })).kind).toBe(
+      "hard",
+    );
+    // $0.05 budget, $0.02 flat: soft once < $0.04 remains, hard once < $0.02 remains.
+    expect(decideBudget(inputs({ spentUsd: 0.02, budgetUsd: 0.05, reserve: r })).kind).toBe("soft");
+    expect(decideBudget(inputs({ spentUsd: 0.04, budgetUsd: 0.05, reserve: r })).kind).toBe("hard");
+  });
 });
 
-describe("isConvergenceTool", () => {
-  const draft = "/work/findings.json";
-  it("always allows Read", () => {
-    expect(isConvergenceTool("Read", { file_path: "/anything.ts" }, draft)).toBe(true);
+describe("blockedDuringConvergence", () => {
+  it("blocks subagent spawns (the #38 fan-out) and web calls", () => {
+    expect(blockedDuringConvergence("Agent", { prompt: "go find bugs" })).toBe(true);
+    expect(blockedDuringConvergence("Task", {})).toBe(true);
+    expect(blockedDuringConvergence("WebFetch", { url: "http://x" })).toBe(true);
+    expect(blockedDuringConvergence("WebSearch", {})).toBe(true);
   });
-  it("allows Write/Edit only to the draft", () => {
-    expect(isConvergenceTool("Write", { file_path: draft }, draft)).toBe(true);
-    expect(isConvergenceTool("Edit", { file_path: draft }, draft)).toBe(true);
-    expect(isConvergenceTool("Write", { file_path: "/work/src/x.ts" }, draft)).toBe(false);
+  it("blocks arbitrary Bash but allows `code-review validate` (not other subcommands)", () => {
+    expect(blockedDuringConvergence("Bash", { command: "grep -r TODO src/" })).toBe(true);
+    expect(blockedDuringConvergence("Bash", { command: "code-review gather" })).toBe(true);
+    expect(blockedDuringConvergence("Bash", { command: "code-review validate /work/f.json" })).toBe(
+      false,
+    );
   });
-  it("resolves relative vs absolute draft paths equivalently", () => {
-    expect(isConvergenceTool("Write", { file_path: "/work/./findings.json" }, draft)).toBe(true);
-  });
-  it("allows Bash only when it invokes code-review", () => {
-    expect(
-      isConvergenceTool("Bash", { command: "code-review validate /work/findings.json" }, draft),
-    ).toBe(true);
-    expect(isConvergenceTool("Bash", { command: "grep -r TODO src/" }, draft)).toBe(false);
-  });
-  it("denies new investigation and subagent spawns", () => {
-    expect(isConvergenceTool("Agent", { prompt: "go find bugs" }, draft)).toBe(false);
-    expect(isConvergenceTool("Task", {}, draft)).toBe(false);
-    expect(isConvergenceTool("WebSearch", {}, draft)).toBe(false);
+  it("never blocks the deliver-the-draft path: Read, Write/Edit anywhere, and terminal answer tools", () => {
+    expect(blockedDuringConvergence("Read", { file_path: "/anything.ts" })).toBe(false);
+    expect(blockedDuringConvergence("Write", { file_path: "/work/findings.json" })).toBe(false);
+    expect(blockedDuringConvergence("Edit", { file_path: "/work/src/x.ts" })).toBe(false);
+    expect(blockedDuringConvergence("StructuredOutput", {})).toBe(false);
+    expect(blockedDuringConvergence("ReportFindings", {})).toBe(false);
   });
 });
 
@@ -89,7 +96,7 @@ describe("budgetMessage", () => {
   it("reports both axes and the hard directive when hard", () => {
     const msg = budgetMessage(
       inputs({ spentUsd: 0.95, budgetUsd: 1, elapsedMs: 60_000, wallMs: 120_000 }),
-      { kind: "hard", fraction: 0.95 },
+      { kind: "hard" },
       draft,
     );
     expect(msg).toContain("$0.95/$1.00");
@@ -98,16 +105,12 @@ describe("budgetMessage", () => {
     expect(msg).toContain(draft);
   });
   it("uses the softer directive when soft", () => {
-    const msg = budgetMessage(
-      inputs({ spentUsd: 0.75, budgetUsd: 1 }),
-      { kind: "soft", fraction: 0.75 },
-      draft,
-    );
+    const msg = budgetMessage(inputs({ spentUsd: 0.75, budgetUsd: 1 }), { kind: "soft" }, draft);
     expect(msg).toContain("Wind down investigation");
     expect(msg).not.toContain("STOP all new investigation");
   });
   it("omits the time clause when elapsed is unknown, and the denominator when budget is unknown", () => {
-    const msg = budgetMessage(inputs({ spentUsd: 0.5 }), { kind: "soft", fraction: 0.75 }, draft);
+    const msg = budgetMessage(inputs({ spentUsd: 0.5 }), { kind: "soft" }, draft);
     expect(msg).toContain("spent $0.50");
     expect(msg).not.toContain("/$");
     expect(msg).not.toContain("elapsed");
@@ -115,7 +118,7 @@ describe("budgetMessage", () => {
   it("omits the spend clause (never '$0.00') when spend is unmeasurable, showing only time", () => {
     const msg = budgetMessage(
       inputs({ spentUsd: null, elapsedMs: 60_000, wallMs: 120_000 }),
-      { kind: "soft", fraction: 0.5 },
+      { kind: "soft" },
       draft,
     );
     expect(msg).not.toContain("spent");
@@ -131,8 +134,7 @@ describe("evaluateBudgetHook", () => {
     budgetUsd: null,
     elapsedMs: null,
     wallMs: null,
-    softFrac: 0.7,
-    hardFrac: 0.9,
+    reserve: { frac: 0.15, flatUsd: 0, flatMs: 0 },
     draftPath: draft,
     ...o,
   });
@@ -197,10 +199,8 @@ describe("evaluateBudgetHook", () => {
       ),
     ).toEqual({});
   });
-  it("PreToolUse: denies an unknown/mis-shaped tool name at hard (deliverable first)", () => {
-    expect(
-      evaluateBudgetHook({ hook_event_name: "PreToolUse", tool_input: {} }, hard),
-    ).toHaveProperty("hookSpecificOutput.permissionDecision", "deny");
+  it("PreToolUse: allows an unknown/mis-shaped tool name at hard (denylist blocks only known burners)", () => {
+    expect(evaluateBudgetHook({ hook_event_name: "PreToolUse", tool_input: {} }, hard)).toEqual({});
   });
   it("PreToolUse: still forces convergence on the time axis when spend is unmeasurable", () => {
     const out = evaluateBudgetHook(

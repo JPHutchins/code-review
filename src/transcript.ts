@@ -38,6 +38,7 @@ const numField = (rec: Record<string, unknown>, key: string): number => {
 };
 
 interface MessageUsage {
+  readonly id: string | null;
   readonly model: string;
   readonly input: number;
   readonly output: number;
@@ -47,7 +48,9 @@ interface MessageUsage {
 
 /** The usage an assistant turn contributes, or null for any other line. Claude Code names cache
  *  fields `cache_read_input_tokens`/`cache_creation_input_tokens`; the abstract envelope names them
- *  `cache_read_tokens`/`cache_write_tokens` (SPEC §6.1) — this is where that rename happens. */
+ *  `cache_read_tokens`/`cache_write_tokens` (SPEC §6.1) — this is where that rename happens. `id` is
+ *  the API message id, carried so a message logged across several lines (one per content block of a
+ *  parallel tool-use turn, each repeating the message-level usage) is summed once, not per line. */
 const messageUsage = (entry: unknown): MessageUsage | null => {
   const rec = asRecord(entry);
   if (rec === null || rec["type"] !== "assistant") return null;
@@ -56,7 +59,9 @@ const messageUsage = (entry: unknown): MessageUsage | null => {
   const model = msg["model"];
   const usage = asRecord(msg["usage"]);
   if (typeof model !== "string" || usage === null) return null;
+  const id = msg["id"];
   return {
+    id: typeof id === "string" ? id : null,
     model,
     input: numField(usage, "input_tokens"),
     output: numField(usage, "output_tokens"),
@@ -96,12 +101,17 @@ export const parseJsonl = (text: string): readonly unknown[] =>
     });
 
 /** Sum per-model usage and derive turn count + wall span across a set of already-parsed transcript
- *  entries. Order of `models` follows first-appearance of each model. Pure. */
+ *  entries. A message logged over multiple lines (identified by a repeated `message.id`) is counted
+ *  once — otherwise a parallel tool-use turn's usage, stamped on every one of its content-block lines,
+ *  is summed several times and inflates spend (issue #38). Entries with no id can't be de-duplicated
+ *  and are counted as-is. Order of `models` follows first-appearance of each model. Pure. */
 export const sumTranscriptUsage = (entries: readonly unknown[]): TranscriptUsage => {
-  const summed = entries.reduce<{ totals: Map<string, Totals>; turns: number }>(
+  const summed = entries.reduce<{ totals: Map<string, Totals>; turns: number; seen: Set<string> }>(
     (acc, entry) => {
       const u = messageUsage(entry);
       if (u === null) return acc;
+      if (u.id !== null && acc.seen.has(u.id)) return acc;
+      if (u.id !== null) acc.seen.add(u.id);
       const prev = acc.totals.get(u.model) ?? EMPTY_TOTALS;
       acc.totals.set(u.model, {
         input: prev.input + u.input,
@@ -109,9 +119,9 @@ export const sumTranscriptUsage = (entries: readonly unknown[]): TranscriptUsage
         cacheRead: prev.cacheRead + u.cacheRead,
         cacheWrite: prev.cacheWrite + u.cacheWrite,
       });
-      return { totals: acc.totals, turns: acc.turns + 1 };
+      return { totals: acc.totals, turns: acc.turns + 1, seen: acc.seen };
     },
-    { totals: new Map(), turns: 0 },
+    { totals: new Map(), turns: 0, seen: new Set() },
   );
 
   const models: readonly ModelUsageEntry[] = [...summed.totals].map(([model, t]) => ({

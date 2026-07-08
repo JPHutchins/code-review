@@ -21,23 +21,47 @@ describe("parseJsonl", () => {
 });
 
 describe("sumTranscriptUsage", () => {
-  it("sums a real DeepSeek transcript per model, with the CC→abstract cache-field rename", () => {
+  it("sums a real DeepSeek transcript per model (deduped by message.id), with the CC→abstract cache-field rename", () => {
     const usage = sumTranscriptUsage(
       parseJsonl(readFileSync(fixture("deepseek-main.jsonl"), "utf-8")),
     );
+    // 4 assistant lines but 2 distinct message.id (each logged twice) — summed once each.
     expect(usage.models).toEqual([
       {
         model: "deepseek-v4-pro",
-        input_tokens: 43230,
-        output_tokens: 214,
-        cache_read_tokens: 43008,
+        input_tokens: 21615,
+        output_tokens: 107,
+        cache_read_tokens: 21504,
         cache_write_tokens: 0,
       },
     ]);
-    expect(usage.turns).toBe(4);
+    expect(usage.turns).toBe(2);
     expect(usage.durationMs).toBe(12856);
     expect(usage.firstTsMs).toBe(Date.parse("2026-07-08T20:22:08.326Z"));
     expect(usage.lastTsMs).toBe(Date.parse("2026-07-08T20:22:21.182Z"));
+  });
+
+  it("counts a message logged across multiple lines once (dedup by message.id), but keeps id-less lines", () => {
+    const dup = {
+      type: "assistant",
+      message: { id: "msg_1", model: "pro", usage: { input_tokens: 100, output_tokens: 10 } },
+    };
+    const entries = [
+      dup,
+      dup, // same message.id — a second content-block line of the same turn
+      {
+        type: "assistant",
+        message: { id: "msg_2", model: "pro", usage: { input_tokens: 5, output_tokens: 1 } },
+      },
+      // no id: cannot be de-duplicated, so counted as-is
+      {
+        type: "assistant",
+        message: { model: "pro", usage: { input_tokens: 7, output_tokens: 2 } },
+      },
+    ];
+    const usage = sumTranscriptUsage(entries);
+    expect(usage.models[0]).toMatchObject({ model: "pro", input_tokens: 112, output_tokens: 13 });
+    expect(usage.turns).toBe(3);
   });
 
   it("sums each model separately, preserving first-appearance order", () => {
@@ -119,7 +143,7 @@ describe("readTranscriptTree", () => {
     const tree = readTranscriptTree(fixture("deepseek-main.jsonl"));
     expect(tree.missing).toBe(false);
     expect(tree.files).toEqual([fixture("deepseek-main.jsonl")]);
-    expect(sumTranscriptUsage(tree.entries).turns).toBe(4);
+    expect(sumTranscriptUsage(tree.entries).turns).toBe(2);
   });
 
   it("reports missing (never throws) for an unreadable main transcript", () => {

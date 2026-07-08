@@ -13,7 +13,7 @@ import { render } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
 import { computeCost } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
-import { evaluateBudgetHook, parseWallMs, parseFraction } from "./budget.js";
+import { evaluateBudgetHook, parseWallMs, parseFraction, DEFAULT_RESERVE } from "./budget.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { formatUtc } from "./format.js";
 import { ResultEnvelopeCodec, FindingsCodec, PriceMapCodec, TestSummaryCodec } from "./schema.js";
@@ -370,7 +370,7 @@ const budgetHookCmd = defineCommand({
   meta: {
     name: "budget-hook",
     description:
-      "Self-dispatching Claude Code hook for budget discipline (issue #38): on PostToolBatch, steer the agent to converge once spend or wall-clock crosses --soft-frac; on PreToolUse, past --hard-frac, deny every tool except writing/validating --draft. Reads the hook payload on stdin, measures spend from its transcript, and decides on $ and/or time. Degrades to a no-op on any error.",
+      "Self-dispatching Claude Code hook for budget discipline (issue #38): on PostToolBatch, steer the agent to converge once spend or wall-clock enters its soft wind-down reserve; on PreToolUse, inside the hard reserve, deny the budget-burning tools (subagent spawns, arbitrary shell, web) while leaving the draft-delivery path open. Reads the hook payload on stdin, measures spend from its transcript, and decides on $ and/or time. Degrades to a no-op on any error.",
   },
   args: {
     draft: {
@@ -393,15 +393,20 @@ const budgetHookCmd = defineCommand({
       description:
         "Price map JSON to recompute real spend from the transcript (omit to disable the cost axis)",
     },
-    "soft-frac": {
+    "reserve-frac": {
       type: "string",
       description:
-        "Fraction of budget at which to start steering toward convergence (default: 0.7)",
+        "Wind-down headroom as a fraction of each budget: converge once less than this remains (default: 0.15; the soft steer tier reserves 2× this)",
     },
-    "hard-frac": {
+    "reserve-usd": {
       type: "string",
       description:
-        "Fraction of budget at which to force convergence by denying non-draft tools (default: 0.9)",
+        "Flat dollar wind-down floor, whichever is larger with --reserve-frac (default: 0.02)",
+    },
+    "reserve-wall": {
+      type: "string",
+      description:
+        "Flat wall-clock wind-down floor (e.g. 2m, 120s), whichever is larger with --reserve-frac (default: 2m)",
     },
   },
   run: async ({ args }) => {
@@ -417,10 +422,15 @@ const budgetHookCmd = defineCommand({
       const output = evaluateBudgetHook(input, {
         spentUsd,
         budgetUsd: parseBudgetUsd(args["budget-usd"]),
-        elapsedMs: usage?.firstTsMs != null ? Date.now() - usage.firstTsMs : null,
+        elapsedMs: usage?.firstTsMs != null ? Math.max(0, Date.now() - usage.firstTsMs) : null,
         wallMs: args.wall ? parseWallMs(args.wall) : null,
-        softFrac: parseFraction(args["soft-frac"], 0.7),
-        hardFrac: parseFraction(args["hard-frac"], 0.9),
+        reserve: {
+          frac: parseFraction(args["reserve-frac"], DEFAULT_RESERVE.frac),
+          flatUsd: parseBudgetUsd(args["reserve-usd"]) ?? DEFAULT_RESERVE.flatUsd,
+          flatMs: args["reserve-wall"]
+            ? (parseWallMs(args["reserve-wall"]) ?? DEFAULT_RESERVE.flatMs)
+            : DEFAULT_RESERVE.flatMs,
+        },
         draftPath,
       });
       process.stdout.write(`${JSON.stringify(output)}\n`);
@@ -478,13 +488,20 @@ const printSettingsCmd = defineCommand({
       type: "string",
       description: "Price map JSON to recompute real spend from the transcript",
     },
-    "soft-frac": {
+    "reserve-frac": {
       type: "string",
-      description: "Fraction of budget at which to start steering (default: 0.7)",
+      description:
+        "Wind-down headroom as a fraction of each budget (default: 0.15; soft tier is 2×)",
     },
-    "hard-frac": {
+    "reserve-usd": {
       type: "string",
-      description: "Fraction of budget at which to force convergence (default: 0.9)",
+      description:
+        "Flat dollar wind-down floor, whichever is larger with --reserve-frac (default: 0.02)",
+    },
+    "reserve-wall": {
+      type: "string",
+      description:
+        "Flat wall-clock wind-down floor (e.g. 2m), whichever is larger with --reserve-frac (default: 2m)",
     },
   },
   run: async ({ args }) => {
@@ -501,8 +518,9 @@ const printSettingsCmd = defineCommand({
         budgetUsd: args["budget-usd"],
         wall: args.wall,
         prices: args.prices,
-        softFrac: args["soft-frac"],
-        hardFrac: args["hard-frac"],
+        reserveFrac: args["reserve-frac"],
+        reserveUsd: args["reserve-usd"],
+        reserveWall: args["reserve-wall"],
       },
     });
     process.stdout.write(`${JSON.stringify(settings)}\n`);

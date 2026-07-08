@@ -39,8 +39,9 @@ export interface ComposeSettingsOptions {
     readonly budgetUsd?: string;
     readonly wall?: string;
     readonly prices?: string;
-    readonly softFrac?: string;
-    readonly hardFrac?: string;
+    readonly reserveFrac?: string;
+    readonly reserveUsd?: string;
+    readonly reserveWall?: string;
   };
 }
 

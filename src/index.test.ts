@@ -96,8 +96,8 @@ describe("cli — check-cost", () => {
       pricesProvided: boolean;
       lines: { model: string }[];
     };
-    expect(out.totalInputTokens).toBe(43230);
-    expect(out.turns).toBe(4);
+    expect(out.totalInputTokens).toBe(21615);
+    expect(out.turns).toBe(2);
     expect(out.lines[0]!.model).toBe("deepseek-v4-pro");
     expect(out.totalCostUSD).toBeGreaterThan(0);
     expect(out.pricesProvided).toBe(true);
@@ -135,7 +135,7 @@ describe("cli — check-cost", () => {
       totalCostUSD: number;
       pricesProvided: boolean;
     };
-    expect(out.totalInputTokens).toBe(43230);
+    expect(out.totalInputTokens).toBe(21615);
     expect(out.totalCostUSD).toBe(0);
     expect(out.pricesProvided).toBe(false);
   });

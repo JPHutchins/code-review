@@ -9,8 +9,9 @@ describe("composeReviewSettings", () => {
       budgetUsd: "2.5",
       wall: "20m",
       prices: "/work/prices.json",
-      softFrac: "0.7",
-      hardFrac: "0.9",
+      reserveFrac: "0.15",
+      reserveUsd: "0.02",
+      reserveWall: "2m",
     },
   });
 
@@ -39,8 +40,9 @@ describe("composeReviewSettings", () => {
     expect(preCmd).toContain("--budget-usd '2.5'");
     expect(preCmd).toContain("--wall '20m'");
     expect(preCmd).toContain("--prices '/work/prices.json'");
-    expect(preCmd).toContain("--soft-frac '0.7'");
-    expect(preCmd).toContain("--hard-frac '0.9'");
+    expect(preCmd).toContain("--reserve-frac '0.15'");
+    expect(preCmd).toContain("--reserve-usd '0.02'");
+    expect(preCmd).toContain("--reserve-wall '2m'");
   });
 
   it("carries no matcher on the tool hooks, so they run for every tool (the CLI decides per tool)", () => {

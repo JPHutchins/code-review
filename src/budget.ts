@@ -1,20 +1,20 @@
 // Deterministic budget discipline for a headless review agent (issue #38). Two Claude Code hooks
 // wired from ONE self-dispatching command: a PostToolBatch signal that steers the agent to converge
-// as spend or wall-clock crosses a soft threshold, and a PreToolUse gate that, past a hard threshold,
-// denies every tool except the convergence path — writing and validating the draft — so the agent
-// produces its deliverable before the budget is gone rather than investigating until it is killed.
+// once spend or wall-clock enters its soft wind-down reserve, and a PreToolUse gate that, inside the
+// smaller hard reserve, denies the budget-burning tools — subagent spawns, arbitrary shell, web —
+// while leaving the deliver-the-draft path open, so the agent produces its review before the budget
+// is gone rather than investigating until it is killed.
 //
 // Every decision here is pure. The CLI (index.ts) owns the impure edges — reading the transcript to
 // measure spend, `Date.now()` for elapsed — and hands the results in as `BudgetParams`; the hook
 // itself never crashes (index.ts degrades any failure to an empty, allow-everything result).
 
-import { resolve } from "node:path";
 import { shellQuote } from "./stop-gate.js";
 
 const asRecord = (u: unknown): Record<string, unknown> | null =>
   typeof u === "object" && u !== null && !Array.isArray(u) ? (u as Record<string, unknown>) : null;
 
-/** The two budget axes, as fractions of their limits, that drive a decision. Either may be unknown
+/** The two budget axes and the wind-down reserve to judge them against. Either axis may be unknown
  *  (`spentUsd`/`budgetUsd` null when there is no price map to measure spend; `elapsedMs`/`wallMs`
  *  null when there is no wall set or no transcript timestamp), in which case only the other drives;
  *  if neither is known the phase is always `ok`. Crucially, unmeasurable spend is `null`, never 0 —
@@ -24,36 +24,65 @@ export interface BudgetInputs {
   readonly budgetUsd: number | null;
   readonly elapsedMs: number | null;
   readonly wallMs: number | null;
-  readonly softFrac: number;
-  readonly hardFrac: number;
+  readonly reserve: ReserveParams;
 }
 
-/** How close the run is to its budget: `soft` → steer toward converging; `hard` → force it. The
- *  `fraction` is the driving (larger) axis, carried for the message. */
+/** The headroom to hold back for wind-down, judged per axis as max(flat floor, `frac` × the budget):
+ *  the flat floor keeps a tiny budget from converging with no absolute room left to write and validate
+ *  the draft, while the fraction lets a large budget scale. The soft (steer) tier reserves
+ *  SOFT_MULTIPLE× the hard (force) tier, so the agent is nudged to converge with a whole extra reserve
+ *  still in hand rather than only at the brink (issue #38). */
+export interface ReserveParams {
+  readonly frac: number;
+  readonly flatUsd: number;
+  readonly flatMs: number;
+}
+
+/** Defaults sized for real reviews: hold back 15% of the budget, but never less than $0.02 / 2 minutes
+ *  of absolute wind-down room. On a large budget the fraction dominates (≈ the old 0.7/0.85 soft/hard
+ *  behaviour); on a tiny one the flat floor dominates and converges the agent at once. */
+export const DEFAULT_RESERVE: ReserveParams = { frac: 0.15, flatUsd: 0.02, flatMs: 120_000 };
+
+const SOFT_MULTIPLE = 2;
+
+/** How close the run is to its budget: `soft` → steer toward converging; `hard` → force it. */
 export type BudgetPhase =
-  | { readonly kind: "ok" }
-  | { readonly kind: "soft"; readonly fraction: number }
-  | { readonly kind: "hard"; readonly fraction: number };
+  { readonly kind: "ok" } | { readonly kind: "soft" } | { readonly kind: "hard" };
 
-const costFraction = (i: BudgetInputs): number | null =>
-  i.spentUsd !== null && i.budgetUsd !== null && i.budgetUsd > 0 ? i.spentUsd / i.budgetUsd : null;
+interface Axis {
+  readonly used: number;
+  readonly limit: number;
+  readonly flat: number;
+}
 
-const timeFraction = (i: BudgetInputs): number | null =>
-  i.wallMs !== null && i.wallMs > 0 && i.elapsedMs !== null ? i.elapsedMs / i.wallMs : null;
+const costAxis = (i: BudgetInputs): Axis | null =>
+  i.spentUsd !== null && i.budgetUsd !== null && i.budgetUsd > 0
+    ? { used: i.spentUsd, limit: i.budgetUsd, flat: i.reserve.flatUsd }
+    : null;
 
-/** The further-along of the two axes drives, so hitting EITHER the money OR the time limit converges
- *  the agent — matching the design's "judge on time and/or budget". Null when neither is measurable. */
-const drivingFraction = (i: BudgetInputs): number | null => {
-  const known = [costFraction(i), timeFraction(i)].filter((f): f is number => f !== null);
-  return known.length === 0 ? null : Math.max(...known);
+const timeAxis = (i: BudgetInputs): Axis | null =>
+  i.elapsedMs !== null && i.wallMs !== null && i.wallMs > 0
+    ? { used: i.elapsedMs, limit: i.wallMs, flat: i.reserve.flatMs }
+    : null;
+
+/** 2 = inside the hard reserve (force convergence), 1 = inside the soft reserve (steer), 0 = ok. The
+ *  hard reserve is max(flat floor, frac × limit); the soft reserve is SOFT_MULTIPLE× the hard one. */
+const axisSeverity = (a: Axis, frac: number): 0 | 1 | 2 => {
+  const hardReserve = Math.max(a.flat, frac * a.limit);
+  const remaining = a.limit - a.used;
+  if (remaining <= hardReserve) return 2;
+  if (remaining <= SOFT_MULTIPLE * hardReserve) return 1;
+  return 0;
 };
 
+/** Converge as the run nears EITHER budget: the most-severe axis drives, so exhausting the money OR
+ *  the time reserve steers/forces the agent — matching the design's "judge on time and/or budget".
+ *  `ok` when neither axis is measurable. */
 export const decideBudget = (i: BudgetInputs): BudgetPhase => {
-  const frac = drivingFraction(i);
-  if (frac === null) return { kind: "ok" };
-  if (frac >= i.hardFrac) return { kind: "hard", fraction: frac };
-  if (frac >= i.softFrac) return { kind: "soft", fraction: frac };
-  return { kind: "ok" };
+  const worst = [costAxis(i), timeAxis(i)]
+    .filter((a): a is Axis => a !== null)
+    .reduce<0 | 1 | 2>((max, a) => Math.max(max, axisSeverity(a, i.reserve.frac)) as 0 | 1 | 2, 0);
+  return worst === 2 ? { kind: "hard" } : worst === 1 ? { kind: "soft" } : { kind: "ok" };
 };
 
 const pct = (n: number): string => `${String(Math.round(n * 100))}%`;
@@ -90,37 +119,24 @@ export const budgetMessage = (
   return `Budget check — ${status}. ${directive(phase, draftPath)}`;
 };
 
-const targetsPath = (toolInput: unknown, draftPath: string): boolean => {
-  const fp = asRecord(toolInput)?.["file_path"];
-  return typeof fp === "string" && resolve(fp) === resolve(draftPath);
-};
-
-const invokesCodeReview = (toolInput: unknown): boolean => {
+const invokesCodeReviewValidate = (toolInput: unknown): boolean => {
   const cmd = asRecord(toolInput)?.["command"];
-  return typeof cmd === "string" && /\bcode-review\b/.test(cmd);
+  return typeof cmd === "string" && /\bcode-review\s+validate\b/.test(cmd);
 };
 
-/** The tools left open during forced (hard-phase) convergence: reading anything (to synthesize),
- *  writing/editing ONLY the draft, and running the CLI itself (to validate). Everything else — new
- *  investigation, and crucially new `Agent`/`Task` subagent spawns — is denied. This is not a blind
- *  fan-out count-cap: cheap concurrency runs free early; spawns are clamped only once the budget is
- *  nearly spent (issue #38). */
-export const isConvergenceTool = (
-  toolName: string,
-  toolInput: unknown,
-  draftPath: string,
-): boolean => {
-  switch (toolName) {
-    case "Read":
-      return true;
-    case "Write":
-    case "Edit":
-      return targetsPath(toolInput, draftPath);
-    case "Bash":
-      return invokesCodeReview(toolInput);
-    default:
-      return false;
-  }
+const SPAWN_TOOLS: ReadonlySet<string> = new Set(["Agent", "Task"]);
+const WEB_TOOLS: ReadonlySet<string> = new Set(["WebFetch", "WebSearch"]);
+
+/** Under hard-phase forced convergence, block ONLY the tools that spend budget on new work —
+ *  subagent spawns (the #38 fan-out), arbitrary shell, and web calls — and allow everything else. A
+ *  denylist, not an allowlist: the tools that DELIVER the finished review (writing/validating the
+ *  draft, and whatever terminal tool the agent uses to return its answer) must never be blocked from
+ *  finishing — a live dogfood showed an allowlist denying the answer tool and stranding a complete
+ *  draft (issue #38). `Bash` is the one carve-out, permitted solely to run `code-review validate`. */
+export const blockedDuringConvergence = (toolName: string, toolInput: unknown): boolean => {
+  if (SPAWN_TOOLS.has(toolName) || WEB_TOOLS.has(toolName)) return true;
+  if (toolName === "Bash") return !invokesCodeReviewValidate(toolInput);
+  return false;
 };
 
 /** Everything the hook needs beyond the raw hook input: the measured spend/elapsed (gathered by the
@@ -130,8 +146,7 @@ export interface BudgetParams {
   readonly budgetUsd: number | null;
   readonly elapsedMs: number | null;
   readonly wallMs: number | null;
-  readonly softFrac: number;
-  readonly hardFrac: number;
+  readonly reserve: ReserveParams;
   readonly draftPath: string;
 }
 
@@ -148,8 +163,7 @@ export const evaluateBudgetHook = (
     budgetUsd: params.budgetUsd,
     elapsedMs: params.elapsedMs,
     wallMs: params.wallMs,
-    softFrac: params.softFrac,
-    hardFrac: params.hardFrac,
+    reserve: params.reserve,
   };
   const phase = decideBudget(inputs);
 
@@ -166,18 +180,15 @@ export const evaluateBudgetHook = (
     case "PreToolUse": {
       if (phase.kind !== "hard") return {};
       const toolName = rec["tool_name"];
-      if (
-        typeof toolName === "string" &&
-        isConvergenceTool(toolName, rec["tool_input"], params.draftPath)
-      )
-        return {};
-      return {
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "deny",
-          permissionDecisionReason: budgetMessage(inputs, phase, params.draftPath),
-        },
-      };
+      if (typeof toolName === "string" && blockedDuringConvergence(toolName, rec["tool_input"]))
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: budgetMessage(inputs, phase, params.draftPath),
+          },
+        };
+      return {};
     }
     default:
       return {};
@@ -222,8 +233,9 @@ export const budgetHookCommand = (
     readonly budgetUsd?: string;
     readonly wall?: string;
     readonly prices?: string;
-    readonly softFrac?: string;
-    readonly hardFrac?: string;
+    readonly reserveFrac?: string;
+    readonly reserveUsd?: string;
+    readonly reserveWall?: string;
   },
 ): string =>
   [
@@ -232,6 +244,7 @@ export const budgetHookCommand = (
     ...(opts.budgetUsd ? ["--budget-usd", shellQuote(opts.budgetUsd)] : []),
     ...(opts.wall ? ["--wall", shellQuote(opts.wall)] : []),
     ...(opts.prices ? ["--prices", shellQuote(opts.prices)] : []),
-    ...(opts.softFrac ? ["--soft-frac", shellQuote(opts.softFrac)] : []),
-    ...(opts.hardFrac ? ["--hard-frac", shellQuote(opts.hardFrac)] : []),
+    ...(opts.reserveFrac ? ["--reserve-frac", shellQuote(opts.reserveFrac)] : []),
+    ...(opts.reserveUsd ? ["--reserve-usd", shellQuote(opts.reserveUsd)] : []),
+    ...(opts.reserveWall ? ["--reserve-wall", shellQuote(opts.reserveWall)] : []),
   ].join(" ");

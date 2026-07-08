@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatMarkdown } from "./format.js";
+import { formatMarkdown, formatUtc } from "./format.js";
 import { render } from "./render.js";
 import type { Findings, ResultEnvelope, PriceMap, ModelUsageEntry } from "./schema.js";
 
@@ -118,5 +118,20 @@ describe("formatMarkdown", () => {
     expect(block).toHaveLength(1 + 1 + 3 + 1);
     expect(block.every((line) => line.trim().length > 0)).toBe(true);
     expect(block.at(-1)).toMatch(/^> \| \*\*Total\*\*/);
+  });
+});
+
+describe("formatUtc (issue #28 — sticky's posted-at line)", () => {
+  it("formats a UTC date as 'YYYY-MM-DD HH:MM UTC'", () => {
+    expect(formatUtc(new Date(Date.UTC(2026, 6, 7, 18, 42)))).toBe("2026-07-07 18:42 UTC");
+  });
+
+  it("zero-pads single-digit month, day, hour, and minute", () => {
+    expect(formatUtc(new Date(Date.UTC(2026, 0, 5, 3, 7)))).toBe("2026-01-05 03:07 UTC");
+  });
+
+  it("reads UTC fields, not the host's local time zone", () => {
+    // A date constructed from a local-offset ISO string still formats by its UTC fields.
+    expect(formatUtc(new Date("2026-07-07T00:00:00+05:00"))).toBe("2026-07-06 19:00 UTC");
   });
 });

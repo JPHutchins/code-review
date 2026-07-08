@@ -3,7 +3,7 @@
 
 import { Eta } from "eta";
 import { partitionFindings, indexDiff, defaultSide } from "./diff.js";
-import { severityEmoji, findingsPointer, projectPatch } from "./surface.js";
+import { severityEmoji, findingsPointer, projectPatch, formatConfidence } from "./surface.js";
 import type { Finding, Findings } from "./schema.js";
 import type { InlineComment, InlineResult } from "./types.js";
 
@@ -31,6 +31,7 @@ const renderCommentBody = (
     ...f,
     patchProjection: projectPatch(f.patch),
     severityEmoji,
+    formatConfidence,
     modelsText,
     jsonUrl: jsonUrl ?? null,
     findingsPointer: pointer,

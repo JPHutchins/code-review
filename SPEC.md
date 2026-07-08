@@ -1,866 +1,329 @@
-# code-review — normative specification
+# code-review — a normative approach for safe agentic code review
 
-> **Version:** 0.1.0-alpha
-> **Status:** alpha — implemented by [`@jphutchins/code-review`](https://www.npmjs.com/package/@jphutchins/code-review)
-> and the reference workflow in [examples/workflows/review.yaml](examples/workflows/review.yaml). The
-> approach is proven — a reference implementation posted a live review on
+> **Version:** 0.1.0-alpha · **Status:** alpha.
+>
+> This document specifies an **approach** — a security architecture for having an AI agent review a
+> proposed change and post the result — in **provider-neutral** terms, together with the reasoning for
+> why it is safe. It is deliberately **general**: an implementation may use any agent, any model
+> backend, any code host, and any schema of its own choosing and still conform.
+>
+> It does **not** define a data format, a rendering, a cost report, or a workflow file. Those are
+> decisions of a **reference implementation** — this repository: [`@jphutchins/code-review`](https://www.npmjs.com/package/@jphutchins/code-review),
+> its schema in [`schema/`](schema/), its commenter in [`src/`](src/) and [`templates/`](templates/),
+> and its GitHub Actions realization in [`examples/workflows/review.yaml`](examples/workflows/review.yaml).
+> **Changing any of those requires no change to this document.** The approach is proven: a reference
+> implementation posted a live review on
 > [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691).
 >
-> The reference adapter is Claude Code (`claude -p`); the same shape fits other agent CLIs
-> (e.g. OpenCode) and any Anthropic-compatible model backend. "Claude," "Claude Code," "DeepSeek,"
-> "GitHub," and "OpenCode" are trademarks of their respective owners; used nominatively — no
-> affiliation or endorsement is implied. See [README.md](README.md) § Trademarks.
+> "Claude," "Claude Code," "DeepSeek," "GitHub," and "OpenCode" are trademarks of their respective
+> owners, used nominatively; no affiliation or endorsement is implied. See [README.md](README.md).
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT",
+"RECOMMENDED", "MAY", and "OPTIONAL" are to be interpreted as described in
+[RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
 ---
 
 ## 1. Overview & thesis
 
-A **pull-request code review** is produced by:
+An agentic code review asks a large language model to read a proposed change and report on it. Doing
+so safely means confronting a single hard fact: **the same task needs three capabilities that must
+never be held together.**
 
-1. A **headless coding-agent CLI** that emits **structured JSON** conforming to a published schema;
-2. A **deterministic commenter** that renders and posts the JSON to two GitHub surfaces — a sticky
-   summary comment and an inline PR review.
+1. **Read untrusted content.** The change, its surrounding source, and any logs or discussion are
+   author-controlled. Text placed in a model's context can override the model's instructions —
+   *prompt injection*, whether the hostile text is supplied directly or embedded in content the model
+   merely reads ([OWASP LLM01][llm01]; [NIST AI 100-2][nist]). An agent that ingests a pull request
+   MUST therefore be assumed to be attacker-influenced.
+2. **Hold a model credential.** Driving a model requires a key that spends money — a bearer token and
+   a standing financial liability.
+3. **Write to the review surface.** Posting the result requires a credential that can modify the
+   repository or its conversation.
 
-The whole system is **workflow YAML you can read** — reviewed in the same PR flow as the code it
-guards — plus a CLI invocation and `gh api` to post the result. There is no marketplace Action, no
-hosted GitHub App, and no third-party SaaS reviewer.
+Any one component holding all three is the "lethal trifecta": private/valuable data, exposure to
+untrusted content, and a way to act on the outside world — the combination an injection turns into
+exfiltration or unwanted action ([Willison][trifecta]).
 
-Because there is no Action:
+**Thesis.** Split the three capabilities across **privilege-isolated roles** that communicate only
+through **validated, structured data**, never through code or shell. No single role can be both
+subverted by untrusted input *and* capable of causing harm. The whole system is then plain
+workflow-as-code — reviewed in the same flow as the code it guards — with no marketplace action, no
+hosted app, and no third-party reviewing service to trust.
 
-| Property | Advantage |
-|---|---|
-| The backend is a CLI + `ANTHROPIC_BASE_URL` + a model env | **Agent- & model-agnostic** — any Anthropic-compatible backend, any compatible CLI |
-| The prompt, schema, and gate live in your repo | **Transparent & auditable** — nothing hidden in a vendor's servers |
-| You choose token scopes / egress / spend cap | **You own the security boundary** |
-| The orchestration is just a CLI call | **Portable** — GitHub is a thin posting adapter |
-
-### 1.1 Scope
-
-This specification defines:
-
-- The **findings schema** — the structured JSON a review agent MUST emit.
-- The **roles** (CI, review agent, commenter) and the **security boundary** between them.
-- The **trigger and routing** — how CI completion drives review routing.
-- The **findings + envelope contract** — the structured JSON a review agent emits and the
-  vendor-neutral cost/usage envelope that accompanies it (§4, §6.1, §5.5).
-- The **posting** — how structured findings become a sticky comment and inline review.
-- **Cost and usage reporting** — how token consumption is reported, independent of model vendor.
-- The **threat model** and required controls.
-- **Conformance** — what a conforming implementation MUST and SHOULD do.
-
-This specification is **provider- and tool-agnostic**. Model backends, agent CLIs, and CI systems are
-presented as examples; the normative requirements are abstract. A "GitHub Actions binding" section
-(§8) provides the concrete workflow shape for GitHub users.
-
-### 1.2 Document conventions
-
-The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT",
-"RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in
-[RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
+This document defines the **roles**, the **contracts** between them, the **threat model** and
+**required controls**, and **conformance**. It treats data formats, rendering, and platform bindings
+as an implementation's own concern (§6).
 
 ---
 
-## 2. Roles & the security boundary
+## 2. Roles & the privilege boundary
 
-The system has three roles, distributed across two trust domains:
+A conforming system has three roles, defined by **capability**, not by any particular tool or vendor.
+They span two trust domains.
 
-### 2.1 CI (unprivileged)
+### 2.1 Orchestrator (unprivileged)
 
-The project's existing CI workflow. Runs on `pull_request`; produces a **conclusion** (success,
-failure, or cancelled) that the review routes on. Optionally uploads machine-readable test reports
-as artifacts. This workflow is **unchanged** — no modifications are required to enable review.
+The existing CI for the change — whatever already runs the project's checks. It produces an outcome
+the review routes on and MAY publish machine-readable test results. It holds no review credential and
+requires **no modification** to enable review.
 
-### 2.2 Review agent (privileged — model key, read-only repo token)
+### 2.2 Reviewer (untrusted input + model key; no write; contained)
 
-A job in the privileged review workflow. Holds the model API key and a **read-only** GitHub token.
-Consumes:
+Ingests the untrusted change and its context, drives the model, and emits the review as **structured
+data** (§3.2). It holds the model key and, at most, a **read-only** repository credential. Because it
+reads attacker-influenced content (§1), it MUST be treated as potentially subverted, and is therefore
+**contained**: no write or publish credential, a **locked network egress**, and a **burner model key
+with a hard spend cap**. Its worst realistic output is a public comment — never a secret leak or a
+repository write.
 
-- The PR diff (fetched as data via the API — no fork checkout).
-- The CI result (`workflow_run.conclusion`).
-- Failing-job logs (when CI failed) and/or an optional machine-readable test report (any conforming
-  format).
-- Prior review context (bot-authored comments on the PR, PR title and body).
+### 2.3 Commenter (write credential; no model; no untrusted execution)
 
-Produces: structured JSON conforming to the [findings schema](schema/findings.schema.json).
+Transforms the reviewer's structured data into the review surfaces. It holds the **write** credential
+but **no model key**, and it **never executes** the change under review — it only deserializes and
+renders validated data. It MUST be **deterministic**: no model call, and no interpolation of untrusted
+text into a shell or an API body (§4).
 
-The review agent executes untrusted PR code **only after a preflight security triage** of the diff.
-The real containment is the read-only token, an egress lock on the runner, and a **burner model key
-with a hard spend cap**.
+### 2.4 The boundary
 
-### 2.3 Commenter (semi-privileged — write token, no model key, no PR code)
+> The role that reads untrusted content cannot write. The role that can write neither reads a model
+> nor executes untrusted content. Nothing crosses between them except data that has been validated
+> against a published schema.
 
-A separate job (separate runner, separately-scoped token) in the same privileged workflow. Holds a
-**pull-requests: write** token but **no model key** and **no PR code**. Its only responsibility is to
-transform the structured JSON output into GitHub review surfaces. It MUST be deterministic — no model
-invocation, no shell interpolation of untrusted text.
+This is the load-bearing invariant. It directly defeats the dominant CI attack class, in which
+untrusted pull-request code runs in a *privileged* context that holds secrets and write access — the
+"pwn request" ([GitHub Security Lab][pwn]) and *poisoned pipeline execution* ([OWASP CICD-SEC-04][ppe];
+[Gil & Krivelevich][ppeorig]) patterns. Here the privileged role runs no untrusted content at all,
+and the role that does is stripped of everything worth stealing.
 
-The commenter's separation from the review agent is the security boundary: the job that holds the
-write token never touches the model or the PR code.
-
-### 2.4 Token split
-
-```
-review job    — model key (secret) + contents:read + actions:read
-comment job   — pull-requests:write + issues:write + actions:read
-                (NO model key, NO agent, NO PR code)
-```
-
-The two jobs MUST be separate runners with independently-scoped tokens.
+The two roles MUST run as **separate execution contexts with independently scoped credentials**. A
+role's credential MUST follow least privilege — the minimum scope for its job, nothing more
+([NIST][leastpriv]).
 
 ---
 
-## 3. Trigger & routing
+## 3. The contracts between roles
 
-### 3.1 Abstract contract
+The roles are coupled only by the three abstract contracts below. All are stated in CI-neutral terms;
+a concrete platform binding is illustrative, not part of the contract (Appendix A).
 
-The review is **triggered by CI completion** and **routed on the CI result**. This section states the
-requirements in CI-neutral terms; §8 binds them to GitHub Actions.
+### 3.1 Trigger & routing
 
-- **Trigger.** A CI run for a pull request completes → the review runs. The trigger MUST come from
-  CI completion (not from the PR itself), so the result arrives for free and CI is guaranteed to
-  have finished before a model token is spent. The trigger MUST NOT be fork-controlled: the
-  initiating event and the reviewed commit identifier MUST come from the CI event, not from
-  PR-authored content.
-- **Routing.** The review agent MUST route on the CI run's outcome:
+- **Trigger.** The review is driven by the **completion of CI** for a change, so the CI outcome
+  arrives for free and no model spend occurs before the project's checks have run. The trigger and the
+  identifier of the reviewed commit MUST come from the **CI event**, not from author-controlled
+  content — otherwise a fork could redirect or forge the review.
+- **Routing.** The reviewer MUST route on the CI outcome:
 
   | Outcome | Route | Behavior |
   |---|---|---|
-  | pass | **reviewer** | Full agentic review; may re-run project checks to validate findings. High-effort model. |
-  | fail | **mechanic** | Fast, minimal pass: failing-job logs are fed to a low-effort model that proposes minimal fixes only — no comprehensive review. |
-  | cancelled / skipped / not-run | **skip** | No review; post nothing. ("not-run" covers outcomes like `startup_failure` or `neutral` where CI did not actually execute the project's checks — the mechanic MUST NOT critique code for failures that never ran.) |
+  | passed | **review** | Full agentic review; MAY re-run the project's checks to validate findings; higher effort. |
+  | failed | **mechanic** | Fast, minimal pass over the failure only — propose targeted fixes, not a broad review; lower effort. |
+  | did not run (cancelled/skipped/errored) | **skip** | Post nothing — there is no meaningful result to review. |
 
-  The rationale: paying a max-effort review for code that doesn't pass CI is wasteful, and a CI
-  result is universal — every repo has one — and requires no special tooling.
+  Paying for a full review of code that does not pass CI is wasteful, and a CI outcome is universal —
+  every project has one — so routing on it needs no special tooling.
+- **Input as data.** The change and all context (diff, logs, prior review, discussion, optional test
+  report) MUST be gathered as **data** by a step that holds only the read-only credential — never by
+  checking out and running fork code, and never by granting the reviewer network access to fetch them.
+  A binding that fetches the change over an API that may truncate MUST detect truncation or fall back
+  to a non-truncating source; silently reviewing a partial change is a correctness fault.
 
-- **Diff source.** The diff MUST be fetched as data, not by checking out fork code. The reviewed
-  commit identifier comes from the CI event; the associated pull request is resolved from it (not
-  from a fork-controlled value). When multiple pull requests share a commit, the binding SHOULD
-  disambiguate by the CI event's branch rather than taking an arbitrary first match.
-- **Diff size.** A binding that fetches the diff over an API which may truncate large responses
-  MUST detect truncation or fall back to a non-truncating source (e.g. a bare `git fetch` + `git
-  diff`); silently reviewing a truncated diff is a correctness bug.
+### 3.2 The deliverable
 
-### 3.2 GitHub realization
+The reviewer's output is a **structured document** — an overall assessment plus zero or more findings,
+each anchored to a precise location in the change — accompanied by a **vendor-neutral record of model
+usage** (per-model token counts, turns, duration) sufficient to report cost independently of any
+backend's own pricing.
 
-The GitHub Actions binding of §3.1:
+The document MUST be **validated against a published schema before anything is posted**. The schema —
+not this specification — is the single, authoritative definition of the deliverable's fields and which
+are required; a conforming implementation publishes its own and treats it as the source of truth, so
+the schema can evolve without amending this document. (The reference schema is
+[`schema/findings.schema.json`](schema/findings.schema.json); its field descriptions are its spec.)
 
-- **Trigger** — `on: workflow_run: { workflows: ["CI"], types: [completed] }`. `workflow_run` fires
-  only from the default branch, so the PR that introduces the reviewer will not review itself —
-  merge first, then open a test PR.
-- **Routing** — `workflow_run.conclusion`: `success` → reviewer, `failure` → mechanic,
-  `cancelled`/`skipped`/`startup_failure`/`neutral` → skip.
-- **Diff source** — `gh api repos/{repo}/pulls/{N} -H 'Accept: application/vnd.github.v3.diff'`,
-  with `{N}` resolved from the trusted `workflow_run.head_sha` via
-  `gh api repos/{repo}/commits/{head_sha}/pulls`. This works for forks and is not fork-controlled.
+When a model's structured-output enforcement is imperfect, an implementation MAY recover the deliverable
+from the model's output by a **deterministic** procedure, provided that procedure accepts **exactly one**
+validating candidate and **fails closed** on ambiguity or absence (§4.2). Recovering a self-validated
+document the agent wrote to a file is preferable to parsing free-form output.
 
-### 3.3 Enrichment (optional)
+### 3.3 The commenter
 
-A conforming implementation MAY consume richer inputs when available:
+The commenter renders the validated deliverable onto durable review surfaces. Its behavior is
+constrained, but *how* it renders — layout, markers, per-surface formatting — is the implementation's
+own decision (the reference commenter's templates are the source of truth for its rendering). It MUST be:
 
-- **Machine-readable test reports**: when the CI run uploaded one, download and hand it to the agent
-  (structured per-test detail — which tests failed, messages, timings). The report format is not
-  fixed; any conforming test report is acceptable.
-- **Prior review context**: previous bot-authored comments on the PR, author replies, PR title and
-  body. Gathered as data files by a pre-agent step, never by granting the agent network access.
-
-These enrichments MUST be optional. When absent, the system MUST degrade gracefully (failing-job
-logs for the mechanic, no prior-review context for the first run).
-
----
-
-## 4. Findings schema
-
-The canonical schema is [`schema/findings.schema.json`](schema/findings.schema.json) — JSON Schema
-2020-12, inlined (no `$ref`/`$defs`/`$id` fragments) so the same file works for both JSON-Schema
-validators and CLI structured-output enforcement. A CLI's `--json-schema` form additionally MUST omit
-the top-level `$schema` draft keyword: some CLIs (observed: `claude -p --json-schema`) silently
-disable enforcement — returning a null structured output with no error — when it is present. The
-canonical file keeps `$schema` for validators; the reference CLI's `print-schema` strips it from the
-form handed to `--json-schema`.
-
-### 4.1 Shape
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `schema_version` | `string` (semver) | yes | The findings-schema version this object conforms to (e.g. `"0.2.0"`); see §4.2. Lets a commenter detect a version mismatch rather than silently dropping fields. |
-| `summary` | `string` | yes | Markdown walkthrough of the change and overall assessment |
-| `verdict` | `enum[approve, comment, changes]` | yes | Overall stance; advisory only |
-| `findings` | `array` | yes | Zero or more specific findings |
-
-Each finding:
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `path` | `string` | yes | Repo-relative file path |
-| `start_line` | `integer` (≥1) | yes | 1-indexed first line of the anchored range |
-| `end_line` | `integer` (≥1) | yes | 1-indexed last line; must be ≥ `start_line` (enforced by the runtime codecs; see REQ-SC-6) |
-| `side` | `enum[RIGHT, LEFT]` | no (default: `RIGHT`) | RIGHT for added/changed lines, LEFT for removed lines |
-| `severity` | `enum[critical, major, minor, nit]` | yes | Used for grouping and noise folding |
-| `code` | `string` | no | Stable rule identifier (e.g. `"null-check-missing"`) for rule-based filtering, suppression, and cross-run dedup |
-| `code_url` | `string` | no | URL documenting the rule named by `code` |
-| `title` | `string` | yes | One-line summary |
-| `description` | `string` | yes | Markdown explanation of what is wrong; rendered as the inline comment body |
-| `recommendation` | `string` | no | Markdown prose describing what to do about the finding, in human terms — distinct from `patch` (a machine-applicable diff). Use it when the fix is best explained rather than mechanically applied, or to accompany a `patch` with rationale |
-| `confidence` | `number` (0..1) | yes | For noise suppression; the commenter MAY suppress a finding below a configurable threshold, but MUST NOT suppress a `critical` finding on confidence alone |
-| `reasoning` | `string` | yes | Human/agent-facing rationale for why the finding is sound; used to judge the finding, distinct from `description` (the finding's own rendered explanation) |
-| `patch` | `string \| null` | no | Single-hunk unified diff of an edit the agent actually made to this file, against the PR-head (post-change) content, or `null` for no mechanical fix. Validated exactly against the file and deterministically projected into a suggestion (§5.2.8) or dropped — never hand-authored, so it eliminates the wrong-indentation/too-wide-range failure mode (issue #10) |
-
-### 4.2 Versioning
-
-The schema follows [semver](https://semver.org). The **in-data conformance signal** is the
-`schema_version` field (§4.1): a findings object declares which schema version it conforms to, so a
-commenter can detect a version mismatch rather than silently dropping or misinterpreting fields.
-
-A conforming commenter accepts a configurable allowlist of schema minors (currently `{0.4}`); a
-document declaring a minor outside the allowlist degrades per §5.5 rather than being silently
-accepted or rejected without explanation. The `0.4` shape makes `description`, `reasoning`, and
-`confidence` required and drops the free-text `suggestion` field (a `patch` is the sole mechanical
-fix); a `0.2`/`0.3` document — which cannot supply a `reasoning`/`confidence` the shape now requires
-— therefore degrades per §5.5 rather than being upcast.
-
-The schema file's `$id` URI is the schema's own identity, distinct from a finding's
-`schema_version`:
-
-```
-https://raw.githubusercontent.com/JPHutchins/code-review/schema-v<version>/schema/findings.schema.json
-```
-
-The `$id` on a tagged release MUST carry that release's version tag — not `main`. The release
-process MUST verify the `$id` matches the tag (a CI check or release step), since the file on
-`main` carries the moving `main` ref until the tag is cut. See
-[`schema/VERSIONING.md`](schema/VERSIONING.md) for the version policy.
+- **Deterministic and agentless** — a data-in, string-out transform; no model call.
+- **Advisory** — posted as a non-blocking comment, **never** as a merge-blocking "request changes,"
+  and **never** wired as a required status check. The review is model output and MUST NOT gate merge.
+- **Truthful** — it MUST NOT claim a surface or action that did not occur (e.g. asserting inline
+  annotations exist when none were posted). A finding that cannot be anchored where it belongs MUST be
+  surfaced elsewhere, not silently dropped.
+- **Idempotent** — re-running on the same commit updates in place rather than duplicating, and it
+  decides what already exists by **authenticated author identity**, never by a marker that untrusted
+  parties could copy (§4.2).
 
 ---
 
-## 5. Posting
+## 4. Threat model & required controls
 
-The commenter produces two GitHub surfaces from the same findings JSON.
+### 4.1 Assets
 
-### 5.1 Sticky summary comment
+- **Model API key** — spends money; the primary target.
+- **Write credential** — can modify the repository or its conversation; the secondary target.
+- **Reviewer runtime** — transient, but its environment holds the model key.
 
-An **issue comment** on the PR, found and updated by a fixed marker:
+### 4.2 Threats
 
-- **Marker:** `<!-- code-review -->` (fixed constant; MUST be a known value, never interpolated).
-- **Reviewed-SHA marker:** `<!-- reviewed-sha: <sha> -->` — enables incremental review on subsequent
-  runs.
+| Threat | Why it matters | Control |
+|---|---|---|
+| Untrusted content hijacks the reviewer (direct or indirect prompt injection) | The reviewer reads author-controlled text by design ([OWASP LLM01][llm01]; [NIST][nist]) | The reviewer holds no write/publish credential and no open egress; its worst output is a public comment (§2.2) |
+| Reviewer is induced to exfiltrate the model key or environment secrets | The "lethal trifecta" turns injection into exfiltration ([Willison][trifecta]) | Read-only credential; egress allowlist ([StepSecurity][harden]); burner key with hard spend cap; public comment is the sole accepted residual channel |
+| Untrusted change runs in a privileged context (pwn request / poisoned pipeline execution) | A documented, high-impact CI class ([GitHub Security Lab][pwn]; [OWASP][ppe]; [Gil & Krivelevich][ppeorig]) | The privileged (write) role never executes the change; the trigger and reviewed commit come from CI, not author content |
+| Output carries a payload aimed at the maintainer (phishing, "ignore previous instructions") | A finding is untrusted text shown to a human | Rendered as data by a host that neutralizes active content; the commenter escapes all untrusted text (defense in depth) |
+| Output smuggles a second, conflicting result to flip the verdict | Appending an extra block could mask the real one | Recovery accepts exactly one validating candidate; ambiguity fails closed (§3.2) |
+| A fork redirects the review to the wrong target | Author-controlled routing would misattribute the review | Target resolved from the trusted commit identifier (+ branch), never from author-controlled data |
+| A prior review is spoofed to suppress a real one | A copied marker could impersonate the bot | Prior state trusted by **authenticated author identity**, not by any marker (§3.3) |
+| Spend runaway / denial-of-wallet | Repeated pushes could burn budget | Burner key + hard spend cap; run timeout; cancel superseded runs |
+| Tampered deliverable in transit between roles | The write role must not act on forged data | Transport integrity is provided by the CI platform; the write role only deserializes, never executes |
 
-The marker MUST be the first line of the rendered comment, so the commenter's upsert (which matches
-on `startswith(marker)` AND bot author) finds the existing comment rather than posting a duplicate.
+### 4.3 Preflight triage
 
-The sticky is the **cumulative, PR-level state anchor**: its primary job is to carry the
-`reviewed-sha` marker (which drives the incremental/re-run logic of §5.2.6) plus a human summary of
-the run. It MUST NOT duplicate the per-finding detail that the inline review carries (§5.2) — the
-review is the per-finding surface; the sticky summarizes and points at it. The one exception is
-**strays** (findings whose lines are not in the diff, §5.2 rule 1): they have no inline home, so the
-sticky is where their per-finding detail lives.
+Before a reviewer applies and executes untrusted content (e.g. to run the project's checks and confirm
+a fix), an implementation SHOULD run a **data-only** triage of the change — reading it, never executing
+it — screening for injection attempts, secret access/exfiltration, calls to unexpected hosts, changes
+to CI/build/hook scripts that could execute code, and obfuscated payloads. The triage reads the same
+untrusted content an injection would ride in, so it is a **heuristic first filter only**; its decision
+MUST **fail closed** (any ambiguous, malformed, or unrecoverable result is treated as unsafe). The
+controls that actually contain the reviewer are the read-only credential, the egress lock, and the
+capped burner key (§4.4).
 
-The summary SHALL include the items below. **Structural items (1, 2, 6) are normative** — a
-conforming commenter MUST render them. **Presentation items (3, 4, 5) are RECOMMENDED shape** — a
-commenter MAY vary their layout, but MUST preserve the information (e.g. severity counts MUST appear
-somewhere; cost MUST appear in a footer somewhere), even if the exact rendering differs.
-
-1. A title with a **verdict badge** and **route** line (the route MUST reflect the actual routing
-   decision per §3.1, not be inferred from side-effects like turn count).
-2. A markdown walkthrough (the `summary` field).
-3. A **severity-counts** line (a histogram such as `🔴 0 · 🟠 1 · 🔵 2 · ⚪ 1`), an **honest
-   inline-disposition pointer** stating what actually happened to the inline review (e.g. _N
-   comments posted inline on `<sha>`_, _no inline comments — all findings are outside the diff_, or
-   _inline review suppressed — `<sha>` already reviewed_ — a hyperlink to the review itself when its
-   URL is available), and a **strays** section listing the findings that could not be anchored
-   inline. Each stray MAY carry its `confidence` figure alongside the bullet and, when the finding
-   provides `reasoning`, a collapsible fold containing it. The sticky MUST NOT reproduce the full
-   per-finding list the review carries, and MUST NOT claim inline comments exist when none were
-   posted.
-4. A collapsible **test-results panel** when a test report is provided as input, else a CI job
-   summary when one is available. The panel is **format-agnostic**: it consumes any conforming test
-   report, not a single fixed format.
-5. A **meta line** stating route, effort, turn count, wall-clock duration, model name(s), and total
-   cost (recomputed per §6.2).
-6. An **LLM Disclosure** aside naming the model(s) used (sourced from the envelope's `models`) and
-   carrying the per-model cost breakdown table (§6.3).
-7. The findings JSON embedded directly in the sticky, alongside the `reviewed-sha` marker: a
-   `<!-- code-review:findings-json;base64 <base64> -->` marker carrying the findings, base64-encoded.
-   A reviewing agent SHOULD decode and parse this marker instead of parsing the comment's prose.
-   Embedding the JSON in the comment (rather than only linking the uploaded artifact) keeps the
-   pointer from expiring with artifact retention — the comment is permanent, the artifact is not.
-   When the encoded payload exceeds a size limit, the commenter falls back to a
-   `<!-- code-review:findings-json <url> -->` marker linking the uploaded artifact instead; when
-   neither an embeddable payload nor a URL is available, the marker is omitted — this item is
-   conditional, not required. When present, the marker is preceded on its own line by a fixed
-   `<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read
-   schema_version first. -->` directive, so an agent landing on any ONE of the three surfaces
-   below (this sticky, an inline comment, or the review body) still knows to decode it. The
-   serialization (embed-or-url, plus the directive) is identical across all three — a single
-   pointer format, not a per-surface variant.
-
-### 5.2 Inline review
-
-A **pull request review** (`POST /repos/{owner}/{repo}/pulls/{n}/reviews`) with a `comments[]`
-array. Each in-diff finding becomes one inline comment. The review is the **primary per-finding
-detail surface** — the sticky summary (§5.1) points at it rather than reproducing it.
-
-The review's top-level `body` opens with the same findings-json marker as §5.1 item 7 (the whole
-findings document, not merely a per-comment one), followed by a short **pointer** (e.g. _"Automated
-code review for `<sha>` — see the summary comment for the verdict, walkthrough, and cost."_), NOT a
-duplicate of the summary, and links to the sticky (§5.1) when its URL is available — the two
-comments point at each other (§5.1 item 3 links back to the review symmetrically, and ONLY once the
-review is confirmed to exist — the sticky MUST NOT claim "see the review" before the review has
-actually been posted). The GitHub reviews API requires a review to
-carry a non-empty `body` OR at least one comment; the commenter posts a review only when there is
-at least one in-diff comment, so the pointer body is supplementary. When there are **zero in-diff
-findings**, no review is posted at all — the sticky's strays section (§5.1 item 3) is the sole
-surface, and its disposition pointer says so.
-
-Each inline comment body opens with a **severity header** (`<emoji> **<severity>** — <title>`,
-using the same emoji mapping as §5.1 item 3) so a reader can triage without opening the sticky,
-followed by the finding's `description`, its `recommendation` prose when present, and — when the
-finding carries a `patch` — the block projected from it (§5.2.8). It closes with a per-comment **LLM
-Disclosure** naming the model(s) that produced the finding (sourced the same way as §5.1 item 6) and
-its `confidence`, with `reasoning` in a collapsible fold (both are always present as of the `0.4`
-shape). The same findings-json marker as §5.1 item 7 (embed-or-url, with the AGENTS directive) is
-emitted as the comment's first line — agent-facing and invisible to a human reader — omitted when no
-findings document is available to embed or point at.
-
-Rules (these MUST be enforced by the commenter, not the agent):
-
-1. **In-diff only.** A finding whose `path` + anchored range endpoints (`start_line` AND `end_line`)
-   do not all appear in the diff hunks MUST be demoted into the summary body — not dropped, and not
-   posted as an inline comment. The inline comment anchors on `end_line` (with `start_line` for
-   multi-line ranges), and posting a comment where either endpoint is absent from the diff causes
-   the GitHub API to reject the entire review (`422`).
-2. **Use absolute `line` + `side`** (`RIGHT` for additions), plus `start_line`/`start_side` for
-   multi-line ranges. The deprecated `position` (diff-offset) field MUST NOT be used.
-3. **`commit_id`** MUST be the reviewed head SHA (`workflow_run.head_sha`).
-4. **Suggestions** are a fenced `suggestion` block inside the comment body, replacing exactly
-   `start_line..end_line`. The commenter derives it by projecting a validated `patch` (§5.2.8) — a
-   findings object no longer carries a free-text `suggestion` field. An all-deletion patch projects
-   to an empty suggestion block (delete the range). A suggestion spanning more than GitHub's
-   single-block line limit MUST be stripped (never emitted) and reported (a warning noted in the
-   summary); the inline comment MAY be retained without the block. Emitting a payload that would 422
-   remains prohibited.
-5. **Event.** MUST post as `COMMENT`, never `REQUEST_CHANGES`. The review is advisory and MUST
-   never block merge via branch protection.
-6. **Re-run hygiene (§5.2.6).** Suppression of the inline pass MUST be decided by **review
-   identity** — whether a COMPLETED bot-authored review already exists for the head SHA, read from
-   the reviews API `commit_id` — NOT by the presence of a sticky whose `reviewed-sha` marker matches.
-   A placeholder, degraded, or gate-skipped sticky (§5.5) carries the marker but is not a completed
-   review, and MUST NOT suppress a real review. Concretely: when no non-dismissed bot review has
-   `commit_id == headSha`, the commenter MUST post a fresh review for the head SHA and SHOULD dismiss
-   prior bot-authored reviews left on OTHER commits (a different `commit_id`); when such a review
-   already exists at the head SHA (a genuine re-run of an already-reviewed commit), the commenter
-   SHOULD update only the sticky summary and skip posting a duplicate review. The sticky's
-   `reviewed-sha` marker is refreshed on every run, decoupled from this suppression decision.
-7. **Confidence suppression.** A finding with `confidence` below a configurable threshold (default
-   `0.5`) MAY be suppressed from the inline review (demoted to a collapsed summary section, not
-   dropped). A `critical`-severity finding MUST NOT be suppressed on confidence alone. The
-   threshold SHOULD be configurable by the workflow.
-8. **Patch validation & projection.** In two deterministic steps: (a) before this pass, the review
-   job validates any `patch` (§4.1) against the real PR-head file — aligning the finding's
-   `start_line`/`end_line` to the patch's removed range and **keeping** the patch (the reference
-   CLI's `validate-patches` command); a `patch` that does not apply cleanly (context mismatch, more
-   or fewer than one hunk, a non-contiguous change, a pure insertion, an unreadable file, etc.) is
-   dropped, leaving the finding without a patch — never partially applied. (b) At render time the
-   commenter **projects** a kept patch into a fenced `suggestion` block (its added lines), anchored
-   at the aligned range; a patch that cannot be projected falls back to a raw fenced `patch` block
-   (non-lossy). Because the patch is machine-generated and validated exactly, this closes the
-   wrong-indentation / too-wide-range failure mode a hand-authored suggestion is prone to (issue
-   #10).
-
-### 5.3 Trust — author identity, not marker
-
-The previous review is trusted **only when the comment's author login matches the bot identity**
-(e.g. `github-actions[bot]`). A fork author can paste the `<!-- code-review -->` marker into their
-own comment, but they cannot post as the bot identity. The marker alone MUST NOT be used to determine
-trust.
-
-### 5.4 Injection discipline
-
-All untrusted text — diff, job logs, test reports, PR body/comments, and the findings themselves —
-MUST be passed as files or structured data, never shell-interpolated. API request bodies MUST be
-built with a JSON-aware tool (`jq -n --rawfile` in bash; native JSON serialization in TypeScript) so
-untrusted text is always escaped before it reaches the shell or the API.
-
-### 5.5 Inputs & error semantics
-
-The commenter consumes two inputs produced by the review job (passed as files, never interpolated):
-
-- **`findings`** — the findings object (§4) carried in the envelope's `findings` field (§6.1).
-- **`envelope`** — the full abstract result envelope (§6.1), source of `models`, `turns`,
-  `duration_ms`, and `schema_version` (the reference CLI exposes this input as `--usage`).
-
-The reviewer's inputs (gathered by the review job, also as files) are: the diff (§3.1), the CI
-result, prior bot-authored review context (§3.3), failing-job logs when CI failed, and an optional
-test report. A reviewer MUST NOT be granted network access to fetch these itself — a pre-agent step
-gathers them to files with the read-only token.
-
-**Error semantics.** The commenter MUST handle these conditions deterministically rather than crash
-or post a misleading comment:
-
-| Condition | Required behavior |
-|---|---|
-| Empty diff (no changes) | Post a sticky summary noting the empty diff; verdict `comment`; no inline review. |
-| Corrupt or absent findings artifact | Post a sticky summary noting the review did not complete; verdict `comment`; reference the run for logs. |
-| Findings fail schema validation (`schema_version` mismatch or invalid shape) | Post a sticky summary noting the review output was malformed; verdict `comment`. Never post unvalidated inline comments. |
-| Agent emitted a gate verdict (skipped/unsafe) instead of findings | Post the gate verdict as the sticky summary (the review job SHOULD already assemble this as a valid findings object). |
-| PR was closed between trigger and run | Exit zero with a notice; post nothing. |
-| No open PR for the head SHA | Exit zero with a notice; post nothing. |
-| Posting fails (422 from an out-of-diff line, network, auth) | Exit non-zero (REC-CO-3) so the failure is visible; never partially post. |
-
-A degraded sticky (any row above that posts a summary but no inline review) still carries the
-`reviewed-sha` marker for that head SHA, but it is **not** a completed review: it MUST NOT be
-counted as one for the §5.2.6 suppression decision. A later real review at the same head SHA is
-recognized by the absence of a bot review whose `commit_id` matches, and MUST be posted.
-
----
-
-## 6. Cost & usage reporting
-
-### 6.1 Result envelope
-
-The review agent's CLI invocation MUST capture its full result envelope, not just the findings. The
-envelope is the **abstract, vendor-neutral cost/usage contract** the commenter recomputes from; an
-adapter maps its CLI's native output onto it. The canonical field names are **spec-owned** so a
-non-reference adapter need not mimic any other CLI's internal keys.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `schema_version` | `string` | yes | Semver version of the findings schema this object conforms to (e.g. `"0.2.0"`); see §4.2. |
-| `findings` | `object` | yes | The findings object conforming to [§4](#4-findings-schema). |
-| `models` | `array<object>` | yes | Per-model token breakdown; subagent models appear as their own entries. |
-| `models[].model` | `string` | yes | Model identifier as the CLI reports it. |
-| `models[].input_tokens` | `integer` | yes | Input tokens consumed by this model. |
-| `models[].output_tokens` | `integer` | yes | Output tokens consumed by this model. |
-| `models[].cache_read_tokens` | `integer` | no | Cache-read tokens (prompt-cache hits) for this model. |
-| `models[].cache_write_tokens` | `integer` | no | Cache-write tokens (prompt-cache population) for this model. |
-| `turns` | `integer` | yes | Number of agentic turns taken. |
-| `duration_ms` | `integer` | yes | Wall-clock duration of the review, in milliseconds. |
-| `vendor_cost_usd` | `number` \| `null` | no | CLI-reported cost, vendor-priced — MUST NOT be used as canonical; recompute from `models` (§6.2). |
-| `route` | `string` | no | The routing decision the review ran under (§3.1), e.g. `"full review"` or `"mechanic"`. The commenter renders this rather than re-deriving it (§6.3). |
-| `effort` | `string` | no | The effort level the review ran under, e.g. `"max"` or `"low"`. |
-
-```jsonc
-{
-  "schema_version": "0.2.0",
-  "findings": { /* …per §4… */ },
-  "models": [
-    { "model": "deepseek-v4-pro",   "input_tokens": 0, "output_tokens": 0,
-      "cache_read_tokens": 0, "cache_write_tokens": 0 },
-    { "model": "deepseek-v4-flash", "input_tokens": 0, "output_tokens": 0,
-      "cache_read_tokens": 0, "cache_write_tokens": 0 }
-  ],
-  "turns": 7,
-  "duration_ms": 91234,
-  "vendor_cost_usd": null,
-  "route": "full review",
-  "effort": "max"
-}
-```
-
-A reference adapter's **native** envelope (e.g. Claude Code's `--output-format json`, with its
-`modelUsage`/`usage`/`num_turns`/`structured_output`/`result` keys) is mapped to this abstract
-shape by the adapter; the mapping is documented in [`docs/adapters.md`](docs/adapters.md). The
-commenter consumes the abstract shape only — it MUST NOT depend on any adapter's internal field
-names.
-
-When structured-output enforcement is imperfect or absent, a conforming adapter MUST deterministically recover `findings` via an ordered extraction ladder (agent-file → structured output → parsed result → fenced block, exactly-one-validating), preferring an agent-written, self-validated findings file over parsing free-text output.
-
-### 6.2 Price map
-
-A conforming implementation SHALL maintain a date-stamped **price map** conforming to
-[`schema/prices.schema.json`](schema/prices.schema.json) (an example lives at
-`schema/prices.example.json`), and recompute cost from `models`:
-
-```
-cost = Σ_model (
-    input_tokens      · price_in
-  + output_tokens     · price_out
-  + cache_read_tokens · price_cache_read
-  + cache_write_tokens· price_cache_write
-) / 1e6
-```
-
-A model with no entry in the price map, or a token field the map doesn't price, MUST be reported by
-the commenter (e.g. a stderr warning) rather than silently zeroed — silent zeros make a stale price
-map invisible. The CLI's `vendor_cost_usd` (§6.1) is vendor-priced and will be wrong for other
-backends. The recomputed value is the canonical cost.
-
-### 6.3 Footer
-
-The comment's meta line SHALL state route, effort, turn count, wall-clock duration, model name(s),
-and total cost (recomputed per §6.2):
-
-```
-**Route:** full review · **effort:** max · **turns:** 7 · **wall:** 91s · **models:** deepseek-v4-pro, deepseek-v4-flash · **cost:** $0.48
-```
-
-The per-model cost breakdown lives inside the **LLM Disclosure** aside (§5.1 item 6), rendered as a
-GitHub `[!WARNING]` alert containing a table recomputed from `models` (§6.1) against the price map
-(§6.2), a link to the code-review repository, and — when the workflow run URL is available to the
-commenter — a link to the run and its traces:
-
-```
-> [!WARNING]
-> **LLM Disclosure** — this review was produced by <models>.
->
-> | Model | Input | Output | Cache read | Cache write | Cost |
-> |---|--:|--:|--:|--:|--:|
-> | … | … | … | … | … | $… |
-> | **Total** | … | … | … | … | **$…** |
->
-> Generated by [code-review](https://github.com/JPHutchins/code-review) · [view the run & traces](<run-url>).
-```
-
-Cost figures are rendered to two decimal places (e.g. `$0.06`); a nonzero cost that rounds to
-`$0.00` at that precision renders as `<$0.01` instead, so a real sub-cent cost is never shown as a
-misleading zero.
-
-The meta line's `Route` MUST reflect the actual routing decision (§3.1), not be inferred from
-side-effects such as turn count. The route and effort labels SHOULD come from the envelope's `route`
-and `effort` fields (§6.1) — stamped by the agent job that made the decision — so the meta line
-cannot drift from the run; a commenter MAY accept an explicit override.
-
----
-
-## 7. Threat model & required controls
-
-### 7.1 Assets
-
-- **Model API key** — a bearer token that spends money. Primary target.
-- **GitHub write token** — can post comments and reviews. Secondary target.
-- **Runner filesystem** — temporary, but the review job's env holds the model key.
-
-### 7.2 Threats
-
-| Threat | Control |
-|---|---|
-| PR diff prompts model to exfiltrate secrets | Preflight triage (§7.3); read-only token; egress lock; spend cap |
-| Model output contains injection payloads | Commenter is deterministic; all text JSON-escaped before API call |
-| Model output injects into the review itself (a finding description aimed at the maintainer — "ignore previous instructions", phishing links) | A finding's `description` is untrusted text rendered as markdown; treated as any PR comment; GitHub's renderer strips scripts (defense-in-depth) |
-| Injected extra JSON block in agent output (append-a-block to smuggle a differing verdict) | Extraction ladder (§6.1) requires exactly-one validating candidate; ambiguous output fails closed (findings: non-zero exit; triage: `safe:false`) |
-| Fork PR redirects review to wrong target | PR number resolved from trusted `head_sha` + disambiguated by `head_branch`; CI event is not fork-controlled (§8.3) |
-| Prior review marker spoofed by fork author | Trust by author identity (bot login), not by marker (§5.3) |
-| CI job logs contain secrets | Logs are untrusted; passed as data, never interpolated |
-| Spend runaway | Burner key with hard spend cap; `timeout-minutes` on job; `concurrency` cancel on force-push |
-| Denial-of-wallet via repeated force-pushes | `concurrency` group keyed on the head SHA cancels superseded runs (§8.2) |
-| Resource exhaustion (huge diff or test report) | Diff-size cap + truncation detection (§3.1); input size limits on enrichment |
-| Tampered findings artifact between jobs | Artifact integrity is GitHub-managed (signed URLs, run-id-scoped download); the comment job never executes artifact content — only deserializes it |
-
-### 7.3 Preflight security triage
-
-Before applying and executing untrusted PR code, a conforming implementation SHOULD run a **data-only**
-security triage of the diff — reading the diff text and surrounding source, never executing. The
-triage SHOULD screen for:
-
-- Prompt injection (text aimed at manipulating the AI reviewer).
-- Attempts to read, log, or exfiltrate environment variables, secrets, or tokens.
-- Network calls to unexpected hosts.
-- Changes to CI/CD workflows, git hooks, or build/test scripts that could execute arbitrary code.
-- Obfuscated or encoded payloads.
-
-The triage is a **heuristic first filter** — it reads the same untrusted diff an injection would ride
-in. The triage decision MUST fail closed: any ambiguous, malformed, or unrecoverable Phase 1 output
-is treated as `safe:false`, never defaulted to safe. The controls that actually hold are:
-
-1. **Read-only token** on the agent job.
-2. **Egress lock** (e.g. harden-runner `egress-policy: block` with an explicit allowlist).
-3. **Burner key with a hard spend cap** — the backstop; the residual exfil channel is the public
-   comment.
-
-### 7.4 Required controls (conformance)
+### 4.4 Required controls (conformance)
 
 A conforming implementation MUST:
 
-- Run the review agent with a **read-only** GitHub token (`contents: read` + `actions: read`).
-- Run the commenter in a **separate job** with **no model key and no PR code**.
-- Lock network egress on **both** jobs — the review job (holds the model key) and the comment job
-  (holds the write token) — to minimal allowlists.
-- Use a burner model key with a hard spend cap, configured at the provider; the workflow SHOULD
-  additionally enforce a per-run token budget (computed from the envelope's `models`) and abort to
-  a notice comment if a ceiling is exceeded.
-- Pass all untrusted content (diff, logs, PR body/comments, findings) as files or structured data,
-  never shell-interpolated.
-- Build all API request bodies with JSON-aware tools (`jq --rawfile` in bash; native JSON
-  serialization in TypeScript) so untrusted text is escaped before it reaches the shell or API.
-- Resolve the PR number from the trusted `workflow_run.head_sha` (+ `head_branch` disambiguation).
-- Post the GitHub review as `COMMENT`, never `REQUEST_CHANGES`.
+- Run the reviewer with, at most, a **read-only** repository credential and **no** write/publish
+  credential.
+- Run the commenter as a **separate execution context** with **no model key**, and never let it
+  execute the change under review.
+- **Lock network egress** on **both** roles to minimal allowlists — the reviewer (holds the model key)
+  and the commenter (holds the write credential) ([StepSecurity][harden]; and see the exfiltration
+  precedents [CVE-2025-30066][tjcve], [Unit 42][unit42], [Codecov][codecov]).
+- Use a **burner model key with a hard spend cap**; a run SHOULD also enforce a per-run budget from the
+  usage record and abort to a notice if a ceiling is exceeded.
+- Pass all untrusted content (change, logs, discussion, the deliverable itself) as **files or
+  structured data**, and build every API request body with a **JSON-aware serializer** — never
+  interpolate untrusted text into a shell or an API body.
+- Resolve the review target from **trusted CI data** (commit identifier, disambiguated by branch),
+  never from author-controlled content.
+- **Validate the deliverable against the published schema before posting**; on malformed output, post a
+  safe notice, never unvalidated content.
+- Keep the review **advisory** (§3.3): a non-blocking comment, never a merge gate.
+- Scope every credential to **least privilege** ([GitHub][ghtoken]; [NIST][leastpriv]).
+
+A conforming implementation SHOULD report **cost recomputed from the usage record against a price map
+committed to the trusted base** (so author-controlled content cannot forge the displayed rates), and
+MUST surface — never silently zero — a model or token class the map does not price.
 
 ---
 
-## 8. GitHub Actions binding
+## 5. Conformance
 
-This section provides the concrete workflow shape for GitHub Actions users. It is the GitHub
-realization of the abstract contract in [§3.1](#31-abstract-contract); normative for implementations
-targeting GitHub, descriptive for other CI systems.
+Conformance is defined at the level of the architecture and its controls, so that an implementation is
+free in every concrete choice.
 
-### 8.1 File layout
+- **Reviewer** — MUST emit a schema-validated deliverable and a vendor-neutral usage record (§3.2),
+  route on the CI outcome (§3.1), hold no write/publish credential, and run contained (§2.2, §4.4). It
+  SHOULD triage before executing untrusted content (§4.3).
+- **Commenter** — MUST be deterministic, agentless, advisory, truthful, and idempotent (§3.3), hold no
+  model key, never execute the change, obey the injection-discipline and target-resolution controls
+  (§4.4), and trust prior state by authenticated identity.
+- **Orchestrator / CI binding** — MUST drive the review from CI completion without modifying the
+  existing CI, split the reviewer and commenter into separate least-privilege contexts, and derive the
+  target from trusted CI data (§3.1, §2.4).
+- **Schema** — a conforming deliverable schema is the implementation's own published, versioned
+  contract; it MUST be validated before posting (§3.2). This document asserts nothing about its fields.
 
-Two files total:
-
-- `ci.yaml` — the existing CI workflow. **Unchanged.**
-- `review.yaml` — the privileged review workflow (two jobs: `review` + `comment`).
-
-### 8.2 `review.yaml` shape
-
-```yaml
-name: Code review
-
-on:
-  workflow_run:
-    workflows: ["CI"]       # your existing CI workflow name
-    types: [completed]
-
-concurrency:                 # cancel superseded runs; bounds spend on force-push
-  group: review-${{ github.event.workflow_run.head_sha }}
-  cancel-in-progress: true
-
-jobs:
-  review:
-    if: >-
-      github.event.workflow_run.event == 'pull_request' &&
-      (github.event.workflow_run.conclusion == 'success' ||
-       github.event.workflow_run.conclusion == 'failure')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
-      issues: read
-    steps:
-      - uses: actions/checkout@v7       # SHA-pin for auditability (§8.5)
-      - uses: actions/setup-node@v6
-
-      # Lock egress BEFORE untrusted data touches the agent, AFTER trusted setup
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-
-      # Gather review inputs: resolve PR from head_sha, fetch diff (git-diff fallback), context, logs
-      # Phase 1: data-only security triage of the diff
-      # (best-effort: copy the triage agent's session transcript into transcripts/triage — advisory
-      #  only, never fails the job on a copy miss)
-      # Phase 2: if safe — snapshot the applied, clean PR-head tree as a throwaway git commit BEFORE
-      #   the agent edits anything, run the agentic review → abstract envelope (§6.1), then
-      #   `git reset --hard` to that snapshot and validate any finding's `patch` against the
-      #   restored PR-head content — aligning the range and keeping it, or dropping it
-      #   (`validate-patches`, §5.2 rule 8); the commenter later projects it into a suggestion
-      # (best-effort: copy the review agent's session transcript into transcripts/review)
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: code-review-findings
-          path: findings/
-
-      - uses: actions/upload-artifact@v7   # separate artifact — advisory/auditability only, never
-        with:                              # read by the comment job or any posting decision
-          name: code-review-transcript
-          path: transcripts/
-
-  comment:
-    needs: review
-    if: ${{ always() && (needs.review.result == 'success' || needs.review.result == 'failure') }}
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      issues: write
-      actions: read
-    steps:
-      - uses: actions/download-artifact@v8
-        with: { name: code-review-findings }
-
-      # The comment job holds the WRITE token and runs NO agent, NO PR code —
-      # so it MUST also have a locked egress allowlist (api.github.com + blob host only).
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-
-      # Deterministic posting (resolves PR from head_sha, validates diff, renders, posts;
-      # reads the write token from GH_TOKEN):
-      #   code-review post findings/findings.json --repo … --head-sha … --head-branch … \
-      #     --usage … --prices … --run-url … --json-url …
-      #   (route/effort come from the envelope — §6.1/§6.3; --run-url/--json-url point at THIS
-      #   workflow run — where both artifacts above were uploaded — and feed the sticky's LLM
-      #   Disclosure link and the findings-json marker, §5.1 items 6/7)
-```
-
-The full, copy-paste-ready example lives in [`examples/workflows/review.yaml`](examples/workflows/review.yaml).
-
-### 8.3 PR number resolution
-
-```bash
-PR=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
-      --jq ".[] | select(.head.ref == \"$HEAD_REF\") | .number" | head -n1)
-```
-
-`HEAD_SHA` comes from `github.event.workflow_run.head_sha` and `HEAD_REF` from
-`workflow_run.head_branch` — both trusted. Disambiguating by `head_ref` avoids posting to the wrong
-PR when multiple open PRs share a commit. The fork-controlled artifact carrying the diff MUST NOT
-carry or override the PR number. Resolution SHOULD happen once (inside the commenter command), not
-independently in each job, to avoid split-brain when PR state changes between jobs.
-
-### 8.4 Egress allowlist
-
-**Both** jobs lock egress — the review job (holds the model key) and the comment job (holds the write
-token). Run `egress-policy: audit` on a first run to discover the real endpoints, then pin:
-
-```
-registry.npmjs.org:443          # installs the reference CLIs (both jobs)
-api.<model-provider>.com:443
-api.anthropic.com:443           # the CLI phones home even on non-Anthropic backends
-github.com:443
-api.github.com:443
-objects.githubusercontent.com:443
-*.blob.core.windows.net:443     # artifact download
-results-receiver.actions.githubusercontent.com:443  # artifact upload
-```
-
-Plus ecosystem registries (pypi.org, files.pythonhosted.org, etc.) when the job installs project
-dependencies or the agent installs packages to validate findings.
-
-A lock enforced by a pre-step (e.g. harden-runner) applies from **job start**, before any setup step
-runs — so the allowlist MUST cover setup traffic (the CLI install, dependency install) too, not only
-the agent's calls. A consequence is that a single job cannot grant a broad setup allowlist and then
-tighten to a minimal one for the untrusted-agent phase; the whole job shares one allowlist. The
-allowlist is therefore not the agent's containment — the read-only token, the capped burner key, and
-the absence of any write/publish credential are (§7.3), with the public comment as the accepted
-residual channel. Splitting setup and the agent into separate jobs (a trusted preparer that hands off
-an artifact to a minimally-scoped agent job) is the only way to give the agent phase a tighter
-allowlist, at the cost of added workflow complexity; it is OPTIONAL.
-
-### 8.5 Model backend env
-
-The reference adapter (Claude Code) uses DeepSeek via an Anthropic-compatible endpoint:
-
-```bash
-ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
-ANTHROPIC_AUTH_TOKEN=${{ secrets.MODEL_API_KEY }}
-ANTHROPIC_MODEL=deepseek-v4-pro
-CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash
-CLAUDE_CODE_EFFORT_LEVEL=max
-```
-
-These env names are Claude-Code-specific; other adapters use their own configuration mechanism. The
-abstract requirement (§2.2) is that the adapter accepts a model backend URL, a model identifier, and
-optionally a subagent model identifier and an effort level. Any Anthropic-compatible backend works
-with the Claude Code adapter's env shape above.
-
-The binding MUST NOT default the backend endpoint: it is explicit operator configuration (the
-reference workflow requires an `API_BASE_URL` repository variable and fails before any model call
-when it is unset), because a CLI left to fall back to its own vendor's API would send the model key
-to an endpoint the operator never chose.
+The reference implementation's schema and commenter carry their specific guarantees in this
+repository's **test suite** (run via `camas run ci`); those tests — not this document — are the
+executable definition of the reference implementation's concrete behavior.
 
 ---
 
-## 9. Conformance
+## 6. Reference implementation
 
-### 9.1 Review agent
+This repository realizes the approach. Every concrete decision this document declines to make lives
+here, each with a single owner:
 
-A conforming review agent MUST:
+| Concern | Source of truth |
+|---|---|
+| The deliverable (fields, types, requiredness, agent-facing guidance) | [`schema/findings.schema.json`](schema/findings.schema.json) and the sibling `triage`/`prices` schemas — the field descriptions **are** the spec |
+| Schema version policy | [`schema/VERSIONING.md`](schema/VERSIONING.md) |
+| The commenter (validation, rendering, posting) | [`src/`](src/) and the per-surface templates in [`templates/`](templates/) |
+| The agent adapter (native output → the deliverable) | [`src/adapt.ts`](src/adapt.ts), [`src/extract.ts`](src/extract.ts), [`docs/adapters.md`](docs/adapters.md) |
+| The GitHub Actions realization | [`examples/workflows/review.yaml`](examples/workflows/review.yaml) (see Appendix A) |
 
-- **REQ-RA-1:** Emit findings as structured JSON conforming to the published findings schema (§4).
-- **REQ-RA-2:** Emit the abstract result envelope (§6.1) — `schema_version`, `findings`, `models`
-  (per-model token counts incl. subagents), `turns`, `duration_ms`; map the adapter's native CLI
-  output onto these spec-owned field names.
-- **REQ-RA-3:** Not hold or use a writable GitHub token.
-- **REQ-RA-4:** Not post comments, reviews, or any other content to GitHub.
-- **REQ-RA-5:** Be subject to an egress lock and a hard spend cap (§7.3).
-- **REQ-RA-6:** Route behavior on the CI result — full review on pass, mechanic-only pass on fail,
-  skip on cancelled/skipped/not-run (§3.1).
-
-A conforming review agent MAY satisfy REQ-RA-1's and REQ-RA-2's findings requirement by writing a
-self-validated findings file for the commenter's deterministic extraction ladder (§6.1) to recover,
-rather than relying solely on structured-output enforcement.
-
-A conforming review agent SHOULD:
-
-- **REC-RA-1:** Run a data-only security triage before executing PR code (§7.3).
-- **REC-RA-2:** Accept prior review context and job logs as data files (§3.3).
-
-### 9.2 Commenter
-
-A conforming commenter MUST:
-
-- **REQ-CO-1:** Post a sticky summary comment with the `<!-- code-review -->` marker (§5.1).
-- **REQ-CO-2:** Post an inline PR review as `COMMENT`, never `REQUEST_CHANGES` (§5.2).
-- **REQ-CO-3:** Validate each finding's anchored range endpoints (`start_line` AND `end_line`)
-  against the diff and demote a finding into the summary body if either endpoint is out-of-diff
-  (§5.2 rule 1).
-- **REQ-CO-4:** Use the modern absolute `line` + `side` API; never the deprecated `position` field
-  (§5.2 rule 2).
-- **REQ-CO-5:** Trust the previous review by author identity (bot login), not by marker (§5.3).
-- **REQ-CO-6:** Never shell-interpolate untrusted text; build all API bodies with JSON-aware
-  serialization (§5.4).
-- **REQ-CO-7:** Not hold a model API key, run a model, or execute PR code (§2.3).
-- **REQ-CO-8:** Render a cost/usage footer recomputed from `models` against a date-stamped price
-  map (§6). A model missing from the price map MUST be reported, not silently zeroed.
-- **REQ-CO-9:** Render a test-results panel when a test report is provided as input; else render
-  a CI job summary when one is available (§5.1). The panel is format-agnostic — it consumes any
-  conforming test report, not a single fixed format.
-- **REQ-CO-10:** Include an LLM Disclosure aside naming the model(s) used, sourced from `models`
-  (§5.1, §6.1).
-
-- **REQ-CO-11:** Set the inline review's `commit_id` to the reviewed head SHA (§5.2.3).
-- **REQ-CO-12:** Project a finding's validated `patch` into a fenced `suggestion` block inside the
-  comment body, replacing exactly `start_line..end_line`; an all-deletion patch renders a deletion
-  block, and a patch that cannot be projected falls back to a raw fenced `patch` block. A finding
-  with no `patch` renders neither (§4.1, §5.2.4, §5.2.8).
-- **REQ-CO-13:** Strip (never emit) a suggestion block that spans more than GitHub's single-block
-  line limit, report it (a warning, with the stripped suggestion noted in the summary), and MAY
-  retain the inline comment without it — never emit a review payload that will 422.
-
-A conforming commenter SHOULD:
-
-- **REC-CO-1:** Summarize findings by severity in the sticky (e.g. a severity-counts line) rather
-  than reproducing the per-finding list the inline review already carries (§5.1 item 3).
-- **REC-CO-2:** Decide re-run suppression by review identity (§5.2.6): when no non-dismissed
-  bot-authored review exists for the head SHA (by reviews API `commit_id`), post a fresh review and
-  dismiss prior bot-authored reviews left on OTHER commits; when such a review already exists at the
-  head SHA, update only the sticky summary. A sticky's `reviewed-sha` marker MUST NOT be used as the
-  suppression signal. Dismissal failure (already dismissed, missing scope) MUST be logged and
-  continue — never fail the job on dismissal.
-- **REC-CO-3:** Exit non-zero when posting fails (422, network) so failures are visible; exit zero
-  only when there is nothing to post (no open PR). The review check MUST NOT be a required check
-  in branch protection — advisory-only is enforced by configuration, not by exit code (§5.2.5).
-
-### 9.3 CI system binding (for GitHub Actions)
-
-A conforming GitHub Actions binding MUST:
-
-- **REQ-GH-1:** Trigger the review off `workflow_run` of the CI workflow (§3.1).
-- **REQ-GH-2:** Split the review and comment jobs with separate token scopes (§2.4).
-- **REQ-GH-3:** Resolve the PR number from `workflow_run.head_sha` (§8.3).
-- **REQ-GH-4:** Not modify the existing CI workflow.
-
-### 9.4 Schema
-
-A conforming findings schema MUST:
-
-- **REQ-SC-1:** Be a valid JSON Schema (2020-12).
-- **REQ-SC-2:** Be inlined (no `$ref`/`$defs`/`$id` fragments) so it works for both validators and
-  CLI structured-output enforcement. The form handed to a CLI's `--json-schema` MUST omit the
-  top-level `$schema` draft keyword (§4) — some CLIs silently disable enforcement when it is present.
-- **REQ-SC-3:** Follow semantic versioning; each version SHALL have a distinct, stable `$id` URI.
-- **REQ-SC-4:** Require at minimum `schema_version`, `summary`, `verdict`, `findings`; each finding
-  MUST require `path`, `start_line`, `end_line`, `severity`, `title`, `description`, `reasoning`, and
-  `confidence`.
-- **REQ-SC-5:** Declare `patch` as `string | null` — a single-hunk unified diff, or `null` for no
-  mechanical fix; the commenter validates and projects it (§5.2.8) rather than trusting a hand-authored
-  replacement.
-- **REQ-SC-6:** Constrain both `start_line` and `end_line` `>= 1` in the schema; the schema MAY
-  approximate the cross-field `end_line >= start_line` invariant where the schema language allows,
-  but the invariant MUST be enforced by the runtime codecs.
-- **REQ-SC-7:** Allow an optional `code` (stable rule identifier) and `code_url` per finding, for
-  rule-based filtering, suppression, cross-run dedup, and SARIF export.
+The reference reviewer is driven by **Claude Code** (`claude -p`) against an Anthropic-compatible model
+backend; the same contract fits other agent CLIs (e.g. OpenCode) and any compatible backend.
 
 ---
 
-## 10. Adapters
+## Appendix A — Reference realization: GitHub Actions (non-normative)
 
-Each agent CLI is treated as a pluggable **adapter** behind one interface:
+The reference binding is a single `review.yaml` with two jobs — `review` (reviewer) and `comment`
+(commenter) — triggered by `workflow_run` on completion of the project's existing CI. The full,
+copy-paste-ready file is [`examples/workflows/review.yaml`](examples/workflows/review.yaml); this
+appendix records only the platform facts that make the binding safe.
 
-- **In:** diff text + CI result + context file (prior review, PR conversation, optional test report).
-- **Out:** the abstract result envelope (§6.1) — `findings` conforming to the
-  [findings schema](schema/findings.schema.json) plus `models`/`turns`/`duration_ms`/`schema_version`.
+- **The trigger runs in the privileged, base-repository context.** `workflow_run` (like
+  `pull_request_target`) executes with the base repo's token and secrets even when the triggering run
+  was unprivileged ([GitHub — events][events]; [GitHub — `pull_request_target`][prtarget]). That is
+  exactly why the reviewer must never check out and run fork code, and why the write role is a separate
+  job ([GitHub — security hardening][ghsec]; [GitHub Security Lab, Part 4][seclab4]).
+- **Least-privilege token.** The `review` job is granted read-only scopes; the `comment` job is granted
+  only the write scopes it needs ([GitHub — controlling `GITHUB_TOKEN` permissions][ghtoken]).
+- **Egress lock on both jobs.** Enforced by a runner-hardening step ([StepSecurity][harden]); because
+  the lock arms at job start, the allowlist must also cover trusted setup (CLI/dependency installs), so
+  the allowlist is *not* the reviewer's containment — the read-only token and capped burner key are.
+- **Target resolution** derives the pull request from the trusted `workflow_run.head_sha`, disambiguated
+  by `head_branch`; author-controlled artifacts never carry or override it.
 
-The reference adapter is **Claude Code** (`claude -p "/code-review" --json-schema … --output-format json`,
-whose native `.structured_output` the adapter maps onto the abstract envelope's `findings`). An
-**OpenCode** or other CLI adapter drops into the same contract.
+Everything else in the file — routing thresholds, model env, artifact handling, the commenter
+invocation — is implementation detail, kept in the example and its README, not here.
 
-See [`docs/adapters.md`](docs/adapters.md) for the adapter contract, the Claude Code reference
-adapter, and guidance for writing new adapters.
+## Appendix B — Adapters (non-normative)
+
+An agent CLI is a pluggable adapter behind one interface: **in** — the change plus context files;
+**out** — the schema-validated deliverable plus the vendor-neutral usage record (§3.2). The reference
+adapter is Claude Code; an OpenCode or other CLI adapter drops into the same contract. See
+[`docs/adapters.md`](docs/adapters.md).
+
+---
+
+## References
+
+1. **OWASP Gen AI Security Project** — [LLM01:2025 Prompt Injection][llm01].
+2. **Simon Willison** — [The lethal trifecta for AI agents: private data, untrusted content, and external communication][trifecta] (2025).
+3. **NIST** — [Adversarial Machine Learning: A Taxonomy and Terminology of Attacks and Mitigations][nist] (AI 100-2 E2025).
+4. **GitHub Security Lab (J. Lobačevski)** — [Preventing pwn requests (Part 1)][pwn]; [New vulnerability patterns and mitigations (Part 4)][seclab4].
+5. **GitHub** — [Securely using `pull_request_target`][prtarget]; [Events that trigger workflows][events]; [Security hardening for GitHub Actions][ghsec]; [Controlling permissions for `GITHUB_TOKEN`][ghtoken].
+6. **OWASP** — [CICD-SEC-04: Poisoned Pipeline Execution][ppe]; **O. Gil & D. Krivelevich (Cider Security)** — [PPE — Poisoned Pipeline Execution][ppeorig] (2022).
+7. **StepSecurity** — [Harden-Runner: egress filtering for CI runners][harden].
+8. **GitHub Advisory Database** — [CVE-2025-30066 — tj-actions/changed-files][tjcve]; **Palo Alto Networks Unit 42** — [tj-actions & reviewdog supply-chain attack][unit42] (2025); **Codecov** — [Bash Uploader Security Update][codecov] (2021).
+9. **NIST CSRC Glossary** — [Least privilege][leastpriv].
+
+[llm01]: https://genai.owasp.org/llmrisk/llm01-prompt-injection/
+[trifecta]: https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/
+[nist]: https://csrc.nist.gov/pubs/ai/100/2/e2025/final
+[pwn]: https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
+[seclab4]: https://securitylab.github.com/resources/github-actions-new-patterns-and-mitigations/
+[prtarget]: https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target
+[events]: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
+[ghsec]: https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions
+[ghtoken]: https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/controlling-permissions-for-github_token
+[ppe]: https://owasp.org/www-project-top-10-ci-cd-security-risks/CICD-SEC-04-Poisoned-Pipeline-Execution
+[ppeorig]: https://medium.com/cider-sec/ppe-poisoned-pipeline-execution-34f4e8d0d4e9
+[harden]: https://docs.stepsecurity.io/github-actions/harden-runner
+[tjcve]: https://github.com/advisories/GHSA-mrrh-fwg8-r2c3
+[unit42]: https://unit42.paloaltonetworks.com/github-actions-supply-chain-attack/
+[codecov]: https://about.codecov.io/security-update/
+[leastpriv]: https://csrc.nist.gov/glossary/term/least_privilege

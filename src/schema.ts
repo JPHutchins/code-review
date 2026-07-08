@@ -51,7 +51,7 @@ const FindingShape = t.intersection([
     code: t.string,
     code_url: t.string,
     recommendation: t.string,
-    patch: t.union([t.string, t.null]),
+    patch: t.string,
   }),
 ]);
 

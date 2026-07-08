@@ -35,3 +35,11 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
 
       - run: uv run tasks.py ci
+
+      # Reference only: render the three review surfaces from committed fixtures into the run
+      # summary, so the current template output is visible on every CI run (dist/ is built by the
+      # step above). Advisory — never fails the job.
+      - name: Template preview → job summary
+        if: ${{ always() }}
+        continue-on-error: true
+        run: npx tsx scripts/preview.ts >> "$GITHUB_STEP_SUMMARY"

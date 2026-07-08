@@ -232,10 +232,10 @@ jobs:
             echo "::warning::Could not apply pr.diff to the checked-out base — skipping the review rather than running it against an unmodified tree"
             mkdir -p findings
             jq -n \
-              '{schema_version: "0.2.0", summary: "### ⚠️ Could not apply the diff\n\nThe PR diff could not be applied to the checked-out base commit, so the review was skipped rather than run against an unmodified tree. See workflow logs.", verdict: "comment", findings: []}' \
+              '{schema_version: "0.4.0", summary: "### ⚠️ Could not apply the diff\n\nThe PR diff could not be applied to the checked-out base commit, so the review was skipped rather than run against an unmodified tree. See workflow logs.", verdict: "comment", findings: []}' \
               >findings/findings.json
             jq -n --slurpfile findings findings/findings.json \
-              '{schema_version: "0.2.0", findings: $findings[0], models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null}' \
+              '{schema_version: "0.4.0", findings: $findings[0], models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null}' \
               >findings/envelope.json
             echo "::endgroup::"
             exit 0
@@ -255,12 +255,8 @@ jobs:
             --strict-mcp-config \
             --output-format json \
             --json-schema "$(code-review print-schema findings)" \
-            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your only deliverable is the review as JSON conforming to the findings schema — write it to $DRAFT (an absolute path outside the repo tree), run \`code-review validate $DRAFT\`, and fix-and-revalidate until it exits 0 before ending your turn.
-          Guidance:
-          - Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix.
-          - Each finding needs \`description\` (what's wrong, markdown), \`reasoning\` (why it holds — required), and \`confidence\` (0..1 — required). Optionally add \`recommendation\` (prose describing the fix in human terms).
-          - For a mechanical fix, also include the finding's \`patch\` field: a single-hunk unified diff of just that edit against the current file (e.g. \`git diff -U3 -- <file>\`). A patch is validated exactly against the file and projected into a suggestion, so it won't post with broken indentation or an over-wide range.
-          - The findings schema (provided via --json-schema) documents every field." \
+            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your only deliverable is the review as JSON conforming to the findings schema provided via --json-schema — its field descriptions are the authoritative spec for every field, including how to author a \`patch\`. Write the JSON to $DRAFT (an absolute path outside the repo tree), run \`code-review validate $DRAFT\`, and fix-and-revalidate until it exits 0 before ending your turn.
+          Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix." \
             >envelope.json
 
           # Map the CLI's native envelope onto the abstract, vendor-neutral shape (§6.1) — the
@@ -306,7 +302,7 @@ jobs:
 
           wrap_envelope() {
             jq -n --slurpfile findings findings/findings.json \
-              '{schema_version: "0.2.0", findings: $findings[0], models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null}' \
+              '{schema_version: "0.4.0", findings: $findings[0], models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null}' \
               >findings/envelope.json
           }
 
@@ -314,12 +310,12 @@ jobs:
             echo "Review produced findings"
           elif [ "$SAFE" = "false" ]; then
             jq -n --arg reasons "$REASONS" \
-              '{schema_version: "0.2.0", summary: ("### 🛑 Code review skipped by the security gate\n\nThe diff was flagged as unsafe to apply and execute:\n\n> " + $reasons), verdict: "comment", findings: []}' \
+              '{schema_version: "0.4.0", summary: ("### 🛑 Code review skipped by the security gate\n\nThe diff was flagged as unsafe to apply and execute:\n\n> " + $reasons), verdict: "comment", findings: []}' \
               >findings/findings.json
             wrap_envelope
           else
             jq -n \
-              '{schema_version: "0.2.0", summary: "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs.", verdict: "comment", findings: []}' \
+              '{schema_version: "0.4.0", summary: "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs.", verdict: "comment", findings: []}' \
               >findings/findings.json
             wrap_envelope
           fi

@@ -1,0 +1,8 @@
+{
+  "_updated": "2026-07-07",
+  "_unit": "USD per million tokens",
+  "models": {
+    "deepseek-v4-pro": { "in": 0.435, "out": 0.87, "cache_read": 0.003625, "cache_write": 0.435 },
+    "deepseek-v4-flash": { "in": 0.14, "out": 0.28, "cache_read": 0.0028, "cache_write": 0.14 }
+  }
+}

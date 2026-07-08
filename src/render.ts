@@ -5,7 +5,7 @@ import { Eta } from "eta";
 import type { Finding, Severity } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
-import { severityEmoji, findingsPointer, projectPatch } from "./surface.js";
+import { severityEmoji, findingsPointer, projectPatch, formatConfidence } from "./surface.js";
 import type { PatchProjection } from "./surface.js";
 
 /** Escape pipe characters so they don't break markdown table columns. */
@@ -60,6 +60,7 @@ export const render = (input: RenderInput): string => {
     modelNames,
     testReport: input.testReport ?? null,
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
+    postedAt: input.postedAt ?? "",
     severityCounts: input.severityCounts ?? computeSeverityCounts(input.findings.findings),
     strays: (input.strays ?? []).map(sanitizeFinding),
     inlineDisposition: input.inlineDisposition ?? null,
@@ -97,5 +98,6 @@ export const render = (input: RenderInput): string => {
       }
     },
     severityEmoji,
+    formatConfidence,
   });
 };

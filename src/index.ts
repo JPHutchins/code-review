@@ -13,6 +13,7 @@ import { render } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
 import { computeCost } from "./cost.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
+import { formatUtc } from "./format.js";
 import { ResultEnvelopeCodec, FindingsCodec, PriceMapCodec, TestSummaryCodec } from "./schema.js";
 import type { Triage, Finding } from "./schema.js";
 import { post } from "./post.js";
@@ -168,6 +169,7 @@ const renderCmd = defineCommand({
       route: args.route,
       effort: args.effort,
       testReport,
+      postedAt: formatUtc(new Date()),
     });
     process.stdout.write(output);
   },
@@ -418,7 +420,7 @@ const readFileLines = (path: string): readonly string[] | null => {
  *  or the patch doesn't apply cleanly — the finding survives without it, never writing a suggestion.
  *  A finding with no patch passes through untouched. Never throws. */
 const validateFinding = (finding: Finding, repoRoot: string): Finding => {
-  if (finding.patch === undefined || finding.patch === null) return finding;
+  if (finding.patch === undefined) return finding;
   const lines = readFileLines(resolve(repoRoot, finding.path));
   if (lines === null) {
     process.stderr.write(
@@ -788,6 +790,7 @@ const postCmd = defineCommand({
       testReportPath: args["test-report"],
       runUrl: args["run-url"],
       jsonUrl: args["json-url"],
+      postedAt: formatUtc(new Date()),
     });
   },
 });

@@ -11,7 +11,7 @@ import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts } from "./render.js";
 import { formatMarkdown } from "./format.js";
-import { findingsPointer } from "./surface.js";
+import { findingsPointer, reviewBodyPointer } from "./surface.js";
 import { ResultEnvelopeCodec, PriceMapCodec, TestSummaryCodec, noticeFindings } from "./schema.js";
 import type { Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
@@ -44,6 +44,10 @@ export interface PostInput {
    *  comment, and the review body itself) when the embedded form is too large (SPEC §5.1 item 7,
    *  §5.2, issue #19). */
   readonly jsonUrl?: string;
+  /** Preformatted UTC post time, rendered on the sticky's dedicated "Reviewed `<sha>` · <postedAt>"
+   *  line (issue #28) — computed by the caller (index.ts's post command) via `formatUtc`, not here,
+   *  so `post()` stays a thin, testable pass-through of the timestamp into `render()`. */
+  readonly postedAt?: string;
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
@@ -174,11 +178,7 @@ const postInlineReview = async (
   marker: string,
   ghApi: GhApi,
 ): Promise<string | undefined> => {
-  const sha7 = headSha.slice(0, 7);
-  const linkLine = stickyUrl
-    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
-    : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
-  const pointer = marker ? `${marker}\n\n${linkLine}` : linkLine;
+  const pointer = reviewBodyPointer(headSha, stickyUrl, marker);
   const body = JSON.stringify({
     body: pointer,
     commit_id: headSha,
@@ -406,6 +406,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         effort: input.effort,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
+        postedAt: input.postedAt,
       }),
     );
 
@@ -451,6 +452,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
+        postedAt: input.postedAt,
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
@@ -512,6 +514,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,
     findingsPointer: findingsMarker,
+    postedAt: input.postedAt,
   };
   const longFilesNote =
     longFiles.length > 0

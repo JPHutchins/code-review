@@ -1,0 +1,8 @@
+{
+  "passed": 42,
+  "failed": 1,
+  "total": 43,
+  "failures": [
+    { "name": "test_upload_timeout_coercion", "message": "TypeError: expected number, got str" }
+  ]
+}

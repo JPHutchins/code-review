@@ -1,4 +1,5 @@
-// Conservative markdown formatting pass applied just before a comment/review body is posted.
+// Conservative markdown formatting pass applied just before a comment/review body is posted, plus
+// small pure formatting helpers for the IO boundary (e.g. the sticky's posted-at timestamp).
 // Pure string transform: never reflows content, never touches fenced code blocks (a `suggestion`
 // block's blank lines and trailing whitespace are significant and must survive verbatim).
 
@@ -35,3 +36,11 @@ export const formatMarkdown = (md: string): string => {
     .reduce<ScanState>(scanLine, { lines: [], inFence: false, blankRun: 0 });
   return `${lines.join("\n").replace(/\n+$/, "")}\n`;
 };
+
+const pad2 = (n: number): string => String(n).padStart(2, "0");
+
+/** Format a Date as UTC `YYYY-MM-DD HH:MM UTC`, for the sticky's "Reviewed `<sha>` · <postedAt>"
+ *  line (issue #28). Computed at the IO boundary (index.ts's post/render commands) — `render()`
+ *  itself stays pure/clockless and just receives the formatted string. */
+export const formatUtc = (d: Date): string =>
+  `${String(d.getUTCFullYear())}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`;

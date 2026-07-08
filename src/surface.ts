@@ -2,7 +2,7 @@
 // (sticky, inline comment, review body) must agree on: the severity→emoji mapping, the
 // machine-readable findings-json pointer (issue #19), and the patch→suggestion projection. Pure.
 
-import type { Findings } from "./schema.js";
+import type { Finding, Findings } from "./schema.js";
 import { patchToSuggestion } from "./patch.js";
 
 /** Severity → emoji, used by every render surface (sticky, inline, strays). */
@@ -29,15 +29,11 @@ const EMBED_LIMIT = 40000;
 const AGENTS_STOP_DIRECTIVE =
   "<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->";
 
-/** The machine-readable findings-json marker (issue #19), identical on every surface: embeds
- *  `findings` as base64 when it fits under `limit`, falls back to a `jsonUrl` link marker, or
- *  omits the marker entirely when neither is available. */
-export const findingsPointer = (
-  findings: Findings,
-  jsonUrl: string | undefined,
-  limit = EMBED_LIMIT,
-): string => {
-  const b64 = Buffer.from(JSON.stringify(findings), "utf-8").toString("base64");
+/** Shared core of the findings-json marker: base64-encodes `document` when it fits under `limit`,
+ *  falls back to a `jsonUrl` link marker, or omits the marker entirely when neither is available —
+ *  prefixed with the AGENTS_STOP directive whenever a marker is produced. */
+const encodeMarker = (document: unknown, jsonUrl: string | undefined, limit: number): string => {
+  const b64 = Buffer.from(JSON.stringify(document), "utf-8").toString("base64");
   const marker =
     b64.length <= limit
       ? `<!-- code-review:findings-json;base64 ${b64} -->`
@@ -46,6 +42,26 @@ export const findingsPointer = (
         : "";
   return marker ? `${AGENTS_STOP_DIRECTIVE}\n${marker}` : "";
 };
+
+/** The machine-readable findings-json marker (issue #19), identical on the sticky and the review
+ *  body: embeds the whole `findings` document as base64 when it fits under `limit`, falls back to a
+ *  `jsonUrl` link marker, or omits the marker entirely when neither is available. */
+export const findingsPointer = (
+  findings: Findings,
+  jsonUrl: string | undefined,
+  limit = EMBED_LIMIT,
+): string => encodeMarker(findings, jsonUrl, limit);
+
+/** The per-finding counterpart to {@link findingsPointer} (issue #31): each inline comment embeds
+ *  only its own `finding` (with `schemaVersion`), not the entire findings document — the sticky and
+ *  review body remain the whole-document SSOT. Same base64/limit/jsonUrl-fallback/AGENTS_STOP
+ *  behavior as `findingsPointer`. */
+export const findingPointer = (
+  finding: Finding,
+  schemaVersion: string,
+  jsonUrl?: string,
+  limit = EMBED_LIMIT,
+): string => encodeMarker({ schema_version: schemaVersion, findings: [finding] }, jsonUrl, limit);
 
 /** Escape triple-backtick sequences so fenced content can't break out of its block. */
 const escapeFence = (text: string): string => text.replace(/```/g, "`` ` ``");

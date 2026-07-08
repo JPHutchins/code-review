@@ -342,7 +342,7 @@ index abc..def 100644
   });
 });
 
-describe("findings-json marker on inline comments (issue #19 — shared serializer)", () => {
+describe("findings-json marker on inline comments (issue #31 — per-finding, not whole-document)", () => {
   const diff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
 --- a/src/foo.ts
@@ -356,6 +356,16 @@ index abc..def 100644
     mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, ...overrides }),
   ];
 
+  /** Decode a comment body's embedded base64 marker back into its carried document. */
+  const decodeMarker = (body: string): { schema_version: string; findings: Finding[] } => {
+    const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(body);
+    expect(match).not.toBeNull();
+    return JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
+      schema_version: string;
+      findings: Finding[];
+    };
+  };
+
   it("embeds the findings JSON as base64 as the very first line when a findings document is given", () => {
     const findings = findingAt({});
     const { comments } = buildInlineComments(findings, diff, {
@@ -366,32 +376,30 @@ index abc..def 100644
     expect(comments[0]!.body).toContain("<!-- code-review:findings-json;base64 ");
   });
 
-  it("round-trips the exact findings document through the embedded base64 marker", () => {
-    const findings = findingAt({ title: "Round-trip me" });
-    const doc = mkFindingsDoc(findings);
-    const { comments } = buildInlineComments(findings, diff, {
+  it("embeds ONLY its own finding, not the whole findings document (issue #31)", () => {
+    const a = mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, title: "Finding A" });
+    const b = mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, title: "Finding B" });
+    const doc = mkFindingsDoc([a, b]);
+    const { comments } = buildInlineComments([a, b], diff, {
       inlineTemplate: bundledInlineTemplate,
       findings: doc,
     });
-    const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(comments[0]!.body);
-    expect(match).not.toBeNull();
-    const decoded: unknown = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8"));
-    expect(decoded).toEqual(doc);
+    expect(comments).toHaveLength(2);
+
+    const decodedA = decodeMarker(comments[0]!.body);
+    expect(decodedA.schema_version).toBe(doc.schema_version);
+    expect(decodedA.findings).toEqual([a]);
+
+    const decodedB = decodeMarker(comments[1]!.body);
+    expect(decodedB.schema_version).toBe(doc.schema_version);
+    expect(decodedB.findings).toEqual([b]);
   });
 
-  it("falls back to the jsonUrl link marker when the embedded payload is too large", () => {
-    const large = Array.from({ length: 500 }, (_, i) =>
-      mkFinding({
-        path: "src/foo.ts",
-        start_line: 2,
-        end_line: 2,
-        title: `Finding ${String(i)}`,
-        description: "x".repeat(200),
-      }),
-    );
-    const { comments } = buildInlineComments(large, diff, {
+  it("falls back to the jsonUrl link marker when a single finding's own payload is too large", () => {
+    const huge = findingAt({ description: "x".repeat(60000) });
+    const { comments } = buildInlineComments(huge, diff, {
       inlineTemplate: bundledInlineTemplate,
-      findings: mkFindingsDoc(large),
+      findings: mkFindingsDoc(huge),
       jsonUrl: "https://example.com/findings.json",
     });
     expect(comments[0]!.body).toContain(
@@ -400,19 +408,11 @@ index abc..def 100644
     expect(comments[0]!.body).not.toContain(";base64");
   });
 
-  it("omits the marker entirely when the embedded payload is too large and no jsonUrl is given", () => {
-    const large = Array.from({ length: 500 }, (_, i) =>
-      mkFinding({
-        path: "src/foo.ts",
-        start_line: 2,
-        end_line: 2,
-        title: `Finding ${String(i)}`,
-        description: "x".repeat(200),
-      }),
-    );
-    const { comments } = buildInlineComments(large, diff, {
+  it("omits the marker entirely when a single finding's own payload is too large and no jsonUrl is given", () => {
+    const huge = findingAt({ description: "x".repeat(60000) });
+    const { comments } = buildInlineComments(huge, diff, {
       inlineTemplate: bundledInlineTemplate,
-      findings: mkFindingsDoc(large),
+      findings: mkFindingsDoc(huge),
     });
     expect(comments[0]!.body).not.toContain("findings-json");
   });

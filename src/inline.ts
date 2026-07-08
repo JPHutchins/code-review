@@ -3,7 +3,7 @@
 
 import { Eta } from "eta";
 import { partitionFindings, indexDiff, defaultSide } from "./diff.js";
-import { severityEmoji, findingsPointer, projectPatch, formatConfidence } from "./surface.js";
+import { severityEmoji, findingPointer, projectPatch, formatConfidence } from "./surface.js";
 import type { Finding, Findings } from "./schema.js";
 import type { InlineComment, InlineResult } from "./types.js";
 
@@ -46,12 +46,10 @@ export interface InlineContext {
   readonly models?: readonly string[];
   /** Findings-json artifact URL — the marker's fallback when the embedded form is too large (#19). */
   readonly jsonUrl?: string;
-  /** The full findings document, embedded (or pointed at) via the shared marker (#19); omitted
-   *  when the caller has no whole document to embed (the marker is then omitted too). */
+  /** The full findings document — each in-diff comment embeds only its OWN finding (issue #31), but
+   *  needs the document's `schema_version` to do so; omitted when the caller has no document at all
+   *  (each comment's marker is then omitted too). */
   readonly findings?: Findings;
-  /** Precomputed findings-json marker (#19) — when set, used verbatim instead of recomputing from
-   *  `findings`/`jsonUrl`, so `post()` base64-encodes the findings once and reuses it here. */
-  readonly findingsPointer?: string;
 }
 
 /** Build the GitHub reviews API comments[] array from in-diff findings. Strays are demoted. */
@@ -65,10 +63,9 @@ export const buildInlineComments = (
   const { inDiff, strays } = partitionFindings(findings, index);
   const eta = new Eta({ autoTrim: false });
   const modelsText = formatModels(models);
-  const pointer =
-    context.findingsPointer ?? (fullFindings ? findingsPointer(fullFindings, jsonUrl) : "");
 
   const comments: InlineComment[] = inDiff.map((f) => {
+    const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";
     const comment: InlineComment = {
       path: f.path,
       line: f.end_line,

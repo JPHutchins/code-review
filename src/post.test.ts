@@ -1841,7 +1841,7 @@ describe("post — --run-url / --json-url threading", () => {
     expect(body).toContain("[view the run & traces](https://ci.example.com/runs/123)");
   });
 
-  it("embeds the same findings-json marker on the sticky and each inline comment when small enough (issue #19 — one serializer, all surfaces)", async () => {
+  it("embeds the whole-document marker on the sticky, and a per-finding marker on each inline comment, when small enough (issue #19 sticky, issue #31 inline)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
@@ -1863,6 +1863,16 @@ describe("post — --run-url / --json-url threading", () => {
     expect(commentBody.startsWith("<!-- AGENTS: STOP")).toBe(true);
     expect(commentBody).toContain("<!-- code-review:findings-json;base64 ");
     expect(commentBody).not.toContain("https://artifacts.example.com/findings.json");
+
+    // The inline comment's marker carries only its OWN finding, not the whole document (issue #31).
+    const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(commentBody);
+    const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
+      schema_version: string;
+      summary?: string;
+      findings: unknown[];
+    };
+    expect(decoded.findings).toHaveLength(1);
+    expect(decoded.summary).toBeUndefined();
   });
 
   it("falls back to the --json-url link marker in the sticky when the findings are too large to embed (PR #17 review)", async () => {
@@ -2015,5 +2025,93 @@ describe("post — absent price map renders cost as N/A with a footnote (SPEC §
     expect(body).toContain("**cost:** $");
     expect(body).not.toContain("N/A");
     expect(body).not.toContain("No `.github/prices.json`");
+  });
+});
+
+describe("post — minimize superseded inline comments (issue #31)", () => {
+  const node = (id: string, login: string, oid: string, isMinimized: boolean): unknown => ({
+    comments: { nodes: [{ id, isMinimized, author: { login }, originalCommit: { oid } }] },
+  });
+
+  // headSha is "abc123def456" (mkInput default): C_old_bot is the ONLY superseded bot comment;
+  // C_cur_bot is on the current head, C_old_user is not the bot, C_old_min is already minimized.
+  const threadsResponse = JSON.stringify({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: false },
+            nodes: [
+              node("C_old_bot", "github-actions", "oldsha111", false),
+              node("C_cur_bot", "github-actions", "abc123def456", false),
+              node("C_old_user", "someuser", "oldsha111", false),
+              node("C_old_min", "github-actions", "oldsha111", true),
+            ],
+          },
+        },
+      },
+    },
+  });
+
+  const baseMocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+      response: "",
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+      response: "",
+    },
+  ];
+
+  const minimizedIdsOf = (calls: readonly RecordedCall[]): readonly string[] =>
+    calls
+      .filter((c) => c.args[0] === "graphql" && c.args.some((x) => x.includes("minimizeComment")))
+      .map((c) => c.args.find((x) => x.startsWith("id="))?.slice("id=".length))
+      .filter((x): x is string => x !== undefined);
+
+  it("minimizes ONLY the bot's own non-minimized comments left on a superseded head SHA", async () => {
+    const { api, calls } = mkMockGhApi([
+      ...baseMocks,
+      {
+        match: (a) => a[0] === "graphql" && a.some((x) => x.includes("reviewThreads")),
+        response: threadsResponse,
+      },
+      {
+        match: (a) => a[0] === "graphql" && a.some((x) => x.includes("minimizeComment")),
+        response: '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}',
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    expect(minimizedIdsOf(calls())).toEqual(["C_old_bot"]);
+  });
+
+  it("still posts the review when listing review threads fails (best-effort, never fails the post)", async () => {
+    // No graphql match → the review-threads query rejects; minimize must swallow it, never fail post.
+    const { api, calls } = mkMockGhApi(baseMocks);
+
+    await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+
+    const reviewPost = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect(reviewPost).toBeDefined();
+    expect(minimizedIdsOf(calls())).toEqual([]);
   });
 });

@@ -289,6 +289,21 @@ describe("cli — adapt", () => {
     expect(parsed.findings.summary).toBe("Authoritative: from the agent-written file.");
     expect(parsed.turns).toBe(0);
   });
+
+  it("names the real read error (not a false 'empty') when the native path is an unreadable directory (issue #39)", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "adapt",
+      tmpDir,
+      "--adapter",
+      "claude-code",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toContain("could not be read");
+    expect(stderr).toContain("no native telemetry");
+    const parsed = JSON.parse(stdout) as { turns: number; findings: { summary: string } };
+    expect(parsed.turns).toBe(0);
+    expect(parsed.findings.summary).toContain("did not complete");
+  });
 });
 
 describe("cli — extract", () => {

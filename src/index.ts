@@ -48,27 +48,35 @@ const fail = (msg: string): never => {
   process.exit(1);
 };
 
-/** Like `readJSON` but tolerant: returns `undefined` (never exits) when the file is missing, empty,
- *  or not valid JSON. Used ONLY for `adapt`'s native positional arg, which a wall-clock `timeout`
- *  kill can leave empty/truncated (issue #39) — `adapt` then degrades to a no-telemetry envelope and
- *  still recovers findings from `--agent-file`, instead of crashing the whole review step. A stderr
- *  warning keeps the degrade diagnosable; genuinely-required inputs keep the strict `readJSON`. */
+/** Like `readJSON` but tolerant: returns `undefined` (never exits) when the file is unreadable,
+ *  empty, or not valid JSON. Used ONLY for `adapt`'s native positional arg, which a wall-clock
+ *  `timeout` kill can leave empty/truncated (issue #39) — `adapt` then degrades to a no-telemetry
+ *  envelope and still recovers findings from `--agent-file`, instead of crashing the whole review
+ *  step. Each degrade path names its specific cause on stderr — surfacing the real read error so an
+ *  EACCES/EISDIR is not misreported as "empty" — to stay diagnosable; genuinely-required inputs keep
+ *  the strict `readJSON`. */
 const readJSONOrAbsent = (path: string): unknown => {
-  const text = ((): string | null => {
+  const read = ((): { readonly text: string } | { readonly error: string } => {
     try {
-      return readFileSync(resolve(path), "utf-8");
-    } catch {
-      return null;
+      return { text: readFileSync(resolve(path), "utf-8") };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
     }
   })();
-  if (text === null || text.trim() === "") {
+  if ("error" in read) {
     process.stderr.write(
-      `code-review: native envelope ${path} is missing or empty — proceeding with no native telemetry (issue #39)\n`,
+      `code-review: native envelope ${path} could not be read (${read.error}) — proceeding with no native telemetry (issue #39)\n`,
+    );
+    return undefined;
+  }
+  if (read.text.trim() === "") {
+    process.stderr.write(
+      `code-review: native envelope ${path} is empty — proceeding with no native telemetry (issue #39)\n`,
     );
     return undefined;
   }
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(read.text) as unknown;
   } catch (err) {
     process.stderr.write(
       `code-review: native envelope ${path} is not valid JSON (${err instanceof Error ? err.message : String(err)}) — proceeding with no native telemetry (issue #39)\n`,

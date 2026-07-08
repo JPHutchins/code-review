@@ -1,6 +1,8 @@
 // Adapter: maps a coding-agent CLI's native result envelope onto the abstract
 // result envelope (SPEC §6.1). Claude Code is the reference adapter — see docs/adapters.md.
-// Pure mapping; a decode failure surfaces as a Left, never a throw.
+// A present-but-wrong-shaped native surfaces as a Left; an *absent* native (undefined — the caller
+// could not read/parse it, e.g. a wall-clock timeout killed `claude -p` mid-flush, issue #39)
+// degrades to a no-telemetry envelope that still recovers findings from --agent-file. Never throws.
 
 import * as t from "io-ts";
 import type { Either } from "fp-ts/Either";
@@ -72,10 +74,7 @@ type FindingsOutcome =
   | { readonly kind: "ok"; readonly version: string; readonly findings: Findings }
   | { readonly kind: "telemetry-only"; readonly reason: string };
 
-const findingsOutcome = (
-  native: ClaudeCodeEnvelope,
-  agentFilePath: string | undefined,
-): FindingsOutcome => {
+const findingsOutcome = (native: unknown, agentFilePath: string | undefined): FindingsOutcome => {
   const ladder = extractStructured({ kind: "findings", native, agentFilePath });
   if (ladder.kind !== "ok")
     return { kind: "telemetry-only", reason: describeLadderFailure(ladder) };
@@ -91,42 +90,69 @@ const findingsOutcome = (
       };
 };
 
-/** Map Claude Code's native `--output-format json` envelope onto the abstract envelope (SPEC §6.1).
- *  `findings` and `schema_version` come from the extraction ladder when it recovers a candidate;
- *  every other envelope field (models, turns, duration, vendor cost) always comes from the native
- *  envelope itself, UNCONDITIONALLY — a findings-ladder miss never discards real telemetry. */
-const adaptClaudeCode = (
-  native: ClaudeCodeEnvelope,
+/** The abstract envelope's telemetry fields (SPEC §6.1), split out so both a decoded native
+ *  envelope and an absent one (issue #39) assemble the same shape. */
+interface Telemetry {
+  readonly models: ModelUsageEntry[];
+  readonly turns: number;
+  readonly duration_ms: number;
+  readonly vendor_cost_usd: number | null;
+  readonly route?: string;
+  readonly effort?: string;
+}
+
+const withMeta = (base: Omit<Telemetry, "route" | "effort">, meta: RunMeta): Telemetry => ({
+  ...base,
+  ...(meta.route ? { route: meta.route } : {}),
+  ...(meta.effort ? { effort: meta.effort } : {}),
+});
+
+/** Real telemetry from a decoded native envelope — carried UNCONDITIONALLY, so a findings-ladder
+ *  miss never discards it (issue #18). */
+const nativeTelemetry = (native: ClaudeCodeEnvelope, meta: RunMeta): Telemetry =>
+  withMeta(
+    {
+      models: mapModelUsage(native.modelUsage),
+      turns: native.num_turns,
+      duration_ms: native.duration_ms,
+      vendor_cost_usd: native.total_cost_usd ?? null,
+    },
+    meta,
+  );
+
+/** Telemetry stand-in when the native envelope is absent/unreadable (issue #39): a wall-clock
+ *  `timeout` can kill `claude -p` mid-flush, leaving no parseable envelope. No per-model usage,
+ *  zero turns/duration, cost unknown — the findings ladder still runs (its --agent-file rung needs
+ *  no native), so a checkpointed $DRAFT survives the cutoff; transcript cost recovery (#36) refills. */
+const absentTelemetry = (meta: RunMeta): Telemetry =>
+  withMeta({ models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null }, meta);
+
+/** Assemble the abstract envelope (SPEC §6.1): `findings`/`schema_version` from the extraction
+ *  ladder (which reads --agent-file and defensively reads the raw native), telemetry from the
+ *  caller. A ladder miss becomes a "did not complete" notice — never a discarded envelope. */
+const buildEnvelope = (
+  telemetry: Telemetry,
+  native: unknown,
   agentFilePath: string | undefined,
-  meta: RunMeta,
-): Either<string, ResultEnvelope> => {
-  const telemetry = {
-    models: mapModelUsage(native.modelUsage),
-    turns: native.num_turns,
-    duration_ms: native.duration_ms,
-    vendor_cost_usd: native.total_cost_usd ?? null,
-    ...(meta.route ? { route: meta.route } : {}),
-    ...(meta.effort ? { effort: meta.effort } : {}),
-  };
+): ResultEnvelope => {
   const outcome = findingsOutcome(native, agentFilePath);
   switch (outcome.kind) {
     case "ok":
-      return right({
-        schema_version: outcome.version,
-        findings: outcome.findings,
-        ...telemetry,
-      });
+      return { schema_version: outcome.version, findings: outcome.findings, ...telemetry };
     case "telemetry-only":
-      return right({
+      return {
         schema_version: DEFAULT_SCHEMA_VERSION,
         findings: noticeFindings(`### ⚠️ Review did not complete\n\n${outcome.reason}`),
         ...telemetry,
-      });
+      };
   }
 };
 
 /** Map a native agent-CLI result envelope onto the abstract envelope (SPEC §6.1). `agentFilePath`
- *  is meaningful only for the findings recovery (a documented no-op otherwise). */
+ *  is meaningful only for the findings recovery (a documented no-op otherwise). A `native` of
+ *  `undefined` means the caller could not read/parse the envelope (empty/truncated — issue #39):
+ *  rather than fail the run, the adapter emits a no-telemetry envelope and still recovers findings
+ *  from --agent-file. A *present* but wrong-shaped native is still a Left (a real adapter mismatch). */
 export const adapt = (
   adapterName: AdapterName,
   native: unknown,
@@ -136,11 +162,12 @@ export const adapt = (
   switch (adapterName) {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exhaustive by design; AdapterName grows (e.g. "opencode") without collapsing this switch to an if
     case "claude-code": {
+      if (native === undefined)
+        return right(buildEnvelope(absentTelemetry(meta), undefined, agentFilePath));
       const decoded = ClaudeCodeEnvelopeCodec.decode(native);
-      if (decoded._tag === "Left") {
+      if (decoded._tag === "Left")
         return left("native envelope does not match the Claude Code output shape");
-      }
-      return adaptClaudeCode(decoded.right, agentFilePath, meta);
+      return right(buildEnvelope(nativeTelemetry(decoded.right, meta), native, agentFilePath));
     }
   }
 };

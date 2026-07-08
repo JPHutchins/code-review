@@ -48,6 +48,35 @@ const fail = (msg: string): never => {
   process.exit(1);
 };
 
+/** Like `readJSON` but tolerant: returns `undefined` (never exits) when the file is missing, empty,
+ *  or not valid JSON. Used ONLY for `adapt`'s native positional arg, which a wall-clock `timeout`
+ *  kill can leave empty/truncated (issue #39) — `adapt` then degrades to a no-telemetry envelope and
+ *  still recovers findings from `--agent-file`, instead of crashing the whole review step. A stderr
+ *  warning keeps the degrade diagnosable; genuinely-required inputs keep the strict `readJSON`. */
+const readJSONOrAbsent = (path: string): unknown => {
+  const text = ((): string | null => {
+    try {
+      return readFileSync(resolve(path), "utf-8");
+    } catch {
+      return null;
+    }
+  })();
+  if (text === null || text.trim() === "") {
+    process.stderr.write(
+      `code-review: native envelope ${path} is missing or empty — proceeding with no native telemetry (issue #39)\n`,
+    );
+    return undefined;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (err) {
+    process.stderr.write(
+      `code-review: native envelope ${path} is not valid JSON (${err instanceof Error ? err.message : String(err)}) — proceeding with no native telemetry (issue #39)\n`,
+    );
+    return undefined;
+  }
+};
+
 const decode = <A>(either: Either<unknown, A>, label: string): A => {
   try {
     return unsafeUnwrap(either);
@@ -318,7 +347,7 @@ const adaptCmd = defineCommand({
   },
   run: async ({ args }) => {
     const envelope = unwrapAdapt(
-      adapt(requireAdapterName(args.adapter), readJSON(args.native), args["agent-file"], {
+      adapt(requireAdapterName(args.adapter), readJSONOrAbsent(args.native), args["agent-file"], {
         route: args.route,
         effort: args.effort,
       }),

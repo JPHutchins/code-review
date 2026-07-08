@@ -227,6 +227,49 @@ describe("adapt — claude-code — extraction ladder integration", () => {
   });
 });
 
+describe("adapt — claude-code — absent native envelope (issue #39)", () => {
+  it("degrades to a no-telemetry 'did not complete' envelope instead of failing when the native envelope is absent (a timeout-killed, empty/truncated envelope.json)", () => {
+    const result = adapt("claude-code", undefined);
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    // Degenerate telemetry — nothing to report, but the run does not crash.
+    expect(result.right.models).toEqual([]);
+    expect(result.right.turns).toBe(0);
+    expect(result.right.duration_ms).toBe(0);
+    expect(result.right.vendor_cost_usd).toBeNull();
+    // No findings recoverable → the graceful notice, not a thrown/exited process.
+    expect(result.right.findings.findings).toEqual([]);
+    expect(result.right.findings.verdict).toBe("comment");
+    expect(result.right.findings.summary).toContain("did not complete");
+    // The whole envelope still round-trips through the abstract codec.
+    expect(ResultEnvelopeCodec.decode(result.right)._tag).toBe("Right");
+  });
+
+  it("still recovers findings from --agent-file when the native envelope is absent — a checkpointed $DRAFT survives the cutoff", () => {
+    const result = adapt("claude-code", undefined, ladderFixturePath("f11-agent-file.json"));
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    // The agent-file rung needs no native envelope, so the review is saved even with none.
+    expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
+    // Telemetry is still degenerate — cost/turns are unknown without a native envelope (#36 refills).
+    expect(result.right.models).toEqual([]);
+    expect(result.right.turns).toBe(0);
+    expect(result.right.vendor_cost_usd).toBeNull();
+  });
+
+  it("stamps route/effort onto the degraded envelope when the native envelope is absent", () => {
+    const result = adapt("claude-code", undefined, undefined, {
+      route: "full review",
+      effort: "xhigh",
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.route).toBe("full review");
+    expect(result.right.effort).toBe("xhigh");
+    expect(result.right.turns).toBe(0);
+  });
+});
+
 describe("adapt — run metadata (route/effort)", () => {
   it("stamps route and effort into the envelope when provided", () => {
     const result = adapt("claude-code", nativeFixture, undefined, {

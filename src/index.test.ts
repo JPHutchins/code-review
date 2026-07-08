@@ -246,6 +246,49 @@ describe("cli — adapt", () => {
     const parsed = JSON.parse(stdout) as { findings: { summary: string } };
     expect(parsed.findings.summary).toBe("Authoritative: from the agent-written file.");
   });
+
+  it("degrades (exit 0 + warning) on an EMPTY envelope.json instead of crashing — the timeout-kill repro (issue #39)", async () => {
+    const emptyPath = join(tmpDir, "envelope.json");
+    writeFileSync(emptyPath, "");
+    const { stdout, stderr, exitCode } = await runCli([
+      "adapt",
+      emptyPath,
+      "--adapter",
+      "claude-code",
+    ]);
+    // Pre-#39 this exited 1 ("Cannot read envelope.json: Unexpected end of JSON input").
+    expect(exitCode).toBeNull();
+    expect(stderr).toContain("no native telemetry");
+    const parsed = JSON.parse(stdout) as {
+      findings: { findings: unknown[]; summary: string };
+      turns: number;
+      models: unknown[];
+    };
+    expect(parsed.turns).toBe(0);
+    expect(parsed.models).toEqual([]);
+    expect(parsed.findings.findings).toEqual([]);
+    expect(parsed.findings.summary).toContain("did not complete");
+  });
+
+  it("recovers findings from --agent-file even when envelope.json is TRUNCATED mid-flush (issue #39)", async () => {
+    const truncPath = join(tmpDir, "envelope.json");
+    // What a SIGTERM'd `claude -p >envelope.json` leaves behind: valid-JSON prefix, no close.
+    writeFileSync(truncPath, '{"modelUsage":{"deepseek-v4-pro":{"inputTokens":100,');
+    const { stdout, stderr, exitCode } = await runCli([
+      "adapt",
+      truncPath,
+      "--adapter",
+      "claude-code",
+      "--agent-file",
+      ladderFixturePath("f11-agent-file.json"),
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toContain("not valid JSON");
+    const parsed = JSON.parse(stdout) as { findings: { summary: string }; turns: number };
+    // The checkpointed $DRAFT survives the cutoff — the review is saved, not lost.
+    expect(parsed.findings.summary).toBe("Authoritative: from the agent-written file.");
+    expect(parsed.turns).toBe(0);
+  });
 });
 
 describe("cli — extract", () => {

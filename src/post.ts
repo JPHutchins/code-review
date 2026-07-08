@@ -360,6 +360,140 @@ const dismissReviews = async (
   }
 };
 
+/** GraphQL: list a PR's review-thread comments with the head each was authored against and whether it
+ *  is already minimized — enough to find the bot's own comments left on superseded SHAs. Capped at the
+ *  first 100 threads (×100 comments each); `pageInfo.hasNextPage` flags a PR that exceeds the cap. */
+const REVIEW_THREAD_COMMENTS_QUERY =
+  "query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){pageInfo{hasNextPage}nodes{comments(first:100){nodes{id isMinimized author{login} originalCommit{oid}}}}}}}}";
+
+/** GraphQL: hide one comment as OUTDATED. Reversible — minimized, not deleted. */
+const MINIMIZE_COMMENT_MUTATION =
+  "mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}";
+
+/** The comment's node id when it is a bot-authored, not-yet-minimized comment on a head OTHER than
+ *  the current one (i.e. from a superseded review); null otherwise. GraphQL reports the bare login
+ *  (`github-actions`), so the bot login is matched with and without the REST `[bot]` suffix; a comment
+ *  with no attributable original commit is left alone. Pure. */
+const supersededCommentId = (
+  c: unknown,
+  headSha: string,
+  logins: readonly string[],
+): string | null => {
+  if (typeof c !== "object" || c === null) return null;
+  const o = c as {
+    id?: unknown;
+    isMinimized?: unknown;
+    author?: { login?: unknown } | null;
+    originalCommit?: { oid?: unknown } | null;
+  };
+  const login = o.author?.login;
+  const oid = o.originalCommit?.oid;
+  return typeof o.id === "string" &&
+    o.isMinimized !== true &&
+    typeof login === "string" &&
+    logins.includes(login) &&
+    typeof oid === "string" &&
+    oid !== headSha
+    ? o.id
+    : null;
+};
+
+/** Parse the review-threads response into the bot's superseded comment ids, degrading to an empty
+ *  list on any malformed shape (§5.5), and flagging whether the 100-thread cap was hit. Pure. */
+const supersededBotCommentIds = (
+  raw: string,
+  headSha: string,
+  botLogin: string,
+): { readonly ids: readonly string[]; readonly truncated: boolean } => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ids: [], truncated: false };
+  }
+  const conn = (
+    parsed as {
+      data?: {
+        repository?: {
+          pullRequest?: {
+            reviewThreads?: { nodes?: unknown; pageInfo?: { hasNextPage?: unknown } };
+          };
+        };
+      };
+    }
+  ).data?.repository?.pullRequest?.reviewThreads;
+  const truncated = conn?.pageInfo?.hasNextPage === true;
+  const nodes = conn?.nodes;
+  if (!Array.isArray(nodes)) return { ids: [], truncated };
+  const logins = [botLogin.replace(/\[bot\]$/, ""), botLogin];
+  const ids = nodes.flatMap((t) => {
+    const cnodes = (t as { comments?: { nodes?: unknown } }).comments?.nodes;
+    return Array.isArray(cnodes)
+      ? cnodes
+          .map((c) => supersededCommentId(c, headSha, logins))
+          .filter((id): id is string => id !== null)
+      : [];
+  });
+  return { ids, truncated };
+};
+
+/** Minimize (as OUTDATED, reversibly) the bot's own inline review comments left on superseded head
+ *  SHAs, so a re-reviewed PR doesn't accumulate stale comment threads (issue #31). Best-effort: any
+ *  failure to list or minimize is logged and never fails the post. */
+const minimizeSupersededComments = async (
+  repo: string,
+  prNumber: number,
+  headSha: string,
+  botLogin: string,
+  ghApi: GhApi,
+): Promise<void> => {
+  const slash = repo.indexOf("/");
+  if (slash <= 0) return;
+  const owner = repo.slice(0, slash);
+  const name = repo.slice(slash + 1);
+  let raw: string;
+  try {
+    raw = await ghApi([
+      "graphql",
+      "-f",
+      `query=${REVIEW_THREAD_COMMENTS_QUERY}`,
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `name=${name}`,
+      "-F",
+      `pr=${String(prNumber)}`,
+    ]);
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not list review threads to minimize stale comments on PR #${String(prNumber)}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return;
+  }
+  const { ids, truncated } = supersededBotCommentIds(raw, headSha, botLogin);
+  if (truncated) {
+    process.stderr.write(
+      `Note: PR #${String(prNumber)} has more than 100 review threads — only the first 100 were scanned for stale bot comments\n`,
+    );
+  }
+  let minimized = 0;
+  for (const id of ids) {
+    try {
+      await ghApi(["graphql", "-f", `query=${MINIMIZE_COMMENT_MUTATION}`, "-f", `id=${id}`]);
+      minimized += 1;
+    } catch (err) {
+      process.stderr.write(
+        `Warning: failed to minimize a stale review comment on PR #${String(prNumber)}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+  if (minimized > 0) {
+    process.stderr.write(
+      `Minimized ${String(minimized)} stale inline comment(s) from superseded reviews on PR #${String(prNumber)}\n`,
+    );
+  }
+};
+
 export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<void> => {
   // Phase 1 (CO-R3): reads, decodes, diff validation, rendering — no writes yet.
   const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
@@ -462,14 +596,17 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     process.exit(0);
   }
 
-  // Issue #19 + review fix #5: base64-encode the findings ONCE and reuse the marker across every
-  // surface (both sticky renders, each inline comment, the review body) instead of recomputing it.
+  // Issue #19 + review fix #5: base64-encode the whole-document marker ONCE and reuse it on the two
+  // single-per-review surfaces (both sticky renders, the review body). Each inline comment instead
+  // embeds only its OWN finding (issue #31) — buildInlineComments derives that per-finding marker
+  // itself from `findings` below, rather than reusing this whole-document one.
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
 
   const { comments: rawComments, strays } = buildInlineComments(findings.findings, diff, {
     inlineTemplate,
     models: envelope.models.map((m) => m.model),
-    findingsPointer: findingsMarker,
+    findings,
+    jsonUrl: input.jsonUrl,
   });
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
@@ -567,6 +704,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   process.stderr.write(
     `Posted ${String(comments.length)} inline comments on PR #${String(prNumber)}\n`,
   );
+
+  // Issue #31: hide the bot's own inline comments from superseded head SHAs so a re-reviewed PR
+  // doesn't accumulate stale threads. Best-effort — the fresh review above is already posted.
+  await minimizeSupersededComments(input.repo, prNumber, input.headSha, input.botLogin, ghApi);
 
   // Issue #11/#21: now that postInlineReview has actually resolved, the sticky can truthfully
   // report the review — with a link when reviewUrl parsed, as plain text otherwise (still true:

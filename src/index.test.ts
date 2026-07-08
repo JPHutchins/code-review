@@ -456,6 +456,31 @@ describe("cli — validate-patches", () => {
     expect(parsed.findings[0]?.suggestion).toBeUndefined();
   });
 
+  it("keeps a pure-insertion patch that applies cleanly, leaving the finding's range untouched (issue #30)", async () => {
+    writeFileSync(join(tmpDir, "foo.ts"), "line1\nline2\nline3\n");
+    const findingsPath = join(tmpDir, "findings.json");
+    const patch = ["@@ -1,2 +1,3 @@", " line1", "+inserted", " line2"].join("\n");
+    writeFileSync(findingsPath, mkFindingsDoc({ start_line: 1, end_line: 1, patch }));
+
+    const { stdout, stderr, exitCode } = await runCli([
+      "validate-patches",
+      findingsPath,
+      "--repo-root",
+      tmpDir,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toBe("");
+    const parsed = JSON.parse(stdout) as {
+      findings: { start_line: number; end_line: number; patch?: string }[];
+    };
+    expect(parsed.findings).toHaveLength(1);
+    // No removed range to align to — the finding's own range is left as the inline anchor, and the
+    // patch is kept for the renderer to project as a ```patch fallback.
+    expect(parsed.findings[0]?.start_line).toBe(1);
+    expect(parsed.findings[0]?.end_line).toBe(1);
+    expect(parsed.findings[0]?.patch).toBe(patch);
+  });
+
   it("drops an invalid patch (mismatched context), keeping the finding and reporting why on stderr", async () => {
     writeFileSync(join(tmpDir, "foo.ts"), "line1\nactual line\nline3\n");
     const findingsPath = join(tmpDir, "findings.json");

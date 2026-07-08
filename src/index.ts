@@ -48,6 +48,43 @@ const fail = (msg: string): never => {
   process.exit(1);
 };
 
+/** Like `readJSON` but tolerant: returns `undefined` (never exits) when the file is unreadable,
+ *  empty, or not valid JSON. Used ONLY for `adapt`'s native positional arg, which a wall-clock
+ *  `timeout` kill can leave empty/truncated (issue #39) — `adapt` then degrades to a no-telemetry
+ *  envelope and still recovers findings from `--agent-file`, instead of crashing the whole review
+ *  step. Each degrade path names its specific cause on stderr — surfacing the real read error so an
+ *  EACCES/EISDIR is not misreported as "empty" — to stay diagnosable; genuinely-required inputs keep
+ *  the strict `readJSON`. */
+const readJSONOrAbsent = (path: string): unknown => {
+  const read = ((): { readonly text: string } | { readonly error: string } => {
+    try {
+      return { text: readFileSync(resolve(path), "utf-8") };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  })();
+  if ("error" in read) {
+    process.stderr.write(
+      `code-review: native envelope ${path} could not be read (${read.error}) — proceeding with no native telemetry (issue #39)\n`,
+    );
+    return undefined;
+  }
+  if (read.text.trim() === "") {
+    process.stderr.write(
+      `code-review: native envelope ${path} is empty — proceeding with no native telemetry (issue #39)\n`,
+    );
+    return undefined;
+  }
+  try {
+    return JSON.parse(read.text) as unknown;
+  } catch (err) {
+    process.stderr.write(
+      `code-review: native envelope ${path} is not valid JSON (${err instanceof Error ? err.message : String(err)}) — proceeding with no native telemetry (issue #39)\n`,
+    );
+    return undefined;
+  }
+};
+
 const decode = <A>(either: Either<unknown, A>, label: string): A => {
   try {
     return unsafeUnwrap(either);
@@ -318,7 +355,7 @@ const adaptCmd = defineCommand({
   },
   run: async ({ args }) => {
     const envelope = unwrapAdapt(
-      adapt(requireAdapterName(args.adapter), readJSON(args.native), args["agent-file"], {
+      adapt(requireAdapterName(args.adapter), readJSONOrAbsent(args.native), args["agent-file"], {
         route: args.route,
         effort: args.effort,
       }),

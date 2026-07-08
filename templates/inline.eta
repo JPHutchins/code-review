@@ -1,7 +1,7 @@
 <% if (it.findingsPointer) { -%>
 <%~ it.findingsPointer %>
 <% } -%>
-<%= it.severityEmoji(it.severity) %> **<%= it.title %>** · <%= it.formatConfidence(it.confidence) %> confidence
+<%= it.severityEmoji(it.severity) %> <%= it.severity.charAt(0).toUpperCase() + it.severity.slice(1) %>: **<%= it.title %>** · <%= it.formatConfidence(it.confidence) %> confidence
 
 <%~ it.description %>
 <% if (it.recommendation) { -%>

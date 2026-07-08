@@ -75,6 +75,11 @@ const testReport = orThrow(
 );
 const diff = readFileSync(fx("sample.diff"), "utf-8");
 
+const { comments, strays } = buildInlineComments(findings.findings, diff, {
+  inlineTemplate: readFileSync(resolve(root, "templates/inline.eta"), "utf-8"),
+  findings,
+});
+
 const sticky = render({
   findings,
   envelope,
@@ -83,12 +88,8 @@ const sticky = render({
   template: readFileSync(resolve(root, "templates/comment.eta"), "utf-8"),
   reviewedSha: REVIEWED_SHA,
   testReport,
+  strays,
   postedAt: formatUtc(new Date()),
-});
-
-const { comments } = buildInlineComments(findings.findings, diff, {
-  inlineTemplate: readFileSync(resolve(root, "templates/inline.eta"), "utf-8"),
-  findings,
 });
 
 const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined, findingsPointer(findings, undefined));

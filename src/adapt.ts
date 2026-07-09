@@ -123,16 +123,24 @@ const withMeta = (base: Omit<Telemetry, "route" | "effort">, meta: RunMeta): Tel
   ...(meta.effort ? { effort: meta.effort } : {}),
 });
 
-/** Assemble telemetry from the native envelope and, when a transcript is provided, the transcript
- *  tree. Per-model USAGE stays native-authoritative when present (Claude Code rolls subagent tokens
- *  into the main envelope's usage — issue #18); the transcript refills usage only when the native has
- *  none (a wall-clock `timeout` kill leaves it absent/empty — issues #39/#36, so cost still computes
- *  from real models×prices, not $0.00). But WALL + TURNS are taken from the transcript whenever one is
- *  available: the native envelope reports only the MAIN agent's active time and turn count, which
- *  wildly under-report a review that fanned out subagents — a 12-subagent, ~12-minute run otherwise
- *  surfaces as "5 turns, 42s" (issue #59). The transcript tree spans the whole session (main +
- *  subagents), so its span is the true wall and its message count the real work. The vendor's own cost
- *  figure is carried through from the native whenever it had one. */
+/** Assemble telemetry, taking each field from the source that is authoritative for it — NOT simply
+ *  "always the transcript." Two sources, two strengths:
+ *
+ *  - WALL + TURNS come from the transcript whenever one is available. The native envelope reports only
+ *    the MAIN agent's active time and turn count, which wildly under-report a review that fanned out
+ *    subagents — a 12-subagent, ~12-minute run otherwise surfaces as "5 turns, 42s" (issue #59). The
+ *    transcript tree spans the whole session (main + subagents), so its span is the true wall and its
+ *    message count the real work.
+ *  - Per-model USAGE stays native-authoritative when present. Claude Code's rollup already includes
+ *    the subagents (issue #18), and it is MORE accurate than the transcript for output tokens: summing
+ *    the per-message `usage` under-counts output badly (measured ~5.7× low on the #59 fixture —
+ *    32,945 vs the native's 188,952 output tokens on the same run, while input + cache-read matched),
+ *    because the transcript doesn't record every message's full output. So using the transcript for
+ *    cost would under-count it several-fold — DO NOT "simplify" this to always-transcript. The
+ *    transcript refills usage ONLY when the native has none (a `timeout` kill leaves it absent/empty —
+ *    issues #39/#36), where an under-count still beats a false $0.00.
+ *
+ *  The vendor's own cost figure is carried through from the native whenever it had one. */
 const resolveTelemetry = (
   native: {
     models: ModelUsageEntry[];

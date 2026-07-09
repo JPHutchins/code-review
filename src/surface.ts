@@ -63,6 +63,22 @@ export const findingPointer = (
   limit = EMBED_LIMIT,
 ): string => encodeMarker({ schema_version: schemaVersion, findings: [finding] }, jsonUrl, limit);
 
+/** The inverse of {@link findingsPointer}'s base64 form: extract and decode the whole-document
+ *  findings JSON a prior run embedded in a sticky/review body, or null when the body carries no
+ *  base64 marker (e.g. the jsonUrl-link fallback used for oversized findings, which can't be decoded
+ *  inline) or the payload isn't valid JSON. Returns the raw decoded value — callers validate it
+ *  against the current schema before trusting it (a prior run may predate the current shape). Pure. */
+export const parseFindingsMarker = (body: string): unknown => {
+  const match = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body);
+  const b64 = match?.[1];
+  if (b64 === undefined) return null;
+  try {
+    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
+  } catch {
+    return null;
+  }
+};
+
 /** Escape triple-backtick sequences so fenced content can't break out of its block. */
 const escapeFence = (text: string): string => text.replace(/```/g, "`` ` ``");
 

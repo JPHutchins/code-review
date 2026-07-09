@@ -5,11 +5,8 @@
 <% } -%>
 
 ### <%= it.verdictBadge(it.findings.verdict) %>
-<% if (it.postedAt) { -%>
-Reviewed `<%= it.reviewedSha.slice(0, 7) %>` · <%= it.postedAt %>
-<% } -%>
 
-<% const meta = [] %><% if (it.route) { meta.push('**Route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.usageAvailable) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><%~ meta.join(' · ') %>
+<% const meta = [] %><% if (it.postedAt) { meta.push('**Reviewed** `' + it.reviewedSha.slice(0, 7) + '` at ' + it.postedAt) } %><% if (it.route) { meta.push('**route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.usageAvailable) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><sub><%~ meta.join(' · ') %></sub>
 
 <%~ it.findings.summary %>
 
@@ -27,20 +24,18 @@ _No findings — clean review._
 → <%= it.inlineDisposition.count %> comment<%= it.inlineDisposition.count === 1 ? '' : 's' %> posted inline on `<%= it.inlineDisposition.sha.slice(0, 7) %>` — <% if (it.reviewUrl) { %>[see the review](<%~ it.reviewUrl %>)<% } else { %>see the review<% } %>.
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'none-in-diff') { %>
 → No inline comments — all findings are outside the diff (listed below).
-<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'suppressed-existing-review') { %>
-→ Inline review suppressed — `<%= it.inlineDisposition.sha.slice(0, 7) %>` was already reviewed.
 <% } %>
 
 <% if (it.strays.length > 0) { %>
-#### ⚠️ Findings outside the diff
-
-These findings are on lines not in the diff, so they can't be anchored as inline comments:
+### Findings outside the diff
 
 <% it.strays.forEach(function(f) { -%>
-- <%= it.severityEmoji(f.severity) %> `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %>
+#### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %>
+
+<%~ f.description %>
 <% if (f.recommendation) { -%>
 
-  **Recommended fix:** <%~ f.recommendation %>
+**Recommended fix:** <%~ f.recommendation %>
 <% } -%>
 <% if (f.patchProjection.kind === "suggestion") { -%>
 
@@ -54,13 +49,14 @@ These findings are on lines not in the diff, so they can't be anchored as inline
 ```
 <% } -%>
 
-  <details><summary>Reasoning</summary>
-
+> [!TIP]
+> <details><summary>Reasoning (<%= it.formatConfidence(f.confidence) %> confidence)</summary>
+>
 <% f.reasoning.split("\n").forEach(function(rl) { -%>
-  <%= rl %>
+> <%= rl %>
 <% }) -%>
-
-  </details>
+>
+> </details>
 <% }) %>
 <% } %>
 

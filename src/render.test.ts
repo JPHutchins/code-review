@@ -152,8 +152,8 @@ describe("render", () => {
     expect(result).toContain("0000000000000000000000000000000000000000");
   });
 
-  describe("sticky posted-at line (issue #28)", () => {
-    it("renders 'Reviewed `<short-sha>` · <postedAt>' right under the verdict heading when postedAt is set", () => {
+  describe("sticky posted-at segment (issue #28; #54 <sub> meta line)", () => {
+    it("leads the <sub> meta line with '**Reviewed** `<short-sha>` at <postedAt>', a blank line under the heading", () => {
       const findings = mkFindings([]);
       const result = render({
         findings,
@@ -163,16 +163,19 @@ describe("render", () => {
         reviewedSha: "abc123def456",
         postedAt: "2026-07-07 18:42 UTC",
       });
-      expect(result).toContain("Reviewed `abc123d` · 2026-07-07 18:42 UTC");
+      expect(result).toContain("**Reviewed** `abc123d` at 2026-07-07 18:42 UTC");
       const lines = result.split("\n");
       const headingIndex = lines.findIndex((l) => l.startsWith("### "));
-      expect(lines[headingIndex + 1]).toBe("Reviewed `abc123d` · 2026-07-07 18:42 UTC");
+      expect(lines[headingIndex + 1]).toBe("");
+      const subLine = lines[headingIndex + 2] ?? "";
+      expect(subLine).toMatch(/^<sub>\*\*Reviewed\*\* `abc123d` at 2026-07-07 18:42 UTC · /);
+      expect(subLine.endsWith("</sub>")).toBe(true);
     });
 
-    it("omits the Reviewed line entirely when postedAt is not provided", () => {
+    it("omits the Reviewed segment when postedAt is not provided", () => {
       const findings = mkFindings([]);
       const result = render({ findings, envelope: baseEnvelope, prices, template });
-      expect(result).not.toContain("Reviewed `");
+      expect(result).not.toContain("**Reviewed**");
     });
   });
 
@@ -359,19 +362,6 @@ describe("render", () => {
       expect(result).not.toContain("posted inline");
     });
 
-    it("says the inline review was suppressed for an already-reviewed SHA", () => {
-      const result = render({
-        findings,
-        envelope: baseEnvelope,
-        prices,
-        template,
-        inlineDisposition: { kind: "suppressed-existing-review", sha: "abc123def456" },
-      });
-      expect(result).toContain("suppressed");
-      expect(result).toContain("abc123d");
-      expect(result).not.toContain("posted inline");
-    });
-
     it("emits no disposition pointer for no-envelope renders", () => {
       const result = render({
         findings,
@@ -387,10 +377,17 @@ describe("render", () => {
   });
 
   describe("strays section (only per-finding detail in the sticky)", () => {
-    it("lists strays with severity, path, line, and title plus a not-in-the-diff note", () => {
+    it("renders each stray with severity emoji + label, path, title, confidence, and its description", () => {
       const findings = mkFindings([mkFinding({ severity: "major", title: "in-diff-ish" })]);
       const strays = [
-        mkFinding({ path: "src/bar.ts", start_line: 100, severity: "major", title: "Stray one" }),
+        mkFinding({
+          path: "src/bar.ts",
+          start_line: 100,
+          end_line: 100,
+          severity: "major",
+          title: "Stray one",
+          description: "The stray's summary text.",
+        }),
       ];
       const result = render({
         findings,
@@ -401,9 +398,13 @@ describe("render", () => {
         inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
       });
       expect(result).toContain("Findings outside the diff");
-      expect(result).toContain("not in the diff");
-      expect(result).toContain("src/bar.ts:100");
+      // issue #56: each stray is an h4 with the severity label, not a bare list item.
+      expect(result).toContain("#### 🟠 (major) `src/bar.ts:100`");
       expect(result).toContain("Stray one");
+      // issue #56 defect #1: the description was previously never rendered in the sticky.
+      expect(result).toContain("The stray's summary text.");
+      // issue #56 misc #1: the out-of-diff note is normal behavior, not a warning.
+      expect(result).not.toContain("⚠️ Findings outside the diff");
     });
 
     it("renders no strays section when there are none", () => {
@@ -439,11 +440,14 @@ describe("render", () => {
       expect(bulletLine).toContain("confidence 0.00");
     });
 
-    it("renders a collapsible reasoning fold under the bullet (reasoning is always present)", () => {
+    it("renders a collapsible reasoning fold in a [!TIP] aside with the confidence (reasoning is always present)", () => {
       const findings = mkFindings([]);
-      const strays = [mkFinding({ title: "Stray reason", reasoning: "Because X causes Y." })];
+      const strays = [
+        mkFinding({ title: "Stray reason", confidence: 0.9, reasoning: "Because X causes Y." }),
+      ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result).toContain("<details><summary>Reasoning</summary>");
+      expect(result).toContain("> [!TIP]");
+      expect(result).toContain("<details><summary>Reasoning (0.90 confidence)</summary>");
       expect(result).toContain("Because X causes Y.");
       expect(result).toContain("</details>");
     });
@@ -471,7 +475,7 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const rec = result.indexOf("**Recommended fix:**");
-      const reasoning = result.indexOf("<details><summary>Reasoning</summary>");
+      const reasoning = result.indexOf("<details><summary>Reasoning (");
       // Guard against a vacuous pass: both must actually render before comparing positions.
       expect(rec).toBeGreaterThanOrEqual(0);
       expect(reasoning).toBeGreaterThanOrEqual(0);
@@ -491,7 +495,7 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const rec = result.indexOf("**Recommended fix:**");
       const fence = result.indexOf("```suggestion");
-      const reasoning = result.indexOf("<details><summary>Reasoning</summary>");
+      const reasoning = result.indexOf("<details><summary>Reasoning (");
       expect(rec).toBeGreaterThanOrEqual(0);
       expect(fence).toBeGreaterThanOrEqual(0);
       expect(reasoning).toBeGreaterThanOrEqual(0);
@@ -533,7 +537,7 @@ describe("render", () => {
       expect(result).toContain("fixed line");
     });
 
-    it("indents every line of a multi-paragraph reasoning so continuation lines stay in the fold", () => {
+    it("keeps every line of a multi-paragraph reasoning inside the [!TIP] blockquote fold", () => {
       const findings = mkFindings([]);
       const strays = [
         mkFinding({
@@ -543,17 +547,17 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const lines = result.split("\n");
-      const openIndex = lines.findIndex((l) => l.includes("<details><summary>Reasoning</summary>"));
-      const closeIndex = lines.findIndex((l, i) => i > openIndex && l.trim() === "</details>");
+      const openIndex = lines.findIndex((l) => l.includes("<details><summary>Reasoning ("));
+      const closeIndex = lines.findIndex((l, i) => i > openIndex && l.includes("</details>"));
       expect(openIndex).toBeGreaterThanOrEqual(0);
       expect(closeIndex).toBeGreaterThan(openIndex);
-      // A continuation line at column 0 (the bug) would fall out of the list-item fold; every
-      // non-empty content line must carry the 2-space list indent.
+      // A continuation line at column 0 (the bug) would fall out of the blockquote aside; every
+      // non-empty content line between the fold's open and close must carry the "> " prefix.
       const contentLines = lines
         .slice(openIndex + 1, closeIndex)
         .filter((l) => l.trim().length > 0);
-      expect(contentLines.some((l) => l === "  Second paragraph.")).toBe(true);
-      expect(contentLines.every((l) => l.startsWith("  "))).toBe(true);
+      expect(contentLines.some((l) => l === "> Second paragraph.")).toBe(true);
+      expect(contentLines.every((l) => l.startsWith(">"))).toBe(true);
     });
   });
 
@@ -856,7 +860,7 @@ describe("render", () => {
       expect(result).toContain("[code-review](https://github.com/JPHutchins/code-review)");
     });
 
-    it("no longer renders the cost table in a standalone <sub> block", () => {
+    it("renders the cost table as a real markdown table, not inside the <sub> meta line", () => {
       const findings = mkFindings([]);
       const result = render({
         findings,
@@ -865,8 +869,10 @@ describe("render", () => {
         template,
         route: "full review",
       });
-      expect(result).not.toContain("<sub>");
-      expect(result).not.toContain("</sub>");
+      const subLines = result.split("\n").filter((l) => l.includes("<sub>"));
+      expect(subLines).toHaveLength(1);
+      expect(subLines[0]).not.toContain("|");
+      expect(result).toContain("| **Total** |");
     });
 
     it("links to the workflow run when runUrl is set", () => {
@@ -1074,7 +1080,7 @@ describe("render", () => {
       template,
       route: "full review",
     });
-    expect(result).toContain("Route:");
+    expect(result).toContain("**route:** full review");
     expect(result).not.toContain("effort:");
   });
 
@@ -1088,7 +1094,7 @@ describe("render", () => {
       route: "mechanic",
       effort: "low",
     });
-    expect(result).toContain("Route:");
+    expect(result).toContain("**route:** mechanic");
     expect(result).toContain("**effort:** low");
   });
 
@@ -1224,7 +1230,7 @@ describe("render — route/effort from the envelope (SSOT)", () => {
 
   it("renders the envelope's route and effort when no override is passed", () => {
     const result = render({ findings: mkFindings([]), envelope: envWithMeta, prices, template });
-    expect(result).toContain("**Route:** mechanic");
+    expect(result).toContain("**route:** mechanic");
     expect(result).toContain("**effort:** low");
   });
 
@@ -1237,14 +1243,14 @@ describe("render — route/effort from the envelope (SSOT)", () => {
       route: "full review",
       effort: "max",
     });
-    expect(result).toContain("**Route:** full review");
+    expect(result).toContain("**route:** full review");
     expect(result).toContain("**effort:** max");
     expect(result).not.toContain("mechanic");
   });
 
-  it("omits the Route label when neither an override nor the envelope carries one", () => {
+  it("omits the route label when neither an override nor the envelope carries one", () => {
     const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
-    expect(result).not.toContain("**Route:**");
+    expect(result).not.toContain("**route:**");
   });
 });
 
@@ -1372,13 +1378,13 @@ describe("strays list structural integrity", () => {
     expect(headingIdx).toBeGreaterThanOrEqual(0); // fail clearly here, not via a garbage slice below
     const section = result.slice(headingIdx);
 
-    // Every stray renders exactly one bullet and one reasoning fold — none collapsed or duplicated.
-    // Anchor the bullet match on the backtick-wrapped path so a dash in prose can't inflate the count.
-    expect(section.match(/^- .+ `[^`]+`/gm) ?? []).toHaveLength(3);
-    expect(section.match(/<details><summary>Reasoning<\/summary>/g) ?? []).toHaveLength(3);
-    // Within the list itself (first bullet → last fold), the Eta forEach must not leak a RUN of
+    // Every stray renders exactly one h4 header and one reasoning fold — none collapsed or duplicated.
+    // Anchor the header match on the backtick-wrapped path so a dash in prose can't inflate the count.
+    expect(section.match(/^#### .+ `[^`]+`/gm) ?? []).toHaveLength(3);
+    expect(section.match(/<details><summary>Reasoning \(/g) ?? []).toHaveLength(3);
+    // Within the list itself (first header → last fold), the Eta forEach must not leak a RUN of
     // blank lines (the per-row bug signature); inter-section spacing after the list is not in scope.
-    const listStart = section.indexOf("\n- ");
+    const listStart = section.indexOf("\n#### ");
     const listEnd = section.lastIndexOf("</details>");
     expect(listStart).toBeGreaterThanOrEqual(0);
     expect(listEnd).toBeGreaterThan(listStart);

@@ -6,6 +6,8 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main } from "./index.js";
 import { ResultEnvelopeCodec } from "./schema.js";
+import { findingsPointer } from "./surface.js";
+import type { Findings } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -940,6 +942,123 @@ describe("cli — validate --explain (issue #45: schema on failure, fix the shap
   });
 });
 
+describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () => {
+  const priorFindings = {
+    schema_version: "0.4.0",
+    summary: "Prior review summary.",
+    verdict: "changes",
+    findings: [
+      {
+        path: "src/a.ts",
+        start_line: 3,
+        end_line: 3,
+        severity: "major",
+        title: "Prior finding",
+        description: "carried over from the prior review",
+        reasoning: "still worth checking",
+        confidence: 0.8,
+      },
+    ],
+  };
+
+  const writePrior = (body: string): string => {
+    const p = join(tmpDir, "prior_review.json");
+    writeFileSync(p, JSON.stringify({ id: 999, body }));
+    return p;
+  };
+
+  it("seeds $DRAFT from a prior review's embedded findings and reports 'prior'", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior");
+    const seeded = JSON.parse(readFileSync(out, "utf-8")) as typeof priorFindings;
+    expect(seeded.findings).toHaveLength(1);
+    expect(seeded.findings[0]!.title).toBe("Prior finding");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
+  it("seeds an empty valid scaffold and reports 'empty' when the prior review has no marker", async () => {
+    const prior = writePrior("<!-- code-review -->\njust prose, no findings marker");
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
+      readonly summary: string;
+      readonly findings: readonly unknown[];
+    };
+    expect(seeded.findings).toEqual([]);
+    expect(seeded.summary).toBe("");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
+  it("seeds an empty scaffold when --prior is the literal null gather stages on a first review", async () => {
+    const prior = join(tmpDir, "prior_review.json");
+    writeFileSync(prior, "null");
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
+      readonly findings: readonly unknown[];
+    };
+    expect(seeded.findings).toEqual([]);
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
+  it("seeds an empty scaffold (never crashes) when --prior is omitted entirely", async () => {
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
+  it("falls back to the empty scaffold when the prior findings don't validate against the current schema", async () => {
+    const skillShaped = {
+      schema_version: "0.4.0",
+      summary: "x",
+      verdict: "comment",
+      findings: [{ file: "a", line: 1, summary: "s", failure_scenario: "f" }],
+    };
+    const prior = writePrior(findingsPointer(skillShaped as unknown as Findings, undefined));
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
+  it("degrades to the scaffold and still exits 0 on a bad --schema-version (never fails the review step)", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--out",
+      out,
+      "--schema-version",
+      "9.9",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+});
+
 describe("cli — render defaults (bundled template + prices)", () => {
   it("renders using the bundled template and prices when both are omitted, warning about example prices", async () => {
     const { stdout, stderr, exitCode } = await runCli([
@@ -981,7 +1100,7 @@ describe("cli — render defaults (bundled template + prices)", () => {
 });
 
 describe("cli — render posted-at line (issue #28)", () => {
-  it("renders 'Reviewed `<short-sha>` · <UTC timestamp>' computed at the IO boundary", async () => {
+  it("renders '**Reviewed** `<short-sha>` at <UTC timestamp>' computed at the IO boundary", async () => {
     const { stdout, exitCode } = await runCli([
       "render",
       sampleFindingsPath,
@@ -993,7 +1112,7 @@ describe("cli — render posted-at line (issue #28)", () => {
       "abc123def456",
     ]);
     expect(exitCode).toBeNull();
-    expect(stdout).toMatch(/Reviewed `abc123d` · \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+    expect(stdout).toMatch(/\*\*Reviewed\*\* `abc123d` at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
   });
 });
 

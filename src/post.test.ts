@@ -989,7 +989,7 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
     expect(finalStickyBody.body).toContain("posted inline");
   });
 
-  it("suppresses the inline pass when a completed bot review already exists at the head SHA", async () => {
+  it("dismisses a prior bot review on the SAME head SHA and posts a fresh review (issue #53)", async () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
@@ -1018,23 +1018,42 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
           },
         ]),
       },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews/555/dismissals",
+        response: "",
+      },
+      {
+        match: (a) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" &&
+          a.includes("--input") &&
+          !a.includes("--paginate"),
+        response: "",
+      },
     ]);
 
     await post(mkInput({}), api);
 
-    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
-    expect(patchCall).toBeDefined();
-    const stickyBody = JSON.parse(patchCall!.stdin!) as CommentBody;
-    expect(stickyBody.body).toContain("suppressed");
+    // The prior review on the SAME SHA is superseded, not left in place (issue #53).
+    const dismissCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews/555/dismissals",
+    );
+    expect(dismissCall).toBeDefined();
+    expect(dismissCall?.args).toContain("PUT");
 
-    // No fresh review is posted for a SHA that already has a completed bot review.
+    // A fresh review IS posted — the agent ran and paid, so its result must be surfaced, not skipped.
     const inlineCall = calls().find(
       (c) =>
         c.args[0] === "repos/owner/repo/pulls/42/reviews" &&
         c.args.includes("--input") &&
         !c.args.includes("--paginate"),
     );
-    expect(inlineCall).toBeUndefined();
+    expect(inlineCall).toBeDefined();
+
+    // The sticky no longer claims suppression.
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+    const stickyBody = JSON.parse(patchCall!.stdin!) as CommentBody;
+    expect(stickyBody.body).not.toContain("suppressed");
   });
 
   it("dismisses prior bot reviews and posts a fresh inline review when the head SHA differs", async () => {
@@ -1441,7 +1460,7 @@ describe("post — --effort threading", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
-    expect(body.body).toContain("**Route:** mechanic");
+    expect(body.body).toContain("**route:** mechanic");
     expect(body.body).toContain("**effort:** low");
   });
 });
@@ -1958,7 +1977,7 @@ describe("post — postedAt threading (issue #28)", () => {
     },
   ];
 
-  it("renders the sticky's 'Reviewed `<sha>` · <postedAt>' line when postedAt is passed", async () => {
+  it("renders the sticky's '**Reviewed** `<sha>` at <postedAt>' segment when postedAt is passed", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({ postedAt: "2026-07-07 18:42 UTC" }), api);
@@ -1967,10 +1986,10 @@ describe("post — postedAt threading (issue #28)", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
-    expect(body).toContain("Reviewed `abc123d` · 2026-07-07 18:42 UTC");
+    expect(body).toContain("**Reviewed** `abc123d` at 2026-07-07 18:42 UTC");
   });
 
-  it("omits the Reviewed line when postedAt is not passed", async () => {
+  it("omits the Reviewed segment when postedAt is not passed", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({}), api);
@@ -1979,7 +1998,7 @@ describe("post — postedAt threading (issue #28)", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
-    expect(body).not.toContain("Reviewed `");
+    expect(body).not.toContain("**Reviewed**");
   });
 });
 
@@ -2044,13 +2063,15 @@ describe("post — absent price map renders cost as N/A with a footnote (SPEC §
   });
 });
 
-describe("post — minimize superseded inline comments (issue #31)", () => {
-  const node = (id: string, login: string, oid: string, isMinimized: boolean): unknown => ({
-    comments: { nodes: [{ id, isMinimized, author: { login }, originalCommit: { oid } }] },
+describe("post — minimize prior inline comments (issue #31/#53)", () => {
+  const node = (id: string, login: string, isMinimized: boolean): unknown => ({
+    comments: { nodes: [{ id, isMinimized, author: { login } }] },
   });
 
-  // headSha is "abc123def456" (mkInput default): C_old_bot is the ONLY superseded bot comment;
-  // C_cur_bot is on the current head, C_old_user is not the bot, C_old_min is already minimized.
+  // The snapshot is taken BEFORE the fresh review is posted, so every bot comment here is a PRIOR
+  // (stale) one regardless of which SHA it was authored against — C_prior_a and C_prior_b are both
+  // the bot's own non-minimized comments and get minimized; C_user is not the bot; C_min is already
+  // minimized. This is the #53 fix: a prior same-SHA review's threads are no longer left orphaned.
   const threadsResponse = JSON.stringify({
     data: {
       repository: {
@@ -2058,10 +2079,10 @@ describe("post — minimize superseded inline comments (issue #31)", () => {
           reviewThreads: {
             pageInfo: { hasNextPage: false },
             nodes: [
-              node("C_old_bot", "github-actions", "oldsha111", false),
-              node("C_cur_bot", "github-actions", "abc123def456", false),
-              node("C_old_user", "someuser", "oldsha111", false),
-              node("C_old_min", "github-actions", "oldsha111", true),
+              node("C_prior_a", "github-actions", false),
+              node("C_prior_b", "github-actions", false),
+              node("C_user", "someuser", false),
+              node("C_min", "github-actions", true),
             ],
           },
         },
@@ -2100,7 +2121,7 @@ describe("post — minimize superseded inline comments (issue #31)", () => {
       .map((c) => c.args.find((x) => x.startsWith("id="))?.slice("id=".length))
       .filter((x): x is string => x !== undefined);
 
-  it("minimizes ONLY the bot's own non-minimized comments left on a superseded head SHA", async () => {
+  it("minimizes the bot's own non-minimized inline comments from prior reviews (any SHA)", async () => {
     const { api, calls } = mkMockGhApi([
       ...baseMocks,
       {
@@ -2115,7 +2136,7 @@ describe("post — minimize superseded inline comments (issue #31)", () => {
 
     await post(mkInput({}), api);
 
-    expect(minimizedIdsOf(calls())).toEqual(["C_old_bot"]);
+    expect(minimizedIdsOf(calls())).toEqual(["C_prior_a", "C_prior_b"]);
   });
 
   it("still posts the review when listing review threads fails (best-effort, never fails the post)", async () => {

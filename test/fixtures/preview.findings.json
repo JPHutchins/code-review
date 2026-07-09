@@ -11,7 +11,7 @@
       "severity": "major",
       "code": "widened-type",
       "title": "timeout type widened from number to number | string",
-      "description": "Widening `timeout` to `number | string` breaks every call site that does arithmetic on it — those now either type-error or silently coerce.",
+      "description": "Widening `timeout` to `number | string` breaks every call site that does arithmetic on it \u2014 those now either type-error or silently coerce.",
       "recommendation": "Keep `timeout: number` and coerce string inputs at the edge with a small `parseTimeout` helper.",
       "reasoning": "The diff changes the field type without updating any consumer; a grep for `.timeout` shows arithmetic use in the client, which `number | string` no longer satisfies.",
       "confidence": 0.9,
@@ -37,7 +37,7 @@
       "severity": "minor",
       "title": "Declare a package version alongside __all__",
       "description": "The package exposes `__all__` but no `__version__`; downstream tooling that reads `pkg.__version__` will fail.",
-      "reasoning": "Pure-insertion fix — there is no line to replace, so this projects to a raw ```patch block rather than a GitHub suggestion (demonstrates the fallback).",
+      "reasoning": "Pure-insertion fix \u2014 there is no line to replace, so this projects to a raw ```patch block rather than a GitHub suggestion (demonstrates the fallback).",
       "confidence": 0.6,
       "patch": "@@ -3 +3,2 @@\n __all__ = ['UploadClient']\n+__version__ = '1.0.0'\n"
     },
@@ -49,8 +49,10 @@
       "severity": "minor",
       "title": "Retry loop has no upper bound (finding outside the diff)",
       "description": "The legacy retry loop can spin forever if the endpoint stays down. Not in this diff, so it is demoted to the summary as a stray.",
-      "reasoning": "`old_code.ts` is unchanged by this PR, so lines 120–124 are outside every diff hunk and cannot be anchored inline — the commenter surfaces it in the sticky's strays section with its reasoning fold instead of dropping it.",
-      "confidence": 0.45
+      "reasoning": "`old_code.ts` is unchanged by this PR, so lines 120\u2013124 are outside every diff hunk and cannot be anchored inline \u2014 the commenter surfaces it in the sticky's strays section with its reasoning fold instead of dropping it.",
+      "confidence": 0.45,
+      "recommendation": "Bound the loop with a max-attempts counter and back off between tries.",
+      "patch": "@@ -120,3 +120,4 @@\n while (!ok) {\n-    retry();\n+    if (++attempts > MAX_ATTEMPTS) break;\n+    retry();\n }\n"
     }
   ]
 }

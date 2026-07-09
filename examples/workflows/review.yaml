@@ -61,7 +61,7 @@ jobs:
           node-version: "22"
 
       # Install the CLI and the deterministic commenter.
-      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.9
+      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.10
 
       # Install project deps so the agent can validate findings — swap this for your ecosystem's
       # install command (this repo is npm-based; a Python project would `uv sync`, etc.).
@@ -421,7 +421,7 @@ jobs:
         with:
           node-version: "22"
 
-      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.9
+      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.10
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download (§8.4).

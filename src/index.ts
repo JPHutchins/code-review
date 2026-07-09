@@ -682,7 +682,7 @@ const seedDraftCmd = defineCommand({
   meta: {
     name: "seed-draft",
     description:
-      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0 (issues #52, #53). Prints the mode chosen (prior|empty) to stdout; always exits 0",
+      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0 (issues #52, #53). Prints the mode chosen (prior|empty|none — none when even the scaffold write failed) to stdout; always exits 0",
   },
   args: {
     prior: {
@@ -713,6 +713,11 @@ const seedDraftCmd = defineCommand({
     const outPath = resolve(args.out);
     const kindArg = args.kind || "findings";
     const kind: SchemaKind = isSchemaKind(kindArg) ? kindArg : "findings";
+    if (kind !== kindArg) {
+      process.stderr.write(
+        `Warning: unknown --kind "${kindArg}" — validating against "findings"\n`,
+      );
+    }
 
     // seed-draft is best-effort and must NEVER fail the review step (the workflow runs it under
     // `set -e`), so every path below either seeds from the prior review or degrades to the
@@ -725,12 +730,15 @@ const seedDraftCmd = defineCommand({
         process.stderr.write(
           `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
         );
+        process.stdout.write("empty\n");
       } catch (err) {
+        // The scaffold write itself failed — report "none" (not "empty"), so the workflow doesn't
+        // tell the agent a scaffold exists that isn't there; the agent writes $DRAFT itself.
         process.stderr.write(
           `Warning: could not write the seed scaffold to ${outPath} (${err instanceof Error ? err.message : String(err)}) — the agent will create $DRAFT itself\n`,
         );
+        process.stdout.write("none\n");
       }
-      process.stdout.write("empty\n");
     };
 
     // Decode the prior review's embedded findings, tolerating a missing/absent/"null"/malformed

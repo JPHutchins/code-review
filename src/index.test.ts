@@ -1005,6 +1005,12 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("empty");
+    const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
+      readonly findings: readonly unknown[];
+    };
+    expect(seeded.findings).toEqual([]);
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
   });
 
   it("seeds an empty scaffold (never crashes) when --prior is omitted entirely", async () => {

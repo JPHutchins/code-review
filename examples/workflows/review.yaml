@@ -233,8 +233,10 @@ jobs:
           SEED_MODE="$(code-review seed-draft --prior prior_review.json --out "$DRAFT")"
           if [ "$SEED_MODE" = "prior" ]; then
             SEED_NOTE=" $DRAFT is PRE-SEEDED with the previous review's findings for this PR — treat them as your starting point: re-verify each against the CURRENT diff (drop any now fixed or no longer applicable, keep those that still hold), then add anything new, refining it in place rather than starting over."
-          else
+          elif [ "$SEED_MODE" = "empty" ]; then
             SEED_NOTE=" $DRAFT already holds a valid but EMPTY findings document — populate it as you review; it is a template to fill in, not a file you must create from scratch."
+          else
+            SEED_NOTE=""
           fi
 
           # Route + effort are decided once here and stamped into the envelope by `adapt` below,

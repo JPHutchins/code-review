@@ -293,23 +293,20 @@ const upsertSticky = async (
   return posted ? { id: posted.id, url: posted.html_url } : null;
 };
 
-/** A non-dismissed bot-authored review, carrying the commit it reviewed (SPEC §5.2.6 — review
- *  identity is the reviews API `commit_id`, not the sticky's `reviewed-sha` marker). */
+/** A non-dismissed bot-authored review. Only its id is needed — every prior bot review is
+ *  superseded regardless of which commit it reviewed (issue #53). */
 interface BotReviewRef {
   readonly id: number;
-  readonly commitId: string;
 }
 
-const isBotReview = (
-  r: unknown,
-): r is { id: number; user: { login: string }; state: string; commit_id?: unknown } =>
+const isBotReview = (r: unknown): r is { id: number; user: { login: string }; state: string } =>
   typeof r === "object" &&
   r !== null &&
   typeof (r as { id?: unknown }).id === "number" &&
   typeof (r as { state?: unknown }).state === "string" &&
   typeof (r as { user?: { login?: unknown } }).user?.login === "string";
 
-/** List the PR's non-dismissed bot-authored reviews with the SHA each one reviewed. */
+/** List the PR's non-dismissed bot-authored reviews. */
 const fetchBotReviews = async (
   repo: string,
   prNumber: number,
@@ -327,10 +324,7 @@ const fetchBotReviews = async (
   return reviews
     .filter(isBotReview)
     .filter((r) => r.user.login === botLogin && r.state !== "DISMISSED")
-    .map((r) => ({
-      id: r.id,
-      commitId: typeof r.commit_id === "string" ? r.commit_id : "",
-    }));
+    .map((r) => ({ id: r.id }));
 };
 
 /** Dismiss superseded bot-authored reviews (REC-CO-2). Failures are logged, never fail the job. */

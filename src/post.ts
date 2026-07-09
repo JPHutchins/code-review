@@ -360,49 +360,37 @@ const dismissReviews = async (
   }
 };
 
-/** GraphQL: list a PR's review-thread comments with the head each was authored against and whether it
- *  is already minimized — enough to find the bot's own comments left on superseded SHAs. Capped at the
- *  first 100 threads (×100 comments each); `pageInfo.hasNextPage` flags a PR that exceeds the cap. */
+/** GraphQL: list a PR's review-thread comments — author + whether already minimized — enough to find
+ *  the bot's own inline comments left by prior reviews. Capped at the first 100 threads (×100 comments
+ *  each); `pageInfo.hasNextPage` flags a PR that exceeds the cap. */
 const REVIEW_THREAD_COMMENTS_QUERY =
-  "query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){pageInfo{hasNextPage}nodes{comments(first:100){nodes{id isMinimized author{login} originalCommit{oid}}}}}}}}";
+  "query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){pageInfo{hasNextPage}nodes{comments(first:100){nodes{id isMinimized author{login}}}}}}}}";
 
 /** GraphQL: hide one comment as OUTDATED. Reversible — minimized, not deleted. */
 const MINIMIZE_COMMENT_MUTATION =
   "mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}";
 
-/** The comment's node id when it is a bot-authored, not-yet-minimized comment on a head OTHER than
- *  the current one (i.e. from a superseded review); null otherwise. GraphQL reports the bare login
- *  (`github-actions`), so the bot login is matched with and without the REST `[bot]` suffix; a comment
- *  with no attributable original commit is left alone. Pure. */
-const supersededCommentId = (
-  c: unknown,
-  headSha: string,
-  logins: readonly string[],
-): string | null => {
+/** The comment's node id when it is a bot-authored, not-yet-minimized inline comment; null otherwise.
+ *  GraphQL reports the bare login (`github-actions`), so the bot login is matched with and without the
+ *  REST `[bot]` suffix. Which SHA it was authored against no longer matters — the caller snapshots the
+ *  set BEFORE posting the fresh review, so every match is by definition a prior (stale) comment. Pure. */
+const priorBotCommentId = (c: unknown, logins: readonly string[]): string | null => {
   if (typeof c !== "object" || c === null) return null;
-  const o = c as {
-    id?: unknown;
-    isMinimized?: unknown;
-    author?: { login?: unknown } | null;
-    originalCommit?: { oid?: unknown } | null;
-  };
+  const o = c as { id?: unknown; isMinimized?: unknown; author?: { login?: unknown } | null };
   const login = o.author?.login;
-  const oid = o.originalCommit?.oid;
   return typeof o.id === "string" &&
     o.isMinimized !== true &&
     typeof login === "string" &&
-    logins.includes(login) &&
-    typeof oid === "string" &&
-    oid !== headSha
+    logins.includes(login)
     ? o.id
     : null;
 };
 
-/** Parse the review-threads response into the bot's superseded comment ids, degrading to an empty
- *  list on any malformed shape (§5.5), and flagging whether the 100-thread cap was hit. Pure. */
-const supersededBotCommentIds = (
+/** Parse the review-threads response into the bot's not-yet-minimized inline comment ids, degrading
+ *  to an empty list on any malformed shape (§5.5), and flagging whether the 100-thread cap was hit.
+ *  Pure. */
+const priorBotCommentIds = (
   raw: string,
-  headSha: string,
   botLogin: string,
 ): { readonly ids: readonly string[]; readonly truncated: boolean } => {
   let parsed: unknown;
@@ -429,26 +417,24 @@ const supersededBotCommentIds = (
   const ids = nodes.flatMap((t) => {
     const cnodes = (t as { comments?: { nodes?: unknown } }).comments?.nodes;
     return Array.isArray(cnodes)
-      ? cnodes
-          .map((c) => supersededCommentId(c, headSha, logins))
-          .filter((id): id is string => id !== null)
+      ? cnodes.map((c) => priorBotCommentId(c, logins)).filter((id): id is string => id !== null)
       : [];
   });
   return { ids, truncated };
 };
 
-/** Minimize (as OUTDATED, reversibly) the bot's own inline review comments left on superseded head
- *  SHAs, so a re-reviewed PR doesn't accumulate stale comment threads (issue #31). Best-effort: any
- *  failure to list or minimize is logged and never fails the post. */
-const minimizeSupersededComments = async (
+/** Snapshot the bot's own not-yet-minimized inline review comments currently on the PR — the stale
+ *  threads left by prior reviews (issue #31/#53). Called BEFORE the fresh review is posted, so the set
+ *  is exactly the prior comments (whether on a superseded commit or an earlier review of this same
+ *  SHA) and never the fresh ones. Best-effort: any listing failure logs and returns []. */
+const listPriorBotCommentIds = async (
   repo: string,
   prNumber: number,
-  headSha: string,
   botLogin: string,
   ghApi: GhApi,
-): Promise<void> => {
+): Promise<readonly string[]> => {
   const slash = repo.indexOf("/");
-  if (slash <= 0) return;
+  if (slash <= 0) return [];
   const owner = repo.slice(0, slash);
   const name = repo.slice(slash + 1);
   let raw: string;
@@ -468,14 +454,25 @@ const minimizeSupersededComments = async (
     process.stderr.write(
       `Warning: could not list review threads to minimize stale comments on PR #${String(prNumber)}: ${err instanceof Error ? err.message : String(err)}\n`,
     );
-    return;
+    return [];
   }
-  const { ids, truncated } = supersededBotCommentIds(raw, headSha, botLogin);
+  const { ids, truncated } = priorBotCommentIds(raw, botLogin);
   if (truncated) {
     process.stderr.write(
       `Note: PR #${String(prNumber)} has more than 100 review threads — only the first 100 were scanned for stale bot comments\n`,
     );
   }
+  return ids;
+};
+
+/** Minimize (as OUTDATED, reversibly) the given bot inline comment node ids — the pre-post snapshot of
+ *  stale threads — so a re-reviewed PR doesn't accumulate them (issue #31/#53). Best-effort: any
+ *  minimize failure is logged and never fails the post. */
+const minimizeComments = async (
+  prNumber: number,
+  ids: readonly string[],
+  ghApi: GhApi,
+): Promise<void> => {
   let minimized = 0;
   for (const id of ids) {
     try {
@@ -627,7 +624,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // never will, if this process dies before posting it) must never be claimed. Everything knowable
   // from reads alone (no-in-diff-findings) is truthful up front and stays as-is.
   const initialDisposition: InlineDisposition | undefined =
-    comments.length > 0 ? undefined : strays.length > 0 ? { kind: "none-in-diff" } : undefined;
+    comments.length === 0 && strays.length > 0 ? { kind: "none-in-diff" } : undefined;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
@@ -672,14 +669,20 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // agents get a review event every time — its body points at the sticky (for humans) and carries the
   // findings-JSON marker (for agents).
 
-  // REC-CO-2 + issue #53: supersede EVERY prior bot review — those left on other commits and any
-  // already on this head SHA — before posting the fresh one, so a re-review of the same commit
-  // replaces the stale review instead of being suppressed.
-  const stalePriorReviewIds = botReviews.map((r) => r.id);
-  if (stalePriorReviewIds.length > 0) {
-    await dismissReviews(input.repo, prNumber, stalePriorReviewIds, ghApi);
-  }
+  // Issue #31/#53: snapshot the bot's existing inline comments BEFORE posting the fresh review, so the
+  // stale ones can be minimized afterward without touching the fresh ones. Timing — not the comment's
+  // commit SHA — separates stale from fresh: everything present now is from a prior review (on a
+  // superseded commit OR an earlier review of this same SHA); the fresh comments are posted below.
+  const priorInlineComments = await listPriorBotCommentIds(
+    input.repo,
+    prNumber,
+    input.botLogin,
+    ghApi,
+  );
 
+  // Post the fresh review FIRST, THEN supersede the prior ones (REC-CO-2 + issue #53): posting before
+  // dismissing means the PR is never left without a review even if the process dies between the two —
+  // a re-review of the same commit dismisses the stale review only after its replacement exists.
   const reviewUrl = await postInlineReview(
     input.repo,
     prNumber,
@@ -693,9 +696,19 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     `Posted a review with ${String(comments.length)} inline comment(s) on PR #${String(prNumber)}\n`,
   );
 
-  // Issue #31: hide the bot's own inline comments from superseded head SHAs so a re-reviewed PR
-  // doesn't accumulate stale threads. Best-effort — the fresh review above is already posted.
-  await minimizeSupersededComments(input.repo, prNumber, input.headSha, input.botLogin, ghApi);
+  // Supersede EVERY prior bot review — those on other commits and any already on this head SHA.
+  // Best-effort: a dismissal that fails leaves a stale review beside the fresh one (logged), which
+  // beats failing the job now that the fresh review is already posted. Concurrent runs on the same
+  // commit are bounded by the workflow's concurrency group; GitHub itself tolerates multiple reviews.
+  const priorReviewIds = botReviews.map((r) => r.id);
+  if (priorReviewIds.length > 0) {
+    await dismissReviews(input.repo, prNumber, priorReviewIds, ghApi);
+  }
+
+  // Issue #31/#53: minimize the pre-post snapshot — the stale threads from the reviews just
+  // superseded — so a re-reviewed PR doesn't accumulate them. The fresh review's comments were posted
+  // after the snapshot, so they are untouched. Best-effort — the fresh review is already posted.
+  await minimizeComments(prNumber, priorInlineComments, ghApi);
 
   // Issue #11/#21: now that postInlineReview has actually resolved, the sticky can truthfully
   // report the review — with a link when reviewUrl parsed, as plain text otherwise (still true:

@@ -2063,13 +2063,15 @@ describe("post — absent price map renders cost as N/A with a footnote (SPEC §
   });
 });
 
-describe("post — minimize superseded inline comments (issue #31)", () => {
-  const node = (id: string, login: string, oid: string, isMinimized: boolean): unknown => ({
-    comments: { nodes: [{ id, isMinimized, author: { login }, originalCommit: { oid } }] },
+describe("post — minimize prior inline comments (issue #31/#53)", () => {
+  const node = (id: string, login: string, isMinimized: boolean): unknown => ({
+    comments: { nodes: [{ id, isMinimized, author: { login } }] },
   });
 
-  // headSha is "abc123def456" (mkInput default): C_old_bot is the ONLY superseded bot comment;
-  // C_cur_bot is on the current head, C_old_user is not the bot, C_old_min is already minimized.
+  // The snapshot is taken BEFORE the fresh review is posted, so every bot comment here is a PRIOR
+  // (stale) one regardless of which SHA it was authored against — C_prior_a and C_prior_b are both
+  // the bot's own non-minimized comments and get minimized; C_user is not the bot; C_min is already
+  // minimized. This is the #53 fix: a prior same-SHA review's threads are no longer left orphaned.
   const threadsResponse = JSON.stringify({
     data: {
       repository: {
@@ -2077,10 +2079,10 @@ describe("post — minimize superseded inline comments (issue #31)", () => {
           reviewThreads: {
             pageInfo: { hasNextPage: false },
             nodes: [
-              node("C_old_bot", "github-actions", "oldsha111", false),
-              node("C_cur_bot", "github-actions", "abc123def456", false),
-              node("C_old_user", "someuser", "oldsha111", false),
-              node("C_old_min", "github-actions", "oldsha111", true),
+              node("C_prior_a", "github-actions", false),
+              node("C_prior_b", "github-actions", false),
+              node("C_user", "someuser", false),
+              node("C_min", "github-actions", true),
             ],
           },
         },
@@ -2119,7 +2121,7 @@ describe("post — minimize superseded inline comments (issue #31)", () => {
       .map((c) => c.args.find((x) => x.startsWith("id="))?.slice("id=".length))
       .filter((x): x is string => x !== undefined);
 
-  it("minimizes ONLY the bot's own non-minimized comments left on a superseded head SHA", async () => {
+  it("minimizes the bot's own non-minimized inline comments from prior reviews (any SHA)", async () => {
     const { api, calls } = mkMockGhApi([
       ...baseMocks,
       {
@@ -2134,7 +2136,7 @@ describe("post — minimize superseded inline comments (issue #31)", () => {
 
     await post(mkInput({}), api);
 
-    expect(minimizedIdsOf(calls())).toEqual(["C_old_bot"]);
+    expect(minimizedIdsOf(calls())).toEqual(["C_prior_a", "C_prior_b"]);
   });
 
   it("still posts the review when listing review threads fails (best-effort, never fails the post)", async () => {

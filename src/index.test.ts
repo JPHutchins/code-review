@@ -1031,6 +1031,26 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
   });
+
+  it("degrades to the scaffold and still exits 0 on a bad --schema-version (never fails the review step)", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--out",
+      out,
+      "--schema-version",
+      "9.9",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
 });
 
 describe("cli — render defaults (bundled template + prices)", () => {

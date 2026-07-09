@@ -710,16 +710,32 @@ const seedDraftCmd = defineCommand({
     },
   },
   run: async ({ args }) => {
-    const kind = requireSchemaKind(args.kind || "findings");
     const outPath = resolve(args.out);
-    const schemaPath = args.schema
-      ? resolve(args.schema)
-      : requireSchemaPath(kind, args["schema-version"]);
+    const kindArg = args.kind || "findings";
+    const kind: SchemaKind = isSchemaKind(kindArg) ? kindArg : "findings";
+
+    // seed-draft is best-effort and must NEVER fail the review step (the workflow runs it under
+    // `set -e`), so every path below either seeds from the prior review or degrades to the
+    // empty-but-valid scaffold — none uses the process-exiting require* helpers. The only outcome
+    // that skips seeding is a scaffold write that itself throws (e.g. a bad --out directory), which
+    // is warned and still exits 0: the agent then writes $DRAFT itself, exactly as before seeding.
+    const writeEmptyScaffold = (): void => {
+      try {
+        writeFileSync(outPath, `${JSON.stringify(noticeFindings(""), null, 2)}\n`);
+        process.stderr.write(
+          `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
+        );
+      } catch (err) {
+        process.stderr.write(
+          `Warning: could not write the seed scaffold to ${outPath} (${err instanceof Error ? err.message : String(err)}) — the agent will create $DRAFT itself\n`,
+        );
+      }
+      process.stdout.write("empty\n");
+    };
 
     // Decode the prior review's embedded findings, tolerating a missing/absent/"null"/malformed
-    // file — the seed is best-effort and must never fail the review step. Validated against the
-    // current schema below so an older-shaped or corrupt prior review degrades to the empty scaffold
-    // rather than seeding an invalid $DRAFT.
+    // file. Validated against the current schema below so an older-shaped or corrupt prior review
+    // degrades to the empty scaffold rather than seeding an invalid $DRAFT.
     const priorFindings = ((): unknown => {
       if (!args.prior) return null;
       const raw = ((): unknown => {
@@ -736,8 +752,31 @@ const seedDraftCmd = defineCommand({
       return body === null ? null : parseFindingsMarker(body);
     })();
 
-    if (priorFindings !== null && validateAgainstSchema(priorFindings, schemaPath).valid) {
-      writeFileSync(outPath, `${JSON.stringify(priorFindings, null, 2)}\n`);
+    if (priorFindings === null) {
+      writeEmptyScaffold();
+      return;
+    }
+
+    // Resolve + validate WITHOUT the process-exiting require* helpers: any failure (bad
+    // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the
+    // scaffold so the always-exit-0 contract holds.
+    const seededFromPrior = ((): boolean => {
+      try {
+        const schemaPath = args.schema
+          ? resolve(args.schema)
+          : schemaPathFor(kind, args["schema-version"]);
+        if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
+        writeFileSync(outPath, `${JSON.stringify(priorFindings, null, 2)}\n`);
+        return true;
+      } catch (err) {
+        process.stderr.write(
+          `Warning: could not seed from the prior review (${err instanceof Error ? err.message : String(err)}) — falling back to the empty scaffold\n`,
+        );
+        return false;
+      }
+    })();
+
+    if (seededFromPrior) {
       const priorList = (priorFindings as { readonly findings?: unknown }).findings;
       const count = Array.isArray(priorList) ? priorList.length : 0;
       process.stderr.write(
@@ -745,11 +784,7 @@ const seedDraftCmd = defineCommand({
       );
       process.stdout.write("prior\n");
     } else {
-      writeFileSync(outPath, `${JSON.stringify(noticeFindings(""), null, 2)}\n`);
-      process.stderr.write(
-        `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
-      );
-      process.stdout.write("empty\n");
+      writeEmptyScaffold();
     }
   },
 });

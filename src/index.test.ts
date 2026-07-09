@@ -482,6 +482,50 @@ describe("cli — adapt", () => {
     expect(parsed.turns).toBe(0);
     expect(parsed.findings.summary).toContain("did not complete");
   });
+
+  it("takes wall + turns from the transcript tree, not the native envelope's under-reported figures (issue #59)", async () => {
+    // The real PR #58 review (run 29055476844): fanned out 12 subagents over ~702s, but its native
+    // envelope reports 42042ms / 5 turns — the main agent's active time only. The transcript tree is
+    // committed as a fixture; adapt must derive the true wall + turns from it.
+    const nativeUnderReported = resolve(
+      repoRoot,
+      "test",
+      "fixtures",
+      "native-fanout-underreported-envelope.json",
+    );
+    const mainTranscript = transcriptFixture("fanout-underreported", "main.jsonl");
+
+    const withTranscript = await runCli([
+      "adapt",
+      nativeUnderReported,
+      "--adapter",
+      "claude-code",
+      "--route",
+      "full review",
+      "--effort",
+      "xhigh",
+      "--transcript",
+      mainTranscript,
+    ]);
+    expect(withTranscript.exitCode).toBeNull();
+    const env = JSON.parse(withTranscript.stdout) as {
+      duration_ms: number;
+      turns: number;
+      models: { model: string }[];
+    };
+    // ~702s and 118 turns from the tree — decisively not the native's 42s / 5 turns.
+    expect(env.duration_ms).toBeGreaterThan(600_000);
+    expect(env.turns).toBeGreaterThan(100);
+    // Per-model usage stays native-authoritative (both models present).
+    expect(env.models.map((m) => m.model).sort()).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+
+    // Without a transcript, the native's under-reported figures are all there is — proving the
+    // transcript is what corrects them.
+    const noTranscript = await runCli(["adapt", nativeUnderReported, "--adapter", "claude-code"]);
+    const envNoTr = JSON.parse(noTranscript.stdout) as { duration_ms: number; turns: number };
+    expect(envNoTr.duration_ms).toBe(42042);
+    expect(envNoTr.turns).toBe(5);
+  });
 });
 
 describe("cli — extract", () => {

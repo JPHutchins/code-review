@@ -318,18 +318,20 @@ describe("adapt — transcript telemetry fallback (issue #36 — real cost on a 
     expect(result.right.turns).toBe(0);
   });
 
-  it("keeps the native telemetry over the fallback when the native has real per-model usage (fallback is only for the empty-native case)", () => {
+  it("keeps native per-model USAGE but takes wall + turns from the transcript when both are present (issue #59)", () => {
     const result = adapt("claude-code", nativeFixture, undefined, {
       transcriptFallback: () => fallback,
     });
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
-    // deepseek-v4-flash exists only in the native fixture, never in the single-entry fallback.
+    // Usage stays native-authoritative — deepseek-v4-flash exists only in the native fixture...
     expect(result.right.models.some((m) => m.model === "deepseek-v4-flash")).toBe(true);
-    expect(result.right.turns).not.toBe(7);
+    // ...but wall + turns come from the transcript, since the native under-reports a subagent fan-out.
+    expect(result.right.turns).toBe(7);
+    expect(result.right.duration_ms).toBe(123456);
   });
 
-  it("does NOT invoke the fallback thunk when the native has per-model usage; DOES when it's empty (no wasted transcript I/O)", () => {
+  it("invokes the fallback thunk whenever a transcript is supplied — wall + turns need it, native usage or not (issue #59)", () => {
     let calledWithNative = 0;
     adapt("claude-code", nativeFixture, undefined, {
       transcriptFallback: () => {
@@ -337,7 +339,7 @@ describe("adapt — transcript telemetry fallback (issue #36 — real cost on a 
         return fallback;
       },
     });
-    expect(calledWithNative).toBe(0);
+    expect(calledWithNative).toBe(1);
 
     let calledWhenAbsent = 0;
     adapt("claude-code", undefined, undefined, {

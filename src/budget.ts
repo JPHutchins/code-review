@@ -33,21 +33,32 @@ export interface BudgetInputs {
   readonly reserve: ReserveParams;
 }
 
-/** The headroom to hold back for wind-down, judged per axis as max(flat floor, `frac` × the budget):
- *  the flat floor keeps a tiny budget from converging with no absolute room left to write and validate
- *  the draft, while the fraction lets a large budget scale. The soft (steer) tier reserves
- *  SOFT_MULTIPLE× the hard (force) tier, so the agent is nudged to converge with a whole extra reserve
+/** The headroom to hold back for wind-down, judged per axis as max(flat floor, effective-frac × the
+ *  budget): the flat floor keeps a tiny budget from converging with no absolute room left to write and
+ *  validate the draft, while the fraction lets a large budget scale. The effective fraction GROWS with
+ *  how far into the budget the run already is — `frac + growth × (used / limit)` — so convergence
+ *  pressure escalates the longer the review has run, reserving proportionally more tail for the
+ *  write→validate→fix loop rather than triggering at one late cliff (issue #45; a wall-killed review
+ *  wrote its first draft at ~85% and ran out of time adapting it to the schema). The soft (steer) tier
+ *  reserves SOFT_MULTIPLE× the hard (force) tier, so the agent is nudged with a whole extra reserve
  *  still in hand rather than only at the brink (issue #38). */
 export interface ReserveParams {
   readonly frac: number;
+  readonly growth: number;
   readonly flatUsd: number;
   readonly flatMs: number;
 }
 
-/** Defaults sized for real reviews: hold back 15% of the budget, but never less than $0.02 / 2 minutes
- *  of absolute wind-down room. On a large budget the fraction dominates (≈ the old 0.7/0.85 soft/hard
- *  behaviour); on a tiny one the flat floor dominates and converges the agent at once. */
-export const DEFAULT_RESERVE: ReserveParams = { frac: 0.15, flatUsd: 0.02, flatMs: 120_000 };
+/** Defaults sized for real reviews: hold back a base 15% of the budget, growing by up to another 25%
+ *  as the run approaches its limit (so hard convergence lands near ~68% of the wall rather than ~85%,
+ *  soft near ~47%), but never less than $0.02 / 2 minutes of absolute wind-down room. `growth: 0`
+ *  recovers the old flat-reserve behaviour. */
+export const DEFAULT_RESERVE: ReserveParams = {
+  frac: 0.15,
+  growth: 0.25,
+  flatUsd: 0.02,
+  flatMs: 120_000,
+};
 
 const SOFT_MULTIPLE = 2;
 
@@ -72,9 +83,14 @@ const timeAxis = (i: BudgetInputs): Axis | null =>
     : null;
 
 /** 2 = inside the hard reserve (force convergence), 1 = inside the soft reserve (steer), 0 = ok. The
- *  hard reserve is max(flat floor, frac × limit); the soft reserve is SOFT_MULTIPLE× the hard one. */
-const axisSeverity = (a: Axis, frac: number): 0 | 1 | 2 => {
-  const hardReserve = Math.max(a.flat, frac * a.limit);
+ *  hard reserve is max(flat floor, effFrac × limit), where effFrac grows with how far into the budget
+ *  the run is — `frac + growth × usedFrac` — so it converges earlier the longer it has run; the soft
+ *  reserve is SOFT_MULTIPLE× the hard one. `usedFrac` is clamped to [0, 1] so an over-budget axis
+ *  simply pins the growth term at its max rather than compounding past it. */
+const axisSeverity = (a: Axis, reserve: ReserveParams): 0 | 1 | 2 => {
+  const usedFrac = Math.min(1, Math.max(0, a.used / a.limit));
+  const effFrac = reserve.frac + reserve.growth * usedFrac;
+  const hardReserve = Math.max(a.flat, effFrac * a.limit);
   const remaining = a.limit - a.used;
   if (remaining <= hardReserve) return 2;
   if (remaining <= SOFT_MULTIPLE * hardReserve) return 1;
@@ -87,7 +103,7 @@ const axisSeverity = (a: Axis, frac: number): 0 | 1 | 2 => {
 export const decideBudget = (i: BudgetInputs): BudgetPhase => {
   const worst = [costAxis(i), timeAxis(i)]
     .filter((a): a is Axis => a !== null)
-    .reduce<0 | 1 | 2>((max, a) => Math.max(max, axisSeverity(a, i.reserve.frac)) as 0 | 1 | 2, 0);
+    .reduce<0 | 1 | 2>((max, a) => Math.max(max, axisSeverity(a, i.reserve)) as 0 | 1 | 2, 0);
   return worst === 2 ? { kind: "hard" } : worst === 1 ? { kind: "soft" } : { kind: "ok" };
 };
 
@@ -111,8 +127,8 @@ const timeClause = (i: BudgetInputs): string | null =>
 
 const directive = (phase: Exclude<BudgetPhase, { kind: "ok" }>, draftPath: string): string =>
   phase.kind === "hard"
-    ? `Budget nearly exhausted — STOP all new investigation now. Write your COMPLETE findings to ${draftPath} and run \`code-review validate ${draftPath}\` until it passes. Other tools are blocked until that draft is written.`
-    : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, then validate — you may run out of budget before you finish otherwise.`;
+    ? `Budget nearly exhausted — STOP all new investigation now. Write your COMPLETE findings to ${draftPath} and run \`code-review validate ${draftPath} --explain\` until it passes (--explain prints the exact schema when the shape is wrong). Other tools are blocked until that draft is written.`
+    : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, then run \`code-review validate ${draftPath} --explain\` (it prints the exact schema if the shape is wrong) — you may run out of budget before you finish otherwise.`;
 
 /** The steer/deny message: both budget axes, then the phase's directive. Shown to the agent as
  *  PostToolBatch `additionalContext` (soft/hard) and as the PreToolUse deny reason (hard). */
@@ -279,6 +295,7 @@ export const budgetHookCommand = (
     readonly wall?: string;
     readonly prices?: string;
     readonly reserveFrac?: string;
+    readonly reserveGrowth?: string;
     readonly reserveUsd?: string;
     readonly reserveWall?: string;
   },
@@ -290,6 +307,7 @@ export const budgetHookCommand = (
     ...(opts.wall ? ["--wall", shellQuote(opts.wall)] : []),
     ...(opts.prices ? ["--prices", shellQuote(opts.prices)] : []),
     ...(opts.reserveFrac ? ["--reserve-frac", shellQuote(opts.reserveFrac)] : []),
+    ...(opts.reserveGrowth ? ["--reserve-growth", shellQuote(opts.reserveGrowth)] : []),
     ...(opts.reserveUsd ? ["--reserve-usd", shellQuote(opts.reserveUsd)] : []),
     ...(opts.reserveWall ? ["--reserve-wall", shellQuote(opts.reserveWall)] : []),
   ].join(" ");

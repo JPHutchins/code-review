@@ -895,6 +895,51 @@ describe("cli — validate --kind", () => {
   });
 });
 
+describe("cli — validate --explain (issue #45: schema on failure, fix the shape in one pass)", () => {
+  // The exact shape the wall-killed jphfmt#11 agent wrote: the /code-review skill's finding vocabulary
+  // ({file,line,summary,failure_scenario}) instead of the canonical schema. It then reverse-engineered
+  // the real field names against `validate` at the wall — `--explain` hands them over immediately.
+  const skillShapedDraft = {
+    schema_version: "0.4.0",
+    summary: "example",
+    verdict: "comment",
+    findings: [{ file: "src/x.rs", line: 19, summary: "bug", failure_scenario: "boom" }],
+  };
+
+  it("on failure, prints the errors AND the schema carrying the canonical field names", async () => {
+    const badPath = join(tmpDir, "skill-shaped.json");
+    writeFileSync(badPath, JSON.stringify(skillShapedDraft));
+    const { stderr, exitCode } = await runCli(["validate", badPath, "--explain"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("invalid");
+    expect(stderr).toContain("start_line"); // the ajv error names a missing canonical field
+    expect(stderr).toContain("authoritative spec"); // the --explain preamble
+    expect(stderr).toContain('"path"'); // the schema itself, with real property names
+    expect(stderr).toContain('"severity"');
+    expect(stderr).toContain('"confidence"');
+  });
+
+  it("without --explain, dumps only the errors (no schema)", async () => {
+    const badPath = join(tmpDir, "skill-shaped2.json");
+    writeFileSync(badPath, JSON.stringify(skillShapedDraft));
+    const { stderr, exitCode } = await runCli(["validate", badPath]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("invalid");
+    expect(stderr).not.toContain("authoritative spec");
+  });
+
+  it("on a valid document, --explain adds nothing (still just ✅ valid)", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "validate",
+      sampleFindingsPath,
+      "--explain",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("valid");
+    expect(stderr).not.toContain("authoritative spec");
+  });
+});
+
 describe("cli — render defaults (bundled template + prices)", () => {
   it("renders using the bundled template and prices when both are omitted, warning about example prices", async () => {
     const { stdout, stderr, exitCode } = await runCli([

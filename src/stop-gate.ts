@@ -65,7 +65,7 @@ export const decideGate = (
     reason: [
       `This review is not complete — ${whatsWrong(state, draftPath, kind)}`,
       `The only deliverable is a ${kind} document that validates against the ${kind} schema — run "code-review print-schema ${kind}" to see the exact shape.`,
-      `Write it to ${draftPath}, then run "code-review validate ${draftPath} --kind ${kind}" until it exits 0 before ending your turn.`,
+      `Write it to ${draftPath}, then run "code-review validate ${draftPath} --kind ${kind} --explain" until it exits 0 before ending your turn (--explain prints the schema when the shape is wrong).`,
     ].join("\n"),
   };
 };

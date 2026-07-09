@@ -40,6 +40,7 @@ export interface ComposeSettingsOptions {
     readonly wall?: string;
     readonly prices?: string;
     readonly reserveFrac?: string;
+    readonly reserveGrowth?: string;
     readonly reserveUsd?: string;
     readonly reserveWall?: string;
   };

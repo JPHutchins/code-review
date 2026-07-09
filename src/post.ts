@@ -218,7 +218,7 @@ const postInlineReview = async (
     // (comments.length === 0) is a genuine error and propagates.
     if (comments.length === 0) throw err;
     process.stderr.write(
-      `Warning: the batched inline review on PR #${String(prNumber)} was rejected (${err instanceof Error ? err.message : String(err)}) — GitHub rejects the whole batch if any one comment's position is invalid; posting the review body-only, then each comment individually to keep the valid ones (issue #57)\n`,
+      `Warning: the batched inline review on PR #${String(prNumber)} was rejected (${err instanceof Error ? err.message : String(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
     );
     const url = parseHtmlUrl(await ghApi(reviewsEndpoint, reviewBody(false)));
     const commentsEndpoint = [`repos/${repo}/pulls/${String(prNumber)}/comments`, "--input", "-"];
@@ -774,13 +774,14 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // Best-effort — the sticky and review are already posted, so a failure here must never fail the job.
   const unanchoredCount = unposted.length;
   const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
-  const finalDisposition: InlineDisposition | undefined =
-    inlinePosted > 0
-      ? { kind: "posted", count: inlinePosted, sha: input.headSha }
-      : unanchoredCount > 0
-        ? { kind: "inline-unavailable" }
-        : initialDisposition;
   if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
+    // Inside the guard exactly one holds: some comments anchored ("posted N"), or none did but
+    // findings were rejected ("inline unavailable"). A body-only review with nothing to say keeps
+    // the initial sticky and never reaches here.
+    const finalDisposition: InlineDisposition =
+      inlinePosted > 0
+        ? { kind: "posted", count: inlinePosted, sha: input.headSha }
+        : { kind: "inline-unavailable" };
     try {
       await patchComment(
         input.repo,

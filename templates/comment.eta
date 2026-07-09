@@ -31,7 +31,7 @@ _No findings — clean review._
 <% if (it.strays.length > 0) { %>
 ### <%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %>
 <% if (it.unanchoredCount && it.unanchoredCount > 0) { %>
-_<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> below couldn't be posted as inline comment<%= it.unanchoredCount === 1 ? '' : 's' %> (GitHub rejected the position); the rest are outside the diff._
+_<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> below couldn't be posted as inline comment<%= it.unanchoredCount === 1 ? '' : 's' %> (GitHub rejected the position)<% if (it.strays.length > it.unanchoredCount) { %>; the rest are outside the diff<% } %>._
 <% } %>
 
 <% it.strays.forEach(function(f) { -%>

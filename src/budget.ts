@@ -12,6 +12,14 @@
 import { shellQuote } from "./stop-gate.js";
 import { asRecord } from "./util.js";
 
+/** The environment variable carrying the run's absolute deadline as Unix epoch SECONDS. The review
+ *  job exports it right before `claude -p` (from `code-review deadline`), and every hook subprocess —
+ *  the main agent's AND each fan-out subagent's — inherits it, so all measure the SAME true remaining
+ *  wall. Without it each hook derived elapsed from its own transcript's first timestamp, which reads
+ *  ≈0 inside a freshly-spawned subagent, leaving the skill's parallel fan-out entirely unsteered until
+ *  the wall (issue #45). */
+export const DEADLINE_ENV = "CODE_REVIEW_DEADLINE_EPOCH";
+
 /** The two budget axes and the wind-down reserve to judge them against. Either axis may be unknown
  *  (`spentUsd`/`budgetUsd` null when there is no price map to measure spend; `elapsedMs`/`wallMs`
  *  null when there is no wall set or no transcript timestamp), in which case only the other drives;
@@ -215,6 +223,42 @@ export const parseWallMs = (raw: string): number | null => {
       return n * 3_600_000;
   }
 };
+
+/** Parse a Unix epoch-SECONDS anchor (as `date +%s` prints it, and as `deadline` emits) to epoch ms;
+ *  null when unset or not a bare positive integer, so the caller falls back to the per-transcript
+ *  start rather than trusting a garbage anchor. */
+export const parseEpochSecMs = (raw: string | undefined): number | null => {
+  if (raw === undefined) return null;
+  const t = raw.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number.parseInt(t, 10);
+  return Number.isFinite(n) && n > 0 ? n * 1000 : null;
+};
+
+/** The elapsed wall-clock to judge the time axis on, from the most reliable source available. Prefers
+ *  the ABSOLUTE anchor — a fixed run deadline (epoch ms) shared across every hook process — computed
+ *  as `wall − (deadline − now)`; the per-transcript first timestamp (`firstTsMs`) is only the fallback
+ *  because inside a freshly-spawned subagent it reads ≈0, so during the skill's parallel fan-out the
+ *  budget hooks stay blind and never steer (issue #45). Falls back to the transcript start when no
+ *  anchor is set (manual/local runs), then to null when neither is knowable (time axis disabled).
+ *  Clamped to ≥ 0 — a passed deadline or clock skew reads as fully elapsed, never negative. */
+export const anchoredElapsedMs = (src: {
+  readonly deadlineMs: number | null;
+  readonly wallMs: number | null;
+  readonly firstTsMs: number | null;
+  readonly nowMs: number;
+}): number | null => {
+  if (src.deadlineMs !== null && src.wallMs !== null)
+    return Math.max(0, src.wallMs - (src.deadlineMs - src.nowMs));
+  if (src.firstTsMs !== null) return Math.max(0, src.nowMs - src.firstTsMs);
+  return null;
+};
+
+/** The epoch-SECONDS deadline for a `wallMs` run starting now — what the review job exports as
+ *  `DEADLINE_ENV`. The wall is rounded UP to whole seconds so the anchor never expires before the
+ *  matching `timeout` kill. */
+export const deadlineEpochSec = (wallMs: number, nowMs: number): number =>
+  Math.floor(nowMs / 1000) + Math.ceil(wallMs / 1000);
 
 /** Parse a fraction in [0, 1]; fall back to `fallback` on anything unparseable or out of range. `0`
  *  is valid and meaningful — it disables the fraction part of the reserve so only the flat floor

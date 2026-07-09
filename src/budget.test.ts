@@ -6,6 +6,9 @@ import {
   evaluateBudgetHook,
   parseWallMs,
   parseFraction,
+  parseEpochSecMs,
+  anchoredElapsedMs,
+  deadlineEpochSec,
   budgetHookCommand,
   type BudgetInputs,
   type BudgetParams,
@@ -246,6 +249,95 @@ describe("parseFraction", () => {
     expect(parseFraction("-0.1", 0.7)).toBe(0.7);
     expect(parseFraction("1.5", 0.7)).toBe(0.7);
     expect(parseFraction("abc", 0.7)).toBe(0.7);
+  });
+});
+
+describe("parseEpochSecMs", () => {
+  it("parses a bare positive integer of epoch SECONDS to epoch ms", () => {
+    expect(parseEpochSecMs("1700000000")).toBe(1_700_000_000_000);
+    expect(parseEpochSecMs("  1700000000  ")).toBe(1_700_000_000_000);
+  });
+  it("returns null for unset, non-integer, zero/negative, or exponent forms (no garbage anchor)", () => {
+    expect(parseEpochSecMs(undefined)).toBeNull();
+    expect(parseEpochSecMs("")).toBeNull();
+    expect(parseEpochSecMs("abc")).toBeNull();
+    expect(parseEpochSecMs("12.5")).toBeNull();
+    expect(parseEpochSecMs("0")).toBeNull();
+    expect(parseEpochSecMs("-5")).toBeNull();
+    expect(parseEpochSecMs("17e9")).toBeNull();
+    expect(parseEpochSecMs("100abc")).toBeNull();
+  });
+});
+
+describe("anchoredElapsedMs", () => {
+  it("uses the absolute anchor when present: elapsed = wall − (deadline − now)", () => {
+    // deadline 100s out on a 600s wall → 500s elapsed, regardless of any transcript timestamp.
+    expect(
+      anchoredElapsedMs({
+        deadlineMs: 1_000_000 + 100_000,
+        wallMs: 600_000,
+        firstTsMs: null,
+        nowMs: 1_000_000,
+      }),
+    ).toBe(500_000);
+  });
+
+  it("issue #45: the anchor WINS over a fresh subagent's ≈0 firstTsMs (the fan-out-blindness fix)", () => {
+    // A subagent's own transcript started 1s ago — firstTsMs alone would read 1s elapsed (≈0%, no
+    // steer). The shared anchor says the run is 500s into its 600s wall — that must be what drives.
+    const elapsed = anchoredElapsedMs({
+      deadlineMs: 1_000_000 + 100_000,
+      wallMs: 600_000,
+      firstTsMs: 1_000_000 - 1_000,
+      nowMs: 1_000_000,
+    });
+    expect(elapsed).toBe(500_000);
+    expect(elapsed).not.toBe(1_000);
+  });
+
+  it("falls back to the per-transcript start when no anchor (or no wall) is set", () => {
+    expect(
+      anchoredElapsedMs({
+        deadlineMs: null,
+        wallMs: 600_000,
+        firstTsMs: 970_000,
+        nowMs: 1_000_000,
+      }),
+    ).toBe(30_000);
+    // deadline set but no wall → can't anchor → transcript fallback
+    expect(
+      anchoredElapsedMs({
+        deadlineMs: 1_100_000,
+        wallMs: null,
+        firstTsMs: 970_000,
+        nowMs: 1_000_000,
+      }),
+    ).toBe(30_000);
+  });
+
+  it("is null when neither the anchor nor a transcript start is knowable (time axis disabled)", () => {
+    expect(
+      anchoredElapsedMs({ deadlineMs: null, wallMs: 600_000, firstTsMs: null, nowMs: 1_000_000 }),
+    ).toBeNull();
+  });
+
+  it("clamps to ≥ 0 — a deadline further out than the wall (clock skew) never reads negative", () => {
+    expect(
+      anchoredElapsedMs({
+        deadlineMs: 1_000_000 + 700_000, // 700s out on a 600s wall
+        wallMs: 600_000,
+        firstTsMs: null,
+        nowMs: 1_000_000,
+      }),
+    ).toBe(0);
+  });
+});
+
+describe("deadlineEpochSec", () => {
+  it("is now (floored to seconds) + the wall (ceiled to seconds)", () => {
+    expect(deadlineEpochSec(600_000, 1_000_000)).toBe(1_600);
+    // now rounds DOWN, wall rounds UP — the anchor never expires before the matching timeout kill
+    expect(deadlineEpochSec(90_500, 1_000_499)).toBe(1_000 + 91);
   });
 });
 

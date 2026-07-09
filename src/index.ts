@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CLI entry point — citty subcommands for render, inline, post, cost, check-cost, validate, adapt,
-// extract, validate-patches, print-schema, stop-gate, budget-hook, print-settings.
+// extract, validate-patches, print-schema, stop-gate, budget-hook, print-settings, deadline.
 
 /* eslint-disable @typescript-eslint/require-await */
 // citty requires async run() even when the body has no explicit await
@@ -13,7 +13,16 @@ import { render } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
 import { computeCost } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
-import { evaluateBudgetHook, parseWallMs, parseFraction, DEFAULT_RESERVE } from "./budget.js";
+import {
+  evaluateBudgetHook,
+  parseWallMs,
+  parseFraction,
+  parseEpochSecMs,
+  anchoredElapsedMs,
+  deadlineEpochSec,
+  DEFAULT_RESERVE,
+  DEADLINE_ENV,
+} from "./budget.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { formatUtc } from "./format.js";
 import { ResultEnvelopeCodec, FindingsCodec, PriceMapCodec, TestSummaryCodec } from "./schema.js";
@@ -421,11 +430,20 @@ const budgetHookCmd = defineCommand({
       const prices = args.prices ? tryReadPrices(args.prices) : null;
       const spentUsd =
         prices !== null && usage ? computeCost(usage.models, prices).totalCostUSD : null;
+      // The absolute anchor (set by the review job, inherited by every hook incl. fan-out subagents)
+      // is the true remaining wall; the per-transcript first timestamp is only the fallback — it
+      // reads ≈0 in a fresh subagent and leaves the fan-out unsteered (issue #45).
+      const wallMs = args.wall ? parseWallMs(args.wall) : null;
       const output = evaluateBudgetHook(input, {
         spentUsd,
         budgetUsd: parseBudgetUsd(args["budget-usd"]),
-        elapsedMs: usage?.firstTsMs != null ? Math.max(0, Date.now() - usage.firstTsMs) : null,
-        wallMs: args.wall ? parseWallMs(args.wall) : null,
+        elapsedMs: anchoredElapsedMs({
+          deadlineMs: parseEpochSecMs(process.env[DEADLINE_ENV]),
+          wallMs,
+          firstTsMs: usage?.firstTsMs ?? null,
+          nowMs: Date.now(),
+        }),
+        wallMs,
         reserve: {
           frac: parseFraction(args["reserve-frac"], DEFAULT_RESERVE.frac),
           flatUsd: parseBudgetUsd(args["reserve-usd"]) ?? DEFAULT_RESERVE.flatUsd,
@@ -528,6 +546,30 @@ const printSettingsCmd = defineCommand({
       },
     });
     process.stdout.write(`${JSON.stringify(settings)}\n`);
+  },
+});
+
+const deadlineCmd = defineCommand({
+  meta: {
+    name: "deadline",
+    description:
+      "Print the run's absolute deadline as Unix epoch seconds (now + --wall). The review job exports this as CODE_REVIEW_DEADLINE_EPOCH right before `claude -p` so every budget hook — the main agent's and each fan-out subagent's — measures the SAME true remaining wall instead of its own transcript's start, which reads ≈0 in a fresh subagent and leaves the fan-out unsteered (issue #45).",
+  },
+  args: {
+    wall: {
+      type: "string",
+      description:
+        "Wall-clock budget for the run (e.g. 24m, 1200s, 2h) — the deadline is now + this",
+      required: true,
+    },
+  },
+  run: async ({ args }) => {
+    const wallMs = parseWallMs(args.wall);
+    if (wallMs === null) {
+      fail(`--wall must be a duration like 24m, 1200s, or 2h (got '${args.wall}')`);
+    } else {
+      process.stdout.write(`${String(deadlineEpochSec(wallMs, Date.now()))}\n`);
+    }
   },
 });
 
@@ -1103,7 +1145,7 @@ export const main = defineCommand({
     name: "code-review",
     version: packageVersion,
     description:
-      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, check-cost, validate, stop-gate, budget-hook, and print-settings",
+      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, check-cost, validate, stop-gate, budget-hook, print-settings, and deadline",
   },
   subCommands: {
     gather: gatherCmd,
@@ -1120,6 +1162,7 @@ export const main = defineCommand({
     "stop-gate": stopGateCmd,
     "budget-hook": budgetHookCmd,
     "print-settings": printSettingsCmd,
+    deadline: deadlineCmd,
   },
 });
 

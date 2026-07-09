@@ -417,6 +417,35 @@ describe("cli — adapt", () => {
     expect(parsed.findings.summary).toContain("did not complete");
   });
 
+  it("recovers real telemetry from --transcript when envelope.json is EMPTY (issue #36 — cost is real, not $0.00)", async () => {
+    const emptyPath = join(tmpDir, "envelope.json");
+    writeFileSync(emptyPath, "");
+    const { stdout, exitCode } = await runCli([
+      "adapt",
+      emptyPath,
+      "--adapter",
+      "claude-code",
+      "--transcript",
+      transcriptFixture("deepseek-main.jsonl"),
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as {
+      turns: number;
+      models: { model: string; input_tokens: number }[];
+    };
+    // The wall-killed run left no envelope, but the transcript still holds the real spend.
+    expect(parsed.turns).toBe(2);
+    expect(parsed.models).toEqual([
+      {
+        model: "deepseek-v4-pro",
+        input_tokens: 21615,
+        output_tokens: 107,
+        cache_read_tokens: 21504,
+        cache_write_tokens: 0,
+      },
+    ]);
+  });
+
   it("recovers findings from --agent-file even when envelope.json is TRUNCATED mid-flush (issue #39)", async () => {
     const truncPath = join(tmpDir, "envelope.json");
     // What a SIGTERM'd `claude -p >envelope.json` leaves behind: valid-JSON prefix, no close.

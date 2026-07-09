@@ -30,7 +30,7 @@ import type { Triage, Finding, PriceMap } from "./schema.js";
 import { post } from "./post.js";
 import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
-import type { AdapterName } from "./adapt.js";
+import type { AdapterName, TranscriptTelemetry } from "./adapt.js";
 import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
 import { schemaPathFor, declaredVersion } from "./registry.js";
@@ -135,6 +135,20 @@ const unwrapAdapt = <A>(either: Either<string, A>): A => {
     fail(err instanceof Error ? err.message : String(err));
   }
   throw new Error("unreachable"); // fail() always exits
+};
+
+/** Recover telemetry from a session transcript tree (main + subagents) for `adapt`'s wall-kill
+ *  fallback (issue #36): when the native envelope has no per-model usage, `adapt` refills from this
+ *  so cost computes from real models×prices instead of $0.00. A missing/unreadable transcript yields
+ *  empty models, which `adapt` treats as no fallback (keeping the native's zeros). */
+const transcriptFallbackFrom = (path: string): TranscriptTelemetry => {
+  const tree = readTranscriptTree(resolve(path));
+  if (tree.missing)
+    process.stderr.write(
+      `code-review adapt: transcript ${path} is unreadable — no telemetry fallback (issue #36)\n`,
+    );
+  const usage = sumTranscriptUsage(tree.entries);
+  return { models: usage.models, turns: usage.turns, durationMs: usage.durationMs };
 };
 
 /** Resolve a path bundled with the package (schema/, templates/) — same pattern as validate's default schema. */
@@ -653,12 +667,18 @@ const adaptCmd = defineCommand({
       type: "string",
       description: 'Effort label to stamp into the envelope (e.g. "max" or "low")',
     },
+    transcript: {
+      type: "string",
+      description:
+        "Path to the session transcript (the main .jsonl); when the native envelope carries no per-model usage — a wall-clock kill leaves it empty (issue #39) — telemetry is recovered from the transcript tree (main + subagents) so cost is real, not $0.00 (issue #36)",
+    },
   },
   run: async ({ args }) => {
     const envelope = unwrapAdapt(
       adapt(requireAdapterName(args.adapter), readJSONOrAbsent(args.native), args["agent-file"], {
         route: args.route,
         effort: args.effort,
+        ...(args.transcript ? { transcriptFallback: transcriptFallbackFrom(args.transcript) } : {}),
       }),
     );
     process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);

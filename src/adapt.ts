@@ -2,7 +2,8 @@
 // result envelope (SPEC §6.1). Claude Code is the reference adapter — see docs/adapters.md.
 // A present-but-wrong-shaped native surfaces as a Left; an *absent* native (undefined or null — the
 // caller could not read/parse it, e.g. a wall-clock timeout killed `claude -p` mid-flush, issue #39)
-// degrades to a no-telemetry envelope that still recovers findings from --agent-file. Never throws.
+// still recovers findings from --agent-file, and refills telemetry from the transcript fallback when
+// the caller supplies one (issue #36) so cost is real, not $0.00. Never throws.
 
 import * as t from "io-ts";
 import type { Either } from "fp-ts/Either";
@@ -61,10 +62,22 @@ const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsage
       : {}),
   }));
 
-/** Route/effort the review ran under (SPEC §6.1 envelope fields). */
+/** Telemetry recovered from the session transcript tree, supplied by the caller to refill the
+ *  envelope when the native envelope carries no per-model usage — a wall-clock kill leaves it
+ *  absent/empty (issue #39), yet the transcript still records the real spend (issue #36), so cost
+ *  computes from real models×prices downstream instead of a false $0.00. */
+export interface TranscriptTelemetry {
+  readonly models: readonly ModelUsageEntry[];
+  readonly turns: number;
+  readonly durationMs: number;
+}
+
+/** Run context the caller stamps into the envelope: route/effort (SPEC §6.1) and an optional
+ *  transcript telemetry fallback for the wall-kill path. */
 export interface RunMeta {
   readonly route?: string;
   readonly effort?: string;
+  readonly transcriptFallback?: TranscriptTelemetry;
 }
 
 /** The extraction ladder's outcome, reduced to what `buildEnvelope` needs: either a materialized
@@ -107,25 +120,60 @@ const withMeta = (base: Omit<Telemetry, "route" | "effort">, meta: RunMeta): Tel
   ...(meta.effort ? { effort: meta.effort } : {}),
 });
 
-/** Real telemetry from a decoded native envelope — carried UNCONDITIONALLY, so a findings-ladder
- *  miss never discards it (issue #18). */
+/** Assemble telemetry, preferring the native envelope but falling back to the transcript when the
+ *  native has NO per-model usage. A clean run's native is authoritative (carried unconditionally, so
+ *  a findings-ladder miss never discards it — issue #18); a wall-clock `timeout` kill leaves the
+ *  native absent/empty (issue #39), and only then does the transcript fallback (issue #36) refill
+ *  models/turns/duration so cost still computes from real models×prices instead of $0.00. The
+ *  vendor's own cost figure is carried through from the native whenever it had one. */
+const resolveTelemetry = (
+  native: {
+    models: ModelUsageEntry[];
+    turns: number;
+    durationMs: number;
+    vendorCostUsd: number | null;
+  },
+  meta: RunMeta,
+): Telemetry => {
+  const fb = meta.transcriptFallback;
+  const useFallback = native.models.length === 0 && fb !== undefined && fb.models.length > 0;
+  return withMeta(
+    useFallback
+      ? {
+          models: [...fb.models],
+          turns: fb.turns,
+          duration_ms: fb.durationMs,
+          vendor_cost_usd: native.vendorCostUsd,
+        }
+      : {
+          models: native.models,
+          turns: native.turns,
+          duration_ms: native.durationMs,
+          vendor_cost_usd: native.vendorCostUsd,
+        },
+    meta,
+  );
+};
+
+/** Telemetry from a decoded native envelope (issue #18), or the transcript fallback when it has no
+ *  per-model usage. */
 const nativeTelemetry = (native: ClaudeCodeEnvelope, meta: RunMeta): Telemetry =>
-  withMeta(
+  resolveTelemetry(
     {
       models: mapModelUsage(native.modelUsage),
       turns: native.num_turns,
-      duration_ms: native.duration_ms,
-      vendor_cost_usd: native.total_cost_usd ?? null,
+      durationMs: native.duration_ms,
+      vendorCostUsd: native.total_cost_usd ?? null,
     },
     meta,
   );
 
-/** Telemetry stand-in when the native envelope is absent/unreadable (issue #39): a wall-clock
- *  `timeout` can kill `claude -p` mid-flush, leaving no parseable envelope. No per-model usage,
- *  zero turns/duration, cost unknown — the findings ladder still runs (its --agent-file rung needs
- *  no native), so a checkpointed $DRAFT survives the cutoff; transcript cost recovery (#36) refills. */
+/** Telemetry when the native envelope is absent/unreadable (issue #39): a wall-clock `timeout` can
+ *  kill `claude -p` mid-flush, leaving no parseable envelope. The transcript fallback (issue #36)
+ *  refills real spend when present; otherwise zeros. Either way the findings ladder still runs (its
+ *  --agent-file rung needs no native), so a checkpointed $DRAFT survives the cutoff. */
 const absentTelemetry = (meta: RunMeta): Telemetry =>
-  withMeta({ models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null }, meta);
+  resolveTelemetry({ models: [], turns: 0, durationMs: 0, vendorCostUsd: null }, meta);
 
 /** Assemble the abstract envelope (SPEC §6.1): `findings`/`schema_version` from the extraction
  *  ladder (which reads --agent-file and defensively reads the raw native), telemetry from the

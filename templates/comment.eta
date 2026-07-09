@@ -24,10 +24,15 @@ _No findings — clean review._
 → <%= it.inlineDisposition.count %> comment<%= it.inlineDisposition.count === 1 ? '' : 's' %> posted inline on `<%= it.inlineDisposition.sha.slice(0, 7) %>` — <% if (it.reviewUrl) { %>[see the review](<%~ it.reviewUrl %>)<% } else { %>see the review<% } %>.
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'none-in-diff') { %>
 → No inline comments — all findings are outside the diff (listed below).
+<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'inline-unavailable') { %>
+→ ⚠️ Inline comments couldn't be posted for this review (GitHub rejected a comment's position) — every finding is listed below instead.
 <% } %>
 
 <% if (it.strays.length > 0) { %>
-### Findings outside the diff
+### <%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %>
+<% if (it.unanchoredCount && it.unanchoredCount > 0) { %>
+_<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> below couldn't be posted as inline comment<%= it.unanchoredCount === 1 ? '' : 's' %> (GitHub rejected the position)<% if (it.strays.length > it.unanchoredCount) { %>; the rest are outside the diff<% } %>._
+<% } %>
 
 <% it.strays.forEach(function(f) { -%>
 #### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %>

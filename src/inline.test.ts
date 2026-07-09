@@ -60,7 +60,7 @@ describe("buildInlineComments", () => {
     const findings: Finding[] = [
       mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "on-line10" }),
     ];
-    const { comments, strays } = buildInlineComments(findings, inlineDiff, {
+    const { comments, strays, inDiff } = buildInlineComments(findings, inlineDiff, {
       inlineTemplate: bundledInlineTemplate,
     });
     expect(comments).toHaveLength(1);
@@ -68,6 +68,9 @@ describe("buildInlineComments", () => {
     expect(comments[0]!.line).toBe(10);
     expect(comments[0]!.side).toBe("RIGHT");
     expect(strays).toHaveLength(0);
+    // issue #57: inDiff is the finding behind each comment (1:1), for sticky demotion on a rejected post.
+    expect(inDiff).toHaveLength(1);
+    expect(inDiff[0]!.title).toBe("on-line10");
   });
 
   it("demotes findings on lines not in the diff to strays", () => {

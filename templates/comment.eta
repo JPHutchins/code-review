@@ -5,11 +5,8 @@
 <% } -%>
 
 ### <%= it.verdictBadge(it.findings.verdict) %>
-<% if (it.postedAt) { -%>
-Reviewed `<%= it.reviewedSha.slice(0, 7) %>` · <%= it.postedAt %>
-<% } -%>
 
-<% const meta = [] %><% if (it.route) { meta.push('**Route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.usageAvailable) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><%~ meta.join(' · ') %>
+<% const meta = [] %><% if (it.postedAt) { meta.push('**Reviewed** `' + it.reviewedSha.slice(0, 7) + '` at ' + it.postedAt) } %><% if (it.route) { meta.push('**route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.usageAvailable) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><sub><%~ meta.join(' · ') %></sub>
 
 <%~ it.findings.summary %>
 

@@ -1441,7 +1441,7 @@ describe("post — --effort threading", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
-    expect(body.body).toContain("**Route:** mechanic");
+    expect(body.body).toContain("**route:** mechanic");
     expect(body.body).toContain("**effort:** low");
   });
 });
@@ -1958,7 +1958,7 @@ describe("post — postedAt threading (issue #28)", () => {
     },
   ];
 
-  it("renders the sticky's 'Reviewed `<sha>` · <postedAt>' line when postedAt is passed", async () => {
+  it("renders the sticky's '**Reviewed** `<sha>` at <postedAt>' segment when postedAt is passed", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({ postedAt: "2026-07-07 18:42 UTC" }), api);
@@ -1967,10 +1967,10 @@ describe("post — postedAt threading (issue #28)", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
-    expect(body).toContain("Reviewed `abc123d` · 2026-07-07 18:42 UTC");
+    expect(body).toContain("**Reviewed** `abc123d` at 2026-07-07 18:42 UTC");
   });
 
-  it("omits the Reviewed line when postedAt is not passed", async () => {
+  it("omits the Reviewed segment when postedAt is not passed", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({}), api);
@@ -1979,7 +1979,7 @@ describe("post — postedAt threading (issue #28)", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
-    expect(body).not.toContain("Reviewed `");
+    expect(body).not.toContain("**Reviewed**");
   });
 });
 

@@ -46,9 +46,9 @@ export interface RenderInput {
   readonly pricesProvided?: boolean;
   readonly template: string;
   readonly reviewedSha?: string;
-  /** Preformatted UTC post time (e.g. "2026-07-07 18:42 UTC"), rendered on the sticky's dedicated
-   *  "Reviewed `<sha>` · <postedAt>" line (issue #28) — computed at the IO boundary (post.ts/CLI)
-   *  via `formatUtc`, never here, so `render()` stays pure/clockless. Omitted ⇒ line is suppressed. */
+  /** Preformatted UTC post time (e.g. "2026-07-07 18:42 UTC"), leading the sticky's "**Reviewed**
+   *  `<sha>` at <postedAt>" meta segment (issue #28) — computed at the IO boundary (post.ts/CLI)
+   *  via `formatUtc`, never here, so `render()` stays pure/clockless. Omitted ⇒ segment suppressed. */
   readonly postedAt?: string;
   /** Overrides the envelope's `route`/`effort` (SPEC §6.1) when set; otherwise the envelope is the source. */
   readonly route?: string;

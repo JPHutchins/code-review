@@ -152,8 +152,8 @@ describe("render", () => {
     expect(result).toContain("0000000000000000000000000000000000000000");
   });
 
-  describe("sticky posted-at line (issue #28)", () => {
-    it("renders 'Reviewed `<short-sha>` · <postedAt>' right under the verdict heading when postedAt is set", () => {
+  describe("sticky posted-at segment (issue #28; #54 <sub> meta line)", () => {
+    it("leads the <sub> meta line with '**Reviewed** `<short-sha>` at <postedAt>', a blank line under the heading", () => {
       const findings = mkFindings([]);
       const result = render({
         findings,
@@ -163,16 +163,19 @@ describe("render", () => {
         reviewedSha: "abc123def456",
         postedAt: "2026-07-07 18:42 UTC",
       });
-      expect(result).toContain("Reviewed `abc123d` · 2026-07-07 18:42 UTC");
+      expect(result).toContain("**Reviewed** `abc123d` at 2026-07-07 18:42 UTC");
       const lines = result.split("\n");
       const headingIndex = lines.findIndex((l) => l.startsWith("### "));
-      expect(lines[headingIndex + 1]).toBe("Reviewed `abc123d` · 2026-07-07 18:42 UTC");
+      expect(lines[headingIndex + 1]).toBe("");
+      const subLine = lines[headingIndex + 2] ?? "";
+      expect(subLine).toMatch(/^<sub>\*\*Reviewed\*\* `abc123d` at 2026-07-07 18:42 UTC · /);
+      expect(subLine.endsWith("</sub>")).toBe(true);
     });
 
-    it("omits the Reviewed line entirely when postedAt is not provided", () => {
+    it("omits the Reviewed segment when postedAt is not provided", () => {
       const findings = mkFindings([]);
       const result = render({ findings, envelope: baseEnvelope, prices, template });
-      expect(result).not.toContain("Reviewed `");
+      expect(result).not.toContain("**Reviewed**");
     });
   });
 
@@ -856,7 +859,7 @@ describe("render", () => {
       expect(result).toContain("[code-review](https://github.com/JPHutchins/code-review)");
     });
 
-    it("no longer renders the cost table in a standalone <sub> block", () => {
+    it("renders the cost table as a real markdown table, not inside the <sub> meta line", () => {
       const findings = mkFindings([]);
       const result = render({
         findings,
@@ -865,8 +868,10 @@ describe("render", () => {
         template,
         route: "full review",
       });
-      expect(result).not.toContain("<sub>");
-      expect(result).not.toContain("</sub>");
+      const subLines = result.split("\n").filter((l) => l.includes("<sub>"));
+      expect(subLines).toHaveLength(1);
+      expect(subLines[0]).not.toContain("|");
+      expect(result).toContain("| **Total** |");
     });
 
     it("links to the workflow run when runUrl is set", () => {
@@ -1074,7 +1079,7 @@ describe("render", () => {
       template,
       route: "full review",
     });
-    expect(result).toContain("Route:");
+    expect(result).toContain("**route:** full review");
     expect(result).not.toContain("effort:");
   });
 
@@ -1088,7 +1093,7 @@ describe("render", () => {
       route: "mechanic",
       effort: "low",
     });
-    expect(result).toContain("Route:");
+    expect(result).toContain("**route:** mechanic");
     expect(result).toContain("**effort:** low");
   });
 
@@ -1224,7 +1229,7 @@ describe("render — route/effort from the envelope (SSOT)", () => {
 
   it("renders the envelope's route and effort when no override is passed", () => {
     const result = render({ findings: mkFindings([]), envelope: envWithMeta, prices, template });
-    expect(result).toContain("**Route:** mechanic");
+    expect(result).toContain("**route:** mechanic");
     expect(result).toContain("**effort:** low");
   });
 
@@ -1237,14 +1242,14 @@ describe("render — route/effort from the envelope (SSOT)", () => {
       route: "full review",
       effort: "max",
     });
-    expect(result).toContain("**Route:** full review");
+    expect(result).toContain("**route:** full review");
     expect(result).toContain("**effort:** max");
     expect(result).not.toContain("mechanic");
   });
 
-  it("omits the Route label when neither an override nor the envelope carries one", () => {
+  it("omits the route label when neither an override nor the envelope carries one", () => {
     const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
-    expect(result).not.toContain("**Route:**");
+    expect(result).not.toContain("**route:**");
   });
 });
 

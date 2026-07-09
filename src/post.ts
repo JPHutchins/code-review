@@ -44,8 +44,8 @@ export interface PostInput {
    *  comment, and the review body itself) when the embedded form is too large (SPEC §5.1 item 7,
    *  §5.2, issue #19). */
   readonly jsonUrl?: string;
-  /** Preformatted UTC post time, rendered on the sticky's dedicated "Reviewed `<sha>` · <postedAt>"
-   *  line (issue #28) — computed by the caller (index.ts's post command) via `formatUtc`, not here,
+  /** Preformatted UTC post time, leading the sticky's "**Reviewed** `<sha>` at <postedAt>" meta
+   *  segment (issue #28) — computed by the caller (index.ts's post command) via `formatUtc`, not here,
    *  so `post()` stays a thin, testable pass-through of the timestamp into `render()`. */
   readonly postedAt?: string;
 }

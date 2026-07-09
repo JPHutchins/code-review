@@ -981,7 +981,7 @@ describe("cli — render defaults (bundled template + prices)", () => {
 });
 
 describe("cli — render posted-at line (issue #28)", () => {
-  it("renders 'Reviewed `<short-sha>` · <UTC timestamp>' computed at the IO boundary", async () => {
+  it("renders '**Reviewed** `<short-sha>` at <UTC timestamp>' computed at the IO boundary", async () => {
     const { stdout, exitCode } = await runCli([
       "render",
       sampleFindingsPath,
@@ -993,7 +993,7 @@ describe("cli — render posted-at line (issue #28)", () => {
       "abc123def456",
     ]);
     expect(exitCode).toBeNull();
-    expect(stdout).toMatch(/Reviewed `abc123d` · \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+    expect(stdout).toMatch(/\*\*Reviewed\*\* `abc123d` at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
   });
 });
 

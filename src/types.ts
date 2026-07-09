@@ -31,7 +31,6 @@ export type SeverityCounts = Readonly<Record<Severity, number>>;
 export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
-  | { readonly kind: "suppressed-existing-review"; readonly sha: string }
   | { readonly kind: "no-envelope" };
 
 export interface RenderInput {

@@ -615,25 +615,19 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     );
   }
 
-  // Fix #5 (SPEC §5.2.6): suppression turns on whether a COMPLETED bot review already exists for
-  // this head SHA — review identity via the reviews API `commit_id` — not on the sticky's marker
-  // (a placeholder/degraded sticky must not claim the SHA). Fetched unconditionally now that a review
-  // is always posted (issue #43), for both the duplicate-SHA guard and prior-review dismissal.
+  // The bot's prior reviews (identity via the reviews API `commit_id`), fetched to supersede every
+  // one of them — including any already on THIS head SHA — before posting the fresh review below.
+  // We ran the review agent and paid for it, so its result must be surfaced: a re-request (or an
+  // incidental CI re-run) on the same commit dismisses the stale review and posts the new one rather
+  // than being skipped (issue #53). Fetched unconditionally now that a review is always posted (#43).
   const botReviews = await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi);
-  const alreadyReviewedThisSha = botReviews.some((r) => r.commitId === input.headSha);
 
   // Issue #21: the "posted — see the review" disposition is constructed ONLY from the actual
   // postInlineReview result below, never optimistically — a review that doesn't yet exist (or
   // never will, if this process dies before posting it) must never be claimed. Everything knowable
-  // from reads alone (suppression, no-in-diff-findings) is truthful up front and stays as-is.
+  // from reads alone (no-in-diff-findings) is truthful up front and stays as-is.
   const initialDisposition: InlineDisposition | undefined =
-    comments.length > 0
-      ? alreadyReviewedThisSha
-        ? { kind: "suppressed-existing-review", sha: input.headSha }
-        : undefined
-      : strays.length > 0
-        ? { kind: "none-in-diff" }
-        : undefined;
+    comments.length > 0 ? undefined : strays.length > 0 ? { kind: "none-in-diff" } : undefined;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
@@ -676,18 +670,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   // Issue #43: a COMMENT review is posted on EVERY run, even with no in-diff comments, so tooling and
   // agents get a review event every time — its body points at the sticky (for humans) and carries the
-  // findings-JSON marker (for agents). The only skip is a completed review already on this SHA.
-  if (alreadyReviewedThisSha) {
-    process.stderr.write(
-      `A completed bot review already exists for ${input.headSha} — updated sticky only, no new review\n`,
-    );
-    return;
-  }
+  // findings-JSON marker (for agents).
 
-  // REC-CO-2: supersede prior bot reviews left on OTHER commits before posting the fresh one.
-  const stalePriorReviewIds = botReviews
-    .filter((r) => r.commitId !== input.headSha)
-    .map((r) => r.id);
+  // REC-CO-2 + issue #53: supersede EVERY prior bot review — those left on other commits and any
+  // already on this head SHA — before posting the fresh one, so a re-review of the same commit
+  // replaces the stale review instead of being suppressed.
+  const stalePriorReviewIds = botReviews.map((r) => r.id);
   if (stalePriorReviewIds.length > 0) {
     await dismissReviews(input.repo, prNumber, stalePriorReviewIds, ghApi);
   }

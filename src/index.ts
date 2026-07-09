@@ -6,7 +6,7 @@
 // citty requires async run() even when the body has no explicit await
 
 import { defineCommand, runMain } from "citty";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
 import { render } from "./render.js";
@@ -25,8 +25,15 @@ import {
 } from "./budget.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { formatUtc } from "./format.js";
-import { ResultEnvelopeCodec, FindingsCodec, PriceMapCodec, TestSummaryCodec } from "./schema.js";
+import {
+  ResultEnvelopeCodec,
+  FindingsCodec,
+  PriceMapCodec,
+  TestSummaryCodec,
+  noticeFindings,
+} from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
+import { parseFindingsMarker } from "./surface.js";
 import { post } from "./post.js";
 import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
@@ -671,6 +678,82 @@ const validateCmd = defineCommand({
   },
 });
 
+const seedDraftCmd = defineCommand({
+  meta: {
+    name: "seed-draft",
+    description:
+      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0 (issues #52, #53). Prints the mode chosen (prior|empty) to stdout; always exits 0",
+  },
+  args: {
+    prior: {
+      type: "string",
+      description:
+        "Path to the prior-review JSON gather staged ({ id, body }, or the literal null); its embedded base64 findings marker is decoded and becomes the seed when it validates against the schema",
+    },
+    out: {
+      type: "string",
+      description: "Path to write the seed $DRAFT to (an absolute path outside the worktree)",
+      required: true,
+    },
+    kind: {
+      type: "string",
+      description: "Schema kind to validate the prior findings against (default: findings)",
+    },
+    schema: {
+      type: "string",
+      description: "Path to a schema file (wins over --kind/--schema-version)",
+    },
+    "schema-version": {
+      type: "string",
+      description:
+        "Schema major.minor to validate the prior findings against (default: the kind's latest — an older-shaped prior review then falls back to the empty scaffold)",
+    },
+  },
+  run: async ({ args }) => {
+    const kind = requireSchemaKind(args.kind || "findings");
+    const outPath = resolve(args.out);
+    const schemaPath = args.schema
+      ? resolve(args.schema)
+      : requireSchemaPath(kind, args["schema-version"]);
+
+    // Decode the prior review's embedded findings, tolerating a missing/absent/"null"/malformed
+    // file — the seed is best-effort and must never fail the review step. Validated against the
+    // current schema below so an older-shaped or corrupt prior review degrades to the empty scaffold
+    // rather than seeding an invalid $DRAFT.
+    const priorFindings = ((): unknown => {
+      if (!args.prior) return null;
+      const raw = ((): unknown => {
+        try {
+          return JSON.parse(readFileSync(resolve(args.prior), "utf-8")) as unknown;
+        } catch {
+          return null;
+        }
+      })();
+      const body =
+        typeof raw === "object" && raw !== null && "body" in raw && typeof raw.body === "string"
+          ? raw.body
+          : null;
+      return body === null ? null : parseFindingsMarker(body);
+    })();
+
+    if (priorFindings !== null && validateAgainstSchema(priorFindings, schemaPath).valid) {
+      writeFileSync(outPath, `${JSON.stringify(priorFindings, null, 2)}\n`);
+      const priorList = (priorFindings as { readonly findings?: unknown }).findings;
+      const count = Array.isArray(priorList) ? priorList.length : 0;
+      process.stderr.write(
+        `Seeded ${outPath} from the prior review (${String(count)} finding(s)) — verify each still holds against the current diff and refine in place\n`,
+      );
+      process.stdout.write("prior\n");
+    } else {
+      writeFileSync(outPath, `${JSON.stringify(noticeFindings(""), null, 2)}\n`);
+      process.stderr.write(
+        `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
+      );
+      process.stdout.write("empty\n");
+    }
+  },
+});
+
 const adaptCmd = defineCommand({
   meta: {
     name: "adapt",
@@ -1196,7 +1279,7 @@ export const main = defineCommand({
     name: "code-review",
     version: packageVersion,
     description:
-      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, check-cost, validate, stop-gate, budget-hook, print-settings, and deadline",
+      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, check-cost, validate, seed-draft, stop-gate, budget-hook, print-settings, and deadline",
   },
   subCommands: {
     gather: gatherCmd,
@@ -1206,6 +1289,7 @@ export const main = defineCommand({
     cost: costCmd,
     "check-cost": checkCostCmd,
     validate: validateCmd,
+    "seed-draft": seedDraftCmd,
     adapt: adaptCmd,
     extract: extractCmd,
     "validate-patches": validatePatchesCmd,

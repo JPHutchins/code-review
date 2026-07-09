@@ -222,6 +222,21 @@ jobs:
           DRAFT="$RUNNER_TEMP/findings-draft.json"
           rm -f "$DRAFT" "$DRAFT.nudges"
 
+          # Seed $DRAFT with a VALID findings document before the agent runs, so a valid deliverable
+          # exists from turn 0 (issues #52, #53). On a re-review, `seed-draft` decodes the prior
+          # review's embedded findings (from prior_review.json gather staged) and writes them here, so
+          # the agent verifies-and-refines rather than redoing a cold review; on a first review — or
+          # when the prior findings no longer validate — it writes an empty-but-valid scaffold for the
+          # agent to fill. It always exits 0 and prints the mode (prior|empty) chosen. The seed comes
+          # from the bot's OWN prior output (not attacker-controlled PR content) and $DRAFT lives in
+          # $RUNNER_TEMP, so this can't be won by a planted file.
+          SEED_MODE="$(code-review seed-draft --prior prior_review.json --out "$DRAFT")"
+          if [ "$SEED_MODE" = "prior" ]; then
+            SEED_NOTE=" $DRAFT is PRE-SEEDED with the previous review's findings for this PR — treat them as your starting point: re-verify each against the CURRENT diff (drop any now fixed or no longer applicable, keep those that still hold), then add anything new, refining it in place rather than starting over."
+          else
+            SEED_NOTE=" $DRAFT already holds a valid but EMPTY findings document — populate it as you review; it is a template to fill in, not a file you must create from scratch."
+          fi
+
           # Route + effort are decided once here and stamped into the envelope by `adapt` below,
           # so the comment footer reflects the run instead of re-deriving and risking drift.
           if [ "$CONCLUSION" = "success" ]; then
@@ -305,7 +320,7 @@ jobs:
             --output-format json \
             --json-schema "$(cat "$SCHEMA_FILE")" \
             --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your ONLY deliverable is a findings JSON document written to $DRAFT (an absolute path outside the repo tree). It is an OBJECT, not a bare array: {\"schema_version\": \"0.4.0\", \"summary\": \"...\", \"verdict\": \"comment\", \"findings\": [ ... ]}. Each finding uses these exact field names — path, start_line, end_line, severity, title, description, reasoning, confidence (optional: side, code, code_url, recommendation, patch). Do NOT use file/line/summary/failure_scenario; if your review process yields those, translate them to the field names above. The full schema — whose field descriptions are the authoritative spec, including how to author a \`patch\` — is written to $SCHEMA_FILE and passed via --json-schema; read $SCHEMA_FILE if unsure, and tell any subagents you delegate to to read it too.
-          Write a COMPLETE, valid $DRAFT by the time you are HALFWAY through your $AGENT_WALL budget — the moment you have a first pass of findings — then keep refining it in place. A valid review that exists beats a thorough one that gets cut off, so never leave $DRAFT unwritten while you explore. After each write, run \`code-review validate $DRAFT --explain\` and fix-and-revalidate until it exits 0 (--explain reprints the schema when the shape is wrong) before ending your turn.
+          Write a COMPLETE, valid $DRAFT by the time you are HALFWAY through your $AGENT_WALL budget — the moment you have a first pass of findings — then keep refining it in place. A valid review that exists beats a thorough one that gets cut off, so never leave $DRAFT unwritten while you explore. After each write, run \`code-review validate $DRAFT --explain\` and fix-and-revalidate until it exits 0 (--explain reprints the schema when the shape is wrong) before ending your turn.$SEED_NOTE
           Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix." \
             >envelope.json
           AGENT_RC=$?

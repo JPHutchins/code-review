@@ -362,19 +362,6 @@ describe("render", () => {
       expect(result).not.toContain("posted inline");
     });
 
-    it("says the inline review was suppressed for an already-reviewed SHA", () => {
-      const result = render({
-        findings,
-        envelope: baseEnvelope,
-        prices,
-        template,
-        inlineDisposition: { kind: "suppressed-existing-review", sha: "abc123def456" },
-      });
-      expect(result).toContain("suppressed");
-      expect(result).toContain("abc123d");
-      expect(result).not.toContain("posted inline");
-    });
-
     it("emits no disposition pointer for no-envelope renders", () => {
       const result = render({
         findings,

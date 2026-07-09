@@ -989,7 +989,7 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
     expect(finalStickyBody.body).toContain("posted inline");
   });
 
-  it("suppresses the inline pass when a completed bot review already exists at the head SHA", async () => {
+  it("dismisses a prior bot review on the SAME head SHA and posts a fresh review (issue #53)", async () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
@@ -1018,23 +1018,42 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
           },
         ]),
       },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews/555/dismissals",
+        response: "",
+      },
+      {
+        match: (a) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" &&
+          a.includes("--input") &&
+          !a.includes("--paginate"),
+        response: "",
+      },
     ]);
 
     await post(mkInput({}), api);
 
-    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
-    expect(patchCall).toBeDefined();
-    const stickyBody = JSON.parse(patchCall!.stdin!) as CommentBody;
-    expect(stickyBody.body).toContain("suppressed");
+    // The prior review on the SAME SHA is superseded, not left in place (issue #53).
+    const dismissCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews/555/dismissals",
+    );
+    expect(dismissCall).toBeDefined();
+    expect(dismissCall?.args).toContain("PUT");
 
-    // No fresh review is posted for a SHA that already has a completed bot review.
+    // A fresh review IS posted — the agent ran and paid, so its result must be surfaced, not skipped.
     const inlineCall = calls().find(
       (c) =>
         c.args[0] === "repos/owner/repo/pulls/42/reviews" &&
         c.args.includes("--input") &&
         !c.args.includes("--paginate"),
     );
-    expect(inlineCall).toBeUndefined();
+    expect(inlineCall).toBeDefined();
+
+    // The sticky no longer claims suppression.
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+    const stickyBody = JSON.parse(patchCall!.stdin!) as CommentBody;
+    expect(stickyBody.body).not.toContain("suppressed");
   });
 
   it("dismisses prior bot reviews and posts a fresh inline review when the head SHA differs", async () => {

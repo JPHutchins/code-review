@@ -6,6 +6,8 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main } from "./index.js";
 import { ResultEnvelopeCodec } from "./schema.js";
+import { findingsPointer } from "./surface.js";
+import type { Findings } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -937,6 +939,97 @@ describe("cli — validate --explain (issue #45: schema on failure, fix the shap
     expect(exitCode).toBeNull();
     expect(stdout).toContain("valid");
     expect(stderr).not.toContain("authoritative spec");
+  });
+});
+
+describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () => {
+  const priorFindings = {
+    schema_version: "0.4.0",
+    summary: "Prior review summary.",
+    verdict: "changes",
+    findings: [
+      {
+        path: "src/a.ts",
+        start_line: 3,
+        end_line: 3,
+        severity: "major",
+        title: "Prior finding",
+        description: "carried over from the prior review",
+        reasoning: "still worth checking",
+        confidence: 0.8,
+      },
+    ],
+  };
+
+  const writePrior = (body: string): string => {
+    const p = join(tmpDir, "prior_review.json");
+    writeFileSync(p, JSON.stringify({ id: 999, body }));
+    return p;
+  };
+
+  it("seeds $DRAFT from a prior review's embedded findings and reports 'prior'", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior");
+    const seeded = JSON.parse(readFileSync(out, "utf-8")) as typeof priorFindings;
+    expect(seeded.findings).toHaveLength(1);
+    expect(seeded.findings[0]!.title).toBe("Prior finding");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
+  it("seeds an empty valid scaffold and reports 'empty' when the prior review has no marker", async () => {
+    const prior = writePrior("<!-- code-review -->\njust prose, no findings marker");
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
+      readonly summary: string;
+      readonly findings: readonly unknown[];
+    };
+    expect(seeded.findings).toEqual([]);
+    expect(seeded.summary).toBe("");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
+  it("seeds an empty scaffold when --prior is the literal null gather stages on a first review", async () => {
+    const prior = join(tmpDir, "prior_review.json");
+    writeFileSync(prior, "null");
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+  });
+
+  it("seeds an empty scaffold (never crashes) when --prior is omitted entirely", async () => {
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
+  it("falls back to the empty scaffold when the prior findings don't validate against the current schema", async () => {
+    const skillShaped = {
+      schema_version: "0.4.0",
+      summary: "x",
+      verdict: "comment",
+      findings: [{ file: "a", line: 1, summary: "s", failure_scenario: "f" }],
+    };
+    const prior = writePrior(findingsPointer(skillShaped as unknown as Findings, undefined));
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
   });
 });
 

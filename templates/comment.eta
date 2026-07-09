@@ -27,15 +27,15 @@ _No findings — clean review._
 <% } %>
 
 <% if (it.strays.length > 0) { %>
-#### ⚠️ Findings outside the diff
-
-These findings are on lines not in the diff, so they can't be anchored as inline comments:
+### Findings outside the diff
 
 <% it.strays.forEach(function(f) { -%>
-- <%= it.severityEmoji(f.severity) %> `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %>
+#### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %>
+
+<%~ f.description %>
 <% if (f.recommendation) { -%>
 
-  **Recommended fix:** <%~ f.recommendation %>
+**Recommended fix:** <%~ f.recommendation %>
 <% } -%>
 <% if (f.patchProjection.kind === "suggestion") { -%>
 
@@ -49,13 +49,14 @@ These findings are on lines not in the diff, so they can't be anchored as inline
 ```
 <% } -%>
 
-  <details><summary>Reasoning</summary>
-
+> [!TIP]
+> <details><summary>Reasoning (<%= it.formatConfidence(f.confidence) %> confidence)</summary>
+>
 <% f.reasoning.split("\n").forEach(function(rl) { -%>
-  <%= rl %>
+> <%= rl %>
 <% }) -%>
-
-  </details>
+>
+> </details>
 <% }) %>
 <% } %>
 

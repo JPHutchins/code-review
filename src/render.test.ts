@@ -377,10 +377,17 @@ describe("render", () => {
   });
 
   describe("strays section (only per-finding detail in the sticky)", () => {
-    it("lists strays with severity, path, line, and title plus a not-in-the-diff note", () => {
+    it("renders each stray with severity emoji + label, path, title, confidence, and its description", () => {
       const findings = mkFindings([mkFinding({ severity: "major", title: "in-diff-ish" })]);
       const strays = [
-        mkFinding({ path: "src/bar.ts", start_line: 100, severity: "major", title: "Stray one" }),
+        mkFinding({
+          path: "src/bar.ts",
+          start_line: 100,
+          end_line: 100,
+          severity: "major",
+          title: "Stray one",
+          description: "The stray's summary text.",
+        }),
       ];
       const result = render({
         findings,
@@ -391,9 +398,13 @@ describe("render", () => {
         inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
       });
       expect(result).toContain("Findings outside the diff");
-      expect(result).toContain("not in the diff");
-      expect(result).toContain("src/bar.ts:100");
+      // issue #56: each stray is an h4 with the severity label, not a bare list item.
+      expect(result).toContain("#### 🟠 (major) `src/bar.ts:100`");
       expect(result).toContain("Stray one");
+      // issue #56 defect #1: the description was previously never rendered in the sticky.
+      expect(result).toContain("The stray's summary text.");
+      // issue #56 misc #1: the out-of-diff note is normal behavior, not a warning.
+      expect(result).not.toContain("⚠️ Findings outside the diff");
     });
 
     it("renders no strays section when there are none", () => {
@@ -429,11 +440,14 @@ describe("render", () => {
       expect(bulletLine).toContain("confidence 0.00");
     });
 
-    it("renders a collapsible reasoning fold under the bullet (reasoning is always present)", () => {
+    it("renders a collapsible reasoning fold in a [!TIP] aside with the confidence (reasoning is always present)", () => {
       const findings = mkFindings([]);
-      const strays = [mkFinding({ title: "Stray reason", reasoning: "Because X causes Y." })];
+      const strays = [
+        mkFinding({ title: "Stray reason", confidence: 0.9, reasoning: "Because X causes Y." }),
+      ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result).toContain("<details><summary>Reasoning</summary>");
+      expect(result).toContain("> [!TIP]");
+      expect(result).toContain("<details><summary>Reasoning (0.90 confidence)</summary>");
       expect(result).toContain("Because X causes Y.");
       expect(result).toContain("</details>");
     });
@@ -461,7 +475,7 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const rec = result.indexOf("**Recommended fix:**");
-      const reasoning = result.indexOf("<details><summary>Reasoning</summary>");
+      const reasoning = result.indexOf("<details><summary>Reasoning (");
       // Guard against a vacuous pass: both must actually render before comparing positions.
       expect(rec).toBeGreaterThanOrEqual(0);
       expect(reasoning).toBeGreaterThanOrEqual(0);
@@ -481,7 +495,7 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const rec = result.indexOf("**Recommended fix:**");
       const fence = result.indexOf("```suggestion");
-      const reasoning = result.indexOf("<details><summary>Reasoning</summary>");
+      const reasoning = result.indexOf("<details><summary>Reasoning (");
       expect(rec).toBeGreaterThanOrEqual(0);
       expect(fence).toBeGreaterThanOrEqual(0);
       expect(reasoning).toBeGreaterThanOrEqual(0);
@@ -523,7 +537,7 @@ describe("render", () => {
       expect(result).toContain("fixed line");
     });
 
-    it("indents every line of a multi-paragraph reasoning so continuation lines stay in the fold", () => {
+    it("keeps every line of a multi-paragraph reasoning inside the [!TIP] blockquote fold", () => {
       const findings = mkFindings([]);
       const strays = [
         mkFinding({
@@ -533,17 +547,17 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const lines = result.split("\n");
-      const openIndex = lines.findIndex((l) => l.includes("<details><summary>Reasoning</summary>"));
-      const closeIndex = lines.findIndex((l, i) => i > openIndex && l.trim() === "</details>");
+      const openIndex = lines.findIndex((l) => l.includes("<details><summary>Reasoning ("));
+      const closeIndex = lines.findIndex((l, i) => i > openIndex && l.includes("</details>"));
       expect(openIndex).toBeGreaterThanOrEqual(0);
       expect(closeIndex).toBeGreaterThan(openIndex);
-      // A continuation line at column 0 (the bug) would fall out of the list-item fold; every
-      // non-empty content line must carry the 2-space list indent.
+      // A continuation line at column 0 (the bug) would fall out of the blockquote aside; every
+      // non-empty content line between the fold's open and close must carry the "> " prefix.
       const contentLines = lines
         .slice(openIndex + 1, closeIndex)
         .filter((l) => l.trim().length > 0);
-      expect(contentLines.some((l) => l === "  Second paragraph.")).toBe(true);
-      expect(contentLines.every((l) => l.startsWith("  "))).toBe(true);
+      expect(contentLines.some((l) => l === "> Second paragraph.")).toBe(true);
+      expect(contentLines.every((l) => l.startsWith(">"))).toBe(true);
     });
   });
 
@@ -1364,13 +1378,13 @@ describe("strays list structural integrity", () => {
     expect(headingIdx).toBeGreaterThanOrEqual(0); // fail clearly here, not via a garbage slice below
     const section = result.slice(headingIdx);
 
-    // Every stray renders exactly one bullet and one reasoning fold — none collapsed or duplicated.
-    // Anchor the bullet match on the backtick-wrapped path so a dash in prose can't inflate the count.
-    expect(section.match(/^- .+ `[^`]+`/gm) ?? []).toHaveLength(3);
-    expect(section.match(/<details><summary>Reasoning<\/summary>/g) ?? []).toHaveLength(3);
-    // Within the list itself (first bullet → last fold), the Eta forEach must not leak a RUN of
+    // Every stray renders exactly one h4 header and one reasoning fold — none collapsed or duplicated.
+    // Anchor the header match on the backtick-wrapped path so a dash in prose can't inflate the count.
+    expect(section.match(/^#### .+ `[^`]+`/gm) ?? []).toHaveLength(3);
+    expect(section.match(/<details><summary>Reasoning \(/g) ?? []).toHaveLength(3);
+    // Within the list itself (first header → last fold), the Eta forEach must not leak a RUN of
     // blank lines (the per-row bug signature); inter-section spacing after the list is not in scope.
-    const listStart = section.indexOf("\n- ");
+    const listStart = section.indexOf("\n#### ");
     const listEnd = section.lastIndexOf("</details>");
     expect(listStart).toBeGreaterThanOrEqual(0);
     expect(listEnd).toBeGreaterThan(listStart);

@@ -273,6 +273,23 @@ jobs:
             "${BUDGET_PRICES[@]}" \
             >"$RUNNER_TEMP/review-settings.json"
 
+          # The findings schema, written outside the worktree so the review agent — and any subagents
+          # it delegates to — can read the authoritative field spec by path. A wall-killed review once
+          # wrote the /code-review skill's finding shape ({file,line,summary,failure_scenario}) into
+          # $DRAFT and then burned its remaining budget reverse-engineering the canonical field names
+          # against `validate`; handing it the schema up front (here, via --json-schema, and named in
+          # the prompt) removes that guesswork (issue #45).
+          SCHEMA_FILE="$RUNNER_TEMP/findings-schema.json"
+          code-review print-schema findings >"$SCHEMA_FILE"
+
+          # Absolute run deadline, exported so EVERY budget hook — the main agent's and each fan-out
+          # subagent's — measures the SAME true remaining wall. Without it each hook derives elapsed
+          # from its own transcript's start, which reads ≈0 inside a freshly-spawned subagent, so the
+          # skill's parallel fan-out runs unsteered until the wall and never checkpoints $DRAFT
+          # (issue #45). The env var is inherited by every `claude` subprocess, main and subagent.
+          CODE_REVIEW_DEADLINE_EPOCH="$(code-review deadline --wall "$AGENT_WALL")"
+          export CODE_REVIEW_DEADLINE_EPOCH
+
           # `timeout` is the hard backstop beneath the hooks: SIGTERM at the wall, SIGKILL after a grace
           # period; an overrun (124/137) is a warning, not a step failure — the pipeline proceeds with
           # whatever the agent emitted, and `adapt` preserves its usage/cost even when the deliverable
@@ -285,9 +302,9 @@ jobs:
             --settings "$RUNNER_TEMP/review-settings.json" \
             --strict-mcp-config \
             --output-format json \
-            --json-schema "$(code-review print-schema findings)" \
-            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your only deliverable is the review as JSON conforming to the findings schema provided via --json-schema — its field descriptions are the authoritative spec for every field, including how to author a \`patch\`. Write the JSON to $DRAFT (an absolute path outside the repo tree), run \`code-review validate $DRAFT\`, and fix-and-revalidate until it exits 0 before ending your turn.
-          You have about $AGENT_WALL of wall-clock. Write a COMPLETE, valid draft to $DRAFT as early as you can — the moment you have a first pass of findings — then refine it in place. Never leave $DRAFT unwritten while you keep exploring: a valid review that exists beats a thorough one that gets cut off.
+            --json-schema "$(cat "$SCHEMA_FILE")" \
+            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your ONLY deliverable is a findings JSON document written to $DRAFT (an absolute path outside the repo tree). It is an OBJECT, not a bare array: {\"schema_version\": \"0.4.0\", \"summary\": \"...\", \"verdict\": \"comment\", \"findings\": [ ... ]}. Each finding uses these exact field names — path, start_line, end_line, severity, title, description, reasoning, confidence (optional: side, code, code_url, recommendation, patch). Do NOT use file/line/summary/failure_scenario; if your review process yields those, translate them to the field names above. The full schema — whose field descriptions are the authoritative spec, including how to author a \`patch\` — is written to $SCHEMA_FILE and passed via --json-schema; read $SCHEMA_FILE if unsure, and tell any subagents you delegate to to read it too.
+          Write a COMPLETE, valid $DRAFT by the time you are HALFWAY through your $AGENT_WALL budget — the moment you have a first pass of findings — then keep refining it in place. A valid review that exists beats a thorough one that gets cut off, so never leave $DRAFT unwritten while you explore. After each write, run \`code-review validate $DRAFT --explain\` and fix-and-revalidate until it exits 0 (--explain reprints the schema when the shape is wrong) before ending your turn.
           Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix." \
             >envelope.json
           AGENT_RC=$?
@@ -301,8 +318,19 @@ jobs:
           # --agent-file prefers the agent's own self-validated $DRAFT over parsing its free-text
           # result (§6.1 extraction ladder); $DRAFT lives outside the worktree so a PR-planted
           # repo-root findings-draft.json can never win this rung.
+          #
+          # --transcript recovers real per-model spend from the live session transcript (main +
+          # subagents) when a wall-clock kill left envelope.json empty (issue #39) — otherwise the
+          # comment would report $0.00 despite real cost sitting in the transcript (issue #36). Pick
+          # the review session's main transcript: the newest .jsonl, excluding subagent files (which
+          # live under <session>/subagents/ and are summed by `adapt` via the main).
+          REVIEW_TRANSCRIPT="$(find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+          TRANSCRIPT_ARGS=()
+          if [ -n "$REVIEW_TRANSCRIPT" ]; then
+            TRANSCRIPT_ARGS=(--transcript "$REVIEW_TRANSCRIPT")
+          fi
           mkdir -p findings
-          code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" --route "$ROUTE" --effort "$EFFORT" >findings/envelope.json
+          code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" --route "$ROUTE" --effort "$EFFORT" "${TRANSCRIPT_ARGS[@]}" >findings/envelope.json
           jq -c '.findings' findings/envelope.json >findings/findings.json
 
           # Discard the agent's edits and restore the clean PR-head snapshot — `--hard` doesn't

@@ -274,6 +274,15 @@ jobs:
             "${BUDGET_PRICES[@]}" \
             >"$RUNNER_TEMP/review-settings.json"
 
+          # The findings schema, written outside the worktree so the review agent — and any subagents
+          # it delegates to — can read the authoritative field spec by path. A wall-killed review once
+          # wrote the /code-review skill's finding shape ({file,line,summary,failure_scenario}) into
+          # $DRAFT and then burned its remaining budget reverse-engineering the canonical field names
+          # against `validate`; handing it the schema up front (here, via --json-schema, and named in
+          # the prompt) removes that guesswork (issue #45).
+          SCHEMA_FILE="$RUNNER_TEMP/findings-schema.json"
+          code-review print-schema findings >"$SCHEMA_FILE"
+
           # Absolute run deadline, exported so EVERY budget hook — the main agent's and each fan-out
           # subagent's — measures the SAME true remaining wall. Without it each hook derives elapsed
           # from its own transcript's start, which reads ≈0 inside a freshly-spawned subagent, so the
@@ -294,9 +303,9 @@ jobs:
             --settings "$RUNNER_TEMP/review-settings.json" \
             --strict-mcp-config \
             --output-format json \
-            --json-schema "$(code-review print-schema findings)" \
-            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your only deliverable is the review as JSON conforming to the findings schema provided via --json-schema — its field descriptions are the authoritative spec for every field, including how to author a \`patch\`. Write the JSON to $DRAFT (an absolute path outside the repo tree), run \`code-review validate $DRAFT\`, and fix-and-revalidate until it exits 0 before ending your turn.
-          You have about $AGENT_WALL of wall-clock. Write a COMPLETE, valid draft to $DRAFT as early as you can — the moment you have a first pass of findings — then refine it in place. Never leave $DRAFT unwritten while you keep exploring: a valid review that exists beats a thorough one that gets cut off.
+            --json-schema "$(cat "$SCHEMA_FILE")" \
+            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your ONLY deliverable is a findings JSON document written to $DRAFT (an absolute path outside the repo tree). It is an OBJECT, not a bare array: {\"schema_version\": \"0.4.0\", \"summary\": \"...\", \"verdict\": \"comment\", \"findings\": [ ... ]}. Each finding uses these exact field names — path, start_line, end_line, severity, title, description, reasoning, confidence (optional: side, code, code_url, recommendation, patch). Do NOT use file/line/summary/failure_scenario; if your review process yields those, translate them to the field names above. The full schema — whose field descriptions are the authoritative spec, including how to author a \`patch\` — is written to $SCHEMA_FILE and passed via --json-schema; read $SCHEMA_FILE if unsure, and tell any subagents you delegate to to read it too.
+          Write a COMPLETE, valid $DRAFT by the time you are HALFWAY through your $AGENT_WALL budget — the moment you have a first pass of findings — then keep refining it in place. A valid review that exists beats a thorough one that gets cut off, so never leave $DRAFT unwritten while you explore. After each write, run \`code-review validate $DRAFT --explain\` and fix-and-revalidate until it exits 0 (--explain reprints the schema when the shape is wrong) before ending your turn.
           Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix." \
             >envelope.json
           AGENT_RC=$?

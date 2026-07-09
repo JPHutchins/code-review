@@ -421,7 +421,12 @@ const budgetHookCmd = defineCommand({
     "reserve-frac": {
       type: "string",
       description:
-        "Wind-down headroom as a fraction of each budget: converge once less than this remains (default: 0.15; the soft steer tier reserves 2× this)",
+        "Base wind-down headroom as a fraction of each budget: converge once less than this remains (default: 0.15; the soft steer tier reserves 2× this)",
+    },
+    "reserve-growth": {
+      type: "string",
+      description:
+        "How much the reserve grows as a budget is spent — added at full usage, so convergence lands earlier the longer the run has gone (default: 0.25; 0 = flat reserve)",
     },
     "reserve-usd": {
       type: "string",
@@ -460,6 +465,7 @@ const budgetHookCmd = defineCommand({
         wallMs,
         reserve: {
           frac: parseFraction(args["reserve-frac"], DEFAULT_RESERVE.frac),
+          growth: parseFraction(args["reserve-growth"], DEFAULT_RESERVE.growth),
           flatUsd: parseBudgetUsd(args["reserve-usd"]) ?? DEFAULT_RESERVE.flatUsd,
           flatMs: args["reserve-wall"]
             ? (parseWallMs(args["reserve-wall"]) ?? DEFAULT_RESERVE.flatMs)
@@ -525,7 +531,12 @@ const printSettingsCmd = defineCommand({
     "reserve-frac": {
       type: "string",
       description:
-        "Wind-down headroom as a fraction of each budget (default: 0.15; soft tier is 2×)",
+        "Base wind-down headroom as a fraction of each budget (default: 0.15; soft tier is 2×)",
+    },
+    "reserve-growth": {
+      type: "string",
+      description:
+        "How much the reserve grows as a budget is spent, converging earlier the longer the run has gone (default: 0.25; 0 = flat)",
     },
     "reserve-usd": {
       type: "string",
@@ -555,6 +566,7 @@ const printSettingsCmd = defineCommand({
         wall: args.wall,
         prices: args.prices,
         reserveFrac: args["reserve-frac"],
+        reserveGrowth: args["reserve-growth"],
         reserveUsd: args["reserve-usd"],
         reserveWall: args["reserve-wall"],
       },
@@ -593,6 +605,18 @@ const deadlineCmd = defineCommand({
 const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefined =>
   kind === "findings" ? declaredVersion(raw) : undefined;
 
+/** A bundled schema rendered for a CLI/agent to read: pretty-printed with the top-level `$schema`
+ *  draft declaration stripped. `claude -p --json-schema` silently disables enforcement when a schema
+ *  carries `$schema`, and the field DESCRIPTIONS are the authoritative spec the agent must follow, so
+ *  this is the form both `print-schema` and `validate --explain` emit. */
+const printableSchema = (schemaPath: string): string => {
+  const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as Record<string, unknown>;
+  const enforcementSchema = Object.fromEntries(
+    Object.entries(schema).filter(([key]) => key !== "$schema"),
+  );
+  return JSON.stringify(enforcementSchema, null, 2);
+};
+
 const validateCmd = defineCommand({
   meta: {
     name: "validate",
@@ -619,6 +643,11 @@ const validateCmd = defineCommand({
       description:
         "Schema major.minor version to validate against (default: the document's declared schema_version for findings, or the kind's latest)",
     },
+    explain: {
+      type: "boolean",
+      description:
+        "On failure, also print the schema after the errors — its field descriptions are the authoritative spec, so the document can be fixed in one pass instead of by trial and error",
+    },
   },
   run: async ({ args }) => {
     const kind = requireSchemaKind(args.kind || "findings");
@@ -632,6 +661,11 @@ const validateCmd = defineCommand({
     } else {
       process.stderr.write("❌ invalid\n");
       for (const e of errors) process.stderr.write(`  - ${e}\n`);
+      if (args.explain) {
+        process.stderr.write(
+          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath)}\n`,
+        );
+      }
       process.exit(1);
     }
   },
@@ -884,15 +918,7 @@ const printSchemaCmd = defineCommand({
   run: async ({ args }) => {
     const schemaKind = requireSchemaKind(args.name);
     const schemaPath = requireSchemaPath(schemaKind, args["schema-version"]);
-    const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as Record<string, unknown>;
-    // `claude -p --json-schema` silently disables structured-output enforcement when the schema
-    // carries a top-level `$schema` draft declaration — `structured_output` comes back null and the
-    // model guesses field names. The canonical file keeps `$schema` for validators; the form handed
-    // to a CLI must omit it. `$id`/`title` are tolerated and kept.
-    const enforcementSchema = Object.fromEntries(
-      Object.entries(schema).filter(([key]) => key !== "$schema"),
-    );
-    process.stdout.write(`${JSON.stringify(enforcementSchema, null, 2)}\n`);
+    process.stdout.write(`${printableSchema(schemaPath)}\n`);
   },
 });
 

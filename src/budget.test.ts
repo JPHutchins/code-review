@@ -12,16 +12,17 @@ import {
   budgetHookCommand,
   type BudgetInputs,
   type BudgetParams,
+  type ReserveParams,
 } from "./budget.js";
 
-// Flat reserves default to 0 here so the fraction alone drives — the flat-floor behaviour is
-// exercised by its own tests below.
+// Flat reserves default to 0 and growth to 0 here so the base fraction alone drives — the flat-floor
+// and progressive-growth behaviours are exercised by their own tests below.
 const inputs = (o: Partial<BudgetInputs>): BudgetInputs => ({
   spentUsd: null,
   budgetUsd: null,
   elapsedMs: null,
   wallMs: null,
-  reserve: { frac: 0.15, flatUsd: 0, flatMs: 0 },
+  reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0 },
   ...o,
 });
 
@@ -61,13 +62,48 @@ describe("decideBudget", () => {
 
   it("lets the flat floor force convergence when a tiny budget can't cover the wind-down reserve", () => {
     // 60s wall, but a 2-minute flat floor means less than the reserve remains from the start.
-    const r = { frac: 0.15, flatUsd: 0.02, flatMs: 120_000 };
+    const r = { frac: 0.15, growth: 0, flatUsd: 0.02, flatMs: 120_000 };
     expect(decideBudget(inputs({ elapsedMs: 5_000, wallMs: 60_000, reserve: r })).kind).toBe(
       "hard",
     );
     // $0.05 budget, $0.02 flat: soft once < $0.04 remains, hard once < $0.02 remains.
     expect(decideBudget(inputs({ spentUsd: 0.02, budgetUsd: 0.05, reserve: r })).kind).toBe("soft");
     expect(decideBudget(inputs({ spentUsd: 0.04, budgetUsd: 0.05, reserve: r })).kind).toBe("hard");
+  });
+
+  describe("progressive reserve (growth) converges earlier the longer the run has gone (issue #45)", () => {
+    const g = (frac: number, growth: number): ReserveParams => ({
+      frac,
+      growth,
+      flatUsd: 0,
+      flatMs: 0,
+    });
+    const at = (elapsedMs: number, growth: number) =>
+      decideBudget(inputs({ elapsedMs, wallMs: 1000, reserve: g(0.15, growth) })).kind;
+
+    it("escalates a mid-run point one tier vs the flat reserve", () => {
+      // Flat (growth 0): 500/1000 is still ok, 700/1000 is only soft.
+      expect(at(500, 0)).toBe("ok");
+      expect(at(700, 0)).toBe("soft");
+      // Growth 0.25: the SAME points are one tier more severe — the run converges sooner.
+      expect(at(500, 0.25)).toBe("soft");
+      expect(at(700, 0.25)).toBe("hard");
+    });
+
+    it("growth 0 recovers the flat reserve exactly (hard once < frac remains)", () => {
+      expect(at(840, 0)).toBe("soft");
+      expect(at(850, 0)).toBe("hard");
+    });
+
+    it("scales with usage on the cost axis too, not just time", () => {
+      // frac 0.15 + growth 0.25 → hard once spent ≥ ~0.68 of a $1 budget (vs only soft when flat).
+      expect(
+        decideBudget(inputs({ spentUsd: 0.72, budgetUsd: 1, reserve: g(0.15, 0.25) })).kind,
+      ).toBe("hard");
+      expect(decideBudget(inputs({ spentUsd: 0.72, budgetUsd: 1, reserve: g(0.15, 0) })).kind).toBe(
+        "soft",
+      );
+    });
   });
 });
 
@@ -141,7 +177,7 @@ describe("evaluateBudgetHook", () => {
     budgetUsd: null,
     elapsedMs: null,
     wallMs: null,
-    reserve: { frac: 0.15, flatUsd: 0, flatMs: 0 },
+    reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0 },
     draftPath: draft,
     ...o,
   });
@@ -343,10 +379,15 @@ describe("deadlineEpochSec", () => {
 
 describe("budgetHookCommand", () => {
   it("re-invokes the CLI with the draft and only the flags that are set", () => {
-    const cmd = budgetHookCommand("/work/findings.json", { budgetUsd: "2.5", wall: "20m" });
+    const cmd = budgetHookCommand("/work/findings.json", {
+      budgetUsd: "2.5",
+      wall: "20m",
+      reserveGrowth: "0.3",
+    });
     expect(cmd).toContain("code-review budget-hook --draft '/work/findings.json'");
     expect(cmd).toContain("--budget-usd '2.5'");
     expect(cmd).toContain("--wall '20m'");
+    expect(cmd).toContain("--reserve-growth '0.3'");
     expect(cmd).not.toContain("--prices");
     expect(cmd).not.toContain("--soft-frac");
   });

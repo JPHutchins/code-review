@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// CLI entry point — citty subcommands for render, inline, post, cost, validate, adapt, extract,
-// validate-patches, print-schema, stop-gate.
+// CLI entry point — citty subcommands for render, inline, post, cost, check-cost, validate, adapt,
+// extract, validate-patches, print-schema, stop-gate, budget-hook, print-settings.
 
 /* eslint-disable @typescript-eslint/require-await */
 // citty requires async run() even when the body has no explicit await
@@ -12,10 +12,12 @@ import type { Either } from "fp-ts/Either";
 import { render } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
 import { computeCost } from "./cost.js";
+import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
+import { evaluateBudgetHook, parseWallMs, parseFraction, DEFAULT_RESERVE } from "./budget.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { formatUtc } from "./format.js";
 import { ResultEnvelopeCodec, FindingsCodec, PriceMapCodec, TestSummaryCodec } from "./schema.js";
-import type { Triage, Finding } from "./schema.js";
+import type { Triage, Finding, PriceMap } from "./schema.js";
 import { post } from "./post.js";
 import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
@@ -33,6 +35,7 @@ import {
   defaultHookCommand,
   stopHookSettings,
 } from "./stop-gate.js";
+import { composeReviewSettings } from "./settings.js";
 
 const readJSON = (path: string): unknown => {
   try {
@@ -82,6 +85,26 @@ const readJSONOrAbsent = (path: string): unknown => {
       `code-review: native envelope ${path} is not valid JSON (${err instanceof Error ? err.message : String(err)}) — proceeding with no native telemetry (issue #39)\n`,
     );
     return undefined;
+  }
+};
+
+/** Read and parse the hook payload delivered on stdin, defensively: a TTY (manual run), absent stdin,
+ *  or non-JSON all yield null. The budget hook then decides from its flags alone (no live signal),
+ *  never crashing on a missing or malformed payload. */
+const readStdinJSON = (): unknown => {
+  if (process.stdin.isTTY) return null;
+  const raw = ((): string => {
+    try {
+      return readFileSync(0, "utf-8");
+    } catch {
+      return "";
+    }
+  })();
+  if (raw.trim() === "") return null;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
   }
 };
 
@@ -269,6 +292,242 @@ const costCmd = defineCommand({
     const prices = decode(PriceMapCodec.decode(readJSON(args.prices)), "prices");
     const report = computeCost(envelope.models, prices);
     process.stdout.write(JSON.stringify(report, null, 2));
+  },
+});
+
+const checkCostCmd = defineCommand({
+  meta: {
+    name: "check-cost",
+    description:
+      "Sum real USD spend from a live/finished Claude Code transcript tree (main session + subagents) against a price map — the correct cost when no clean result envelope exists (issue #36) and the outlook the review agent tracks in flight (issue #38)",
+  },
+  args: {
+    transcript: {
+      type: "positional",
+      description: "Path to the session transcript JSONL (the hook's transcript_path)",
+      required: true,
+    },
+    prices: {
+      type: "string",
+      description:
+        "Path to price map JSON (default: bundled schema/prices.example.json — token totals stay real, cost reads as $0)",
+    },
+  },
+  run: async ({ args }) => {
+    const tree = readTranscriptTree(resolve(args.transcript));
+    if (tree.missing) {
+      process.stderr.write(
+        `code-review check-cost: transcript ${args.transcript} is unreadable — reporting zero spend (issue #36)\n`,
+      );
+    }
+    const usage = sumTranscriptUsage(tree.entries);
+    const priceResolution = resolvePrices(args.prices);
+    const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
+    const report = computeCost(usage.models, prices);
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ...report,
+          turns: usage.turns,
+          durationMs: usage.durationMs,
+          transcripts: tree.files,
+          pricesProvided: priceResolution.kind === "provided",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  },
+});
+
+/** Read + decode a price map, degrading to null (cost axis disabled) on any failure — the budget
+ *  hook fires on every tool call, so it must never process-exit the way the strict `readJSON` does. */
+const tryReadPrices = (path: string): PriceMap | null => {
+  try {
+    const decoded = PriceMapCodec.decode(JSON.parse(readFileSync(resolve(path), "utf-8")));
+    return decoded._tag === "Right" ? decoded.right : null;
+  } catch {
+    return null;
+  }
+};
+
+/** A non-negative, finite dollar amount, or null (absent/unparseable). `0` is kept, not nulled: as a
+ *  budget it disables the cost axis (decideBudget requires budgetUsd > 0); as a reserve floor it means
+ *  no flat floor. */
+const parseBudgetUsd = (raw: string | undefined): number | null => {
+  if (raw === undefined) return null;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
+
+/** The `transcript_path` a hook payload carries, when present. */
+const transcriptPathOf = (input: unknown): string | undefined => {
+  const tp = (
+    typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {}
+  )["transcript_path"];
+  return typeof tp === "string" ? tp : undefined;
+};
+
+const budgetHookCmd = defineCommand({
+  meta: {
+    name: "budget-hook",
+    description:
+      "Self-dispatching Claude Code hook for budget discipline (issue #38): on PostToolBatch, steer the agent to converge once spend or wall-clock enters its soft wind-down reserve; on PreToolUse, inside the hard reserve, deny the budget-burning tools (subagent spawns, arbitrary shell, web) while leaving the draft-delivery path open. Reads the hook payload on stdin, measures spend from its transcript, and decides on $ and/or time. Degrades to a no-op on any error.",
+  },
+  args: {
+    draft: {
+      type: "string",
+      description:
+        "Path to the findings draft that is the sole permitted write target under forced convergence",
+      required: true,
+    },
+    "budget-usd": {
+      type: "string",
+      description:
+        "Dollar budget for the run; the cost axis is measured against it (needs --prices)",
+    },
+    wall: {
+      type: "string",
+      description: "Wall-clock budget (e.g. 20m, 1200s, 2h); the time axis is measured against it",
+    },
+    prices: {
+      type: "string",
+      description:
+        "Price map JSON to recompute real spend from the transcript (omit to disable the cost axis)",
+    },
+    "reserve-frac": {
+      type: "string",
+      description:
+        "Wind-down headroom as a fraction of each budget: converge once less than this remains (default: 0.15; the soft steer tier reserves 2× this)",
+    },
+    "reserve-usd": {
+      type: "string",
+      description:
+        "Flat dollar wind-down floor, whichever is larger with --reserve-frac (default: 0.02)",
+    },
+    "reserve-wall": {
+      type: "string",
+      description:
+        "Flat wall-clock wind-down floor (e.g. 2m, 120s), whichever is larger with --reserve-frac (default: 2m)",
+    },
+  },
+  run: async ({ args }) => {
+    try {
+      const draftPath = resolve(args.draft);
+      const input = readStdinJSON();
+      const transcriptPath = transcriptPathOf(input);
+      const tree = transcriptPath ? readTranscriptTree(resolve(transcriptPath)) : undefined;
+      const usage = tree ? sumTranscriptUsage(tree.entries) : undefined;
+      const prices = args.prices ? tryReadPrices(args.prices) : null;
+      const spentUsd =
+        prices !== null && usage ? computeCost(usage.models, prices).totalCostUSD : null;
+      const output = evaluateBudgetHook(input, {
+        spentUsd,
+        budgetUsd: parseBudgetUsd(args["budget-usd"]),
+        elapsedMs: usage?.firstTsMs != null ? Math.max(0, Date.now() - usage.firstTsMs) : null,
+        wallMs: args.wall ? parseWallMs(args.wall) : null,
+        reserve: {
+          frac: parseFraction(args["reserve-frac"], DEFAULT_RESERVE.frac),
+          flatUsd: parseBudgetUsd(args["reserve-usd"]) ?? DEFAULT_RESERVE.flatUsd,
+          flatMs: args["reserve-wall"]
+            ? (parseWallMs(args["reserve-wall"]) ?? DEFAULT_RESERVE.flatMs)
+            : DEFAULT_RESERVE.flatMs,
+        },
+        draftPath,
+      });
+      process.stdout.write(`${JSON.stringify(output)}\n`);
+    } catch (err) {
+      process.stderr.write(
+        `code-review budget-hook: degrading to no-op — ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      process.stdout.write("{}\n");
+    }
+  },
+});
+
+const printSettingsCmd = defineCommand({
+  meta: {
+    name: "print-settings",
+    description:
+      "Emit ONE Claude Code --settings JSON composing the review agent's discipline (issue #38): the Stop deliverable gate plus the budget hooks (PreToolUse forced convergence + PostToolBatch steer) wired from one self-dispatching command. The review job generates this once and passes it as --settings.",
+  },
+  args: {
+    draft: {
+      type: "string",
+      description:
+        "Path to the findings draft the agent must produce — the Stop gate's target and the only write allowed under forced convergence",
+      required: true,
+    },
+    kind: {
+      type: "string",
+      description: "Schema kind for the Stop gate: findings | triage | prices (default: findings)",
+    },
+    schema: {
+      type: "string",
+      description: "Path to a schema file for the Stop gate (wins over --kind)",
+    },
+    "schema-version": {
+      type: "string",
+      description: "Schema major.minor for the Stop gate (default: the draft's declared version)",
+    },
+    "max-nudges": {
+      type: "string",
+      description: "Stop-gate nudge budget before relenting (default: 5)",
+    },
+    counter: {
+      type: "string",
+      description: "Path for the Stop-gate nudge counter (default: <draft>.nudges)",
+    },
+    "budget-usd": {
+      type: "string",
+      description: "Dollar budget the cost axis is measured against (needs --prices)",
+    },
+    wall: {
+      type: "string",
+      description: "Wall-clock budget the time axis is measured against (e.g. 20m, 1200s)",
+    },
+    prices: {
+      type: "string",
+      description: "Price map JSON to recompute real spend from the transcript",
+    },
+    "reserve-frac": {
+      type: "string",
+      description:
+        "Wind-down headroom as a fraction of each budget (default: 0.15; soft tier is 2×)",
+    },
+    "reserve-usd": {
+      type: "string",
+      description:
+        "Flat dollar wind-down floor, whichever is larger with --reserve-frac (default: 0.02)",
+    },
+    "reserve-wall": {
+      type: "string",
+      description:
+        "Flat wall-clock wind-down floor (e.g. 2m), whichever is larger with --reserve-frac (default: 2m)",
+    },
+  },
+  run: async ({ args }) => {
+    if (args.kind && !["findings", "triage", "prices"].includes(args.kind))
+      fail(`--kind must be one of findings|triage|prices (got '${args.kind}')`);
+    const settings = composeReviewSettings({
+      draftPath: resolve(args.draft),
+      stop: {
+        kind: args.kind,
+        schema: args.schema,
+        schemaVersion: args["schema-version"],
+        maxNudges: args["max-nudges"],
+        counter: args.counter,
+      },
+      budget: {
+        budgetUsd: args["budget-usd"],
+        wall: args.wall,
+        prices: args.prices,
+        reserveFrac: args["reserve-frac"],
+        reserveUsd: args["reserve-usd"],
+        reserveWall: args["reserve-wall"],
+      },
+    });
+    process.stdout.write(`${JSON.stringify(settings)}\n`);
   },
 });
 
@@ -844,7 +1103,7 @@ export const main = defineCommand({
     name: "code-review",
     version: packageVersion,
     description:
-      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, validate, and stop-gate findings JSON",
+      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, check-cost, validate, stop-gate, budget-hook, and print-settings",
   },
   subCommands: {
     gather: gatherCmd,
@@ -852,12 +1111,15 @@ export const main = defineCommand({
     inline: inlineCmd,
     post: postCmd,
     cost: costCmd,
+    "check-cost": checkCostCmd,
     validate: validateCmd,
     adapt: adaptCmd,
     extract: extractCmd,
     "validate-patches": validatePatchesCmd,
     "print-schema": printSchemaCmd,
     "stop-gate": stopGateCmd,
+    "budget-hook": budgetHookCmd,
+    "print-settings": printSettingsCmd,
   },
 });
 

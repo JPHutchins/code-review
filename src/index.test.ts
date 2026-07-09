@@ -20,6 +20,11 @@ const triageSchemaPath = resolve(repoRoot, "schema", "triage.schema.json");
 const ladderFixturePath = (name: string): string =>
   resolve(repoRoot, "test", "fixtures", "extract-ladder", name);
 
+const transcriptFixture = (...segments: string[]): string =>
+  resolve(repoRoot, "test", "fixtures", "transcript", ...segments);
+
+const previewPricesPath = resolve(repoRoot, "test", "fixtures", "preview.prices.json");
+
 let tmpDir: string;
 
 beforeEach(() => {
@@ -73,6 +78,128 @@ const runCli = async (
   }
   return { stdout, stderr, exitCode };
 };
+
+describe("cli — check-cost", () => {
+  it("sums a real transcript per model and reports real cost against a provided price map", async () => {
+    const { stdout, exitCode } = await runCli([
+      "check-cost",
+      transcriptFixture("deepseek-main.jsonl"),
+      "--prices",
+      previewPricesPath,
+    ]);
+    expect(exitCode).toBeNull();
+    const out = JSON.parse(stdout) as {
+      totalInputTokens: number;
+      totalCostUSD: number;
+      turns: number;
+      transcripts: string[];
+      pricesProvided: boolean;
+      lines: { model: string }[];
+    };
+    expect(out.totalInputTokens).toBe(21615);
+    expect(out.turns).toBe(2);
+    expect(out.lines[0]!.model).toBe("deepseek-v4-pro");
+    expect(out.totalCostUSD).toBeGreaterThan(0);
+    expect(out.pricesProvided).toBe(true);
+    expect(out.transcripts).toHaveLength(1);
+  });
+
+  it("reports zero spend and warns (never crashes) when the transcript is unreadable", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "check-cost",
+      join(tmpDir, "does-not-exist.jsonl"),
+      "--prices",
+      previewPricesPath,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toContain("unreadable");
+    const out = JSON.parse(stdout) as {
+      totalInputTokens: number;
+      turns: number;
+      transcripts: string[];
+    };
+    expect(out.totalInputTokens).toBe(0);
+    expect(out.turns).toBe(0);
+    expect(out.transcripts).toHaveLength(0);
+  });
+
+  it("keeps token totals real but flags prices absent (N/A) when --prices is omitted", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "check-cost",
+      transcriptFixture("deepseek-main.jsonl"),
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toContain("cost will be reported as N/A");
+    const out = JSON.parse(stdout) as {
+      totalInputTokens: number;
+      totalCostUSD: number;
+      pricesProvided: boolean;
+    };
+    expect(out.totalInputTokens).toBe(21615);
+    expect(out.totalCostUSD).toBe(0);
+    expect(out.pricesProvided).toBe(false);
+  });
+});
+
+describe("cli — budget-hook", () => {
+  it("emits a no-op {} and exits cleanly when no hook payload arrives on stdin (safe degrade)", async () => {
+    const { stdout, exitCode } = await runCli([
+      "budget-hook",
+      "--draft",
+      join(tmpDir, "findings.json"),
+      "--budget-usd",
+      "1",
+      "--prices",
+      previewPricesPath,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(JSON.parse(stdout)).toEqual({});
+  });
+});
+
+describe("cli — print-settings", () => {
+  it("emits composed Stop + PreToolUse + PostToolBatch settings, the tool hooks sharing one command", async () => {
+    const { stdout, exitCode } = await runCli([
+      "print-settings",
+      "--draft",
+      "/work/findings.json",
+      "--budget-usd",
+      "2",
+      "--wall",
+      "20m",
+      "--prices",
+      previewPricesPath,
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as {
+      hooks: {
+        Stop: { hooks: { command: string }[] }[];
+        PreToolUse: { hooks: { command: string }[] }[];
+        PostToolBatch: { hooks: { command: string }[] }[];
+      };
+    };
+    expect(parsed.hooks.Stop[0]!.hooks[0]!.command).toContain(
+      "stop-gate --draft '/work/findings.json'",
+    );
+    const pre = parsed.hooks.PreToolUse[0]!.hooks[0]!.command;
+    const post = parsed.hooks.PostToolBatch[0]!.hooks[0]!.command;
+    expect(pre).toContain("budget-hook --draft '/work/findings.json'");
+    expect(pre).toContain("--wall '20m'");
+    expect(pre).toBe(post);
+  });
+
+  it("rejects an invalid --kind at generation time (fail fast, not a settings file that breaks later)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "print-settings",
+      "--draft",
+      "/work/findings.json",
+      "--kind",
+      "bogus",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("findings|triage|prices");
+  });
+});
 
 describe("cli — stop-gate", () => {
   it("prints Stop-hook settings that wire the gate to this draft", async () => {

@@ -460,6 +460,21 @@ describe("render", () => {
       expect(result).toContain("Some justification.");
     });
 
+    it("orders the reasoning fold AFTER the recommended fix for a stray (issue #42)", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({
+          title: "Stray order",
+          recommendation: "Guard the input.",
+          reasoning: "Because X causes Y.",
+        }),
+      ];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      expect(result.indexOf("**Recommended fix:**")).toBeLessThan(
+        result.indexOf("<details><summary>Reasoning</summary>"),
+      );
+    });
+
     it("renders a **Recommended fix:** line only when the stray carries a recommendation", () => {
       const findings = mkFindings([]);
       const withRec = render({
@@ -1309,27 +1324,34 @@ describe("summary-only sticky (regression guard against re-adding per-finding ta
 });
 
 describe("strays list structural integrity", () => {
-  it("renders every stray as a bullet immediately followed by its reasoning fold (no blank line splitting a bullet from its own content)", () => {
+  it("renders every stray's bullet and its reasoning fold, with no Eta blank-line-per-row artifact (issue #42 layout: reasoning last)", () => {
     const findings = mkFindings([]);
     const strays = [
-      mkFinding({ path: "src/a.ts", start_line: 1, severity: "critical", title: "Stray A" }),
+      mkFinding({
+        path: "src/a.ts",
+        start_line: 1,
+        severity: "critical",
+        title: "Stray A",
+        recommendation: "Fix A.",
+      }),
       mkFinding({ path: "src/b.ts", start_line: 2, severity: "major", title: "Stray B" }),
-      mkFinding({ path: "src/c.ts", start_line: 3, severity: "minor", title: "Stray C" }),
+      mkFinding({
+        path: "src/c.ts",
+        start_line: 3,
+        severity: "minor",
+        title: "Stray C",
+        recommendation: "Fix C.",
+      }),
     ];
     const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-    const lines = result.split("\n");
+    const section = result.slice(result.indexOf("Findings outside the diff"));
 
-    // All three bullets render (reasoning is always present, so each bullet now carries a fold —
-    // the bullets are no longer one contiguous run, which is the intended 0.4 structure).
-    const bulletIdxs = lines.reduce<number[]>(
-      (acc, line, i) => (line.startsWith("- ") ? [...acc, i] : acc),
-      [],
-    );
-    expect(bulletIdxs).toHaveLength(3);
-    // The Eta blank-line-per-row bug would insert a blank line right under a bullet; here each
-    // bullet is immediately followed by its indented <details> fold.
-    for (const i of bulletIdxs) {
-      expect(lines[i + 1]?.trim()).toMatch(/^<details>/);
-    }
+    // Every stray renders exactly one bullet and one reasoning fold — none collapsed or duplicated.
+    expect(section.match(/^- /gm) ?? []).toHaveLength(3);
+    expect(section.match(/<details><summary>Reasoning<\/summary>/g) ?? []).toHaveLength(3);
+    // Within the list itself (first bullet → last fold), the Eta forEach must not leak a RUN of
+    // blank lines (the per-row bug signature); inter-section spacing after the list is not in scope.
+    const list = section.slice(section.indexOf("\n- "), section.lastIndexOf("</details>"));
+    expect(list).not.toMatch(/\n[ \t]*\n[ \t]*\n/);
   });
 });

@@ -678,7 +678,12 @@ const adaptCmd = defineCommand({
       adapt(requireAdapterName(args.adapter), readJSONOrAbsent(args.native), args["agent-file"], {
         route: args.route,
         effort: args.effort,
-        ...(args.transcript ? { transcriptFallback: transcriptFallbackFrom(args.transcript) } : {}),
+        ...(args.transcript
+          ? {
+              transcriptFallback: (): TranscriptTelemetry =>
+                transcriptFallbackFrom(args.transcript),
+            }
+          : {}),
       }),
     );
     process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);

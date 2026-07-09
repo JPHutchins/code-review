@@ -294,7 +294,9 @@ describe("adapt — transcript telemetry fallback (issue #36 — real cost on a 
   };
 
   it("refills telemetry from the transcript fallback when the native envelope is absent — cost is real, not $0.00", () => {
-    const result = adapt("claude-code", undefined, undefined, { transcriptFallback: fallback });
+    const result = adapt("claude-code", undefined, undefined, {
+      transcriptFallback: () => fallback,
+    });
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
     expect(result.right.models).toEqual(fallback.models);
@@ -308,7 +310,7 @@ describe("adapt — transcript telemetry fallback (issue #36 — real cost on a 
 
   it("does not refill from an EMPTY transcript fallback (stays degenerate, never fabricates models)", () => {
     const result = adapt("claude-code", undefined, undefined, {
-      transcriptFallback: { models: [], turns: 0, durationMs: 0 },
+      transcriptFallback: () => ({ models: [], turns: 0, durationMs: 0 }),
     });
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
@@ -317,7 +319,9 @@ describe("adapt — transcript telemetry fallback (issue #36 — real cost on a 
   });
 
   it("keeps the native telemetry over the fallback when the native has real per-model usage (fallback is only for the empty-native case)", () => {
-    const result = adapt("claude-code", nativeFixture, undefined, { transcriptFallback: fallback });
+    const result = adapt("claude-code", nativeFixture, undefined, {
+      transcriptFallback: () => fallback,
+    });
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
     // deepseek-v4-flash exists only in the native fixture, never in the single-entry fallback.
@@ -325,9 +329,29 @@ describe("adapt — transcript telemetry fallback (issue #36 — real cost on a 
     expect(result.right.turns).not.toBe(7);
   });
 
+  it("does NOT invoke the fallback thunk when the native has per-model usage; DOES when it's empty (no wasted transcript I/O)", () => {
+    let calledWithNative = 0;
+    adapt("claude-code", nativeFixture, undefined, {
+      transcriptFallback: () => {
+        calledWithNative++;
+        return fallback;
+      },
+    });
+    expect(calledWithNative).toBe(0);
+
+    let calledWhenAbsent = 0;
+    adapt("claude-code", undefined, undefined, {
+      transcriptFallback: () => {
+        calledWhenAbsent++;
+        return fallback;
+      },
+    });
+    expect(calledWhenAbsent).toBe(1);
+  });
+
   it("recovers findings from --agent-file AND refills telemetry from the fallback (both survive a wall kill)", () => {
     const result = adapt("claude-code", undefined, ladderFixturePath("f11-agent-file.json"), {
-      transcriptFallback: fallback,
+      transcriptFallback: () => fallback,
     });
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;

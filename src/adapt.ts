@@ -73,11 +73,13 @@ export interface TranscriptTelemetry {
 }
 
 /** Run context the caller stamps into the envelope: route/effort (SPEC §6.1) and an optional
- *  transcript telemetry fallback for the wall-kill path. */
+ *  transcript telemetry fallback for the wall-kill path. The fallback is a THUNK, invoked only when
+ *  the native envelope has no per-model usage — so a clean run never pays to read and sum the
+ *  transcript tree it won't use (that read can be megabytes on a large fan-out). */
 export interface RunMeta {
   readonly route?: string;
   readonly effort?: string;
-  readonly transcriptFallback?: TranscriptTelemetry;
+  readonly transcriptFallback?: () => TranscriptTelemetry;
 }
 
 /** The extraction ladder's outcome, reduced to what `buildEnvelope` needs: either a materialized
@@ -135,8 +137,9 @@ const resolveTelemetry = (
   },
   meta: RunMeta,
 ): Telemetry => {
-  const fb = meta.transcriptFallback;
-  const useFallback = native.models.length === 0 && fb !== undefined && fb.models.length > 0;
+  // Only read/sum the transcript (the thunk) when the native has nothing — never on a clean run.
+  const fb = native.models.length === 0 ? meta.transcriptFallback?.() : undefined;
+  const useFallback = fb !== undefined && fb.models.length > 0;
   return withMeta(
     useFallback
       ? {

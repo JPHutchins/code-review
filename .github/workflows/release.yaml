@@ -59,10 +59,11 @@ jobs:
               ;;
           esac
 
-      # Trusted Publishing's OIDC token exchange needs a recent npm CLI;
-      # the version bundled with actions/setup-node may predate it.
+      # Trusted Publishing's OIDC token exchange needs a recent npm CLI; the version bundled with
+      # actions/setup-node may predate it. Pin to the 11.x line: npm 12.0.0 (the current @latest)
+      # ships a broken `--provenance` (`Cannot find module 'sigstore'`), so @latest is not safe here.
       - name: Ensure npm CLI supports trusted publishing (OIDC)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       # Auth via npm Trusted Publishing (OIDC): configure this repo + this
       # workflow file as a trusted publisher for @jphutchins/code-review on

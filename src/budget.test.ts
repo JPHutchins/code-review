@@ -78,6 +78,10 @@ describe("blockedDuringConvergence", () => {
   it("blocks arbitrary Bash but allows `code-review validate` (not other subcommands)", () => {
     expect(blockedDuringConvergence("Bash", { command: "grep -r TODO src/" })).toBe(true);
     expect(blockedDuringConvergence("Bash", { command: "code-review gather" })).toBe(true);
+    // `validate-patches` is a different, findings-mutating command — must NOT slip past as `validate`.
+    expect(
+      blockedDuringConvergence("Bash", { command: "code-review validate-patches f.json" }),
+    ).toBe(true);
     expect(blockedDuringConvergence("Bash", { command: "code-review validate /work/f.json" })).toBe(
       false,
     );
@@ -238,7 +242,8 @@ describe("parseFraction", () => {
     expect(parseFraction(undefined, 0.7)).toBe(0.7);
     expect(parseFraction("0.85", 0.7)).toBe(0.85);
     expect(parseFraction("1", 0.7)).toBe(1);
-    expect(parseFraction("0", 0.7)).toBe(0.7);
+    expect(parseFraction("0", 0.7)).toBe(0); // 0 is valid — disables the fraction, flat floor only
+    expect(parseFraction("-0.1", 0.7)).toBe(0.7);
     expect(parseFraction("1.5", 0.7)).toBe(0.7);
     expect(parseFraction("abc", 0.7)).toBe(0.7);
   });

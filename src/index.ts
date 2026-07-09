@@ -351,11 +351,13 @@ const tryReadPrices = (path: string): PriceMap | null => {
   }
 };
 
-/** A positive, finite dollar budget, or null (no cost ceiling). */
+/** A non-negative, finite dollar amount, or null (absent/unparseable). `0` is kept, not nulled: as a
+ *  budget it disables the cost axis (decideBudget requires budgetUsd > 0); as a reserve floor it means
+ *  no flat floor. */
 const parseBudgetUsd = (raw: string | undefined): number | null => {
   if (raw === undefined) return null;
   const n = Number.parseFloat(raw);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  return Number.isFinite(n) && n >= 0 ? n : null;
 };
 
 /** The `transcript_path` a hook payload carries, when present. */
@@ -505,6 +507,8 @@ const printSettingsCmd = defineCommand({
     },
   },
   run: async ({ args }) => {
+    if (args.kind && !["findings", "triage", "prices"].includes(args.kind))
+      fail(`--kind must be one of findings|triage|prices (got '${args.kind}')`);
     const settings = composeReviewSettings({
       draftPath: resolve(args.draft),
       stop: {

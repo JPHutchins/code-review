@@ -4,9 +4,10 @@
 // is total: a truncated final line (the artifact of a `timeout` kill mid-flush) or any malformed
 // entry is skipped, never thrown — a cost estimate from most of the transcript beats a crash.
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ModelUsageEntry } from "./schema.js";
+import { asRecord, readFileOrNull } from "./util.js";
 
 /** Per-model token totals plus the coarse telemetry (turn count, wall span) the transcript carries.
  *  `models` feeds `computeCost` directly; `firstTsMs`/`lastTsMs` are epoch-ms bounds (null when no
@@ -26,9 +27,6 @@ export interface TranscriptTree {
   readonly files: readonly string[];
   readonly missing: boolean;
 }
-
-const asRecord = (u: unknown): Record<string, unknown> | null =>
-  typeof u === "object" && u !== null && !Array.isArray(u) ? (u as Record<string, unknown>) : null;
 
 /** A non-negative finite number field, or 0 — token counts are never negative and a NaN/absent
  *  field must not poison the sum. */
@@ -151,14 +149,6 @@ export const sumTranscriptUsage = (entries: readonly unknown[]): TranscriptUsage
     firstTsMs: bounds.min,
     lastTsMs: bounds.max,
   };
-};
-
-const readFileOrNull = (path: string): string | null => {
-  try {
-    return readFileSync(path, "utf-8");
-  } catch {
-    return null;
-  }
 };
 
 const subagentFiles = (mainPath: string): readonly string[] => {

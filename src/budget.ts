@@ -10,9 +10,7 @@
 // itself never crashes (index.ts degrades any failure to an empty, allow-everything result).
 
 import { shellQuote } from "./stop-gate.js";
-
-const asRecord = (u: unknown): Record<string, unknown> | null =>
-  typeof u === "object" && u !== null && !Array.isArray(u) ? (u as Record<string, unknown>) : null;
+import { asRecord } from "./util.js";
 
 /** The two budget axes and the wind-down reserve to judge them against. Either axis may be unknown
  *  (`spentUsd`/`budgetUsd` null when there is no price map to measure spend; `elapsedMs`/`wallMs`
@@ -121,7 +119,9 @@ export const budgetMessage = (
 
 const invokesCodeReviewValidate = (toolInput: unknown): boolean => {
   const cmd = asRecord(toolInput)?.["command"];
-  return typeof cmd === "string" && /\bcode-review\s+validate\b/.test(cmd);
+  // `validate` must not be a prefix of another subcommand — `\b` alone matches before the hyphen in
+  // `validate-patches` (a findings-mutating command that must NOT pass the gate), so exclude `-`/word.
+  return typeof cmd === "string" && /\bcode-review\s+validate(?![\w-])/.test(cmd);
 };
 
 const SPAWN_TOOLS: ReadonlySet<string> = new Set(["Agent", "Task"]);
@@ -216,12 +216,13 @@ export const parseWallMs = (raw: string): number | null => {
   }
 };
 
-/** Parse a fraction in (0, 1]; fall back to `fallback` on anything unparseable or out of range, so a
- *  malformed flag never disables or inverts the gate — it just uses the default threshold. */
+/** Parse a fraction in [0, 1]; fall back to `fallback` on anything unparseable or out of range. `0`
+ *  is valid and meaningful — it disables the fraction part of the reserve so only the flat floor
+ *  applies. A malformed flag never inverts the gate; it just uses the default. */
 export const parseFraction = (raw: string | undefined, fallback: number): number => {
   if (raw === undefined) return fallback;
   const n = Number.parseFloat(raw);
-  return Number.isFinite(n) && n > 0 && n <= 1 ? n : fallback;
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
 };
 
 /** The default budget-hook command: this CLI re-invoked, carrying the limits so the hook decides

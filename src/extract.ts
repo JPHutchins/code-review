@@ -12,7 +12,7 @@
 // additionally enforcing invariants ajv cannot express (e.g. end_line >= start_line). A candidate
 // must pass both to count as "validating".
 
-import { readFileSync } from "node:fs";
+import { readFileOrNull } from "./util.js";
 import { resolve, schemaPathFor, defaultVersion } from "./registry.js";
 import { validateAgainstSchema } from "./validate.js";
 
@@ -151,14 +151,6 @@ const tryParseJson = (text: string): ParseResult => {
     return { ok: true, value: JSON.parse(text) as unknown };
   } catch {
     return { ok: false };
-  }
-};
-
-const readFileOrNull = (path: string): string | null => {
-  try {
-    return readFileSync(path, "utf-8");
-  } catch {
-    return null;
   }
 };
 

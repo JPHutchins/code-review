@@ -187,6 +187,18 @@ describe("cli — print-settings", () => {
     expect(pre).toContain("--wall '20m'");
     expect(pre).toBe(post);
   });
+
+  it("rejects an invalid --kind at generation time (fail fast, not a settings file that breaks later)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "print-settings",
+      "--draft",
+      "/work/findings.json",
+      "--kind",
+      "bogus",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("findings|triage|prices");
+  });
 });
 
 describe("cli — stop-gate", () => {

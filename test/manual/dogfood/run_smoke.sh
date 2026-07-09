@@ -101,6 +101,7 @@ cd "$PROJ"
 # wall ($WALL, what print-settings used), NOT the hard $TIMEOUT backstop. NO_ANCHOR=1 skips it, to
 # A/B against the pre-fix per-transcript blindness (subagents read ≈0% and run unsteered).
 if [ "${NO_ANCHOR:-}" = "1" ]; then
+  unset CODE_REVIEW_DEADLINE_EPOCH  # neutralize any anchor inherited from the calling env, so the A/B truly tests pre-#45
   echo "NO_ANCHOR=1 — deadline anchor DISABLED (reproducing pre-#45 per-transcript elapsed)"
 else
   CODE_REVIEW_DEADLINE_EPOCH="$(code-review deadline --wall "$WALL")"

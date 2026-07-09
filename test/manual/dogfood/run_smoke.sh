@@ -125,9 +125,11 @@ END=$(date +%s)
 echo "agent RC=$RC  wall_elapsed=$((END-START))s"
 
 mkdir -p "$RUN/transcript"
-find "$RHOME/.claude/projects" -name '*.jsonl' -exec cp {} "$RUN/transcript/" \; 2>/dev/null
-echo "--- transcript files ---"; ls -la "$RUN/transcript/" 2>/dev/null
-MAIN="$(find "$RUN/transcript" -name '*.jsonl' -printf '%s %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+# Preserve the on-disk tree (<hash>/<session>.jsonl + <hash>/<session>/subagents/agent-*.jsonl) —
+# NOT a flat copy — so check-cost's readTranscriptTree finds the subagents and sums their spend too.
+cp -r "$RHOME/.claude/projects/." "$RUN/transcript/" 2>/dev/null
+echo "--- transcript files ---"; find "$RUN/transcript" -name '*.jsonl' 2>/dev/null
+MAIN="$(find "$RUN/transcript" -name '*.jsonl' -not -path '*/subagents/*' -printf '%s %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
 
 echo "--- draft present? ---"
 if [ -f "$DRAFT" ]; then

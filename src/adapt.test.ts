@@ -278,6 +278,89 @@ describe("adapt — claude-code — absent native envelope (issue #39)", () => {
   });
 });
 
+describe("adapt — transcript telemetry fallback (issue #36 — real cost on a wall kill)", () => {
+  const fallback = {
+    models: [
+      {
+        model: "deepseek-v4-pro",
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_read_tokens: 50,
+        cache_write_tokens: 0,
+      },
+    ],
+    turns: 7,
+    durationMs: 123456,
+  };
+
+  it("refills telemetry from the transcript fallback when the native envelope is absent — cost is real, not $0.00", () => {
+    const result = adapt("claude-code", undefined, undefined, {
+      transcriptFallback: () => fallback,
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.models).toEqual(fallback.models);
+    expect(result.right.turns).toBe(7);
+    expect(result.right.duration_ms).toBe(123456);
+    expect(result.right.vendor_cost_usd).toBeNull();
+    // Findings are still the graceful notice (no --agent-file here) — telemetry is what changed.
+    expect(result.right.findings.summary).toContain("did not complete");
+    expect(ResultEnvelopeCodec.decode(result.right)._tag).toBe("Right");
+  });
+
+  it("does not refill from an EMPTY transcript fallback (stays degenerate, never fabricates models)", () => {
+    const result = adapt("claude-code", undefined, undefined, {
+      transcriptFallback: () => ({ models: [], turns: 0, durationMs: 0 }),
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.models).toEqual([]);
+    expect(result.right.turns).toBe(0);
+  });
+
+  it("keeps the native telemetry over the fallback when the native has real per-model usage (fallback is only for the empty-native case)", () => {
+    const result = adapt("claude-code", nativeFixture, undefined, {
+      transcriptFallback: () => fallback,
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    // deepseek-v4-flash exists only in the native fixture, never in the single-entry fallback.
+    expect(result.right.models.some((m) => m.model === "deepseek-v4-flash")).toBe(true);
+    expect(result.right.turns).not.toBe(7);
+  });
+
+  it("does NOT invoke the fallback thunk when the native has per-model usage; DOES when it's empty (no wasted transcript I/O)", () => {
+    let calledWithNative = 0;
+    adapt("claude-code", nativeFixture, undefined, {
+      transcriptFallback: () => {
+        calledWithNative++;
+        return fallback;
+      },
+    });
+    expect(calledWithNative).toBe(0);
+
+    let calledWhenAbsent = 0;
+    adapt("claude-code", undefined, undefined, {
+      transcriptFallback: () => {
+        calledWhenAbsent++;
+        return fallback;
+      },
+    });
+    expect(calledWhenAbsent).toBe(1);
+  });
+
+  it("recovers findings from --agent-file AND refills telemetry from the fallback (both survive a wall kill)", () => {
+    const result = adapt("claude-code", undefined, ladderFixturePath("f11-agent-file.json"), {
+      transcriptFallback: () => fallback,
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
+    expect(result.right.turns).toBe(7);
+    expect(result.right.models).toEqual(fallback.models);
+  });
+});
+
 describe("adapt — run metadata (route/effort)", () => {
   it("stamps route and effort into the envelope when provided", () => {
     const result = adapt("claude-code", nativeFixture, undefined, {

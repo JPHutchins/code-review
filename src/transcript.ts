@@ -5,7 +5,7 @@
 // entry is skipped, never thrown — a cost estimate from most of the transcript beats a crash.
 
 import { readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ModelUsageEntry } from "./schema.js";
 import { asRecord, readFileOrNull } from "./util.js";
 
@@ -151,21 +151,26 @@ export const sumTranscriptUsage = (entries: readonly unknown[]): TranscriptUsage
   };
 };
 
+/** The subagent transcripts a main session spawned. Claude Code writes them under a directory named
+ *  for the session id — `<dir>/<session-id>/subagents/agent-*.jsonl`, beside `<dir>/<session-id>.jsonl`
+ *  (the `.meta.json` companions are ignored). Confirmed live on 2.1.205 (issue #38 dogfood); an empty
+ *  result covers both a missing directory and an older/other layout. */
 const subagentFiles = (mainPath: string): readonly string[] => {
+  const dir = join(dirname(mainPath), basename(mainPath, ".jsonl"), "subagents");
   try {
-    return readdirSync(join(dirname(mainPath), "subagents"))
+    return readdirSync(dir)
       .filter((name) => name.endsWith(".jsonl"))
-      .map((name) => join(dirname(mainPath), "subagents", name));
+      .map((name) => join(dir, name));
   } catch {
     return [];
   }
 };
 
-/** Read a transcript tree from `mainPath`. Modern Claude Code inlines subagent turns into the main
- *  transcript (marked `isSidechain: true`); an older layout wrote them to sibling `subagents/*.jsonl`
- *  instead. Sibling files are read ONLY when the main transcript carries no inline sidechain turn, so
- *  a run in either layout is summed exactly once — never doubled. (Confirming the live layout under
- *  real subagents is a dogfood item — issue #38.) Never throws: every unreadable file drops out. */
+/** Read a transcript tree from `mainPath`. Claude Code writes each subagent to its own file under
+ *  `<session-id>/subagents/` (see `subagentFiles`), leaving the main transcript free of those turns;
+ *  a different layout instead inlines them into the main, marked `isSidechain: true`. The subagent
+ *  files are read ONLY when the main carries no inline sidechain turn, so a run in either layout is
+ *  summed exactly once — never doubled. Never throws: every unreadable file drops out. */
 export const readTranscriptTree = (mainPath: string): TranscriptTree => {
   const mainText = readFileOrNull(mainPath);
   const mainEntries = mainText === null ? [] : parseJsonl(mainText);

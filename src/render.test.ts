@@ -470,9 +470,33 @@ describe("render", () => {
         }),
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result.indexOf("**Recommended fix:**")).toBeLessThan(
-        result.indexOf("<details><summary>Reasoning</summary>"),
-      );
+      const rec = result.indexOf("**Recommended fix:**");
+      const reasoning = result.indexOf("<details><summary>Reasoning</summary>");
+      // Guard against a vacuous pass: both must actually render before comparing positions.
+      expect(rec).toBeGreaterThanOrEqual(0);
+      expect(reasoning).toBeGreaterThanOrEqual(0);
+      expect(rec).toBeLessThan(reasoning);
+    });
+
+    it("orders a stray's suggestion block between the recommended fix and the reasoning fold (issue #42)", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({
+          title: "Stray patch order",
+          recommendation: "Apply the patch.",
+          patch: ["@@ -2 +2 @@", "-old", "+fixed line"].join("\n"),
+          reasoning: "Because X causes Y.",
+        }),
+      ];
+      const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
+      const rec = result.indexOf("**Recommended fix:**");
+      const fence = result.indexOf("```suggestion");
+      const reasoning = result.indexOf("<details><summary>Reasoning</summary>");
+      expect(rec).toBeGreaterThanOrEqual(0);
+      expect(fence).toBeGreaterThanOrEqual(0);
+      expect(reasoning).toBeGreaterThanOrEqual(0);
+      expect(rec).toBeLessThan(fence);
+      expect(fence).toBeLessThan(reasoning);
     });
 
     it("renders a **Recommended fix:** line only when the stray carries a recommendation", () => {
@@ -1344,14 +1368,21 @@ describe("strays list structural integrity", () => {
       }),
     ];
     const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-    const section = result.slice(result.indexOf("Findings outside the diff"));
+    const headingIdx = result.indexOf("Findings outside the diff");
+    expect(headingIdx).toBeGreaterThanOrEqual(0); // fail clearly here, not via a garbage slice below
+    const section = result.slice(headingIdx);
 
     // Every stray renders exactly one bullet and one reasoning fold — none collapsed or duplicated.
-    expect(section.match(/^- /gm) ?? []).toHaveLength(3);
+    // Anchor the bullet match on the backtick-wrapped path so a dash in prose can't inflate the count.
+    expect(section.match(/^- .+ `[^`]+`/gm) ?? []).toHaveLength(3);
     expect(section.match(/<details><summary>Reasoning<\/summary>/g) ?? []).toHaveLength(3);
     // Within the list itself (first bullet → last fold), the Eta forEach must not leak a RUN of
     // blank lines (the per-row bug signature); inter-section spacing after the list is not in scope.
-    const list = section.slice(section.indexOf("\n- "), section.lastIndexOf("</details>"));
+    const listStart = section.indexOf("\n- ");
+    const listEnd = section.lastIndexOf("</details>");
+    expect(listStart).toBeGreaterThanOrEqual(0);
+    expect(listEnd).toBeGreaterThan(listStart);
+    const list = section.slice(listStart, listEnd);
     expect(list).not.toMatch(/\n[ \t]*\n[ \t]*\n/);
   });
 });

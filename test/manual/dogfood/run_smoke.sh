@@ -21,6 +21,9 @@ REPO="${CODE_REVIEW_REPO:-$(cd "$HERE/../../.." && pwd)}"
 DOGFOOD_ENV="${DOGFOOD_ENV:-$REPO/.env.dogfood}"
 PLUGIN="${CODE_REVIEW_PLUGIN:-$HOME/.claude/plugins/marketplaces/claude-plugins-official/plugins/code-review}"
 OUT="${DOGFOOD_OUT:-${TMPDIR:-/tmp}/code-review-dogfood}"
+# The PR to review, as a base/ + head/ tree pair (head = base with the PR diff applied). Defaults to
+# the bundled crafted fixture; point FIXTURE at any repo@base + head to replay a real PR (issue #45).
+FIXTURE="${FIXTURE:-$HERE/fixture}"
 
 LABEL="${LABEL:?set LABEL}"
 WALL="${WALL:?set WALL, e.g. 60s or 5m}"
@@ -43,11 +46,11 @@ export PATH="$RUN/bin:$PATH"
 
 # Crafted flawed PR: base commit, then head applied as the working tree + pr.diff (mirrors the
 # review job's "diff already applied" invariant).
-cp -r "$HERE/fixture/base/." "$PROJ/"
+cp -r "$FIXTURE/base/." "$PROJ/"
 git -C "$PROJ" init -q
 git -C "$PROJ" -c user.email=s@local -c user.name=s add -A
 git -C "$PROJ" -c user.email=s@local -c user.name=s commit -qm base
-cp -r "$HERE/fixture/head/." "$PROJ/"
+cp -r "$FIXTURE/head/." "$PROJ/"
 git -C "$PROJ" add -A >/dev/null 2>&1
 git -C "$PROJ" diff --cached >"$PROJ/pr.diff"
 git -C "$PROJ" reset -q
@@ -93,6 +96,18 @@ if [ "${FANOUT:-}" = "1" ]; then
 fi
 
 cd "$PROJ"
+# Absolute deadline anchor (issue #45) — inherited by every hook, incl. fan-out subagents, so all
+# measure the same true remaining wall instead of their own ≈0 transcript start. Matches the budget
+# wall ($WALL, what print-settings used), NOT the hard $TIMEOUT backstop. NO_ANCHOR=1 skips it, to
+# A/B against the pre-fix per-transcript blindness (subagents read ≈0% and run unsteered).
+if [ "${NO_ANCHOR:-}" = "1" ]; then
+  unset CODE_REVIEW_DEADLINE_EPOCH  # neutralize any anchor inherited from the calling env, so the A/B truly tests pre-#45
+  echo "NO_ANCHOR=1 — deadline anchor DISABLED (reproducing pre-#45 per-transcript elapsed)"
+else
+  CODE_REVIEW_DEADLINE_EPOCH="$(code-review deadline --wall "$WALL")"
+  export CODE_REVIEW_DEADLINE_EPOCH
+  echo "deadline anchor: CODE_REVIEW_DEADLINE_EPOCH=$CODE_REVIEW_DEADLINE_EPOCH (now + $WALL)"
+fi
 START=$(date +%s)
 set +e
 timeout --kill-after=60s "$TIMEOUT" \

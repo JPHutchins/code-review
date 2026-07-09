@@ -201,6 +201,26 @@ describe("cli — print-settings", () => {
   });
 });
 
+describe("cli — deadline", () => {
+  it("prints now + --wall as Unix epoch seconds (the anchor every hook shares, issue #45)", async () => {
+    const before = Math.floor(Date.now() / 1000);
+    const { stdout, exitCode } = await runCli(["deadline", "--wall", "24m"]);
+    const after = Math.floor(Date.now() / 1000);
+    expect(exitCode).toBeNull();
+    const deadline = Number.parseInt(stdout.trim(), 10);
+    expect(Number.isInteger(deadline)).toBe(true);
+    // 24m = 1440s of headroom, bracketed by the clock reads around the call.
+    expect(deadline).toBeGreaterThanOrEqual(before + 1440);
+    expect(deadline).toBeLessThanOrEqual(after + 1440);
+  });
+
+  it("fails fast on an unparseable --wall (never emits a garbage anchor)", async () => {
+    const { stderr, exitCode } = await runCli(["deadline", "--wall", "soon"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("--wall must be a duration");
+  });
+});
+
 describe("cli — stop-gate", () => {
   it("prints Stop-hook settings that wire the gate to this draft", async () => {
     const { stdout, exitCode } = await runCli([

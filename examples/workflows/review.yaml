@@ -274,6 +274,14 @@ jobs:
             "${BUDGET_PRICES[@]}" \
             >"$RUNNER_TEMP/review-settings.json"
 
+          # Absolute run deadline, exported so EVERY budget hook — the main agent's and each fan-out
+          # subagent's — measures the SAME true remaining wall. Without it each hook derives elapsed
+          # from its own transcript's start, which reads ≈0 inside a freshly-spawned subagent, so the
+          # skill's parallel fan-out runs unsteered until the wall and never checkpoints $DRAFT
+          # (issue #45). The env var is inherited by every `claude` subprocess, main and subagent.
+          CODE_REVIEW_DEADLINE_EPOCH="$(code-review deadline --wall "$AGENT_WALL")"
+          export CODE_REVIEW_DEADLINE_EPOCH
+
           # `timeout` is the hard backstop beneath the hooks: SIGTERM at the wall, SIGKILL after a grace
           # period; an overrun (124/137) is a warning, not a step failure — the pipeline proceeds with
           # whatever the agent emitted, and `adapt` preserves its usage/cost even when the deliverable

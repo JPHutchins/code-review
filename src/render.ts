@@ -63,6 +63,7 @@ export const render = (input: RenderInput): string => {
     postedAt: input.postedAt ?? "",
     severityCounts: input.severityCounts ?? computeSeverityCounts(input.findings.findings),
     strays: (input.strays ?? []).map(sanitizeFinding),
+    unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,

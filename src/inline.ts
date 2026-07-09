@@ -82,7 +82,7 @@ export const buildInlineComments = (
     return comment;
   });
 
-  return { comments, strays };
+  return { comments, strays, inDiff };
 };
 
 /** Render the demoted (stray) findings as a markdown section for the summary. */

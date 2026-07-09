@@ -23,6 +23,9 @@ export interface InlineComment {
 export interface InlineResult {
   readonly comments: readonly InlineComment[];
   readonly strays: readonly Finding[];
+  /** The in-diff findings the `comments` were built from — surfaced in the sticky (as extra strays)
+   *  when the inline review can't be posted and falls back to body-only (issue #57). */
+  readonly inDiff: readonly Finding[];
 }
 
 export type SeverityCounts = Readonly<Record<Severity, number>>;
@@ -31,6 +34,7 @@ export type SeverityCounts = Readonly<Record<Severity, number>>;
 export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
+  | { readonly kind: "inline-unavailable" }
   | { readonly kind: "no-envelope" };
 
 export interface RenderInput {
@@ -57,6 +61,10 @@ export interface RenderInput {
   readonly severityCounts?: SeverityCounts;
   /** Findings that couldn't be anchored inline (SPEC §5.2 rule 1) — the sticky's only per-finding detail. */
   readonly strays?: readonly Finding[];
+  /** How many of `strays` are in-diff findings whose inline comment GitHub rejected (issue #57),
+   *  rather than genuinely out-of-diff. When > 0 the sticky titles the section "Findings" and adds a
+   *  note that they couldn't be posted inline. Omitted/0 ⇒ all strays are genuinely out-of-diff. */
+  readonly unanchoredCount?: number;
   readonly inlineDisposition?: InlineDisposition;
   /** Workflow run URL (transcript/traces) — populated later by the wiring implementer. Renders a link in the LLM Disclosure aside when present, omitted otherwise. */
   readonly runUrl?: string;

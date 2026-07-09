@@ -13,7 +13,7 @@ import { render, computeSeverityCounts } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import { findingsPointer, reviewBodyPointer } from "./surface.js";
 import { ResultEnvelopeCodec, PriceMapCodec, TestSummaryCodec, noticeFindings } from "./schema.js";
-import type { Findings, ResultEnvelope, TestSummary } from "./schema.js";
+import type { Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -165,39 +165,79 @@ const parseHtmlUrl = (raw: string): string | undefined => {
   }
 };
 
+/** A single comment's position payload, shared by the batched review POST and the per-comment
+ *  salvage POST below. */
+const commentPayload = (c: InlineComment): Record<string, unknown> => ({
+  path: c.path,
+  line: c.line,
+  side: c.side,
+  ...(c.start_line !== undefined && c.start_side !== undefined
+    ? { start_line: c.start_line, start_side: c.start_side }
+    : {}),
+  body: formatMarkdown(c.body),
+});
+
 /** Post the inline review, pointing its body at the sticky (issue #11) when the sticky's URL is
- *  known, and prepending the precomputed findings-json marker (issue #19) so the review body
- *  carries it too. Returns the review's own `html_url` (undefined on a malformed response) so the
- *  caller can link the sticky back to it. */
+ *  known, and prepending the precomputed findings-json marker (issue #19) so the review body carries
+ *  it too. `comments[i]` is the rendered comment for finding `inDiff[i]` (1:1, same order). Returns
+ *  the review's `html_url` (undefined on a malformed response), how many inline comments actually
+ *  posted, and the findings whose comment GitHub rejected — so the caller can surface exactly those
+ *  in the sticky (issue #57) and keep the disposition count truthful (issue #21). */
 const postInlineReview = async (
   repo: string,
   prNumber: number,
   headSha: string,
   comments: readonly InlineComment[],
+  inDiff: readonly Finding[],
   stickyUrl: string | undefined,
   marker: string,
   ghApi: GhApi,
-): Promise<string | undefined> => {
+): Promise<{
+  readonly url: string | undefined;
+  readonly inlinePosted: number;
+  readonly unposted: readonly Finding[];
+}> => {
   const pointer = reviewBodyPointer(headSha, stickyUrl, marker);
-  const body = JSON.stringify({
-    body: pointer,
-    commit_id: headSha,
-    event: "COMMENT",
-    comments: comments.map((c) => ({
-      path: c.path,
-      line: c.line,
-      side: c.side,
-      ...(c.start_line !== undefined && c.start_side !== undefined
-        ? { start_line: c.start_line, start_side: c.start_side }
-        : {}),
-      body: formatMarkdown(c.body),
-    })),
-  });
-  const stdout = await ghApi(
-    [`repos/${repo}/pulls/${String(prNumber)}/reviews`, "--input", "-"],
-    body,
-  );
-  return parseHtmlUrl(stdout);
+  const reviewBody = (withComments: boolean): string =>
+    JSON.stringify({
+      body: pointer,
+      commit_id: headSha,
+      event: "COMMENT",
+      comments: withComments ? comments.map(commentPayload) : [],
+    });
+  const reviewsEndpoint = [`repos/${repo}/pulls/${String(prNumber)}/reviews`, "--input", "-"];
+  try {
+    const stdout = await ghApi(reviewsEndpoint, reviewBody(true));
+    return { url: parseHtmlUrl(stdout), inlinePosted: comments.length, unposted: [] };
+  } catch (err) {
+    // The reviews endpoint is atomic: one comment on a position GitHub won't accept rejects the WHOLE
+    // batch (issue #57). Rather than fail the job — or drop every comment — post the review body-only
+    // (so the event + findings marker exist) and then re-post each comment individually, keeping the
+    // ones GitHub accepts and collecting the finding behind each one it rejects for the caller to
+    // surface in the sticky. Degrade, never crash (§5.5). A body-only review that itself fails
+    // (comments.length === 0) is a genuine error and propagates.
+    if (comments.length === 0) throw err;
+    process.stderr.write(
+      `Warning: the batched inline review on PR #${String(prNumber)} was rejected (${err instanceof Error ? err.message : String(err)}) — GitHub rejects the whole batch if any one comment's position is invalid; posting the review body-only, then each comment individually to keep the valid ones (issue #57)\n`,
+    );
+    const url = parseHtmlUrl(await ghApi(reviewsEndpoint, reviewBody(false)));
+    const commentsEndpoint = [`repos/${repo}/pulls/${String(prNumber)}/comments`, "--input", "-"];
+    const unposted: Finding[] = [];
+    let inlinePosted = 0;
+    for (const [i, c] of comments.entries()) {
+      try {
+        await ghApi(commentsEndpoint, JSON.stringify({ commit_id: headSha, ...commentPayload(c) }));
+        inlinePosted += 1;
+      } catch (e) {
+        const finding = inDiff[i];
+        if (finding) unposted.push(finding);
+        process.stderr.write(
+          `Warning: inline comment on ${c.path}:${String(c.line)} rejected (${e instanceof Error ? e.message : String(e)}) — surfacing that finding in the sticky instead (issue #57)\n`,
+        );
+      }
+    }
+    return { url, inlinePosted, unposted };
+  }
 };
 
 const findBotComment = async (
@@ -593,7 +633,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // itself from `findings` below, rather than reusing this whole-document one.
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
 
-  const { comments: rawComments, strays } = buildInlineComments(findings.findings, diff, {
+  const {
+    comments: rawComments,
+    strays,
+    inDiff,
+  } = buildInlineComments(findings.findings, diff, {
     inlineTemplate,
     models: envelope.models.map((m) => m.model),
     findings,
@@ -647,8 +691,18 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const renderBody = (
     inlineDisposition: InlineDisposition | undefined,
     reviewUrl?: string,
+    straysOverride?: readonly Finding[],
+    unanchoredCount?: number,
   ): string =>
-    formatMarkdown(render({ ...commonRenderInput, inlineDisposition, reviewUrl }) + longFilesNote);
+    formatMarkdown(
+      render({
+        ...commonRenderInput,
+        ...(straysOverride ? { strays: straysOverride } : {}),
+        ...(unanchoredCount !== undefined ? { unanchoredCount } : {}),
+        inlineDisposition,
+        reviewUrl,
+      }) + longFilesNote,
+    );
 
   // Phase 2 (CO-R3): writes — sticky first, inline second; failure exits non-zero.
   const stickyRef = await upsertSticky(
@@ -677,17 +731,22 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // Post the fresh review FIRST, THEN supersede the prior ones (REC-CO-2 + issue #53): posting before
   // dismissing means the PR is never left without a review even if the process dies between the two —
   // a re-review of the same commit dismisses the stale review only after its replacement exists.
-  const reviewUrl = await postInlineReview(
+  const {
+    url: reviewUrl,
+    inlinePosted,
+    unposted,
+  } = await postInlineReview(
     input.repo,
     prNumber,
     input.headSha,
     comments,
+    inDiff,
     stickyRef?.url,
     findingsMarker,
     ghApi,
   );
   process.stderr.write(
-    `Posted a review with ${String(comments.length)} inline comment(s) on PR #${String(prNumber)}\n`,
+    `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`,
   );
 
   // Supersede EVERY prior bot review — those on other commits and any already on this head SHA.
@@ -704,30 +763,37 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // after the snapshot, so they are untouched. Best-effort — the fresh review is already posted.
   await minimizeComments(prNumber, priorInlineComments, ghApi);
 
-  // Issue #11/#21: now that postInlineReview has actually resolved, the sticky can truthfully
-  // report the review — with a link when reviewUrl parsed, as plain text otherwise (still true:
-  // the review was posted; only its URL is unknown). Best-effort — the sticky and review are
-  // already posted, so a failure here (a bad response, a network hiccup) must never fail the job.
-  // Only when inline comments were posted does the sticky upgrade to "posted N" + the review link;
-  // a body-only review (no in-diff comments, issue #43) keeps the sticky's initial disposition and
-  // simply points back at it from the review body.
-  if (comments.length > 0 && stickyRef !== null) {
-    const confirmedDisposition: InlineDisposition = {
-      kind: "posted",
-      count: comments.length,
-      sha: input.headSha,
-    };
+  // Issue #11/#21/#57: now that postInlineReview has resolved, re-render the sticky to the truth.
+  // - `inlinePosted > 0` → "posted N" + the review link (N is the count that ACTUALLY posted, so a
+  //   partial #57 salvage reports only the anchored ones).
+  // - `unposted` (issue #57) → the in-diff findings GitHub rejected are appended to the real
+  //   out-of-diff strays so no finding is lost to human view; `unanchoredCount` drives the section's
+  //   note. When NONE anchored, the disposition says the inline surface was unavailable, never a
+  //   false "posted" (issue #21).
+  // - Neither → a body-only review with no in-diff comments (issue #43) keeps the initial sticky.
+  // Best-effort — the sticky and review are already posted, so a failure here must never fail the job.
+  const unanchoredCount = unposted.length;
+  const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
+  const finalDisposition: InlineDisposition | undefined =
+    inlinePosted > 0
+      ? { kind: "posted", count: inlinePosted, sha: input.headSha }
+      : unanchoredCount > 0
+        ? { kind: "inline-unavailable" }
+        : initialDisposition;
+  if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
     try {
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(confirmedDisposition, reviewUrl),
+        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount),
         ghApi,
       );
-      process.stderr.write(`Linked sticky comment #${String(stickyRef.id)} to the review\n`);
+      process.stderr.write(
+        `Updated sticky comment #${String(stickyRef.id)} to reflect the review\n`,
+      );
     } catch (err) {
       process.stderr.write(
-        `Warning: failed to link the sticky summary to the review: ${err instanceof Error ? err.message : String(err)}\n`,
+        `Warning: failed to update the sticky summary after the review: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }

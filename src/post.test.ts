@@ -1768,7 +1768,9 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
 
     await expect(post(mkInput({}), api)).resolves.toBeUndefined();
 
-    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("failed to link"));
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("failed to update the sticky summary"),
+    );
     expect(stickyPatchCount).toBe(2);
 
     stderrSpy.mockRestore();
@@ -2150,5 +2152,75 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
     );
     expect(reviewPost).toBeDefined();
     expect(minimizedIdsOf(calls())).toEqual([]);
+  });
+});
+
+describe("post — inline review 422 salvage (issue #57)", () => {
+  it("keeps the valid inline comments and demotes only the rejected finding to the sticky", async () => {
+    // Two in-diff findings (lines 10 and 11 of inlineDiff's hunk). The batched review POST is
+    // rejected (as GitHub does when ANY comment position is invalid); the fallback posts the review
+    // body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
+    const findings = mkFindings([
+      mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Finding A" }),
+      mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Finding B" }),
+    ]);
+    const findingsPath = join(tmpDir, "findings-57.json");
+    writeFileSync(findingsPath, JSON.stringify(findings));
+
+    const calls: RecordedCall[] = [];
+    const api: GhApi = (args, stdin, env) => {
+      calls.push({ args: [...args], stdin, env });
+      const a = [...args];
+      if (a[0]?.startsWith("repos/owner/repo/commits/"))
+        return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
+      if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
+        return Promise.resolve(inlineDiff);
+      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))
+        return Promise.resolve("");
+      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
+      if (a[0] === "repos/owner/repo/issues/comments/999")
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
+      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"))
+        return Promise.resolve("[]");
+      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--input")) {
+        const body = JSON.parse(stdin ?? "{}") as ReviewBody;
+        // The batched attempt (with comments) is what GitHub rejects; the body-only retry succeeds.
+        return body.comments.length > 0
+          ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
+          : Promise.resolve('{"html_url": "https://gh/review"}\n');
+      }
+      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input")) {
+        const c = JSON.parse(stdin ?? "{}") as { line: number };
+        return c.line === 11
+          ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
+          : Promise.resolve('{"id": 1, "html_url": "https://gh/comment"}\n');
+      }
+      if (a[0] === "graphql") return Promise.resolve("");
+      return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
+    };
+
+    await expect(post(mkInput({ findingsPath }), api)).resolves.toBeUndefined();
+
+    // The batched review was attempted, then a body-only review posted, then each comment individually.
+    const reviewPosts = calls.filter(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.args.includes("--input"),
+    );
+    expect(reviewPosts).toHaveLength(2);
+    expect((JSON.parse(reviewPosts[1]!.stdin!) as ReviewBody).comments).toEqual([]);
+    const individualComments = calls.filter(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/comments" && c.args.includes("--input"),
+    );
+    expect(individualComments).toHaveLength(2);
+
+    // The sticky's final state: the ONE anchored comment is reported truthfully, and only the
+    // rejected finding (B) is surfaced in the sticky — the anchored one (A) is not.
+    const stickyPatches = calls.filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const finalBody = (JSON.parse(stickyPatches[stickyPatches.length - 1]!.stdin!) as CommentBody)
+      .body;
+    expect(finalBody).toContain("1 comment posted inline");
+    expect(finalBody).toContain("couldn't be posted as inline");
+    expect(finalBody).toContain("Finding B");
+    expect(finalBody).not.toContain("Finding A");
   });
 });

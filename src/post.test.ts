@@ -322,7 +322,7 @@ describe("post — inline review", () => {
     }
   });
 
-  it("does not post inline review when there are no in-diff comments", async () => {
+  it("posts a body-only COMMENT review even when there are no in-diff comments (issue #43)", async () => {
     const strayFindings = mkFindings([mkFinding({ start_line: 999, end_line: 999 })]);
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(strayFindings));
 
@@ -343,6 +343,10 @@ describe("post — inline review", () => {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
         response: "",
       },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
     ]);
 
     await post(mkInput({}), api);
@@ -350,7 +354,14 @@ describe("post — inline review", () => {
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
     );
-    expect(reviewCall).toBeUndefined();
+    expect(reviewCall).toBeDefined();
+    const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(body.event).toBe("COMMENT");
+    expect(body.commit_id).toBe("abc123def456");
+    // A body-only review: no in-diff comments, but the review still posts and its body carries the
+    // code-review marker (points humans at the sticky, agents at the findings JSON).
+    expect(body.comments).toEqual([]);
+    expect(body.body).toContain("code-review");
   });
 });
 
@@ -1511,10 +1522,15 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     expect(body).toContain("src/foo.ts:999");
     expect(body).toContain("Out of diff finding");
 
-    const inlineCall = calls().find(
+    // Issue #43: the sticky keeps its none-in-diff wording, but a body-only COMMENT review is still
+    // posted (empty comments[]) so tooling/agents get a review event.
+    const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
     );
-    expect(inlineCall).toBeUndefined();
+    expect(reviewCall).toBeDefined();
+    const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    expect(reviewBody.event).toBe("COMMENT");
+    expect(reviewBody.comments).toEqual([]);
   });
 
   it("gives the inline review a pointer body, not a duplicate of the walkthrough summary", async () => {

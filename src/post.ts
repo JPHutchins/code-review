@@ -617,10 +617,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   // Fix #5 (SPEC §5.2.6): suppression turns on whether a COMPLETED bot review already exists for
   // this head SHA — review identity via the reviews API `commit_id` — not on the sticky's marker
-  // (a placeholder/degraded sticky must not claim the SHA). Only relevant when there is an inline
-  // review to post at all.
-  const botReviews =
-    comments.length > 0 ? await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi) : [];
+  // (a placeholder/degraded sticky must not claim the SHA). Fetched unconditionally now that a review
+  // is always posted (issue #43), for both the duplicate-SHA guard and prior-review dismissal.
+  const botReviews = await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi);
   const alreadyReviewedThisSha = botReviews.some((r) => r.commitId === input.headSha);
 
   // Issue #21: the "posted — see the review" disposition is constructed ONLY from the actual
@@ -675,11 +674,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ghApi,
   );
 
-  if (comments.length === 0) return;
-
+  // Issue #43: a COMMENT review is posted on EVERY run, even with no in-diff comments, so tooling and
+  // agents get a review event every time — its body points at the sticky (for humans) and carries the
+  // findings-JSON marker (for agents). The only skip is a completed review already on this SHA.
   if (alreadyReviewedThisSha) {
     process.stderr.write(
-      `A completed bot review already exists for ${input.headSha} — updated sticky only, no new inline review\n`,
+      `A completed bot review already exists for ${input.headSha} — updated sticky only, no new review\n`,
     );
     return;
   }
@@ -702,7 +702,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ghApi,
   );
   process.stderr.write(
-    `Posted ${String(comments.length)} inline comments on PR #${String(prNumber)}\n`,
+    `Posted a review with ${String(comments.length)} inline comment(s) on PR #${String(prNumber)}\n`,
   );
 
   // Issue #31: hide the bot's own inline comments from superseded head SHAs so a re-reviewed PR
@@ -713,7 +713,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // report the review — with a link when reviewUrl parsed, as plain text otherwise (still true:
   // the review was posted; only its URL is unknown). Best-effort — the sticky and review are
   // already posted, so a failure here (a bad response, a network hiccup) must never fail the job.
-  if (stickyRef !== null) {
+  // Only when inline comments were posted does the sticky upgrade to "posted N" + the review link;
+  // a body-only review (no in-diff comments, issue #43) keeps the sticky's initial disposition and
+  // simply points back at it from the review body.
+  if (comments.length > 0 && stickyRef !== null) {
     const confirmedDisposition: InlineDisposition = {
       kind: "posted",
       count: comments.length,

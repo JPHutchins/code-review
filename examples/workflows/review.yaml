@@ -310,8 +310,19 @@ jobs:
           # --agent-file prefers the agent's own self-validated $DRAFT over parsing its free-text
           # result (§6.1 extraction ladder); $DRAFT lives outside the worktree so a PR-planted
           # repo-root findings-draft.json can never win this rung.
+          #
+          # --transcript recovers real per-model spend from the live session transcript (main +
+          # subagents) when a wall-clock kill left envelope.json empty (issue #39) — otherwise the
+          # comment would report $0.00 despite real cost sitting in the transcript (issue #36). Pick
+          # the review session's main transcript: the newest .jsonl, excluding subagent files (which
+          # live under <session>/subagents/ and are summed by `adapt` via the main).
+          REVIEW_TRANSCRIPT="$(find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+          TRANSCRIPT_ARGS=()
+          if [ -n "$REVIEW_TRANSCRIPT" ]; then
+            TRANSCRIPT_ARGS=(--transcript "$REVIEW_TRANSCRIPT")
+          fi
           mkdir -p findings
-          code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" --route "$ROUTE" --effort "$EFFORT" >findings/envelope.json
+          code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" --route "$ROUTE" --effort "$EFFORT" "${TRANSCRIPT_ARGS[@]}" >findings/envelope.json
           jq -c '.findings' findings/envelope.json >findings/findings.json
 
           # Discard the agent's edits and restore the clean PR-head snapshot — `--hard` doesn't

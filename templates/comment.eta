@@ -38,13 +38,6 @@ These findings are on lines not in the diff, so they can't be anchored as inline
 
 <% it.strays.forEach(function(f) { -%>
 - <%= it.severityEmoji(f.severity) %> `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %>
-  <details><summary>Reasoning</summary>
-
-<% f.reasoning.split("\n").forEach(function(rl) { -%>
-  <%= rl %>
-<% }) -%>
-
-  </details>
 <% if (f.recommendation) { -%>
 
   **Recommended fix:** <%~ f.recommendation %>
@@ -60,6 +53,14 @@ These findings are on lines not in the diff, so they can't be anchored as inline
 <%~ f.patchProjection.raw %>
 ```
 <% } -%>
+
+  <details><summary>Reasoning</summary>
+
+<% f.reasoning.split("\n").forEach(function(rl) { -%>
+  <%= rl %>
+<% }) -%>
+
+  </details>
 <% }) %>
 <% } %>
 

@@ -153,15 +153,16 @@ describe("readTranscriptTree", () => {
     expect(tree.files).toEqual([]);
   });
 
-  it("adds sibling subagents/*.jsonl when the main transcript has no inline sidechain turns", () => {
+  it("adds subagents from <session>/subagents/*.jsonl (the real CC layout) when the main has no inline sidechain turns", () => {
     const tree = readTranscriptTree(fixture("with-subagents", "main.jsonl"));
     expect(tree.files).toHaveLength(2);
+    expect(tree.files).toContain(fixture("with-subagents", "main", "subagents", "sub.jsonl"));
     const usage = sumTranscriptUsage(tree.entries);
     expect(usage.models.map((m) => m.model).sort()).toEqual(["alpha", "beta"]);
     expect(usage.turns).toBe(2);
   });
 
-  it("does NOT read siblings when the main transcript already inlines sidechain turns (no double count)", () => {
+  it("does NOT read the subagents dir when the main transcript already inlines sidechain turns (no double count)", () => {
     const tree = readTranscriptTree(fixture("inline-sidechain", "main.jsonl"));
     expect(tree.files).toEqual([fixture("inline-sidechain", "main.jsonl")]);
     const usage = sumTranscriptUsage(tree.entries);

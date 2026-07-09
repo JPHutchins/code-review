@@ -31,6 +31,7 @@ jobs:
     # `timeout-minutes:` here only if you want a hard ceiling on the whole job in addition.
     outputs:
       has_findings: ${{ steps.assemble.outputs.has_findings }}
+      findings_artifact_id: ${{ steps.upload-findings.outputs.artifact-id }}
     permissions:
       contents: read        # no write — the agent runs untrusted PR code
       actions: read          # download CI artifacts (logs)
@@ -337,6 +338,13 @@ jobs:
           set -euo pipefail
           mkdir -p findings
 
+          # `code-review adapt` (Phase 2, above) now always returns real telemetry alongside
+          # findings — even a findings-recovery miss carries the run's actual models/turns/
+          # duration (issue #18) — so it always writes both findings/findings.json and
+          # findings/envelope.json when it runs at all. The zeros below are therefore only ever
+          # synthesized when adapt never ran (security gate skip) or never got the chance to write
+          # anything (the agent invocation itself failed outright) — genuine no-telemetry cases,
+          # not a discarded recovery.
           wrap_envelope() {
             jq -n --slurpfile findings findings/findings.json \
               '{schema_version: "0.4.0", findings: $findings[0], models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null}' \
@@ -372,8 +380,11 @@ jobs:
           echo "has_findings=true" >> "$GITHUB_OUTPUT"
 
       # No retention-days: these are small text docs and the traceability links (issues #13/#15)
-      # should outlive a short expiry — keep the repo's default (max) retention.
+      # should outlive a short expiry — keep the repo's default (max) retention. `id` exposes
+      # `artifact-id`, threaded to the comment job as a job output so it can point --json-url at
+      # this artifact's own direct download endpoint (issue #19), not the run's artifacts LIST.
       - uses: actions/upload-artifact@v7
+        id: upload-findings
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-findings
@@ -436,6 +447,7 @@ jobs:
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
+          FINDINGS_ARTIFACT_ID: ${{ needs.review.outputs.findings_artifact_id }}
         run: |
           set -euo pipefail
 
@@ -446,6 +458,14 @@ jobs:
             PRICES_ARGS=(--prices findings/prices.json)
           fi
 
+          # --json-url points at THIS artifact's own direct download endpoint (issue #19) — not the
+          # run's artifacts LIST, which an agent would then have to fetch and filter by name/id
+          # itself. Omitted when the upload step didn't run (e.g. a skipped review).
+          JSON_URL_ARGS=()
+          if [ -n "$FINDINGS_ARTIFACT_ID" ]; then
+            JSON_URL_ARGS=(--json-url "${GITHUB_API_URL}/repos/${REPO}/actions/artifacts/${FINDINGS_ARTIFACT_ID}/zip")
+          fi
+
           # route/effort come from the envelope the review job stamped (§6.1) — not re-derived here.
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
@@ -453,5 +473,5 @@ jobs:
             --usage findings/envelope.json \
             --head-branch "$HEAD_BRANCH" \
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}" \
-            --json-url "${GITHUB_API_URL}/repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}"

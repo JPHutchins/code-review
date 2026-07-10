@@ -144,10 +144,12 @@ const unwrapAdapt = <A>(either: Either<string, A>): A => {
   throw new Error("unreachable"); // fail() always exits
 };
 
-/** Recover telemetry from a session transcript tree (main + subagents) for `adapt`'s wall-kill
- *  fallback (issue #36): when the native envelope has no per-model usage, `adapt` refills from this
- *  so cost computes from real models×prices instead of $0.00. A missing/unreadable transcript yields
- *  empty models, which `adapt` treats as no fallback (keeping the native's zeros). */
+/** Telemetry from a session transcript tree (main + subagents), which `adapt` uses for the true
+ *  WALL + TURNS whenever it's available — the native envelope only sees the main agent and under-
+ *  reports a subagent fan-out (issue #59) — and for per-model usage too on a wall-kill that left the
+ *  native empty (issue #36), so cost computes from real models×prices instead of $0.00. A
+ *  missing/unreadable transcript yields empty models + a zero span, which `adapt` treats as "no
+ *  transcript" (keeping the native's own figures). */
 const transcriptFallbackFrom = (path: string): TranscriptTelemetry => {
   const tree = readTranscriptTree(resolve(path));
   if (tree.missing)
@@ -830,7 +832,7 @@ const adaptCmd = defineCommand({
     transcript: {
       type: "string",
       description:
-        "Path to the session transcript (the main .jsonl); when the native envelope carries no per-model usage — a wall-clock kill leaves it empty (issue #39) — telemetry is recovered from the transcript tree (main + subagents) so cost is real, not $0.00 (issue #36)",
+        "Path to the session transcript (the main .jsonl). Its tree (main + subagents) is the source of the true wall + turn count — the native envelope only sees the main agent and under-reports a fan-out (issue #59) — and refills per-model usage too when the native has none (a wall-clock kill leaves it empty, so cost is real not $0.00 — issues #39/#36)",
     },
   },
   run: async ({ args }) => {

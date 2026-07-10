@@ -511,13 +511,16 @@ describe("cli — adapt", () => {
     const env = JSON.parse(withTranscript.stdout) as {
       duration_ms: number;
       turns: number;
-      models: { model: string }[];
+      models: { model: string; output_tokens: number }[];
     };
     // ~702s and 118 turns from the tree — decisively not the native's 42s / 5 turns.
     expect(env.duration_ms).toBeGreaterThan(600_000);
     expect(env.turns).toBeGreaterThan(100);
-    // Per-model usage stays native-authoritative (both models present).
+    // Per-model usage stays native-authoritative: the pro output is the native's 188,952 — NOT the
+    // transcript's under-counted 32,945 — so cost isn't silently deflated by sourcing usage from the
+    // transcript (issue #59 split: transcript for wall+turns, native for usage).
     expect(env.models.map((m) => m.model).sort()).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    expect(env.models.find((m) => m.model === "deepseek-v4-pro")?.output_tokens).toBe(188952);
 
     // Without a transcript, the native's under-reported figures are all there is — proving the
     // transcript is what corrects them.

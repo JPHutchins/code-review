@@ -150,20 +150,34 @@ const resolveTelemetry = (
   },
   meta: RunMeta,
 ): Telemetry => {
-  const fb = meta.transcriptFallback?.();
+  // Reading the transcript must never fail the adapt step (§5.5) — a thunk that throws degrades to
+  // "no transcript", i.e. the native's own figures.
+  const fb = ((): TranscriptTelemetry | undefined => {
+    try {
+      return meta.transcriptFallback?.();
+    } catch {
+      return undefined;
+    }
+  })();
+  // Wall + turns come from the transcript together (never one source for turns and another for the
+  // wall) whenever it yields a real span; otherwise both from the native envelope.
+  const wallTurns =
+    fb !== undefined && fb.durationMs > 0
+      ? { turns: fb.turns, duration_ms: fb.durationMs }
+      : { turns: native.turns, duration_ms: native.durationMs };
   return withMeta(
     {
       models: native.models.length > 0 ? native.models : fb ? [...fb.models] : native.models,
-      turns: fb !== undefined && fb.turns > 0 ? fb.turns : native.turns,
-      duration_ms: fb !== undefined && fb.durationMs > 0 ? fb.durationMs : native.durationMs,
+      ...wallTurns,
       vendor_cost_usd: native.vendorCostUsd,
     },
     meta,
   );
 };
 
-/** Telemetry from a decoded native envelope (issue #18), or the transcript fallback when it has no
- *  per-model usage. */
+/** Telemetry from a decoded native envelope: its per-model usage + vendor cost, plus wall/turns that
+ *  `resolveTelemetry` overrides from the transcript when one is available (issue #59) or that the
+ *  transcript refills entirely on a wall-kill that left the native empty (issues #39/#36/#18). */
 const nativeTelemetry = (native: ClaudeCodeEnvelope, meta: RunMeta): Telemetry =>
   resolveTelemetry(
     {

@@ -324,8 +324,13 @@ describe("adapt — transcript telemetry fallback (issue #36 — real cost on a 
     });
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
-    // Usage stays native-authoritative — deepseek-v4-flash exists only in the native fixture...
+    // Usage stays native-authoritative — deepseek-v4-flash exists only in the native fixture, and the
+    // pro counts are the native's (6540 output), NOT the fallback's (200) — proving usage isn't taken
+    // from the transcript (which under-counts output).
     expect(result.right.models.some((m) => m.model === "deepseek-v4-flash")).toBe(true);
+    expect(result.right.models.find((m) => m.model === "deepseek-v4-pro")?.output_tokens).toBe(
+      6540,
+    );
     // ...but wall + turns come from the transcript, since the native under-reports a subagent fan-out.
     expect(result.right.turns).toBe(7);
     expect(result.right.duration_ms).toBe(123456);

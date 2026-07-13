@@ -644,10 +644,13 @@ jobs:
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download (§8.4).
+      # Always block here — unlike the review job (whose model/ecosystem hosts a consumer may need to
+      # discover with egress-policy: audit), the commenter's host set is fixed and fully known, and
+      # this job holds the write token. It must never run unenforced, so it ignores inputs.egress_policy.
       - name: Lock network egress
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
-          egress-policy: ${{ inputs.egress_policy }}
+          egress-policy: block
           allowed-endpoints: >
             registry.npmjs.org:443
             api.github.com:443

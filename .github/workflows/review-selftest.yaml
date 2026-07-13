@@ -15,7 +15,8 @@ on:
       conclusion:
         description: route to exercise — success (full review) or failure (mechanic)
         required: false
-        type: string
+        type: choice
+        options: [success, failure]
         default: success
 
 permissions:
@@ -44,8 +45,12 @@ jobs:
           # Newest CI run for that head SHA (any conclusion); mechanic route uses it for job logs.
           # Pass the SHA via --arg (no string interpolation into the filter) and coalesce a no-match
           # (jq null) to "0" so the reusable workflow never receives the literal string "null".
-          run_id=$(gh run list --repo "$REPO" --workflow CI --json databaseId,headSha \
+          # --limit 100 widens the search past the default 20 in case the target run is older.
+          run_id=$(gh run list --repo "$REPO" --workflow CI --limit 100 --json databaseId,headSha \
             | jq -r --arg sha "$head_sha" '[.[] | select(.headSha==$sha)][0].databaseId // 0')
+          if [ "$run_id" = "0" ]; then
+            echo "::warning::No CI run found for head SHA $head_sha — mechanic route will have no logs"
+          fi
           {
             echo "head_sha=$head_sha"
             echo "head_branch=$head_branch"

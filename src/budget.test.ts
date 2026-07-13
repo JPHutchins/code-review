@@ -3,6 +3,8 @@ import {
   decideBudget,
   blockedDuringConvergence,
   budgetMessage,
+  writesToDraft,
+  singleWriterMessage,
   evaluateBudgetHook,
   parseWallMs,
   parseFraction,
@@ -41,6 +43,12 @@ describe("decideBudget", () => {
     expect(decideBudget(inputs({ elapsedMs: 300, wallMs: 1000 })).kind).toBe("ok");
     expect(decideBudget(inputs({ elapsedMs: 800, wallMs: 1000 })).kind).toBe("soft");
     expect(decideBudget(inputs({ elapsedMs: 950, wallMs: 1000 })).kind).toBe("hard");
+  });
+
+  it("stays hard once past the budget wall (the grace window between the budget wall and the hard kill)", () => {
+    // elapsed > wall: the review job runs the agent a few minutes past AGENT_WALL under continuous
+    // over-budget pressure before `timeout` kills it — the hook must keep forcing convergence here.
+    expect(decideBudget(inputs({ elapsedMs: 720_000, wallMs: 600_000 })).kind).toBe("hard");
   });
 
   it("takes the more-severe axis when both are known (either limit converges the agent)", () => {
@@ -134,6 +142,31 @@ describe("blockedDuringConvergence", () => {
   });
 });
 
+describe("writesToDraft (single-writer detection)", () => {
+  const d = "/work/findings-draft.json";
+  it("matches file-writing tools targeting the draft (abs path or basename)", () => {
+    expect(writesToDraft("Write", { file_path: d }, d)).toBe(true);
+    expect(writesToDraft("Edit", { file_path: d }, d)).toBe(true);
+    expect(writesToDraft("Write", { file_path: "findings-draft.json" }, d)).toBe(true);
+  });
+  it("matches Bash redirects, heredocs, and tee into the draft — including the $DRAFT token", () => {
+    expect(writesToDraft("Bash", { command: `echo '{}' > ${d}` }, d)).toBe(true);
+    expect(writesToDraft("Bash", { command: `printf x >>${d}` }, d)).toBe(true);
+    expect(writesToDraft("Bash", { command: `cat > ${d} <<'EOF'\n{}\nEOF` }, d)).toBe(true);
+    expect(writesToDraft("Bash", { command: `echo x | tee -a ${d}` }, d)).toBe(true);
+    expect(writesToDraft("Bash", { command: 'echo x > "$DRAFT"' }, d)).toBe(true);
+  });
+  it("does NOT match reads of the draft (only mutation races the single writer)", () => {
+    expect(writesToDraft("Bash", { command: `cat ${d}` }, d)).toBe(false);
+    expect(writesToDraft("Bash", { command: `code-review validate ${d}` }, d)).toBe(false);
+    expect(writesToDraft("Read", { file_path: d }, d)).toBe(false);
+  });
+  it("does NOT match writes to OTHER files", () => {
+    expect(writesToDraft("Write", { file_path: "/work/other.json" }, d)).toBe(false);
+    expect(writesToDraft("Bash", { command: "echo x > /tmp/scratch.txt" }, d)).toBe(false);
+  });
+});
+
 describe("budgetMessage", () => {
   const draft = "/work/findings.json";
   it("reports both axes and the hard directive when hard", () => {
@@ -151,6 +184,14 @@ describe("budgetMessage", () => {
     const msg = budgetMessage(inputs({ spentUsd: 0.75, budgetUsd: 1 }), { kind: "soft" }, draft);
     expect(msg).toContain("Wind down investigation");
     expect(msg).not.toContain("STOP all new investigation");
+  });
+  it("renders an over-budget (past-deadline) time clause as >100% without breaking", () => {
+    const msg = budgetMessage(
+      inputs({ elapsedMs: 720_000, wallMs: 600_000 }),
+      { kind: "hard" },
+      draft,
+    );
+    expect(msg).toContain("12.0m/10.0m elapsed (120%)");
   });
   it("omits the time clause when elapsed is unknown, and the denominator when budget is unknown", () => {
     const msg = budgetMessage(inputs({ spentUsd: 0.5 }), { kind: "soft" }, draft);
@@ -244,6 +285,52 @@ describe("evaluateBudgetHook", () => {
   });
   it("PreToolUse: allows an unknown/mis-shaped tool name at hard (denylist blocks only known burners)", () => {
     expect(evaluateBudgetHook({ hook_event_name: "PreToolUse", tool_input: {} }, hard)).toEqual({});
+  });
+
+  // Single-writer enforcement: a fan-out subagent (agent_id present) may never write the draft; only
+  // the main agent (no agent_id) writes it. Independent of budget phase — denied even at ok.
+  const denySub = (tool_input: Record<string, unknown>, tool_name: string, p = ok) =>
+    evaluateBudgetHook(
+      { hook_event_name: "PreToolUse", agent_id: "a1b2c3", tool_name, tool_input },
+      p,
+    ) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+
+  it("PreToolUse: denies a SUBAGENT writing the draft — Write tool — at any phase", () => {
+    const out = denySub({ file_path: draft }, "Write");
+    expect(out.hookSpecificOutput?.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput?.permissionDecisionReason).toBe(singleWriterMessage(draft));
+  });
+  it("PreToolUse: denies a SUBAGENT writing the draft — Bash redirect and heredoc", () => {
+    expect(
+      denySub({ command: `echo '{}' > ${draft}` }, "Bash").hookSpecificOutput?.permissionDecision,
+    ).toBe("deny");
+    expect(
+      denySub({ command: `cat > ${draft} <<'EOF'\n{}\nEOF` }, "Bash").hookSpecificOutput
+        ?.permissionDecision,
+    ).toBe("deny");
+    expect(
+      denySub({ command: `echo x >> ${draft}` }, "Bash").hookSpecificOutput?.permissionDecision,
+    ).toBe("deny");
+  });
+  it("PreToolUse: does NOT deny the MAIN agent writing the draft (no agent_id) — it is the sole writer", () => {
+    expect(
+      evaluateBudgetHook(
+        { hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: draft } },
+        ok,
+      ),
+    ).toEqual({});
+  });
+  it("PreToolUse: does NOT deny a subagent READING/validating the draft (only mutation races)", () => {
+    expect(denySub({ command: `cat ${draft}` }, "Bash")).toEqual({});
+    expect(denySub({ command: `code-review validate ${draft}` }, "Bash")).toEqual({});
+    expect(denySub({ file_path: draft }, "Read")).toEqual({});
+  });
+  it("PreToolUse: a subagent draft-write deny fires even under hard budget (both apply; single-writer first)", () => {
+    expect(
+      denySub({ file_path: draft }, "Write", hard).hookSpecificOutput?.permissionDecisionReason,
+    ).toBe(singleWriterMessage(draft));
   });
   it("PreToolUse: still forces convergence on the time axis when spend is unmeasurable", () => {
     const out = evaluateBudgetHook(

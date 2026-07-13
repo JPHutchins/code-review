@@ -163,6 +163,36 @@ export const blockedDuringConvergence = (toolName: string, toolInput: unknown): 
   return false;
 };
 
+const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const WRITE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+/** Does this tool call WRITE to the findings draft? A file-writing tool targeting the path, or a Bash
+ *  redirect / heredoc / `tee` into it. Reads (`cat`, `code-review validate`) are deliberately NOT
+ *  matched — only mutation races the single writer. Matches the absolute path, its basename, and the
+ *  literal `$DRAFT`/`${DRAFT}` token, since a fan-out agent reaches the file by any of those. */
+export const writesToDraft = (toolName: string, toolInput: unknown, draftPath: string): boolean => {
+  const rec = asRecord(toolInput);
+  const targets = [draftPath, baseName(draftPath), "$DRAFT", "${DRAFT}"];
+  if (WRITE_TOOLS.has(toolName)) {
+    const fp = rec?.["file_path"];
+    if (typeof fp === "string" && targets.some((t) => fp === t || baseName(fp) === baseName(t)))
+      return true;
+  }
+  const cmd = rec?.["command"];
+  return (
+    typeof cmd === "string" &&
+    targets.some((t) =>
+      new RegExp(`(?:>>?\\s*|\\btee\\s+(?:-a\\s+)?)['"]?${escapeRegExp(t)}`).test(cmd),
+    )
+  );
+};
+
+/** The deny reason shown to a fan-out subagent that tries to write the draft. Agent-facing text — keep
+ *  it free of internal metadata (issue numbers, refs); it ships to every user's review. */
+export const singleWriterMessage = (draftPath: string): string =>
+  `Only the main agent may write ${draftPath}. When a subagent writes it too, the concurrent writers clobber each other and the review comes out empty. Do NOT write, edit, or redirect into ${draftPath} — instead, return the findings you discovered in your reply (the field names are in the schema); the main agent collects every subagent's reported findings and writes the draft itself.`;
+
 /** Everything the hook needs beyond the raw hook input: the measured spend/elapsed (gathered by the
  *  CLI from the transcript + clock) and the limits/draft from the wired flags. */
 export interface BudgetParams {
@@ -202,8 +232,26 @@ export const evaluateBudgetHook = (
             },
           };
     case "PreToolUse": {
-      if (phase.kind !== "hard") return {};
       const toolName = rec["tool_name"];
+      const agentId = rec["agent_id"];
+      // Single-writer enforcement, independent of budget phase: a fan-out subagent (`agent_id`
+      // present; the main agent's input has none) must never write $DRAFT — concurrent writers race
+      // and clobber it, which has produced empty reviews. The main agent alone writes the draft, from
+      // the findings its subagents report back in their replies.
+      if (
+        typeof agentId === "string" &&
+        agentId.length > 0 &&
+        typeof toolName === "string" &&
+        writesToDraft(toolName, rec["tool_input"], params.draftPath)
+      )
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: singleWriterMessage(params.draftPath),
+          },
+        };
+      if (phase.kind !== "hard") return {};
       if (typeof toolName === "string" && blockedDuringConvergence(toolName, rec["tool_input"]))
         return {
           hookSpecificOutput: {

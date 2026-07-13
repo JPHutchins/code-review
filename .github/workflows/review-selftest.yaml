@@ -1,0 +1,66 @@
+# Code review — manual self-test caller (workflow_dispatch).
+# Exercises this repo's reusable workflow (by LOCAL ./ ref, so it runs the version on the branch
+# you dispatch from) against a real PR, without waiting for the workflow_run chain — which only ever
+# runs the DEFAULT branch's workflow and so can't test a branch's reusable-workflow changes.
+# Also doubles as an on-demand re-review. Dispatch:  gh workflow run review-selftest.yaml --ref <branch> -f pr=<PR#>
+name: Code review (self-test)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to review
+        required: true
+        type: string
+      conclusion:
+        description: route to exercise — success (full review) or failure (mechanic)
+        required: false
+        type: string
+        default: success
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      head_sha: ${{ steps.r.outputs.head_sha }}
+      head_branch: ${{ steps.r.outputs.head_branch }}
+      run_id: ${{ steps.r.outputs.run_id }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          head_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
+          head_branch=$(gh pr view "$PR" --repo "$REPO" --json headRefName -q .headRefName)
+          # Newest CI run for that head SHA (any conclusion); mechanic route uses it for job logs.
+          run_id=$(gh run list --repo "$REPO" --workflow CI --json databaseId,headSha \
+            -q "[.[] | select(.headSha==\"$head_sha\")][0].databaseId" || true)
+          {
+            echo "head_sha=$head_sha"
+            echo "head_branch=$head_branch"
+            echo "run_id=${run_id:-0}"
+          } >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: resolve
+    uses: ./.github/workflows/review-reusable.yml
+    with:
+      head_sha: ${{ needs.resolve.outputs.head_sha }}
+      head_branch: ${{ needs.resolve.outputs.head_branch }}
+      head_repo: ${{ github.repository }}
+      run_id: ${{ needs.resolve.outputs.run_id }}
+      conclusion: ${{ inputs.conclusion }}
+      trigger_event: pull_request
+      api_base_url: ${{ vars.API_BASE_URL }}
+      install_command: npm ci
+    secrets:
+      MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}

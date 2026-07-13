@@ -15,7 +15,52 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 - **`comment` job** — holds the write token, runs **no agent and no PR code**; `code-review post`
   validates findings against the diff and posts the inline review + sticky summary.
 
-## To try it
+## Two ways to consume it
+
+- **Copy-paste (`review.yaml`, this directory)** — own the whole pipeline inline. Best when you want
+  to read, audit, or customize every step in your own repo.
+- **Reusable workflow (`@ref`)** — a thin ~18–35 line caller that delegates to
+  [`.github/workflows/review-reusable.yaml`](../../.github/workflows/review-reusable.yaml) via
+  `workflow_call`, so a release is an `@ref` bump instead of re-copying the file. The full pipeline
+  (both jobs, the permission boundary, harden-runner, the CLI pins) lives in the pinned ref; you own
+  the trigger, secrets, egress policy, prices, and version pin. Minimal caller:
+
+  ```yaml
+  name: Code review
+  on:
+    workflow_run:
+      workflows: ["CI"]            # your CI workflow's name
+      types: [completed]
+  permissions:                     # superset; the two internal jobs narrow from this
+    contents: read
+    actions: read
+    pull-requests: write
+    issues: write
+  jobs:
+    review:
+      if: >-
+        github.event.workflow_run.event == 'pull_request' &&
+        (github.event.workflow_run.conclusion == 'success' ||
+         github.event.workflow_run.conclusion == 'failure')
+      uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.15
+      with:
+        head_sha:      ${{ github.event.workflow_run.head_sha }}
+        head_branch:   ${{ github.event.workflow_run.head_branch }}
+        head_repo:     ${{ github.event.workflow_run.head_repository.full_name }}
+        run_id:        ${{ github.event.workflow_run.id }}
+        conclusion:    ${{ github.event.workflow_run.conclusion }}
+        trigger_event: ${{ github.event.workflow_run.event }}
+        api_base_url:  ${{ vars.API_BASE_URL }}
+        install_command: npm ci    # omit for a STATIC review (diff + source only)
+      secrets:
+        MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+  ```
+
+  Per-repo deltas are `with:` inputs — see the reusable workflow's `inputs:` block for the full set
+  (models + tier aliases, `setup` + `install_command`, per-route walls, `extra_endpoints`,
+  `egress_policy`, pinned versions).
+
+## To try it (copy-paste)
 
 1. Copy `review.yaml` into `.github/workflows/`. Your existing CI workflow is untouched — edit the
    `workflows: ["CI"]` filter to match its `name:`.

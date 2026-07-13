@@ -176,32 +176,58 @@ describe("writesToDraft (single-writer detection)", () => {
 
 describe("budgetMessage", () => {
   const draft = "/work/findings.json";
-  it("reports both axes and the hard directive when hard", () => {
+  it("reports both axes and the hard directive when hard (main agent: write the draft)", () => {
     const msg = budgetMessage(
       inputs({ spentUsd: 0.95, budgetUsd: 1, elapsedMs: 60_000, wallMs: 120_000 }),
       { kind: "hard" },
       draft,
+      false,
     );
     expect(msg).toContain("$0.95/$1.00");
     expect(msg).toContain("elapsed");
     expect(msg).toContain("STOP all new investigation");
-    expect(msg).toContain(draft);
+    expect(msg).toContain(`Write your COMPLETE findings to ${draft}`);
   });
   it("uses the softer directive when soft", () => {
-    const msg = budgetMessage(inputs({ spentUsd: 0.75, budgetUsd: 1 }), { kind: "soft" }, draft);
+    const msg = budgetMessage(
+      inputs({ spentUsd: 0.75, budgetUsd: 1 }),
+      { kind: "soft" },
+      draft,
+      false,
+    );
     expect(msg).toContain("Wind down investigation");
     expect(msg).not.toContain("STOP all new investigation");
+  });
+  it("steers a SUBAGENT to report to the main agent, never to write the draft it cannot write", () => {
+    const hardSub = budgetMessage(
+      inputs({ spentUsd: 0.95, budgetUsd: 1 }),
+      { kind: "hard" },
+      draft,
+      true,
+    );
+    expect(hardSub).toContain("report the findings you have back to the main agent");
+    expect(hardSub).toContain(`Do not write ${draft}`);
+    expect(hardSub).not.toContain(`Write your COMPLETE findings to ${draft}`);
+    const softSub = budgetMessage(
+      inputs({ spentUsd: 0.75, budgetUsd: 1 }),
+      { kind: "soft" },
+      draft,
+      true,
+    );
+    expect(softSub).toContain("report the findings you have back to the main agent");
+    expect(softSub).not.toContain("STOP all new investigation");
   });
   it("renders an over-budget (past-deadline) time clause as >100% without breaking", () => {
     const msg = budgetMessage(
       inputs({ elapsedMs: 720_000, wallMs: 600_000 }),
       { kind: "hard" },
       draft,
+      false,
     );
     expect(msg).toContain("12.0m/10.0m elapsed (120%)");
   });
   it("omits the time clause when elapsed is unknown, and the denominator when budget is unknown", () => {
-    const msg = budgetMessage(inputs({ spentUsd: 0.5 }), { kind: "soft" }, draft);
+    const msg = budgetMessage(inputs({ spentUsd: 0.5 }), { kind: "soft" }, draft, false);
     expect(msg).toContain("spent $0.50");
     expect(msg).not.toContain("/$");
     expect(msg).not.toContain("elapsed");
@@ -211,6 +237,7 @@ describe("budgetMessage", () => {
       inputs({ spentUsd: null, elapsedMs: 60_000, wallMs: 120_000 }),
       { kind: "soft" },
       draft,
+      false,
     );
     expect(msg).not.toContain("spent");
     expect(msg).not.toContain("$");

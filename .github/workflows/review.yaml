@@ -61,7 +61,7 @@ jobs:
           node-version: "22"
 
       # Install the CLI and the deterministic commenter.
-      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.13
+      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.14
 
       # Install project deps so the agent can validate findings (run the checks / confirm fixes).
       - run: npm ci
@@ -271,9 +271,13 @@ jobs:
           git -c user.email=code-review@local -c user.name=code-review add -A
           git -c user.email=code-review@local -c user.name=code-review commit -q -m "pr-head snapshot (for patch validation)"
 
-          # Bound the agent's wall clock per route (issue #25). This wall is both the in-flight budget
-          # the hooks steer on and the `timeout` backstop below.
-          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; else AGENT_WALL=24m; fi
+          # Two wall clocks per route. AGENT_WALL is the BUDGET the hooks steer on: the agent is nudged
+          # to converge as it nears it and is treated as over budget once past it. HARD_KILL is the
+          # later `timeout` deadline — a few minutes of maximum-pressure grace beyond the budget wall,
+          # during which the hooks keep reminding the agent it is over budget and keep denying every
+          # tool but reading and writing/validating $DRAFT, so a review still being finalized can land
+          # before the process is killed rather than being cut off the instant it is told to converge.
+          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; HARD_KILL=7m; else AGENT_WALL=24m; HARD_KILL=27m; fi
 
           # Compose the review agent's hooks into one settings file (issues #29, #38), written to
           # $RUNNER_TEMP OUTSIDE the checked-out worktree so a PR diff can neither define nor disable
@@ -307,27 +311,28 @@ jobs:
           CODE_REVIEW_DEADLINE_EPOCH="$(code-review deadline --wall "$AGENT_WALL")"
           export CODE_REVIEW_DEADLINE_EPOCH
 
-          # `timeout` is the hard backstop beneath the hooks: SIGTERM at the wall, SIGKILL after a grace
-          # period; an overrun (124/137) is a warning, not a step failure — the pipeline proceeds with
-          # whatever the agent emitted, and `adapt` preserves its usage/cost even when the deliverable
-          # is incomplete (issue #39 keeps a truncated envelope from crashing that path).
-          echo "Review mode: $ROUTE (wall budget: $AGENT_WALL)"
+          # `timeout` is the hard backstop beneath the hooks: SIGTERM at HARD_KILL (a few minutes past
+          # the budget wall the hooks steer on), SIGKILL after a short grace; an overrun (124/137) is a
+          # warning, not a step failure — the pipeline proceeds with whatever the agent emitted, and
+          # `adapt` preserves its usage/cost even when the deliverable is incomplete (issue #39 keeps a
+          # truncated envelope from crashing that path).
+          echo "Review mode: $ROUTE (budget $AGENT_WALL, hard kill $HARD_KILL)"
           set +e
-          timeout --kill-after=60s "$AGENT_WALL" \
+          timeout --kill-after=60s "$HARD_KILL" \
           claude -p "$PROMPT" \
             --permission-mode bypassPermissions \
             --settings "$RUNNER_TEMP/review-settings.json" \
             --strict-mcp-config \
             --output-format json \
             --json-schema "$(cat "$SCHEMA_FILE")" \
-            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your ONLY deliverable is a findings JSON document written to $DRAFT (an absolute path outside the repo tree). It is an OBJECT, not a bare array: {\"schema_version\": \"0.4.0\", \"summary\": \"...\", \"verdict\": \"comment\", \"findings\": [ ... ]}. Each finding uses these exact field names — path, start_line, end_line, severity, title, description, reasoning, confidence (optional: side, code, code_url, recommendation, patch). Do NOT use file/line/summary/failure_scenario; if your review process yields those, translate them to the field names above. The full schema — whose field descriptions are the authoritative spec, including how to author a \`patch\` — is written to $SCHEMA_FILE and passed via --json-schema; read $SCHEMA_FILE if unsure, and tell any subagents you delegate to to read it too.
+            --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your ONLY deliverable is a findings JSON document written to $DRAFT (an absolute path outside the repo tree). It is an OBJECT, not a bare array: {\"schema_version\": \"0.4.0\", \"summary\": \"...\", \"verdict\": \"comment\", \"findings\": [ ... ]}. Each finding uses these exact field names — path, start_line, end_line, severity, title, description, reasoning, confidence (optional: side, code, code_url, recommendation, patch). Do NOT use file/line/summary/failure_scenario; if your review process yields those, translate them to the field names above. The full schema — whose field descriptions are the authoritative spec, including how to author a \`patch\` — is written to $SCHEMA_FILE and passed via --json-schema; read $SCHEMA_FILE if unsure. SINGLE WRITER: you, the main agent, are the ONLY one who can write $DRAFT — the environment blocks any subagent from writing, editing, or redirecting into it, because concurrent writers clobber the file and produce empty reviews. Any subagents you fan out to must EXPLORE and REPORT the findings they discover back in their final reply (their own wording is fine — they may read $SCHEMA_FILE for the field names); they must NOT try to write $DRAFT. You collect every subagent's reported findings, translate them to the exact field names above, and write $DRAFT yourself, keeping one valid copy. Do not wait for every subagent to return before $DRAFT exists — write a first-pass $DRAFT early and keep folding reports in as they arrive.
           Write a COMPLETE, valid $DRAFT by the time you are HALFWAY through your $AGENT_WALL budget — the moment you have a first pass of findings — then keep refining it in place. A valid review that exists beats a thorough one that gets cut off, so never leave $DRAFT unwritten while you explore. After each write, run \`code-review validate $DRAFT --explain\` and fix-and-revalidate until it exits 0 (--explain reprints the schema when the shape is wrong) before ending your turn.$SEED_NOTE
           Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix." \
             >envelope.json
           AGENT_RC=$?
           set -e
           if [ "$AGENT_RC" = "124" ] || [ "$AGENT_RC" = "137" ]; then
-            echo "::warning::review agent hit its $AGENT_WALL wall budget — proceeding with whatever draft it emitted"
+            echo "::warning::review agent hit its $HARD_KILL hard limit — proceeding with whatever draft it emitted"
           fi
 
           # Map the CLI's native envelope onto the abstract, vendor-neutral shape (§6.1) — the
@@ -465,7 +470,7 @@ jobs:
         with:
           node-version: "22"
 
-      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.13
+      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.14
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download (§8.4).

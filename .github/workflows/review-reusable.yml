@@ -146,7 +146,10 @@ jobs:
     # Job-level (not workflow-level): inputs.* is reliable here; in a called workflow's top-level
     # concurrency it is not.
     concurrency:
-      group: review-${{ inputs.head_repo }}-${{ inputs.head_branch }}
+      # Fall back to the caller repo when head_repo is omitted, so the group never degrades to the
+      # collision-prone `review--<branch>` form. Pass head_repo to disambiguate same-named branches
+      # across forks.
+      group: review-${{ inputs.head_repo != '' && inputs.head_repo || github.repository }}-${{ inputs.head_branch }}
       cancel-in-progress: true
     # No job-level cap by design (issue #25): the agent is bounded per route by a `timeout` wrapper
     # on each `claude -p` below, so a review is never hard-killed mid-flight — a hard kill loses both
@@ -598,7 +601,10 @@ jobs:
       # Separate artifact so the transcripts (which can be large) don't bloat the findings download
       # the comment job pulls. Advisory/auditability only — never read by the comment job or any
       # part of the review decision; safe to skip on a copy miss (`always()` — path may not exist).
+      # continue-on-error so a failed upload (e.g. artifact size limit) can't fail the review job and
+      # blank its has_findings output, which would silently drop the comment for a completed review.
       - uses: actions/upload-artifact@v7
+        continue-on-error: true
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-transcript
@@ -611,6 +617,11 @@ jobs:
     if: ${{ always() && needs.review.outputs.has_findings == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Same group as the review job so a superseding run cancels this run's comment too — matching
+    # the single-file workflow's workflow-level concurrency (review + comment cancelled as a unit).
+    concurrency:
+      group: review-${{ inputs.head_repo != '' && inputs.head_repo || github.repository }}-${{ inputs.head_branch }}
+      cancel-in-progress: true
     permissions:
       issues: write            # sticky comment via issues-comments endpoint
       pull-requests: write     # inline review via pulls/reviews endpoint

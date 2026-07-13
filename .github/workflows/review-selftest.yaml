@@ -42,8 +42,10 @@ jobs:
           head_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
           head_branch=$(gh pr view "$PR" --repo "$REPO" --json headRefName -q .headRefName)
           # Newest CI run for that head SHA (any conclusion); mechanic route uses it for job logs.
+          # Pass the SHA via --arg (no string interpolation into the filter) and coalesce a no-match
+          # (jq null) to "0" so the reusable workflow never receives the literal string "null".
           run_id=$(gh run list --repo "$REPO" --workflow CI --json databaseId,headSha \
-            -q "[.[] | select(.headSha==\"$head_sha\")][0].databaseId" || true)
+            | jq -r --arg sha "$head_sha" '[.[] | select(.headSha==$sha)][0].databaseId // 0')
           {
             echo "head_sha=$head_sha"
             echo "head_branch=$head_branch"

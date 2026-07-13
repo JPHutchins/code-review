@@ -9,6 +9,8 @@
 // measure spend, `Date.now()` for elapsed — and hands the results in as `BudgetParams`; the hook
 // itself never crashes (index.ts degrades any failure to an empty, allow-everything result).
 
+import { basename } from "node:path";
+
 import { shellQuote } from "./stop-gate.js";
 import { asRecord } from "./util.js";
 
@@ -125,20 +127,34 @@ const timeClause = (i: BudgetInputs): string | null =>
       ? `${mins(i.elapsedMs)}/${mins(i.wallMs)} elapsed (${pct(i.elapsedMs / i.wallMs)})`
       : `${mins(i.elapsedMs)} elapsed`;
 
-const directive = (phase: Exclude<BudgetPhase, { kind: "ok" }>, draftPath: string): string =>
-  phase.kind === "hard"
+// A subagent cannot write the draft (single-writer enforcement below), so it must be steered to
+// REPORT its findings back to the main agent — telling it to "write the draft" would contradict the
+// deny it is about to hit. The main agent gets the write-the-draft directive.
+const directive = (
+  phase: Exclude<BudgetPhase, { kind: "ok" }>,
+  draftPath: string,
+  isSubagent: boolean,
+): string => {
+  if (isSubagent)
+    return phase.kind === "hard"
+      ? `Budget nearly exhausted — STOP all new investigation now and report the findings you have back to the main agent in your reply. Do not write ${draftPath} yourself; only the main agent writes it.`
+      : `Wind down investigation and report the findings you have back to the main agent in your reply — do not write ${draftPath} yourself; the main agent writes it, and you may run out of budget otherwise.`;
+  return phase.kind === "hard"
     ? `Budget nearly exhausted — STOP all new investigation now. Write your COMPLETE findings to ${draftPath} and run \`code-review validate ${draftPath} --explain\` until it passes (--explain prints the exact schema when the shape is wrong). Other tools are blocked until that draft is written.`
     : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, then run \`code-review validate ${draftPath} --explain\` (it prints the exact schema if the shape is wrong) — you may run out of budget before you finish otherwise.`;
+};
 
 /** The steer/deny message: both budget axes, then the phase's directive. Shown to the agent as
- *  PostToolBatch `additionalContext` (soft/hard) and as the PreToolUse deny reason (hard). */
+ *  PostToolBatch `additionalContext` (soft/hard) and as the PreToolUse deny reason (hard). A subagent
+ *  is steered to report to the main agent rather than to write the draft it cannot write. */
 export const budgetMessage = (
   i: BudgetInputs,
   phase: Exclude<BudgetPhase, { kind: "ok" }>,
   draftPath: string,
+  isSubagent: boolean,
 ): string => {
   const status = [spendClause(i), timeClause(i)].filter((c): c is string => c !== null).join(" · ");
-  return `Budget check — ${status}. ${directive(phase, draftPath)}`;
+  return `Budget check — ${status}. ${directive(phase, draftPath, isSubagent)}`;
 };
 
 const invokesCodeReviewValidate = (toolInput: unknown): boolean => {
@@ -163,6 +179,42 @@ export const blockedDuringConvergence = (toolName: string, toolInput: unknown): 
   return false;
 };
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const WRITE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+/** Does this tool call WRITE to the findings draft? A file-writing tool targeting the path
+ *  (Write/Edit/MultiEdit via `file_path`, NotebookEdit via `notebook_path`), or a Bash redirect
+ *  (`>`, `>>`, `>|`, including a heredoc's leading `>`) or a `tee` whose file argument is the draft.
+ *  Reads (`cat`, `code-review validate`) are deliberately NOT matched — only mutation races the
+ *  single writer. The path is matched as a whole argument (end-anchored, so `<draft>.bak` is not a
+ *  hit) against the absolute path, its basename, and the literal `$DRAFT`/`${DRAFT}` token, since a
+ *  fan-out agent reaches the file by any of those. Scoped to the accidental fan-out race — not an
+ *  adversarial evasion model, so obscure copy vectors (`cp`/`mv`/`dd`) are out of scope. */
+export const writesToDraft = (toolName: string, toolInput: unknown, draftPath: string): boolean => {
+  const rec = asRecord(toolInput);
+  const targets = [draftPath, basename(draftPath), "$DRAFT", "${DRAFT}"];
+  if (WRITE_TOOLS.has(toolName)) {
+    const fp = rec?.["file_path"] ?? rec?.["notebook_path"];
+    if (typeof fp === "string" && targets.some((t) => fp === t || basename(fp) === basename(t)))
+      return true;
+  }
+  if (toolName === "Bash") {
+    const cmd = rec?.["command"];
+    if (typeof cmd !== "string") return false;
+    const alt = targets.map(escapeRegExp).join("|");
+    const end = "(?=$|[\\s|&;)])"; // the path must be a whole token, not a prefix of a longer one
+    const redirect = new RegExp(`>>?\\|?\\s*(['"]?)(?:${alt})\\1${end}`);
+    const teeArg = new RegExp(`\\btee\\b(?:\\s+-{1,2}\\S+)*\\s+(['"]?)(?:${alt})\\1${end}`);
+    return redirect.test(cmd) || teeArg.test(cmd);
+  }
+  return false;
+};
+
+/** The deny reason shown to a fan-out subagent that tries to write the draft. Agent-facing text — keep
+ *  it free of internal metadata (issue numbers, refs); it ships to every user's review. */
+export const singleWriterMessage = (draftPath: string): string =>
+  `Only the main agent may write ${draftPath}. When a subagent writes it too, the concurrent writers clobber each other and the review comes out empty. Do NOT write, edit, or redirect into ${draftPath} — instead, return the findings you discovered in your reply (the field names are in the schema); the main agent collects every subagent's reported findings and writes the draft itself.`;
+
 /** Everything the hook needs beyond the raw hook input: the measured spend/elapsed (gathered by the
  *  CLI from the transcript + clock) and the limits/draft from the wired flags. */
 export interface BudgetParams {
@@ -173,6 +225,14 @@ export interface BudgetParams {
   readonly reserve: ReserveParams;
   readonly draftPath: string;
 }
+
+const denyPreTool = (reason: string): Record<string, unknown> => ({
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason: reason,
+  },
+});
 
 /** Decide the hook output from the raw hook input + measured params, self-dispatching on the
  *  `hook_event_name` the input carries. Returns the exact object to print: `{}` is the universal
@@ -190,6 +250,8 @@ export const evaluateBudgetHook = (
     reserve: params.reserve,
   };
   const phase = decideBudget(inputs);
+  const agentId = rec?.["agent_id"];
+  const isSubagent = typeof agentId === "string" && agentId.length > 0;
 
   switch (rec?.["hook_event_name"]) {
     case "PostToolBatch":
@@ -198,20 +260,24 @@ export const evaluateBudgetHook = (
         : {
             hookSpecificOutput: {
               hookEventName: "PostToolBatch",
-              additionalContext: budgetMessage(inputs, phase, params.draftPath),
+              additionalContext: budgetMessage(inputs, phase, params.draftPath, isSubagent),
             },
           };
     case "PreToolUse": {
-      if (phase.kind !== "hard") return {};
       const toolName = rec["tool_name"];
+      // Single-writer enforcement, independent of budget phase: a fan-out subagent (`agent_id`
+      // present; the main agent's input has none) must never write $DRAFT — concurrent writers race
+      // and clobber it, which has produced empty reviews. The main agent alone writes the draft, from
+      // the findings its subagents report back in their replies.
+      if (
+        isSubagent &&
+        typeof toolName === "string" &&
+        writesToDraft(toolName, rec["tool_input"], params.draftPath)
+      )
+        return denyPreTool(singleWriterMessage(params.draftPath));
+      if (phase.kind !== "hard") return {};
       if (typeof toolName === "string" && blockedDuringConvergence(toolName, rec["tool_input"]))
-        return {
-          hookSpecificOutput: {
-            hookEventName: "PreToolUse",
-            permissionDecision: "deny",
-            permissionDecisionReason: budgetMessage(inputs, phase, params.draftPath),
-          },
-        };
+        return denyPreTool(budgetMessage(inputs, phase, params.draftPath, isSubagent));
       return {};
     }
     default:

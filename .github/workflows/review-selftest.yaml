@@ -59,7 +59,7 @@ jobs:
 
   review:
     needs: resolve
-    uses: ./.github/workflows/review-reusable.yml
+    uses: ./.github/workflows/review-reusable.yaml
     with:
       head_sha: ${{ needs.resolve.outputs.head_sha }}
       head_branch: ${{ needs.resolve.outputs.head_branch }}

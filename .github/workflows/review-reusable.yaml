@@ -1,6 +1,6 @@
 # Code review — reusable workflow (two jobs), called via `on: workflow_call`.
 # Consumers own a thin workflow that keeps the trigger and calls this:
-#   jobs.review.uses: JPHutchins/code-review/.github/workflows/review-reusable.yml@vX.Y.Z
+#   jobs.review.uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@vX.Y.Z
 # The consumer keeps: the on: trigger (workflow_run on your CI's name — and/or issue_comment),
 # the SUPERSET permissions the two jobs narrow from, the MODEL_API_KEY secret, .github/prices.json,
 # and the version pin. This file owns: both jobs, the CLI installs (pinned by input default at the

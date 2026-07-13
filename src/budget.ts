@@ -9,6 +9,8 @@
 // measure spend, `Date.now()` for elapsed — and hands the results in as `BudgetParams`; the hook
 // itself never crashes (index.ts degrades any failure to an empty, allow-everything result).
 
+import { basename } from "node:path";
+
 import { shellQuote } from "./stop-gate.js";
 import { asRecord } from "./util.js";
 
@@ -163,29 +165,35 @@ export const blockedDuringConvergence = (toolName: string, toolInput: unknown): 
   return false;
 };
 
-const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const WRITE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
-/** Does this tool call WRITE to the findings draft? A file-writing tool targeting the path, or a Bash
- *  redirect / heredoc / `tee` into it. Reads (`cat`, `code-review validate`) are deliberately NOT
- *  matched — only mutation races the single writer. Matches the absolute path, its basename, and the
- *  literal `$DRAFT`/`${DRAFT}` token, since a fan-out agent reaches the file by any of those. */
+/** Does this tool call WRITE to the findings draft? A file-writing tool targeting the path
+ *  (Write/Edit/MultiEdit via `file_path`, NotebookEdit via `notebook_path`), or a Bash redirect,
+ *  heredoc, or `tee` into it. Reads (`cat`, `code-review validate`) are deliberately NOT matched —
+ *  only mutation races the single writer. Matches the absolute path, its basename, and the literal
+ *  `$DRAFT`/`${DRAFT}` token, since a fan-out agent reaches the file by any of those. */
 export const writesToDraft = (toolName: string, toolInput: unknown, draftPath: string): boolean => {
   const rec = asRecord(toolInput);
-  const targets = [draftPath, baseName(draftPath), "$DRAFT", "${DRAFT}"];
+  const targets = [draftPath, basename(draftPath), "$DRAFT", "${DRAFT}"];
   if (WRITE_TOOLS.has(toolName)) {
-    const fp = rec?.["file_path"];
-    if (typeof fp === "string" && targets.some((t) => fp === t || baseName(fp) === baseName(t)))
+    const fp = rec?.["file_path"] ?? rec?.["notebook_path"];
+    if (typeof fp === "string" && targets.some((t) => fp === t || basename(fp) === basename(t)))
       return true;
   }
-  const cmd = rec?.["command"];
-  return (
-    typeof cmd === "string" &&
-    targets.some((t) =>
-      new RegExp(`(?:>>?\\s*|\\btee\\s+(?:-a\\s+)?)['"]?${escapeRegExp(t)}`).test(cmd),
-    )
-  );
+  if (toolName === "Bash") {
+    const cmd = rec?.["command"];
+    // A redirect/heredoc into the target (`> path`, `>> path`, `cat > path <<EOF`), or any `tee`
+    // command that names it (tee writes every file argument). Gated to Bash so a non-shell tool that
+    // merely carries a `command` field can't trip the deny.
+    if (typeof cmd === "string")
+      return targets.some(
+        (t) =>
+          new RegExp(`>>?\\s*['"]?${escapeRegExp(t)}`).test(cmd) ||
+          (/\btee\b/.test(cmd) && cmd.includes(t)),
+      );
+  }
+  return false;
 };
 
 /** The deny reason shown to a fan-out subagent that tries to write the draft. Agent-facing text — keep

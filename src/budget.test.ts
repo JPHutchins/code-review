@@ -144,16 +144,20 @@ describe("blockedDuringConvergence", () => {
 
 describe("writesToDraft (single-writer detection)", () => {
   const d = "/work/findings-draft.json";
-  it("matches file-writing tools targeting the draft (abs path or basename)", () => {
+  it("matches file-writing tools targeting the draft (abs path or basename); NotebookEdit via notebook_path", () => {
     expect(writesToDraft("Write", { file_path: d }, d)).toBe(true);
     expect(writesToDraft("Edit", { file_path: d }, d)).toBe(true);
+    expect(writesToDraft("MultiEdit", { file_path: d }, d)).toBe(true);
     expect(writesToDraft("Write", { file_path: "findings-draft.json" }, d)).toBe(true);
+    expect(writesToDraft("NotebookEdit", { notebook_path: d }, d)).toBe(true);
   });
-  it("matches Bash redirects, heredocs, and tee into the draft — including the $DRAFT token", () => {
+  it("matches Bash redirects, heredocs, and every tee variant into the draft — including the $DRAFT token", () => {
     expect(writesToDraft("Bash", { command: `echo '{}' > ${d}` }, d)).toBe(true);
     expect(writesToDraft("Bash", { command: `printf x >>${d}` }, d)).toBe(true);
     expect(writesToDraft("Bash", { command: `cat > ${d} <<'EOF'\n{}\nEOF` }, d)).toBe(true);
     expect(writesToDraft("Bash", { command: `echo x | tee -a ${d}` }, d)).toBe(true);
+    expect(writesToDraft("Bash", { command: `echo x | tee --append ${d}` }, d)).toBe(true);
+    expect(writesToDraft("Bash", { command: `echo x | tee -ai ${d}` }, d)).toBe(true);
     expect(writesToDraft("Bash", { command: 'echo x > "$DRAFT"' }, d)).toBe(true);
   });
   it("does NOT match reads of the draft (only mutation races the single writer)", () => {
@@ -164,6 +168,9 @@ describe("writesToDraft (single-writer detection)", () => {
   it("does NOT match writes to OTHER files", () => {
     expect(writesToDraft("Write", { file_path: "/work/other.json" }, d)).toBe(false);
     expect(writesToDraft("Bash", { command: "echo x > /tmp/scratch.txt" }, d)).toBe(false);
+  });
+  it("only inspects `command` for Bash — a non-shell tool carrying a `command` field is not a draft write", () => {
+    expect(writesToDraft("SomeMcpTool", { command: `> ${d}` }, d)).toBe(false);
   });
 });
 

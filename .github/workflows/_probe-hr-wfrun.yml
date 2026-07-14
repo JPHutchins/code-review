@@ -6,6 +6,11 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      issues: read
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
@@ -13,4 +18,4 @@ jobs:
           allowed-endpoints: >
             github.com:443
       - run: |
-          if curl -sS --max-time 12 -o /dev/null https://example.com; then echo "RESULT_WFRUN=LEAK"; else echo "RESULT_WFRUN=BLOCKED"; fi
+          if curl -sS --max-time 12 -o /dev/null https://example.com; then echo "RESULT_WFRUN_PERMS=LEAK"; else echo "RESULT_WFRUN_PERMS=BLOCKED"; fi

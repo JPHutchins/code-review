@@ -46,33 +46,41 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
       with:
         head_sha:      ${{ github.event.workflow_run.head_sha }}
         head_branch:   ${{ github.event.workflow_run.head_branch }}
-        head_repo:     ${{ github.event.workflow_run.head_repository.full_name }}
+        head_repo:     ${{ github.event.workflow_run.head_repository.full_name }}   # fork-safe concurrency group
         run_id:        ${{ github.event.workflow_run.id }}
         conclusion:    ${{ github.event.workflow_run.conclusion }}
         trigger_event: ${{ github.event.workflow_run.event }}
         api_base_url:  ${{ vars.API_BASE_URL }}
-        install_command: npm ci    # omit for a STATIC review (diff + source only)
+        # install_command: npm ci   # add to run your checks so the agent can validate findings —
+                                     # this EXECUTES PR code in the contained phase-2 window; omit
+                                     # (default) for a STATIC review of the diff + source only.
       secrets:
         MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
   ```
 
-  Per-repo deltas are `with:` inputs — see the reusable workflow's `inputs:` block for the full set
-  (models + tier aliases, `setup` + `install_command`, per-route walls, `extra_endpoints`,
-  `egress_policy`, pinned versions).
+  This defaults to a **STATIC** review (no PR-code execution), matching the copy-paste variant. Per-repo
+  deltas are `with:` inputs — see the reusable workflow's [`inputs:`
+  block](../../.github/workflows/review-reusable.yaml) for the full set (models + tier aliases, `setup`
+  + `install_command`, per-route walls, `extra_endpoints`, `egress_policy`, pinned versions). The setup
+  below (endpoint + key, prices, default-branch caveat, first-run egress) applies to **both** paths.
 
-## To try it (copy-paste)
+## Setup (both paths)
 
-1. Copy `review.yaml` into `.github/workflows/`. Your existing CI workflow is untouched — edit the
-   `workflows: ["CI"]` filter to match its `name:`.
+1. **Add the workflow.** Copy-paste: drop `review.yaml` into `.github/workflows/`. Reusable: add the
+   thin caller above. Either way, edit the `workflows: ["CI"]` filter to match your CI workflow's
+   `name:`; your existing CI workflow is untouched.
 2. Set the `API_BASE_URL` Actions **variable** (your provider's Anthropic-compatible endpoint,
    e.g. `https://api.deepseek.com/anthropic`) and add a repo secret `MODEL_API_KEY` — a **burner
    key with a hard spend cap** (it is exposed to untrusted PR code during the contained phase-2
    window). Both are required; an unset endpoint fails the triage step loudly.
 3. Commit `.github/prices.json` (fork [`schema/prices.example.json`](../../schema/prices.example.json))
-   so the cost footer isn't **$0** ([SPEC §4.4](../../SPEC.md#44-required-controls-conformance)).
+   so the cost footer isn't **$0** ([SPEC §4.4](../../SPEC.md#44-required-controls-conformance)). The
+   reusable workflow checks out your repo, so it reads your committed price map too.
 4. `workflow_run` only fires from the **default branch** — merge first, then open a test PR. The
-   introducing PR won't review itself.
-5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
+   introducing PR won't review itself. (Applies to both paths.)
+5. First run: discover the real egress allowlist before locking it. Copy-paste: set the
+   `harden-runner` step's `egress-policy: audit`. Reusable: pass `egress_policy: audit`. Then switch
+   to `block` (copy-paste: add hosts to `allowed-endpoints`; reusable: add them via `extra_endpoints`)
    ([SPEC Appendix A](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
 
 Model configuration is committed step `env` on the two claude-invoking steps — models, efforts, the

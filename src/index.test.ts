@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { runCommand } from "citty";
-import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1027,6 +1027,11 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(seeded.findings[0]!.title).toBe("Prior finding");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
+    // The sidecar marker lands beside the seed so the budget hook can tell the untouched seed from
+    // a draft the agent wrote itself. Only its mtime matters (never its content), and it is written
+    // AFTER the draft, so the seed's mtime never exceeds the marker's.
+    expect(statSync(`${out}.seed`).isFile()).toBe(true);
+    expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
   });
 
   it("seeds an empty valid scaffold and reports 'empty' when the prior review has no marker", async () => {
@@ -1043,6 +1048,10 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(seeded.summary).toBe("");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
+    // Every seeding path — prior or scaffold — must drop the marker, or the fan-out floor would
+    // treat the untouched scaffold as agent-written and let the agent fan out without revising it.
+    expect(statSync(`${out}.seed`).isFile()).toBe(true);
+    expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
   });
 
   it("seeds an empty scaffold when --prior is the literal null gather stages on a first review", async () => {
@@ -1058,6 +1067,7 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(seeded.findings).toEqual([]);
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
+    expect(statSync(`${out}.seed`).isFile()).toBe(true);
   });
 
   it("seeds an empty scaffold (never crashes) when --prior is omitted entirely", async () => {
@@ -1067,6 +1077,7 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(stdout.trim()).toBe("empty");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
+    expect(statSync(`${out}.seed`).isFile()).toBe(true);
   });
 
   it("falls back to the empty scaffold when the prior findings don't validate against the current schema", async () => {

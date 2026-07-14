@@ -5,6 +5,10 @@ import {
   budgetMessage,
   writesToDraft,
   singleWriterMessage,
+  spawnFloorMessage,
+  forceBackgroundSpawn,
+  mainHasWrittenDraft,
+  seedMarkerPath,
   evaluateBudgetHook,
   parseWallMs,
   parseFraction,
@@ -186,7 +190,8 @@ describe("budgetMessage", () => {
     expect(msg).toContain("$0.95/$1.00");
     expect(msg).toContain("elapsed");
     expect(msg).toContain("STOP all new investigation");
-    expect(msg).toContain(`Write your COMPLETE findings to ${draft}`);
+    expect(msg).toContain(`Write your COMPLETE findings from what you already have to ${draft}`);
+    expect(msg).toContain("Do not wait for subagents still running in the background");
   });
   it("uses the softer directive when soft", () => {
     const msg = budgetMessage(
@@ -254,6 +259,7 @@ describe("evaluateBudgetHook", () => {
     wallMs: null,
     reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0 },
     draftPath: draft,
+    mainDraftWritten: true,
     ...o,
   });
   const hard = params({ spentUsd: 0.95, budgetUsd: 1 });
@@ -277,7 +283,7 @@ describe("evaluateBudgetHook", () => {
     expect(out.hookSpecificOutput.additionalContext).toContain("STOP all new investigation");
   });
 
-  it("PreToolUse: allows everything below hard (soft does not deny)", () => {
+  it("PreToolUse: allows a non-spawn tool below hard (soft does not deny; spawns are handled separately)", () => {
     expect(
       evaluateBudgetHook(
         { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" } },
@@ -374,10 +380,118 @@ describe("evaluateBudgetHook", () => {
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
     expect(out.hookSpecificOutput.permissionDecisionReason).not.toContain("$");
   });
+
+  // Fan-out discipline: below hard, the main agent's spawns are gated on its own first-pass draft,
+  // and every permitted spawn — Agent or Task, main's or a subagent's — is rewritten to run in the
+  // background so no batch join can block the spawner where hooks cannot reach it.
+  const spawn = (p: BudgetParams, extra: Record<string, unknown> = {}) =>
+    evaluateBudgetHook(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "Agent",
+        tool_input: { prompt: "hunt", model: "flash" },
+        ...extra,
+      },
+      p,
+    ) as {
+      hookSpecificOutput: {
+        permissionDecision?: string;
+        permissionDecisionReason?: string;
+        updatedInput?: Record<string, unknown>;
+      };
+    };
+
+  it("PreToolUse: rewrites the MAIN agent's spawn to run_in_background, preserving its input", () => {
+    const out = spawn(ok);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(out.hookSpecificOutput.updatedInput).toEqual({
+      prompt: "hunt",
+      model: "flash",
+      run_in_background: true,
+    });
+  });
+  it("PreToolUse: the rewrite overrides an explicit run_in_background: false", () => {
+    const out = evaluateBudgetHook(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { prompt: "hunt", run_in_background: false },
+      },
+      ok,
+    ) as { hookSpecificOutput: { updatedInput: Record<string, unknown> } };
+    expect(out.hookSpecificOutput.updatedInput["run_in_background"]).toBe(true);
+  });
+  it("PreToolUse: denies the MAIN agent's spawn until its own draft exists (seed does not count)", () => {
+    const out = spawn(params({ ...ok, mainDraftWritten: false }));
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toBe(spawnFloorMessage(draft));
+  });
+  it("PreToolUse: a SUBAGENT's spawn is not floor-gated — rewritten to background regardless", () => {
+    const out = spawn(params({ ...ok, mainDraftWritten: false }), { agent_id: "a1b2c3" });
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(out.hookSpecificOutput.updatedInput?.["run_in_background"]).toBe(true);
+  });
+  it("PreToolUse: the hard-phase spawn deny wins over the background rewrite", () => {
+    const out = spawn(hard);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("STOP all new investigation");
+  });
+  it("PreToolUse: non-spawn tools are never rewritten", () => {
+    expect(
+      evaluateBudgetHook(
+        { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/x" } },
+        params({ ...ok, mainDraftWritten: false }),
+      ),
+    ).toEqual({});
+  });
   it("no-ops for an unknown event or a non-object input", () => {
     expect(evaluateBudgetHook({ hook_event_name: "SessionStart" }, hard)).toEqual({});
     expect(evaluateBudgetHook(null, hard)).toEqual({});
     expect(evaluateBudgetHook("not-json", hard)).toEqual({});
+  });
+});
+
+describe("mainHasWrittenDraft (fan-out floor)", () => {
+  it("false while the draft does not exist", () => {
+    expect(mainHasWrittenDraft(null, null)).toBe(false);
+    expect(mainHasWrittenDraft(null, 1000)).toBe(false);
+  });
+  it("true for any existing draft when no seed marker exists (no seeding ran)", () => {
+    expect(mainHasWrittenDraft(1000, null)).toBe(true);
+  });
+  it("only a draft modified AFTER the marker counts — the untouched seed does not", () => {
+    // seed-draft writes the draft first, then the marker, so an untouched seed's mtime is ≤ the
+    // marker's; any later agent write moves the draft's mtime past it.
+    expect(mainHasWrittenDraft(1000, 1000)).toBe(false);
+    expect(mainHasWrittenDraft(999, 1000)).toBe(false);
+    expect(mainHasWrittenDraft(1001, 1000)).toBe(true);
+  });
+});
+
+describe("seedMarkerPath", () => {
+  it("derives the sidecar beside the draft (the seed-draft ↔ budget-hook convention)", () => {
+    expect(seedMarkerPath("/work/findings-draft.json")).toBe("/work/findings-draft.json.seed");
+  });
+});
+
+describe("forceBackgroundSpawn", () => {
+  it("is a PreToolUse allow carrying the original input plus run_in_background: true", () => {
+    expect(forceBackgroundSpawn({ prompt: "hunt" })).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        updatedInput: { prompt: "hunt", run_in_background: true },
+      },
+    });
+  });
+  it("degrades a non-object input to just the background flag rather than crashing", () => {
+    expect(forceBackgroundSpawn(undefined)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        updatedInput: { run_in_background: true },
+      },
+    });
   });
 });
 

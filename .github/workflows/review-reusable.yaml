@@ -77,14 +77,19 @@ on:
         type: string
         required: false
         default: ""
-      # --- check-running: ecosystem setup + install (empty install_command ⇒ STATIC review) ---
-      setup:
-        description: Toolchain to set up for check-running — none | node | python | nix
-        type: string
+      # --- check-running (empty install_command + use_setup_action:false ⇒ STATIC review) ---
+      # Two escape hatches, both optional, both keeping this workflow free of any ecosystem specifics:
+      #   install_command — a shell string for simple installs (npm ci, uv sync, pipx+uv, …).
+      #   use_setup_action — run the consumer's OWN local composite at ./.github/actions/code-review-setup
+      #     for anything needing `uses:` steps (a toolchain installer, a store cache, …). The consumer
+      #     owns that composite in their repo; this workflow just invokes it. It runs before install_command.
+      use_setup_action:
+        description: Run the consumer's local composite at ./.github/actions/code-review-setup (for uses:-based toolchain/cache setup this workflow can't and shouldn't own).
+        type: boolean
         required: false
-        default: none
+        default: false
       install_command:
-        description: Command to install project deps so the agent can run the project's checks. Empty ⇒ STATIC review (diff + source only, no execution). Trusted consumer config.
+        description: Shell command to install project deps so the agent can run the project's checks. Empty ⇒ no shell install. Trusted consumer config.
         type: string
         required: false
         default: ""
@@ -194,30 +199,21 @@ jobs:
           CODE_REVIEW_VERSION: ${{ inputs.code_review_version }}
         run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
-      # Optional check-running setup: install the consumer project's toolchain so the agent can run
-      # its checks / confirm fixes. `setup` selects a toolchain installer; hosts these installers
-      # need (cache.nixos.org, pypi.org, …) must be in the egress allowlist BELOW at arm time —
-      # harden-runner arms before any step runs — so pass them via `extra_endpoints`.
-      - name: Set up Python (uv)
-        if: ${{ inputs.setup == 'python' }}
-        uses: astral-sh/setup-uv@v8.2.0
-      - name: Set up Nix
-        if: ${{ inputs.setup == 'nix' }}
-        uses: nixbuild/nix-quick-install-action@63ca48f939ee3b8d835f4126562537df0fee5b91 # v30
-      # Persist the Nix store across review runs (setup: nix only) so the dev shell isn't refetched
-      # from cache.nixos.org + rebuilt from source every review. Keyed on the caller's flake/nix/lock
-      # files, falling back to the newest prefix match. Uses the GitHub Actions cache backend — add
-      # its hosts to extra_endpoints when hardening egress from audit to block.
-      - name: Cache the Nix store
-        if: ${{ inputs.setup == 'nix' }}
-        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock', '**/Cargo.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
+      # Optional consumer-owned setup for check-running. This workflow deliberately owns NO ecosystem
+      # toolchain or cache action — those are `uses:` steps it can't take as inputs and shouldn't
+      # hardcode (that way lies a junk drawer of every ecosystem's installer + cache). Instead, when
+      # use_setup_action is true, it invokes a composite the CONSUMER commits at the fixed path
+      # ./.github/actions/code-review-setup — resolved against the consumer's checked-out repo — where
+      # they put their own toolchain installer, store cache, and dep install (e.g. Nix + a nix cache).
+      # Any hosts that composite needs (cache.nixos.org, pypi.org, …) must be reachable at harden-runner
+      # arm time (it arms before any step) — pass them via extra_endpoints.
+      - name: Consumer setup (local composite)
+        if: ${{ inputs.use_setup_action }}
+        uses: ./.github/actions/code-review-setup
 
-      # Install project deps so the agent can validate findings. Empty install_command ⇒ STATIC
-      # review. The value is trusted consumer config (authored in their own reviewed workflow, never
-      # from PR/comment content), so `eval` here is a config knob, not an injection surface.
+      # Simple shell install for consumers that don't need a `uses:`-based setup (npm ci, uv sync,
+      # pipx+uv, …). Empty ⇒ skip. Trusted consumer config authored in their own reviewed workflow
+      # (never PR/comment content), so `eval` here is a config knob, not an injection surface.
       - name: Install project dependencies
         if: ${{ inputs.install_command != '' }}
         env:

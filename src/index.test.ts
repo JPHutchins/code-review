@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { runCommand } from "citty";
-import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1027,6 +1027,10 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(seeded.findings[0]!.title).toBe("Prior finding");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
+    // The sidecar marker lands beside the seed so the budget hook can tell the untouched seed from
+    // a draft the agent wrote itself; it is written after the draft, so its mtime bounds the seed's.
+    expect(readFileSync(`${out}.seed`, "utf-8")).toBe(readFileSync(out, "utf-8"));
+    expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
   });
 
   it("seeds an empty valid scaffold and reports 'empty' when the prior review has no marker", async () => {
@@ -1043,6 +1047,7 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(seeded.summary).toBe("");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
+    expect(readFileSync(`${out}.seed`, "utf-8")).toBe(readFileSync(out, "utf-8"));
   });
 
   it("seeds an empty scaffold when --prior is the literal null gather stages on a first review", async () => {

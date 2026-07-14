@@ -6,7 +6,7 @@
 // citty requires async run() even when the body has no explicit await
 
 import { defineCommand, runMain } from "citty";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
 import { render } from "./render.js";
@@ -20,6 +20,8 @@ import {
   parseEpochSecMs,
   anchoredElapsedMs,
   deadlineEpochSec,
+  mainHasWrittenDraft,
+  seedMarkerPath,
   DEFAULT_RESERVE,
   DEADLINE_ENV,
 } from "./budget.js";
@@ -392,6 +394,15 @@ const parseBudgetUsd = (raw: string | undefined): number | null => {
   return Number.isFinite(n) && n >= 0 ? n : null;
 };
 
+/** A file's mtime in epoch ms, or null when it does not exist (or cannot be statted). */
+const mtimeMsOf = (path: string): number | null => {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+};
+
 /** The `transcript_path` a hook payload carries, when present. */
 const transcriptPathOf = (input: unknown): string | undefined => {
   const tp = (
@@ -404,7 +415,7 @@ const budgetHookCmd = defineCommand({
   meta: {
     name: "budget-hook",
     description:
-      "Self-dispatching Claude Code hook for budget discipline (issue #38): on PostToolBatch, steer the agent to converge once spend or wall-clock enters its soft wind-down reserve; on PreToolUse, inside the hard reserve, deny the budget-burning tools (subagent spawns, arbitrary shell, web) while leaving the draft-delivery path open. Reads the hook payload on stdin, measures spend from its transcript, and decides on $ and/or time. Degrades to a no-op on any error.",
+      "Self-dispatching Claude Code hook for budget discipline (issue #38): on PostToolBatch, steer the agent to converge once spend or wall-clock enters its soft wind-down reserve; on PreToolUse, inside the hard reserve, deny the budget-burning tools (subagent spawns, arbitrary shell, web) while leaving the draft-delivery path open. At every phase, the main agent's subagent spawns are denied until it has written its own first-pass draft (seed-draft's sidecar marker tells the seed apart), and permitted spawns are rewritten to run in the background so no batch join can block the spawner (issue #73). Reads the hook payload on stdin, measures spend from its transcript, and decides on $ and/or time. Degrades to a no-op on any error.",
   },
   args: {
     draft: {
@@ -481,6 +492,10 @@ const budgetHookCmd = defineCommand({
             : DEFAULT_RESERVE.flatMs,
         },
         draftPath,
+        mainDraftWritten: mainHasWrittenDraft(
+          mtimeMsOf(draftPath),
+          mtimeMsOf(seedMarkerPath(draftPath)),
+        ),
       });
       process.stdout.write(`${JSON.stringify(output)}\n`);
     } catch (err) {
@@ -684,7 +699,7 @@ const seedDraftCmd = defineCommand({
   meta: {
     name: "seed-draft",
     description:
-      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0 (issues #52, #53). Prints the mode chosen (prior|empty|none — none when even the scaffold write failed) to stdout; always exits 0",
+      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0 (issues #52, #53). Also drops a sidecar marker beside the seed so the budget hook can tell the untouched seed from a draft the agent wrote itself (issue #73). Prints the mode chosen (prior|empty|none — none when even the scaffold write failed) to stdout; always exits 0",
   },
   args: {
     prior: {
@@ -726,9 +741,25 @@ const seedDraftCmd = defineCommand({
     // empty-but-valid scaffold — none uses the process-exiting require* helpers. The only outcome
     // that skips seeding is a scaffold write that itself throws (e.g. a bad --out directory), which
     // is warned and still exits 0: the agent then writes $DRAFT itself, exactly as before seeding.
+
+    // The sidecar marker, written right AFTER the seed so its mtime bounds the seed's: the budget
+    // hook treats the draft as agent-written only once its mtime passes the marker's. Best-effort
+    // like the seed itself — without the marker the fan-out gate just accepts any existing draft.
+    const writeSeedMarker = (content: string): void => {
+      try {
+        writeFileSync(seedMarkerPath(outPath), content);
+      } catch (err) {
+        process.stderr.write(
+          `Warning: could not write the seed marker beside ${outPath} (${err instanceof Error ? err.message : String(err)}) — the seeded draft will count as agent-written\n`,
+        );
+      }
+    };
+
     const writeEmptyScaffold = (): void => {
       try {
-        writeFileSync(outPath, `${JSON.stringify(noticeFindings(""), null, 2)}\n`);
+        const content = `${JSON.stringify(noticeFindings(""), null, 2)}\n`;
+        writeFileSync(outPath, content);
+        writeSeedMarker(content);
         process.stderr.write(
           `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
         );
@@ -776,7 +807,9 @@ const seedDraftCmd = defineCommand({
           ? resolve(args.schema)
           : schemaPathFor(kind, args["schema-version"]);
         if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
-        writeFileSync(outPath, `${JSON.stringify(priorFindings, null, 2)}\n`);
+        const content = `${JSON.stringify(priorFindings, null, 2)}\n`;
+        writeFileSync(outPath, content);
+        writeSeedMarker(content);
         return true;
       } catch (err) {
         process.stderr.write(

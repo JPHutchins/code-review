@@ -3,7 +3,10 @@
 // once spend or wall-clock enters its soft wind-down reserve, and a PreToolUse gate that, inside the
 // smaller hard reserve, denies the budget-burning tools — subagent spawns, arbitrary shell, web —
 // while leaving the deliver-the-draft path open, so the agent produces its review before the budget
-// is gone rather than investigating until it is killed.
+// is gone rather than investigating until it is killed. The PreToolUse gate also owns the fan-out
+// discipline at EVERY phase: subagent spawns are denied until the main agent has written its own
+// first-pass draft, and permitted spawns are rewritten to run in the background so the main agent
+// never blocks on a batch join where no hook can steer it (issue #73).
 //
 // Every decision here is pure. The CLI (index.ts) owns the impure edges — reading the transcript to
 // measure spend, `Date.now()` for elapsed — and hands the results in as `BudgetParams`; the hook
@@ -129,7 +132,9 @@ const timeClause = (i: BudgetInputs): string | null =>
 
 // A subagent cannot write the draft (single-writer enforcement below), so it must be steered to
 // REPORT its findings back to the main agent — telling it to "write the draft" would contradict the
-// deny it is about to hit. The main agent gets the write-the-draft directive.
+// deny it is about to hit. The main agent gets the write-the-draft directive; since its subagents
+// run in the background (spawns are rewritten below), it is also told NOT to idle-wait on them —
+// the draft is written from what it already has, folding in late reports only if they arrive.
 const directive = (
   phase: Exclude<BudgetPhase, { kind: "ok" }>,
   draftPath: string,
@@ -140,8 +145,8 @@ const directive = (
       ? `Budget nearly exhausted — STOP all new investigation now and report the findings you have back to the main agent in your reply. Do not write ${draftPath} yourself; only the main agent writes it.`
       : `Wind down investigation and report the findings you have back to the main agent in your reply — do not write ${draftPath} yourself; the main agent writes it, and you may run out of budget otherwise.`;
   return phase.kind === "hard"
-    ? `Budget nearly exhausted — STOP all new investigation now. Write your COMPLETE findings to ${draftPath} and run \`code-review validate ${draftPath} --explain\` until it passes (--explain prints the exact schema when the shape is wrong). Other tools are blocked until that draft is written.`
-    : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, then run \`code-review validate ${draftPath} --explain\` (it prints the exact schema if the shape is wrong) — you may run out of budget before you finish otherwise.`;
+    ? `Budget nearly exhausted — STOP all new investigation now. Do not wait for subagents still running in the background. Write your COMPLETE findings from what you already have to ${draftPath} and run \`code-review validate ${draftPath} --explain\` until it passes (--explain prints the exact schema when the shape is wrong). Other tools are blocked until that draft is written.`
+    : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, then run \`code-review validate ${draftPath} --explain\` (it prints the exact schema if the shape is wrong) — fold in the subagent reports you already have rather than waiting on stragglers; you may run out of budget before you finish otherwise.`;
 };
 
 /** The steer/deny message: both budget axes, then the phase's directive. Shown to the agent as
@@ -215,6 +220,39 @@ export const writesToDraft = (toolName: string, toolInput: unknown, draftPath: s
 export const singleWriterMessage = (draftPath: string): string =>
   `Only the main agent may write ${draftPath}. When a subagent writes it too, the concurrent writers clobber each other and the review comes out empty. Do NOT write, edit, or redirect into ${draftPath} — instead, return the findings you discovered in your reply (the field names are in the schema); the main agent collects every subagent's reported findings and writes the draft itself.`;
 
+/** The sidecar `seed-draft` writes right AFTER the seed, so the marker's mtime bounds the seed's:
+ *  a draft mtime beyond the marker's means the agent itself has written the draft this run, while
+ *  mtime ≤ marker means the draft is still the untouched seed. The convention is shared between
+ *  seed-draft (producer) and budget-hook (consumer) through this one function. */
+export const seedMarkerPath = (draftPath: string): string => `${draftPath}.seed`;
+
+/** Has the MAIN agent written its own draft this run? True only when the draft exists AND was
+ *  modified after the seed marker (no marker — no seeding ran — means any existing draft counts).
+ *  mtime, not content, so a rewrite that happens to reproduce the seed bytes still counts. */
+export const mainHasWrittenDraft = (
+  draftMtimeMs: number | null,
+  seedMarkerMtimeMs: number | null,
+): boolean =>
+  draftMtimeMs !== null && (seedMarkerMtimeMs === null || draftMtimeMs > seedMarkerMtimeMs);
+
+/** The deny reason when the main agent tries to fan out before writing its own first-pass draft.
+ *  Agent-facing text — no internal metadata. */
+export const spawnFloorMessage = (draftPath: string): string =>
+  `Write your own first-pass findings to ${draftPath} before spawning subagents — a review must never depend on subagents alone, and a pre-seeded draft does not count until you have revised it yourself this run. Write ${draftPath} from what you have read so far (preliminary findings are fine), run \`code-review validate ${draftPath} --explain\` until it passes, then fan out; your subagents run in the background, so keep refining the draft as their reports arrive.`;
+
+/** Rewrite a subagent spawn to run in the BACKGROUND (allow + updatedInput): the spawn returns
+ *  immediately and completions arrive as notifications, so the main agent keeps taking turns —
+ *  every turn a steer/deny surface — and can write/refine the draft during the fan-out. Without
+ *  this, a batch of parallel spawns blocks the main agent on the join with NO tool calls, where
+ *  no hook can reach it, and one stalled subagent holds the whole review until the hard kill. */
+export const forceBackgroundSpawn = (toolInput: unknown): Record<string, unknown> => ({
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "allow",
+    updatedInput: { ...(asRecord(toolInput) ?? {}), run_in_background: true },
+  },
+});
+
 /** Everything the hook needs beyond the raw hook input: the measured spend/elapsed (gathered by the
  *  CLI from the transcript + clock) and the limits/draft from the wired flags. */
 export interface BudgetParams {
@@ -224,6 +262,7 @@ export interface BudgetParams {
   readonly wallMs: number | null;
   readonly reserve: ReserveParams;
   readonly draftPath: string;
+  readonly mainDraftWritten: boolean;
 }
 
 const denyPreTool = (reason: string): Record<string, unknown> => ({
@@ -265,19 +304,23 @@ export const evaluateBudgetHook = (
           };
     case "PreToolUse": {
       const toolName = rec["tool_name"];
+      if (typeof toolName !== "string") return {};
       // Single-writer enforcement, independent of budget phase: a fan-out subagent (`agent_id`
       // present; the main agent's input has none) must never write $DRAFT — concurrent writers race
       // and clobber it, which has produced empty reviews. The main agent alone writes the draft, from
       // the findings its subagents report back in their replies.
-      if (
-        isSubagent &&
-        typeof toolName === "string" &&
-        writesToDraft(toolName, rec["tool_input"], params.draftPath)
-      )
+      if (isSubagent && writesToDraft(toolName, rec["tool_input"], params.draftPath))
         return denyPreTool(singleWriterMessage(params.draftPath));
-      if (phase.kind !== "hard") return {};
-      if (typeof toolName === "string" && blockedDuringConvergence(toolName, rec["tool_input"]))
+      if (phase.kind === "hard" && blockedDuringConvergence(toolName, rec["tool_input"]))
         return denyPreTool(budgetMessage(inputs, phase, params.draftPath, isSubagent));
+      // Spawns are never allowed to block: below hard, the main agent may fan out only once its own
+      // first-pass draft exists (the seed alone does not count), and every spawn — main's or a
+      // subagent's — is rewritten to run in the background so no batch join can freeze the spawner.
+      if (SPAWN_TOOLS.has(toolName)) {
+        if (!isSubagent && !params.mainDraftWritten)
+          return denyPreTool(spawnFloorMessage(params.draftPath));
+        return forceBackgroundSpawn(rec["tool_input"]);
+      }
       return {};
     }
     default:

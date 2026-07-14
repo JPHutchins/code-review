@@ -128,7 +128,7 @@ on:
       code_review_version:
         type: string
         required: false
-        default: 0.1.0-alpha.15
+        default: 0.1.0-alpha.16
     secrets:
       MODEL_API_KEY:
         description: Burner model API key with a hard spend cap (exposed to untrusted PR code during the contained phase-2 window)
@@ -204,6 +204,16 @@ jobs:
       - name: Set up Nix
         if: ${{ inputs.setup == 'nix' }}
         uses: nixbuild/nix-quick-install-action@63ca48f939ee3b8d835f4126562537df0fee5b91 # v30
+      # Persist the Nix store across review runs (setup: nix only) so the dev shell isn't refetched
+      # from cache.nixos.org + rebuilt from source every review. Keyed on the caller's flake/nix/lock
+      # files, falling back to the newest prefix match. Uses the GitHub Actions cache backend — add
+      # its hosts to extra_endpoints when hardening egress from audit to block.
+      - name: Cache the Nix store
+        if: ${{ inputs.setup == 'nix' }}
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock', '**/Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       # Install project deps so the agent can validate findings. Empty install_command ⇒ STATIC
       # review. The value is trusted consumer config (authored in their own reviewed workflow, never

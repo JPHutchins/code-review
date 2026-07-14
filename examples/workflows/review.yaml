@@ -90,6 +90,28 @@ jobs:
       #   pypi.org:443
       #   files.pythonhosted.org:443
 
+      # harden-runner can silently fall back to audit when its arm-time setup hits an internal error
+      # (upstream: step-security/harden-runner#675) — the job then runs with NO egress enforcement
+      # while the YAML says block, and only its own log says so. Deterministic backstop: prove the
+      # lock by attempting egress that must be impossible. example.com/.org are real, reachable, and
+      # never allowlisted; if either connects, the filter is not enforcing, and the job fails CLOSED
+      # before any untrusted PR data is fetched or run. If you temporarily set egress-policy: audit
+      # above to discover your allowlist, comment this step out for that run too.
+      - name: Egress canary — verify the lock engaged
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          # --max-time is deliberately generous: the canary must fail CLOSED, so it has to give an
+          # actually-open egress enough time to connect — a short timeout could expire on a slow but
+          # OPEN link and wrongly pass a job that has open egress. -sS keeps the progress meter off
+          # while still surfacing connection errors on stderr for debugging.
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
+            echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
+            exit 1
+          fi
+          echo "Egress canary could not connect — block policy verified"
+
       # Gather untrusted data as files (fixed paths, never shell-interpolated). `code-review gather`
       # resolves the PR from the trusted head SHA (disambiguated by branch), fetches the diff (with a
       # non-truncating git-diff fallback, §3.1), the PR title/body, the prior bot review, and — when
@@ -445,7 +467,10 @@ jobs:
       # Separate artifact so the transcripts (which can be large) don't bloat the findings download
       # the comment job pulls. Advisory/auditability only — never read by the comment job or any
       # part of the review decision; safe to skip on a copy miss (`always()` — path may not exist).
+      # continue-on-error so a failed upload (e.g. artifact size limit) can't fail the review job and
+      # blank its has_findings output, which would silently drop the comment for a completed review.
       - uses: actions/upload-artifact@v7
+        continue-on-error: true
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-transcript
@@ -487,6 +512,23 @@ jobs:
             github.com:443
             objects.githubusercontent.com:443
             *.blob.core.windows.net:443
+
+      # Same fail-closed backstop as the review job (harden-runner can silently downgrade block to
+      # audit — step-security/harden-runner#675); this job holds the write token and always blocks.
+      - name: Egress canary — verify the lock engaged
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          # --max-time is deliberately generous: the canary must fail CLOSED, so it has to give an
+          # actually-open egress enough time to connect — a short timeout could expire on a slow but
+          # OPEN link and wrongly pass a job that has open egress. -sS keeps the progress meter off
+          # while still surfacing connection errors on stderr for debugging.
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
+            echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
+            exit 1
+          fi
+          echo "Egress canary could not connect — block policy verified"
 
       # code-review post: resolve PR, fetch diff, inline+render, post review (COMMENT),
       # upsert sticky comment. Exit 0 when no PR; non-zero on posting failure.

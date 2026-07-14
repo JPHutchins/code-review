@@ -743,11 +743,13 @@ const seedDraftCmd = defineCommand({
     // is warned and still exits 0: the agent then writes $DRAFT itself, exactly as before seeding.
 
     // The sidecar marker, written right AFTER the seed so its mtime bounds the seed's: the budget
-    // hook treats the draft as agent-written only once its mtime passes the marker's. Best-effort
-    // like the seed itself — without the marker the fan-out gate just accepts any existing draft.
-    const writeSeedMarker = (content: string): void => {
+    // hook treats the draft as agent-written only once its mtime passes the marker's. Only the
+    // marker's mtime is ever consumed (budget.ts mainHasWrittenDraft never reads its content), so a
+    // one-line sentinel suffices. Best-effort like the seed itself — without the marker the fan-out
+    // gate just accepts any existing draft.
+    const writeSeedMarker = (): void => {
       try {
-        writeFileSync(seedMarkerPath(outPath), content);
+        writeFileSync(seedMarkerPath(outPath), "code-review seed marker\n");
       } catch (err) {
         process.stderr.write(
           `Warning: could not write the seed marker beside ${outPath} (${err instanceof Error ? err.message : String(err)}) — the seeded draft will count as agent-written\n`,
@@ -757,9 +759,8 @@ const seedDraftCmd = defineCommand({
 
     const writeEmptyScaffold = (): void => {
       try {
-        const content = `${JSON.stringify(noticeFindings(""), null, 2)}\n`;
-        writeFileSync(outPath, content);
-        writeSeedMarker(content);
+        writeFileSync(outPath, `${JSON.stringify(noticeFindings(""), null, 2)}\n`);
+        writeSeedMarker();
         process.stderr.write(
           `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
         );
@@ -807,9 +808,8 @@ const seedDraftCmd = defineCommand({
           ? resolve(args.schema)
           : schemaPathFor(kind, args["schema-version"]);
         if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
-        const content = `${JSON.stringify(priorFindings, null, 2)}\n`;
-        writeFileSync(outPath, content);
-        writeSeedMarker(content);
+        writeFileSync(outPath, `${JSON.stringify(priorFindings, null, 2)}\n`);
+        writeSeedMarker();
         return true;
       } catch (err) {
         process.stderr.write(

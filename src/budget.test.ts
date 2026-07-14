@@ -283,7 +283,7 @@ describe("evaluateBudgetHook", () => {
     expect(out.hookSpecificOutput.additionalContext).toContain("STOP all new investigation");
   });
 
-  it("PreToolUse: allows everything below hard (soft does not deny)", () => {
+  it("PreToolUse: allows a non-spawn tool below hard (soft does not deny; spawns are handled separately)", () => {
     expect(
       evaluateBudgetHook(
         { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" } },

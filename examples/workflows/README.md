@@ -15,29 +15,109 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 - **`comment` job** — holds the write token, runs **no agent and no PR code**; `code-review post`
   validates findings against the diff and posts the inline review + sticky summary.
 
-## To try it
+## Two ways to consume it
 
-1. Copy `review.yaml` into `.github/workflows/`. Your existing CI workflow is untouched — edit the
-   `workflows: ["CI"]` filter to match its `name:`.
+- **Copy-paste (`review.yaml`, this directory)** — own the whole pipeline inline. Best when you want
+  to read, audit, or customize every step in your own repo.
+- **Reusable workflow (`@ref`)** — a thin ~20–35 line caller that delegates to
+  [`.github/workflows/review-reusable.yaml`](../../.github/workflows/review-reusable.yaml) via
+  `workflow_call`, so an upgrade is an `@ref` bump instead of re-copying the file. The full pipeline
+  (both jobs, the permission boundary, harden-runner, the CLI pins) lives in the pinned ref; you own
+  the trigger, secrets, egress policy, prices, version pin — and any check-running setup. Minimal
+  caller (STATIC review — no PR-code execution):
+
+  ```yaml
+  name: Code review
+  on:
+    workflow_run:
+      workflows: ["CI"]            # your CI workflow's name
+      types: [completed]
+  permissions:                     # superset; the two internal jobs narrow from this
+    contents: read
+    actions: read
+    pull-requests: write
+    issues: write
+  jobs:
+    review:
+      if: >-
+        github.event.workflow_run.event == 'pull_request' &&
+        (github.event.workflow_run.conclusion == 'success' ||
+         github.event.workflow_run.conclusion == 'failure')
+      uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.17
+      with:
+        head_sha:      ${{ github.event.workflow_run.head_sha }}
+        head_branch:   ${{ github.event.workflow_run.head_branch }}
+        head_repo:     ${{ github.event.workflow_run.head_repository.full_name }}   # fork-safe concurrency
+        run_id:        ${{ github.event.workflow_run.id }}
+        conclusion:    ${{ github.event.workflow_run.conclusion }}
+        trigger_event: ${{ github.event.workflow_run.event }}
+        api_base_url:  ${{ vars.API_BASE_URL }}
+      secrets:
+        MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+  ```
+
+  See the reusable workflow's [`inputs:` block](../../.github/workflows/review-reusable.yaml) for the
+  full set (models + tier aliases, per-route walls, `extra_endpoints`, `egress_policy`, pinned
+  versions).
+
+### Check-running with the reusable workflow
+
+By default the reusable workflow reviews **statically** (the diff + source, no execution). To let the
+agent run your project's checks and confirm fixes, there are two opt-in hooks — the shared workflow
+deliberately owns **no** ecosystem toolchain or cache action:
+
+- **Simple, shell-installable deps** — set `install_command` (a shell string): `npm ci`, `uv sync`,
+  `pip install -e .`, even a `pipx install uv && uv sync`. Add your registries via `extra_endpoints`.
+- **Anything needing `uses:` steps** (a toolchain installer, a store cache) — commit your own composite
+  at **`.github/actions/code-review-setup`** and set `use_setup_action: true`. The reusable workflow
+  invokes it (resolved against *your* checked-out repo), so your toolchain + cache live in **your**
+  repo, versioned and owned by you. Example (Nix, mirroring your CI):
+
+  ```yaml
+  # .github/actions/code-review-setup/action.yml
+  name: code-review-setup
+  runs:
+    using: composite
+    steps:
+      - uses: nixbuild/nix-quick-install-action@v35
+      - uses: nix-community/cache-nix-action@v7        # your cache, your key, your repo
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - shell: bash
+        run: nix develop --command true                # warm the dev shell (outside the agent wall)
+  ```
+
+  Hosts the composite needs (`cache.nixos.org`, package registries, the Actions cache backend, …) must
+  be reachable when harden-runner arms — run `egress_policy: audit` first to discover them, then pin
+  via `extra_endpoints` and switch back to `block`.
+
+## Setup (both paths)
+
+1. **Add the workflow.** Copy-paste: drop `review.yaml` into `.github/workflows/`. Reusable: add the
+   thin caller above. Either way, edit the `workflows: ["CI"]` filter to match your CI workflow's
+   `name:`; your existing CI workflow is untouched.
 2. Set the `API_BASE_URL` Actions **variable** (your provider's Anthropic-compatible endpoint,
    e.g. `https://api.deepseek.com/anthropic`) and add a repo secret `MODEL_API_KEY` — a **burner
    key with a hard spend cap** (it is exposed to untrusted PR code during the contained phase-2
    window). Both are required; an unset endpoint fails the triage step loudly.
 3. Commit `.github/prices.json` (fork [`schema/prices.example.json`](../../schema/prices.example.json))
-   so the cost footer isn't **$0** ([SPEC §4.4](../../SPEC.md#44-required-controls-conformance)).
+   so the cost footer isn't **$0** ([SPEC §4.4](../../SPEC.md#44-required-controls-conformance)). The
+   reusable workflow checks out your repo, so it reads your committed price map too.
 4. `workflow_run` only fires from the **default branch** — merge first, then open a test PR. The
-   introducing PR won't review itself.
-5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
+   introducing PR won't review itself. (Both paths.)
+5. First run: discover the real egress allowlist before locking it. Copy-paste: set the
+   `harden-runner` step's `egress-policy: audit`. Reusable: pass `egress_policy: audit`. Then switch
+   to `block` (copy-paste: add hosts to `allowed-endpoints`; reusable: add them via `extra_endpoints`)
    ([SPEC Appendix A](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
 
-Model configuration is committed step `env` on the two claude-invoking steps — models, efforts, the
-subagent model, and the tier aliases, scoped to where each is consumed — deliberately in-file config,
-reviewed in your own PR flow. Only the backend endpoint is a per-repo **Actions variable**
-(`API_BASE_URL`, required, no default — an unset endpoint fails loudly instead of letting the CLI
-choose where the key gets sent), and it is safe as one because the egress allowlist still pins the
-reachable hosts: a different provider means adding its API host to `allowed-endpoints` in the same
-PR. Add your ecosystem's package registries there only if the agent should install packages to
-validate findings (the file's own comment marks where).
+In the copy-paste file, model configuration is committed step `env` on the two claude-invoking steps —
+models, efforts, the subagent model, and the tier aliases, scoped to where each is consumed. In the
+reusable workflow the same knobs are `with:` inputs. Only the backend endpoint is a per-repo **Actions
+variable** (`API_BASE_URL`, required, no default — an unset endpoint fails loudly instead of letting
+the CLI choose where the key gets sent), and it is safe as one because the egress allowlist still pins
+the reachable hosts: a different provider means allowlisting its API host (copy-paste:
+`allowed-endpoints`; reusable: `extra_endpoints`).
 
 The approach was proven by a live review on
 [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691); see

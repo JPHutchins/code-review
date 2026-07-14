@@ -93,7 +93,10 @@ on:
         type: string
         required: false
         default: ""
-      # --- per-route budget walls (AGENT_WALL steers the hooks; HARD_KILL is the timeout backstop) ---
+      # --- per-route budget walls (AGENT_WALL steers the hooks; HARD_KILL is the timeout backstop).
+      # Size hard_kill ≈ wall × 1.5: the over-budget grace is shared by two consumers — subagents
+      # winding down their final replies AND the main agent's post-join synthesis + $DRAFT write —
+      # so a thin grace can be fully consumed by one slow subagent, leaving main no time to write. ---
       full_wall:
         type: string
         required: false
@@ -101,7 +104,7 @@ on:
       full_hard_kill:
         type: string
         required: false
-        default: 27m
+        default: 36m
       mechanic_wall:
         type: string
         required: false
@@ -109,7 +112,7 @@ on:
       mechanic_hard_kill:
         type: string
         required: false
-        default: 7m
+        default: 9m
       # --- egress ---
       extra_endpoints:
         description: Extra harden-runner allowed-endpoints (host:port, whitespace-separated) appended to the baked-in set — e.g. your ecosystem's package registries, or the model host if not deepseek/anthropic.
@@ -133,7 +136,7 @@ on:
       code_review_version:
         type: string
         required: false
-        default: 0.1.0-alpha.17
+        default: 0.1.0-alpha.18
     secrets:
       MODEL_API_KEY:
         description: Burner model API key with a hard spend cap (exposed to untrusted PR code during the contained phase-2 window)
@@ -438,7 +441,9 @@ jobs:
 
           # Two wall clocks per route. AGENT_WALL is the BUDGET the hooks steer on: the agent is nudged
           # to converge as it nears it and is treated as over budget once past it. HARD_KILL is the
-          # later `timeout` deadline — a few minutes of maximum-pressure grace beyond the budget wall,
+          # later `timeout` deadline — maximum-pressure grace of ~50% of the budget wall beyond it
+          # (the grace is shared by subagents winding down AND main's post-join synthesis + write,
+          # so one slow subagent can eat a thin grace and leave main no time to land $DRAFT),
           # during which the hooks keep reminding the agent it is over budget and keep denying every
           # tool but reading and writing/validating $DRAFT, so a review still being finalized can land
           # before the process is killed rather than being cut off the instant it is told to converge.

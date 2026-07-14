@@ -3,7 +3,7 @@
 # permissions + secret, and delegates the whole pipeline to the reusable workflow in this repo.
 # We reference it by LOCAL path (./) so our own review always tracks this repo's current reusable
 # workflow — no version pin to bump. Field consumers instead pin the published ref, e.g.:
-#   uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.17
+#   uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.18
 # The copy-paste single-file variant lives at examples/workflows/review.yaml.
 # See: https://github.com/JPHutchins/code-review
 

@@ -61,7 +61,7 @@ jobs:
           node-version: "22"
 
       # Install the CLI and the deterministic commenter.
-      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.17
+      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.18
 
       # Install project deps so the agent can validate findings — swap this for your ecosystem's
       # install command (this repo is npm-based; a Python project would `uv sync`, etc.).
@@ -274,11 +274,13 @@ jobs:
 
           # Two wall clocks per route. AGENT_WALL is the BUDGET the hooks steer on: the agent is nudged
           # to converge as it nears it and is treated as over budget once past it. HARD_KILL is the
-          # later `timeout` deadline — a few minutes of maximum-pressure grace beyond the budget wall,
+          # later `timeout` deadline — maximum-pressure grace of ~50% of the budget wall beyond it
+          # (the grace is shared by subagents winding down AND main's post-join synthesis + write,
+          # so one slow subagent can eat a thin grace and leave main no time to land $DRAFT),
           # during which the hooks keep reminding the agent it is over budget and keep denying every
           # tool but reading and writing/validating $DRAFT, so a review still being finalized can land
           # before the process is killed rather than being cut off the instant it is told to converge.
-          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; HARD_KILL=7m; else AGENT_WALL=24m; HARD_KILL=27m; fi
+          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; HARD_KILL=9m; else AGENT_WALL=24m; HARD_KILL=36m; fi
 
           # Compose the review agent's hooks into one settings file (issues #29, #38), written to
           # $RUNNER_TEMP OUTSIDE the checked-out worktree so a PR diff can neither define nor disable
@@ -471,7 +473,7 @@ jobs:
         with:
           node-version: "22"
 
-      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.17
+      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.18
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download (§8.4).

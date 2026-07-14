@@ -260,8 +260,13 @@ jobs:
         if: ${{ inputs.egress_policy == 'block' }}
         run: |
           set -euo pipefail
-          if curl -s --max-time 12 -o /dev/null https://example.com ||
-             curl -s --max-time 12 -o /dev/null https://example.org; then
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          # --max-time is deliberately generous: the canary must fail CLOSED, so it has to give an
+          # actually-open egress enough time to connect — a short timeout could expire on a slow but
+          # OPEN link and wrongly pass a job that has open egress. -sS keeps the progress meter off
+          # while still surfacing connection errors on stderr for debugging.
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
             echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
             exit 1
           fi
@@ -691,8 +696,13 @@ jobs:
       - name: Egress canary — verify the lock engaged
         run: |
           set -euo pipefail
-          if curl -s --max-time 12 -o /dev/null https://example.com ||
-             curl -s --max-time 12 -o /dev/null https://example.org; then
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          # --max-time is deliberately generous: the canary must fail CLOSED, so it has to give an
+          # actually-open egress enough time to connect — a short timeout could expire on a slow but
+          # OPEN link and wrongly pass a job that has open egress. -sS keeps the progress meter off
+          # while still surfacing connection errors on stderr for debugging.
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
             echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
             exit 1
           fi

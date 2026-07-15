@@ -204,6 +204,13 @@ const denyPreTool = (reason: string): Record<string, unknown> => ({
   },
 });
 
+// A non-empty agent_id marks a fan-out subagent; the main agent has none (or ""). The one predicate
+// every consumer shares, so the snapshot gate and the single-writer deny never disagree on "".
+export const isSubagentHookInput = (input: unknown): boolean => {
+  const agentId = asRecord(input)?.["agent_id"];
+  return typeof agentId === "string" && agentId.length > 0;
+};
+
 export const evaluateBudgetHook = (
   input: unknown,
   params: BudgetParams,
@@ -217,8 +224,7 @@ export const evaluateBudgetHook = (
     reserve: params.reserve,
   };
   const phase = decideBudget(inputs);
-  const agentId = rec?.["agent_id"];
-  const isSubagent = typeof agentId === "string" && agentId.length > 0;
+  const isSubagent = isSubagentHookInput(input);
 
   switch (rec?.["hook_event_name"]) {
     case "PostToolBatch":

@@ -22,6 +22,7 @@ import {
   mainHasWrittenDraft,
   seedMarkerPath,
   lastValidPath,
+  isSubagentHookInput,
   DEFAULT_RESERVE,
   DEADLINE_ENV,
 } from "./budget.js";
@@ -396,13 +397,18 @@ const transcriptPathOf = (input: unknown): string | undefined => {
  *  Best-effort — a snapshot miss never perturbs the hook's stdout decision. */
 export const snapshotIfValid = (draftPath: string): void => {
   try {
+    // Validate the LIVE draft only (no agentFileFallbackPath): passing the snapshot as a fallback
+    // here would let a valid snapshot rescue an invalid live draft through the ladder, then copy that
+    // invalid draft over the good snapshot — corrupting the last-valid state we exist to preserve.
     if (
       extractStructured({ kind: "findings", native: undefined, agentFilePath: draftPath }).kind ===
       "ok"
     )
       copyFileSync(draftPath, lastValidPath(draftPath));
-  } catch {
-    /* leave the prior snapshot in place */
+  } catch (err) {
+    process.stderr.write(
+      `code-review: could not snapshot the last-valid draft (${errMsg(err)}) — keeping the prior snapshot\n`,
+    );
   }
 };
 
@@ -494,8 +500,7 @@ const budgetHookCmd = defineCommand({
       });
       // Only the main agent writes the draft (single-writer), so a subagent batch never introduces a
       // new valid state to preserve — snapshot on the main agent's PostToolBatch only.
-      const rec = asRecord(input);
-      if (rec?.["hook_event_name"] === "PostToolBatch" && typeof rec["agent_id"] !== "string")
+      if (asRecord(input)?.["hook_event_name"] === "PostToolBatch" && !isSubagentHookInput(input))
         snapshotIfValid(draftPath);
       process.stdout.write(`${JSON.stringify(output)}\n`);
     } catch (err) {

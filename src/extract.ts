@@ -255,8 +255,9 @@ export const extractStructured = (input: ExtractInput): LadderOutcome => {
     }
   }
 
+  const fallbackRung = input.agentFileFallbackPath ? ", last-valid snapshot" : "";
   return {
     kind: "none",
-    detail: `no --agent-file, structured_output, JSON result, or fenced block validated against the ${input.kind} schema`,
+    detail: `no --agent-file${fallbackRung}, structured_output, JSON result, or fenced block validated against the ${input.kind} schema`,
   };
 };

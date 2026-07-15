@@ -10,6 +10,7 @@ import {
   mainHasWrittenDraft,
   seedMarkerPath,
   lastValidPath,
+  isSubagentHookInput,
   evaluateBudgetHook,
   parseWallMs,
   parseFraction,
@@ -472,6 +473,16 @@ describe("mainHasWrittenDraft (fan-out floor)", () => {
 describe("seedMarkerPath", () => {
   it("derives the sidecar beside the draft (the seed-draft ↔ budget-hook convention)", () => {
     expect(seedMarkerPath("/work/findings-draft.json")).toBe("/work/findings-draft.json.seed");
+  });
+});
+
+describe("isSubagentHookInput", () => {
+  it("is true only for a non-empty agent_id — main agent (none or empty) is false", () => {
+    expect(isSubagentHookInput({ agent_id: "sub-1" })).toBe(true);
+    // The "" case the snapshot gate and single-writer deny must agree on.
+    expect(isSubagentHookInput({ agent_id: "" })).toBe(false);
+    expect(isSubagentHookInput({})).toBe(false);
+    expect(isSubagentHookInput(null)).toBe(false);
   });
 });
 

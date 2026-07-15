@@ -182,6 +182,11 @@ jobs:
           }
           trap emit_triage_output EXIT
 
+          # openssl seeds the per-run heredoc delimiter above; if it is absent the delimiter degrades
+          # to the predictable literal TRIAGE_EOF_, which untrusted reasons text could forge. Fail
+          # closed (the trap emits SAFE=false) rather than run the gate with a guessable delimiter.
+          command -v openssl >/dev/null 2>&1 || { echo "::error::openssl not found — cannot generate a secure triage delimiter; failing closed"; REASONS="openssl unavailable — the triage gate cannot run securely; failing closed."; exit 1; }
+
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "::error::MODEL_API_KEY secret is not set"; REASONS="MODEL_API_KEY secret is not set"; exit 1; }
           [ -n "$ANTHROPIC_BASE_URL" ] || { echo "::error::API_BASE_URL variable is not set (e.g. https://api.deepseek.com/anthropic) — refusing to let the CLI pick an endpoint for your key"; REASONS="API_BASE_URL variable is not set"; exit 1; }
 
@@ -406,8 +411,8 @@ jobs:
         id: assemble
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         env:
-          SAFE: ${{ steps.triage.outputs.safe || 'false' }}
-          REASONS: ${{ steps.triage.outputs.reasons || '' }}
+          SAFE_RAW: ${{ steps.triage.outputs.safe }}
+          REASONS: ${{ steps.triage.outputs.reasons }}
         run: |
           set -euo pipefail
           mkdir -p findings
@@ -427,12 +432,21 @@ jobs:
 
           if [ -s findings/findings.json ]; then
             echo "Review produced findings"
-          elif [ "$SAFE" = "false" ]; then
+          elif [ "$SAFE_RAW" = "false" ] && [ -n "$REASONS" ]; then
+            # Triage ran and returned a real fail-closed / unsafe verdict (non-empty reason).
             jq -n --arg reasons "$REASONS" \
               '{schema_version: "0.4.0", summary: ("### 🛑 Code review skipped by the security gate\n\nThe diff was flagged as unsafe to apply and execute:\n\n> " + $reasons), verdict: "comment", findings: []}' \
               >findings/findings.json
             wrap_envelope
+          elif [ -z "$SAFE_RAW" ]; then
+            # Triage never emitted a verdict — the job errored before the gate ran (dependency
+            # install or setup), not a security decision. Never render the gate message here.
+            jq -n \
+              '{schema_version: "0.4.0", summary: "### 🛠️ Review did not run\n\nThe review job failed before the security triage could run (e.g. dependency install or environment setup). See the workflow logs — this is an infrastructure failure, not a security verdict.", verdict: "comment", findings: []}' \
+              >findings/findings.json
+            wrap_envelope
           else
+            # Triage passed (or returned no usable reason) but the review produced no findings.
             jq -n \
               '{schema_version: "0.4.0", summary: "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs.", verdict: "comment", findings: []}' \
               >findings/findings.json

@@ -25,8 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
-      issues: write
+      # write (not read) because reacting to a PR comment needs pull-requests:write — a PR comment's
+      # reaction is scoped to Pull requests, not Issues. The same write covers resolving the PR head.
+      pull-requests: write
     outputs:
       should_run:   ${{ steps.parse.outputs.should_run }}
       head_sha:     ${{ steps.parse.outputs.head_sha }}
@@ -91,7 +92,7 @@ jobs:
     if: ${{ always() && needs.gate.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      issues: write
+      pull-requests: write     # react to a PR comment ⇒ pull-requests:write (not issues:write)
     steps:
       - uses: actions/setup-node@v6
         with:

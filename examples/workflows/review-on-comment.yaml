@@ -41,8 +41,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read      # resolve the PR head (sha/branch/repo) from its number
-      issues: write            # 👀 acknowledgement reaction
+      # write, not read: a reaction on a PR comment is scoped to Pull requests (issues:write does
+      # NOT cover it — GitHub 403s). The same write also covers resolving the PR head by number.
+      pull-requests: write
     outputs:
       should_run:   ${{ steps.parse.outputs.should_run }}
       head_sha:     ${{ steps.parse.outputs.head_sha }}
@@ -119,7 +120,7 @@ jobs:
     if: ${{ always() && needs.gate.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      issues: write
+      pull-requests: write     # react to a PR comment ⇒ pull-requests:write (issues:write 403s)
     steps:
       - uses: actions/setup-node@v6
         with:

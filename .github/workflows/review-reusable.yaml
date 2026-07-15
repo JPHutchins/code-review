@@ -161,7 +161,7 @@ on:
 # released together, so the @ref the consumer trusts carries its matching CLI. One definition both
 # jobs install from, so a release bump can't skew them. Bumped in the release commit with package.json.
 env:
-  CODE_REVIEW_VERSION: 0.1.0-alpha.23
+  CODE_REVIEW_VERSION: 0.1.0-alpha.24
 
 jobs:
   review:

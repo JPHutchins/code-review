@@ -14,7 +14,7 @@ concurrency:                 # a newer CI run for the same PR branch cancels an 
   cancel-in-progress: true
 
 env:                         # one definition both jobs install from, so the two never skew
-  CODE_REVIEW_VERSION: 0.1.0-alpha.23
+  CODE_REVIEW_VERSION: 0.1.0-alpha.24
 
 jobs:
   # REVIEW — holds the model key + read-only token + locked egress

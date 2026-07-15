@@ -68,6 +68,8 @@ jobs:
       conclusion: ${{ inputs.conclusion }}
       trigger_event: pull_request
       api_base_url: ${{ vars.API_BASE_URL }}
+      model_full: deepseek-v4-pro
+      model_mechanic: deepseek-v4-flash
       install_command: npm ci
     secrets:
       MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}

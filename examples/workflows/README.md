@@ -52,13 +52,15 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
         conclusion:    ${{ github.event.workflow_run.conclusion }}
         trigger_event: ${{ github.event.workflow_run.event }}
         api_base_url:  ${{ vars.API_BASE_URL }}
+        model_full:    deepseek-v4-pro       # required — pick alongside api_base_url
+        model_mechanic: deepseek-v4-flash    # required
       secrets:
         MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
   ```
 
   See the reusable workflow's [`inputs:` block](../../.github/workflows/review-reusable.yaml) for the
-  full set (models + tier aliases, per-route walls, `extra_endpoints`, `egress_policy`, pinned
-  versions).
+  full set (tier aliases, per-route time limits + grace periods + USD caps, `extra_endpoints`,
+  `egress_policy`).
 
 ### Check-running with the reusable workflow
 

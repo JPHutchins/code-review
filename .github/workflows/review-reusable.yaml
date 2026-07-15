@@ -38,15 +38,15 @@ on:
         type: string
         required: true
       model_full:
+        # No default: api_base_url has none either, and a model only means something against a chosen
+        # endpoint — pick both together rather than inheriting a vendor the endpoint may not serve.
         description: Model for the comprehensive (CI-success) route and triage
         type: string
-        required: false
-        default: deepseek-v4-pro
+        required: true
       model_mechanic:
         description: Model for the fast fix (CI-failure) route
         type: string
-        required: false
-        default: deepseek-v4-flash
+        required: true
       subagent_model:
         description: Override the fan-out subagent model (empty ⇒ inherit the route model)
         type: string
@@ -77,24 +77,40 @@ on:
         type: string
         required: false
         default: ""
-      # Size hard_kill ≈ wall × 1.5: the over-budget grace is shared by winding-down subagents AND the
-      # main agent's post-join write, so a thin grace can leave main no time to land the draft.
-      full_wall:
+      # The grace period is the over-budget window between the time limit (where the hooks begin
+      # forcing convergence) and the hard SIGTERM at time_limit + grace. It is shared by winding-down
+      # subagents AND the main agent's post-join write, so a thin grace can leave main no time to land
+      # the draft — keep it to at least a couple of minutes.
+      full_review_time_limit:
+        description: Wall-clock budget for the full (CI-success) review; the hooks steer the agent to converge as it nears this
         type: string
         required: false
         default: 24m
-      full_hard_kill:
+      full_review_grace_period:
+        description: Time past full_review_time_limit before the hard SIGTERM, for the review to finish landing its draft (required; keep ≥ ~2m)
         type: string
         required: false
-        default: 36m
-      mechanic_wall:
+        default: 12m
+      full_review_usd_limit:
+        description: Dollar spend cap for the full review (takes effect only with a committed .github/prices.json to price the run)
+        type: string
+        required: false
+        default: "1"
+      mechanic_time_limit:
+        description: Wall-clock budget for the fast fix (CI-failure) route
         type: string
         required: false
         default: 6m
-      mechanic_hard_kill:
+      mechanic_grace_period:
+        description: Time past mechanic_time_limit before the hard SIGTERM (required; keep ≥ ~1m)
         type: string
         required: false
-        default: 9m
+        default: 3m
+      mechanic_usd_limit:
+        description: Dollar spend cap for the mechanic route (takes effect only with a committed .github/prices.json to price the run)
+        type: string
+        required: false
+        default: "0.10"
       extra_endpoints:
         description: Extra harden-runner allowed-endpoints appended to the baked-in set (host:port). Must be a SINGLE space-separated line — a YAML '|' block scalar injects newlines that break harden-runner's endpoint parser (use a '>-' folded scalar or one line). E.g. your ecosystem's package registries, or the model host if not deepseek/anthropic.
         type: string
@@ -105,22 +121,21 @@ on:
         type: string
         required: false
         default: block
-      node_version:
-        type: string
-        required: false
-        default: "22"
       claude_code_version:
+        description: Claude Code CLI version to install; only the pinned default has been validated against this workflow — override at your own risk
         type: string
         required: false
         default: 2.1.197
-      code_review_version:
-        type: string
-        required: false
-        default: 0.1.0-alpha.22
     secrets:
       MODEL_API_KEY:
         description: Burner model API key with a hard spend cap (exposed to untrusted PR code during the contained phase-2 window)
         required: true
+
+# code-review is pinned here, not exposed as an input: the CLI and this workflow are one system
+# released together, so the @ref the consumer trusts carries its matching CLI. One definition both
+# jobs install from, so a release bump can't skew them. Bumped in the release commit with package.json.
+env:
+  CODE_REVIEW_VERSION: 0.1.0-alpha.22
 
 jobs:
   review:
@@ -170,14 +185,11 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: ${{ inputs.node_version }}
+          node-version: "22"
 
-      # Install the CLI and the deterministic commenter. Versions are input defaults pinned at the
-      # tagged release, so the whole toolchain travels with the @ref the consumer trusts.
       - name: Install code-review + agent CLI
         env:
           CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
-          CODE_REVIEW_VERSION: ${{ inputs.code_review_version }}
         run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # The workflow owns NO ecosystem toolchain/cache (those are `uses:` steps it can't take as
@@ -363,10 +375,12 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model != '' && inputs.haiku_model || inputs.model_mechanic }}
           CONCLUSION: ${{ steps.gather.outputs.conclusion }}
           HEAD_SHA: ${{ inputs.head_sha }}
-          FULL_WALL: ${{ inputs.full_wall }}
-          FULL_HARD_KILL: ${{ inputs.full_hard_kill }}
-          MECHANIC_WALL: ${{ inputs.mechanic_wall }}
-          MECHANIC_HARD_KILL: ${{ inputs.mechanic_hard_kill }}
+          FULL_TIME_LIMIT: ${{ inputs.full_review_time_limit }}
+          FULL_GRACE: ${{ inputs.full_review_grace_period }}
+          FULL_USD: ${{ inputs.full_review_usd_limit }}
+          MECHANIC_TIME_LIMIT: ${{ inputs.mechanic_time_limit }}
+          MECHANIC_GRACE: ${{ inputs.mechanic_grace_period }}
+          MECHANIC_USD: ${{ inputs.mechanic_usd_limit }}
         run: |
           set -euo pipefail
 
@@ -437,28 +451,36 @@ jobs:
           git -c user.email=code-review@local -c user.name=code-review add -A
           git -c user.email=code-review@local -c user.name=code-review commit -q -m "pr-head snapshot (for patch validation)"
 
-          # Two wall clocks per route. AGENT_WALL is the BUDGET the hooks steer on: the agent is nudged
-          # to converge as it nears it and is treated as over budget once past it. HARD_KILL is the
-          # later `timeout` deadline — maximum-pressure grace of ~50% of the budget wall beyond it
-          # (the grace is shared by subagents winding down AND main's post-join synthesis + write,
-          # so one slow subagent can eat a thin grace and leave main no time to land $DRAFT),
-          # during which the hooks keep reminding the agent it is over budget and keep denying every
-          # tool but reading and writing/validating $DRAFT, so a review still being finalized can land
-          # before the process is killed rather than being cut off the instant it is told to converge.
-          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL="$MECHANIC_WALL"; HARD_KILL="$MECHANIC_HARD_KILL"; else AGENT_WALL="$FULL_WALL"; HARD_KILL="$FULL_HARD_KILL"; fi
+          # AGENT_WALL is the time limit the hooks steer on (converge as it nears, over budget past it).
+          # HARD_KILL is the `timeout` SIGTERM deadline = time limit + grace; the grace is the
+          # over-budget window in which the hooks keep denying every tool but reading and
+          # writing/validating $DRAFT, so a review still finalizing lands before the kill. Durations are
+          # summed in whole seconds (timeout accepts a bare-seconds deadline). A whole number with an
+          # optional h/m/s suffix; anything else fails loudly rather than crashing $(( )) under set -e.
+          dur_to_secs() {
+            [[ "$1" =~ ^([0-9]+)([hms])?$ ]] || { echo "::error::invalid duration '$1' — use a whole number optionally suffixed h/m/s (e.g. 24m, 90s, 1h)"; exit 1; }
+            case "${BASH_REMATCH[2]}" in
+              h) echo "$(( BASH_REMATCH[1] * 3600 ))" ;;
+              m) echo "$(( BASH_REMATCH[1] * 60 ))" ;;
+              *) echo "${BASH_REMATCH[1]}" ;;
+            esac
+          }
+          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL="$MECHANIC_TIME_LIMIT"; GRACE="$MECHANIC_GRACE"; USD_LIMIT="$MECHANIC_USD"; else AGENT_WALL="$FULL_TIME_LIMIT"; GRACE="$FULL_GRACE"; USD_LIMIT="$FULL_USD"; fi
+          HARD_KILL=$(( $(dur_to_secs "$AGENT_WALL") + $(dur_to_secs "$GRACE") ))
 
           # Compose the review agent's hooks into one settings file, written to
           # $RUNNER_TEMP OUTSIDE the checked-out worktree so a PR diff can neither define nor disable
           # them: the Stop gate refuses to end the turn until $DRAFT validates against the findings
           # schema; the budget hooks steer the agent to converge as it nears $AGENT_WALL (PostToolBatch)
           # and, close to the wall, deny every tool but reading and writing/validating $DRAFT
-          # (PreToolUse forced convergence). --prices makes the steer report real spend; add
-          # --budget-usd for a dollar ceiling on the cost axis.
+          # (PreToolUse forced convergence). --budget-usd caps spend on the cost axis, which activates
+          # only when --prices supplies a price map to value the run against.
           BUDGET_PRICES=()
           if [ -f "$RUNNER_TEMP/prices.json" ]; then
             BUDGET_PRICES=(--prices "$RUNNER_TEMP/prices.json")
           fi
           code-review print-settings --draft "$DRAFT" --kind findings --wall "$AGENT_WALL" \
+            --budget-usd "$USD_LIMIT" \
             "${BUDGET_PRICES[@]}" \
             >"$RUNNER_TEMP/review-settings.json"
 
@@ -480,7 +502,7 @@ jobs:
           # warning, not a step failure — the pipeline proceeds with whatever the agent emitted, and
           # `adapt` preserves its usage/cost even when the deliverable is incomplete (it keeps a
           # truncated envelope from crashing that path).
-          echo "Review mode: $ROUTE (budget $AGENT_WALL, hard kill $HARD_KILL)"
+          echo "Review mode: $ROUTE (time limit $AGENT_WALL, grace $GRACE, hard kill ${HARD_KILL}s)"
           set +e
           timeout --kill-after=60s "$HARD_KILL" \
           claude -p "$PROMPT" \
@@ -653,11 +675,9 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: ${{ inputs.node_version }}
+          node-version: "22"
 
       - name: Install code-review
-        env:
-          CODE_REVIEW_VERSION: ${{ inputs.code_review_version }}
         run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry

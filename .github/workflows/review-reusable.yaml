@@ -115,7 +115,7 @@ on:
         default: 9m
       # --- egress ---
       extra_endpoints:
-        description: Extra harden-runner allowed-endpoints (host:port, whitespace-separated) appended to the baked-in set — e.g. your ecosystem's package registries, or the model host if not deepseek/anthropic.
+        description: Extra harden-runner allowed-endpoints appended to the baked-in set (host:port). Must be a SINGLE space-separated line — a YAML '|' block scalar injects newlines that break harden-runner's endpoint parser (use a '>-' folded scalar or one line). E.g. your ecosystem's package registries, or the model host if not deepseek/anthropic.
         type: string
         required: false
         default: ""
@@ -256,6 +256,23 @@ jobs:
       # lock by attempting egress that must be impossible. example.com/.org are real, reachable, and
       # never allowlisted; if either connects, the filter is not enforcing, and the job fails CLOSED
       # before any untrusted PR data is fetched or run.
+      # A multi-line extra_endpoints (e.g. a YAML '|' block scalar) keeps its newlines through the
+      # ${{ }} interpolation above and breaks harden-runner's space-separated endpoint parser (issue
+      # #74): entries around a newline get a port of 0 and silently stop matching, so the egress lock
+      # is wrong. harden-runner already armed in its Pre step, so this can't be normalized before the
+      # fact — fail fast with an actionable message instead of a downstream "host unreachable".
+      - name: Validate extra_endpoints is single-line
+        if: ${{ inputs.extra_endpoints != '' }}
+        env:
+          EXTRA_ENDPOINTS: ${{ inputs.extra_endpoints }}
+        run: |
+          set -euo pipefail
+          if [ "$EXTRA_ENDPOINTS" != "${EXTRA_ENDPOINTS//$'\n'/}" ]; then
+            echo "::error::extra_endpoints must be a single space-separated line — it contains newlines. A YAML '|' block scalar injects newlines that break harden-runner's endpoint parser (entries get port 0 and stop matching); pass one line or use a '>-' folded scalar."
+            exit 1
+          fi
+          echo "extra_endpoints is single-line — ok"
+
       - name: Egress canary — verify the lock engaged
         if: ${{ inputs.egress_policy == 'block' }}
         run: |
@@ -331,8 +348,6 @@ jobs:
           REASONS="Security triage did not complete successfully (operational error) — failing closed."
 
           emit_triage_output() {
-            local delim
-            delim="TRIAGE_EOF_$(openssl rand -hex 16)"
             {
               echo "safe=$SAFE"
               echo "reasons<<$delim"
@@ -340,7 +355,17 @@ jobs:
               echo "$delim"
             } >>"$GITHUB_OUTPUT"
           }
+          # Per-run heredoc delimiter, derived ONCE from openssl (else /dev/urandom) so untrusted
+          # reasons text can never forge a safe=true output by embedding a fixed delimiter. Computed
+          # up front — not inside the EXIT trap — and set before the trap is registered, so the trap
+          # reuses this value instead of re-deriving it (and possibly degrading to a guessable
+          # literal) on the exit path.
+          delim="TRIAGE_EOF_$(openssl rand -hex 16 2>/dev/null || od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
           trap emit_triage_output EXIT
+
+          # Fail closed if neither randomness source was available (the delimiter would otherwise be
+          # the guessable literal TRIAGE_EOF_); the trap still emits SAFE=false.
+          [ "$delim" != "TRIAGE_EOF_" ] || { echo "::error::cannot generate a secure triage delimiter (no openssl or /dev/urandom); failing closed"; REASONS="secure triage delimiter unavailable; failing closed."; exit 1; }
 
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "::error::MODEL_API_KEY secret is not set"; REASONS="MODEL_API_KEY secret is not set"; exit 1; }
           [ -n "$ANTHROPIC_BASE_URL" ] || { echo "::error::API_BASE_URL variable is not set (e.g. https://api.deepseek.com/anthropic) — refusing to let the CLI pick an endpoint for your key"; REASONS="API_BASE_URL variable is not set"; exit 1; }
@@ -573,8 +598,8 @@ jobs:
         id: assemble
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         env:
-          SAFE: ${{ steps.triage.outputs.safe || 'false' }}
-          REASONS: ${{ steps.triage.outputs.reasons || '' }}
+          SAFE_RAW: ${{ steps.triage.outputs.safe }}
+          REASONS: ${{ steps.triage.outputs.reasons }}
         run: |
           set -euo pipefail
           mkdir -p findings
@@ -594,12 +619,28 @@ jobs:
 
           if [ -s findings/findings.json ]; then
             echo "Review produced findings"
-          elif [ "$SAFE" = "false" ]; then
+          elif [ "$SAFE_RAW" = "false" ] && [ -n "$REASONS" ]; then
+            # Triage ran and returned a real fail-closed / unsafe verdict (non-empty reason).
             jq -n --arg reasons "$REASONS" \
               '{schema_version: "0.4.0", summary: ("### 🛑 Code review skipped by the security gate\n\nThe diff was flagged as unsafe to apply and execute:\n\n> " + $reasons), verdict: "comment", findings: []}' \
               >findings/findings.json
             wrap_envelope
+          elif [ "$SAFE_RAW" = "false" ]; then
+            # Triage returned unsafe but with no reason string (valid per the triage schema) — still
+            # a gate block, so don't fall through to the "passed triage" text below; omit the reason.
+            jq -n \
+              '{schema_version: "0.4.0", summary: "### 🛑 Code review skipped by the security gate\n\nThe security triage returned an unsafe verdict without a reason. See workflow logs.", verdict: "comment", findings: []}' \
+              >findings/findings.json
+            wrap_envelope
+          elif [ -z "$SAFE_RAW" ]; then
+            # Triage never emitted a verdict — the job errored before the gate ran (dependency
+            # install or setup), not a security decision. Never render the gate message here.
+            jq -n \
+              '{schema_version: "0.4.0", summary: "### 🛠️ Review did not run\n\nThe review job failed before the security triage could run (e.g. dependency install or environment setup). See the workflow logs — this is an infrastructure failure, not a security verdict.", verdict: "comment", findings: []}' \
+              >findings/findings.json
+            wrap_envelope
           else
+            # Triage passed (safe=true) but the review produced no findings.
             jq -n \
               '{schema_version: "0.4.0", summary: "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs.", verdict: "comment", findings: []}' \
               >findings/findings.json

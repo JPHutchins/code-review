@@ -1,6 +1,4 @@
-// Pure cost computation from the abstract envelope's `models` array + price map.
-// Recomputes USD because the CLI's vendor_cost_usd is vendor-priced (SPEC §6.2).
-// Pure core: side effects (unknown-model warnings) are threaded via a `warn` callback.
+// Recomputes USD (the CLI's vendor_cost_usd is vendor-priced); warnings threaded via a `warn` sink.
 
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
 
@@ -61,7 +59,6 @@ const computeModelCost = (entry: ModelUsageEntry, prices: PriceMap, warn: Warn):
   };
 };
 
-/** Recompute cost from the envelope's `models` array against a price map. Pure given a `warn` sink. */
 export const computeCost = (
   models: readonly ModelUsageEntry[],
   prices: PriceMap,

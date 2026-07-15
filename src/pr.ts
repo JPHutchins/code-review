@@ -1,6 +1,5 @@
-// PR resolution + diff fetch, shared by `post` (comment job) and `gather` (review job). Both jobs
-// resolve independently (separate runners), but from the SAME pure logic, so they never disagree on
-// which PR (SPEC §8.3 — avoid split-brain). PR resolution is a single read, never jq-interpolated.
+// post (comment job) and gather (review job) resolve the PR on separate runners but from this SAME
+// pure logic, so they never disagree on which PR (no split-brain).
 
 import type { GhApi } from "./gh.js";
 
@@ -32,7 +31,6 @@ export type PrResolution =
   | { readonly kind: "not-open"; readonly prNumber: number; readonly state: string }
   | { readonly kind: "open"; readonly prNumber: number };
 
-/** Resolve which PR to act on. Disambiguates by head branch (pure); never shells out. */
 export const resolvePr = (
   candidates: readonly PrCandidate[],
   headBranch: string | undefined,

@@ -1,9 +1,5 @@
-// One Claude Code --settings file composing every hook this CLI uses to make a headless review agent
-// safe and budget-disciplined (issue #38): the Stop deliverable gate (stop-gate.ts) and the two
-// budget hooks (budget.ts) — the latter wired from a SINGLE self-dispatching command on both
-// PreToolUse and PostToolBatch. The review job generates this once and passes it as --settings, so
-// the whole discipline (can't stop draftless, steered toward convergence, forced to converge, and
-// truncation-safe on a hard kill) is expressed in data, not shell.
+// The review agent's whole hook discipline as one --settings file (data, not shell): the Stop
+// deliverable gate + the two budget hooks (one self-dispatching command wired to both tool events).
 
 import { defaultHookCommand } from "./stop-gate.js";
 import { budgetHookCommand } from "./budget.js";
@@ -16,8 +12,7 @@ interface HookEntry {
   readonly hooks: readonly CommandHook[];
 }
 
-/** The composed settings. `PreToolUse`/`PostToolBatch` carry no matcher — they run for every tool,
- *  and the CLI decides per `tool_name` (allowing the convergence path, denying the rest at hard). */
+// PreToolUse/PostToolBatch carry no matcher — they run for every tool; the CLI decides per tool_name.
 export interface ReviewHookSettings {
   readonly hooks: {
     readonly Stop: readonly HookEntry[];
@@ -46,9 +41,7 @@ export interface ComposeSettingsOptions {
   };
 }
 
-/** Compose the Stop + PreToolUse + PostToolBatch settings for one review. The budget command is
- *  identical across the two tool events — it self-dispatches on the `hook_event_name` it reads from
- *  stdin — so it is built once and wired twice. */
+// The budget command self-dispatches on the stdin event, so it is built once and wired to both.
 export const composeReviewSettings = (opts: ComposeSettingsOptions): ReviewHookSettings => {
   const budgetCommand = budgetHookCommand(opts.draftPath, opts.budget);
   return {

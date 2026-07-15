@@ -279,28 +279,29 @@ jobs:
           git -c user.email=code-review@local -c user.name=code-review add -A
           git -c user.email=code-review@local -c user.name=code-review commit -q -m "pr-head snapshot (for patch validation)"
 
-          # Two wall clocks per route. AGENT_WALL is the BUDGET the hooks steer on: the agent is nudged
-          # to converge as it nears it and is treated as over budget once past it. HARD_KILL is the
-          # later `timeout` deadline — maximum-pressure grace of ~50% of the budget wall beyond it
-          # (the grace is shared by subagents winding down AND main's post-join synthesis + write,
-          # so one slow subagent can eat a thin grace and leave main no time to land $DRAFT),
-          # during which the hooks keep reminding the agent it is over budget and keep denying every
-          # tool but reading and writing/validating $DRAFT, so a review still being finalized can land
-          # before the process is killed rather than being cut off the instant it is told to converge.
-          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; HARD_KILL=9m; else AGENT_WALL=24m; HARD_KILL=36m; fi
+          # AGENT_WALL is the time limit the hooks steer on (converge as it nears, over budget past it).
+          # HARD_KILL is the `timeout` SIGTERM deadline = time limit + grace; the grace is the
+          # over-budget window in which the hooks keep denying every tool but reading and
+          # writing/validating $DRAFT, so a review still finalizing lands before the kill. USD_LIMIT
+          # caps spend on the cost axis when a price map prices the run. Durations are summed in whole
+          # seconds. Edit these four literals to retune the routes.
+          dur_to_secs() { case "$1" in *h) echo "$(( ${1%h} * 3600 ))";; *m) echo "$(( ${1%m} * 60 ))";; *s) echo "${1%s}";; *) echo "$1";; esac; }
+          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; GRACE=3m; USD_LIMIT=0.10; else AGENT_WALL=24m; GRACE=12m; USD_LIMIT=1; fi
+          HARD_KILL=$(( $(dur_to_secs "$AGENT_WALL") + $(dur_to_secs "$GRACE") ))
 
           # Compose the review agent's hooks into one settings file, written to
           # $RUNNER_TEMP OUTSIDE the checked-out worktree so a PR diff can neither define nor disable
           # them: the Stop gate refuses to end the turn until $DRAFT validates against the findings
           # schema; the budget hooks steer the agent to converge as it nears $AGENT_WALL (PostToolBatch)
           # and, close to the wall, deny every tool but reading and writing/validating $DRAFT
-          # (PreToolUse forced convergence). --prices makes the steer report real spend; add
-          # --budget-usd for a dollar ceiling on the cost axis.
+          # (PreToolUse forced convergence). --budget-usd caps spend on the cost axis, which activates
+          # only when --prices supplies a price map to value the run against.
           BUDGET_PRICES=()
           if [ -f "$RUNNER_TEMP/prices.json" ]; then
             BUDGET_PRICES=(--prices "$RUNNER_TEMP/prices.json")
           fi
           code-review print-settings --draft "$DRAFT" --kind findings --wall "$AGENT_WALL" \
+            --budget-usd "$USD_LIMIT" \
             "${BUDGET_PRICES[@]}" \
             >"$RUNNER_TEMP/review-settings.json"
 
@@ -322,7 +323,7 @@ jobs:
           # warning, not a step failure — the pipeline proceeds with whatever the agent emitted, and
           # `adapt` preserves its usage/cost even when the deliverable is incomplete (it keeps a
           # truncated envelope from crashing that path).
-          echo "Review mode: $ROUTE (budget $AGENT_WALL, hard kill $HARD_KILL)"
+          echo "Review mode: $ROUTE (time limit $AGENT_WALL, grace $GRACE, hard kill ${HARD_KILL}s)"
           set +e
           timeout --kill-after=60s "$HARD_KILL" \
           claude -p "$PROMPT" \

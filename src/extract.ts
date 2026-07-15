@@ -5,7 +5,7 @@
 // candidate must pass BOTH gates — ajv (shape + additionalProperties:false) and the registry's io-ts
 // codec (cross-field invariants ajv can't express, e.g. end_line >= start_line).
 
-import { readFileOrNull } from "./util.js";
+import { readFileOrNull, tryParseJson } from "./util.js";
 import { resolve, schemaPathFor, defaultVersion } from "./registry.js";
 import { validateAgainstSchema } from "./validate.js";
 
@@ -129,16 +129,6 @@ const gateCandidate = (kind: ExtractKind, rawCandidate: unknown): GatedCandidate
   if (!validateAgainstSchema(candidate, schemaPath).valid) return null;
   const resolution = resolve(kind, candidate);
   return resolution.kind === "ok" ? { version: resolution.version, candidate } : null;
-};
-
-type ParseResult = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
-
-const tryParseJson = (text: string): ParseResult => {
-  try {
-    return { ok: true, value: JSON.parse(text) as unknown };
-  } catch {
-    return { ok: false };
-  }
 };
 
 const candidateFromJsonText = (kind: ExtractKind, text: string | null): GatedCandidate | null => {

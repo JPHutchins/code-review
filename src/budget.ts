@@ -1,4 +1,4 @@
-// Deterministic budget discipline for a headless review agent (issue #38). Two Claude Code hooks
+// Deterministic budget discipline for a headless review agent. Two Claude Code hooks
 // wired from ONE self-dispatching command: a PostToolBatch signal that steers the agent to converge
 // once spend or wall-clock enters its soft wind-down reserve, and a PreToolUse gate that, inside the
 // smaller hard reserve, denies the budget-burning tools — subagent spawns, arbitrary shell, web —
@@ -6,7 +6,7 @@
 // is gone rather than investigating until it is killed. The PreToolUse gate also owns the fan-out
 // discipline at EVERY phase: subagent spawns are denied until the main agent has written its own
 // first-pass draft, and permitted spawns are rewritten to run in the background so the main agent
-// never blocks on a batch join where no hook can steer it (issue #73).
+// never blocks on a batch join where no hook can steer it.
 //
 // Every decision here is pure. The CLI (index.ts) owns the impure edges — reading the transcript to
 // measure spend, `Date.now()` for elapsed — and hands the results in as `BudgetParams`; the hook
@@ -22,7 +22,7 @@ import { asRecord } from "./util.js";
  *  the main agent's AND each fan-out subagent's — inherits it, so all measure the SAME true remaining
  *  wall. Without it each hook derived elapsed from its own transcript's first timestamp, which reads
  *  ≈0 inside a freshly-spawned subagent, leaving the skill's parallel fan-out entirely unsteered until
- *  the wall (issue #45). */
+ *  the wall. */
 export const DEADLINE_ENV = "CODE_REVIEW_DEADLINE_EPOCH";
 
 /** The two budget axes and the wind-down reserve to judge them against. Either axis may be unknown
@@ -38,15 +38,10 @@ export interface BudgetInputs {
   readonly reserve: ReserveParams;
 }
 
-/** The headroom to hold back for wind-down, judged per axis as max(flat floor, effective-frac × the
- *  budget): the flat floor keeps a tiny budget from converging with no absolute room left to write and
- *  validate the draft, while the fraction lets a large budget scale. The effective fraction GROWS with
- *  how far into the budget the run already is — `frac + growth × (used / limit)` — so convergence
- *  pressure escalates the longer the review has run, reserving proportionally more tail for the
- *  write→validate→fix loop rather than triggering at one late cliff (issue #45; a wall-killed review
- *  wrote its first draft at ~85% and ran out of time adapting it to the schema). The soft (steer) tier
- *  reserves SOFT_MULTIPLE× the hard (force) tier, so the agent is nudged with a whole extra reserve
- *  still in hand rather than only at the brink (issue #38). */
+/** The wind-down headroom, per axis: max(flat floor, effective-frac × budget). The flat floor keeps a
+ *  tiny budget from converging with no room left to write + validate the draft; the fraction lets a
+ *  large budget scale, and GROWS as the budget is spent so convergence lands earlier the longer the
+ *  run has gone. The soft (steer) tier reserves SOFT_MULTIPLE× the hard (force) tier. */
 export interface ReserveParams {
   readonly frac: number;
   readonly growth: number;
@@ -55,9 +50,8 @@ export interface ReserveParams {
 }
 
 /** Defaults sized for real reviews: hold back a base 15% of the budget, growing by up to another 25%
- *  as the run approaches its limit (so hard convergence lands near ~68% of the wall rather than ~85%,
- *  soft near ~47%), but never less than $0.02 / 2 minutes of absolute wind-down room. `growth: 0`
- *  recovers the old flat-reserve behaviour. */
+ *  as the run approaches its limit (convergence pressure escalates the longer it has run), but never
+ *  less than $0.02 / 2 minutes of absolute wind-down room. `growth: 0` recovers a flat reserve. */
 export const DEFAULT_RESERVE: ReserveParams = {
   frac: 0.15,
   growth: 0.25,
@@ -177,7 +171,7 @@ const WEB_TOOLS: ReadonlySet<string> = new Set(["WebFetch", "WebSearch"]);
  *  denylist, not an allowlist: the tools that DELIVER the finished review (writing/validating the
  *  draft, and whatever terminal tool the agent uses to return its answer) must never be blocked from
  *  finishing — a live dogfood showed an allowlist denying the answer tool and stranding a complete
- *  draft (issue #38). `Bash` is the one carve-out, permitted solely to run `code-review validate`. */
+ *  draft. `Bash` is the one carve-out, permitted solely to run `code-review validate`. */
 export const blockedDuringConvergence = (toolName: string, toolInput: unknown): boolean => {
   if (SPAWN_TOOLS.has(toolName) || WEB_TOOLS.has(toolName)) return true;
   if (toolName === "Bash") return !invokesCodeReviewValidate(toolInput);
@@ -364,7 +358,7 @@ export const parseEpochSecMs = (raw: string | undefined): number | null => {
  *  the ABSOLUTE anchor — a fixed run deadline (epoch ms) shared across every hook process — computed
  *  as `wall − (deadline − now)`; the per-transcript first timestamp (`firstTsMs`) is only the fallback
  *  because inside a freshly-spawned subagent it reads ≈0, so during the skill's parallel fan-out the
- *  budget hooks stay blind and never steer (issue #45). Falls back to the transcript start when no
+ *  budget hooks stay blind and never steer. Falls back to the transcript start when no
  *  anchor is set (manual/local runs), then to null when neither is knowable (time axis disabled).
  *  Clamped to ≥ 0 — a passed deadline or clock skew reads as fully elapsed, never negative. */
 export const anchoredElapsedMs = (src: {

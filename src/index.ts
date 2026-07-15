@@ -1386,7 +1386,7 @@ const requireMaxInstructions = (raw: string | undefined): number => {
 
 const requirePositiveInt = (raw: string, flag: string): number => {
   const n = Number.parseInt(raw, 10);
-  return Number.isInteger(n) && n > 0 && /^\d+$/.test(raw.trim())
+  return Number.isInteger(n) && n > 0 && /^\d+$/.test(raw)
     ? n
     : fail(`${flag} must be a positive integer; got "${raw}"`);
 };

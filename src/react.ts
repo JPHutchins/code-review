@@ -4,7 +4,7 @@
 import * as t from "io-ts";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
-import { errMsg } from "./util.js";
+import { errMsg, tryParseJson } from "./util.js";
 
 // GitHub's fixed reaction vocabulary — there is no ✅; 🚀 (rocket) reads as "review shipped".
 export const REACTIONS = [
@@ -22,7 +22,6 @@ export const isReaction = (s: string): s is Reaction =>
   (REACTIONS as readonly string[]).includes(s);
 
 const ReactionCodec = t.type({ id: t.number, content: t.string });
-const ReactionsCodec = t.array(ReactionCodec);
 
 export interface ReactInput {
   readonly repo: string;
@@ -40,18 +39,31 @@ const removeReactions = async (
   content: Reaction,
   ghApi: GhApi,
 ): Promise<void> => {
-  const stdout = await ghApi([reactionsPath(repo, commentId), "--paginate"]);
-  const decoded = ReactionsCodec.decode(JSON.parse(stdout || "[]") as unknown);
-  if (decoded._tag === "Left") return;
-  for (const reaction of decoded.right.filter((r) => r.content === content)) {
+  // --paginate WITHOUT --jq concatenates pages as `[..][..]` (invalid JSON) once a comment has >100
+  // reactions; flatten to one record per line via --jq and decode line by line, like pr.ts. Each
+  // undecodable line is logged and skipped rather than silently swallowed.
+  const stdout = await ghApi([
+    reactionsPath(repo, commentId),
+    "--paginate",
+    "--jq",
+    ".[] | {id, content}",
+  ]);
+  for (const line of stdout.split("\n").filter((l) => l.trim() !== "")) {
+    const parsed = tryParseJson(line);
+    const decoded = parsed.ok ? ReactionCodec.decode(parsed.value) : undefined;
+    if (decoded === undefined || decoded._tag === "Left") {
+      process.stderr.write("code-review react: could not decode a reaction entry — skipping\n");
+      continue;
+    }
+    if (decoded.right.content !== content) continue;
     // The token may delete only its OWN reactions; a 403 on someone else's is expected, not fatal.
     await ghApi([
       "--method",
       "DELETE",
-      `${reactionsPath(repo, commentId)}/${String(reaction.id)}`,
+      `${reactionsPath(repo, commentId)}/${String(decoded.right.id)}`,
     ]).catch((err: unknown) =>
       process.stderr.write(
-        `code-review react: could not remove reaction ${String(reaction.id)} (${errMsg(err)}) — skipping\n`,
+        `code-review react: could not remove reaction ${String(decoded.right.id)} (${errMsg(err)}) — skipping\n`,
       ),
     );
   }

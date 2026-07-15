@@ -34,7 +34,7 @@ import {
   noticeFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
-import { parseFindingsMarker } from "./surface.js";
+import { parseFindingsMarker, parseReviewedSha } from "./surface.js";
 import { post } from "./post.js";
 import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
@@ -676,13 +676,18 @@ const seedDraftCmd = defineCommand({
   meta: {
     name: "seed-draft",
     description:
-      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0. Also drops a sidecar marker beside the seed so the budget hook can tell the untouched seed from a draft the agent wrote itself. Prints the mode chosen (prior|empty|none — none when even the scaffold write failed) to stdout; always exits 0",
+      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0. Also drops a sidecar marker beside the seed so the budget hook can tell the untouched seed from a draft the agent wrote itself. Prints the mode to stdout (prior-same|prior-new when seeded, by whether the prior review examined this same commit; empty-had-prior when a prior review exists but its findings could not be loaded; empty on a first review; none when even the scaffold write failed) and always exits 0",
   },
   args: {
     prior: {
       type: "string",
       description:
         "Path to the prior-review JSON gather staged ({ id, body }, or the literal null); its embedded base64 findings marker is decoded and becomes the seed when it validates against the schema",
+    },
+    "head-sha": {
+      type: "string",
+      description:
+        "Current head SHA, compared against the prior review's embedded reviewed-sha to distinguish a same-commit re-review from a new-commit one; an unknown or mismatched prior SHA is treated as a new commit",
     },
     out: {
       type: "string",
@@ -734,28 +739,26 @@ const seedDraftCmd = defineCommand({
       }
     };
 
-    const writeEmptyScaffold = (): void => {
+    const writeScaffold = (): boolean => {
       try {
         writeFileSync(outPath, `${JSON.stringify(noticeFindings(""), null, 2)}\n`);
         writeSeedMarker();
         process.stderr.write(
           `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
         );
-        process.stdout.write("empty\n");
+        return true;
       } catch (err) {
-        // The scaffold write itself failed — report "none" (not "empty"), so the workflow doesn't
-        // tell the agent a scaffold exists that isn't there; the agent writes $DRAFT itself.
         process.stderr.write(
           `Warning: could not write the seed scaffold to ${outPath} (${errMsg(err)}) — the agent will create $DRAFT itself\n`,
         );
-        process.stdout.write("none\n");
+        return false;
       }
     };
 
-    // Decode the prior review's embedded findings, tolerating a missing/absent/"null"/malformed
-    // file. Validated against the current schema below so an older-shaped or corrupt prior review
-    // degrades to the empty scaffold rather than seeding an invalid $DRAFT.
-    const priorFindings = ((): unknown => {
+    // The whole prior comment body gather staged, tolerating a missing/absent/"null"/malformed
+    // file: it carries both the embedded findings (seeded below when they still validate) and the
+    // reviewed-sha that distinguishes a same-commit re-review from a new-commit one.
+    const priorBody = ((): string | null => {
       if (!args.prior) return null;
       const raw = ((): unknown => {
         try {
@@ -764,48 +767,59 @@ const seedDraftCmd = defineCommand({
           return null;
         }
       })();
-      const body =
-        typeof raw === "object" && raw !== null && "body" in raw && typeof raw.body === "string"
-          ? raw.body
-          : null;
-      return body === null ? null : parseFindingsMarker(body);
+      return typeof raw === "object" &&
+        raw !== null &&
+        "body" in raw &&
+        typeof raw.body === "string"
+        ? raw.body
+        : null;
     })();
+    const priorFindings = priorBody === null ? null : parseFindingsMarker(priorBody);
 
-    if (priorFindings === null) {
-      writeEmptyScaffold();
-      return;
-    }
-
-    // Resolve + validate WITHOUT the process-exiting require* helpers: any failure (bad
+    // Validate + write WITHOUT the process-exiting require* helpers: any failure (bad
     // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the
     // scaffold so the always-exit-0 contract holds.
-    const seededFromPrior = ((): boolean => {
-      try {
-        const schemaPath = args.schema
-          ? resolve(args.schema)
-          : schemaPathFor(kind, args["schema-version"]);
-        if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
-        writeFileSync(outPath, `${JSON.stringify(priorFindings, null, 2)}\n`);
-        writeSeedMarker();
-        return true;
-      } catch (err) {
-        process.stderr.write(
-          `Warning: could not seed from the prior review (${errMsg(err)}) — falling back to the empty scaffold\n`,
-        );
-        return false;
-      }
-    })();
+    const seededFromPrior =
+      priorFindings === null
+        ? false
+        : ((): boolean => {
+            try {
+              const schemaPath = args.schema
+                ? resolve(args.schema)
+                : schemaPathFor(kind, args["schema-version"]);
+              if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
+              writeFileSync(outPath, `${JSON.stringify(priorFindings, null, 2)}\n`);
+              writeSeedMarker();
+              const priorList = (priorFindings as { readonly findings?: unknown }).findings;
+              const count = Array.isArray(priorList) ? priorList.length : 0;
+              process.stderr.write(
+                `Seeded ${outPath} from the prior review (${String(count)} finding(s))\n`,
+              );
+              return true;
+            } catch (err) {
+              process.stderr.write(
+                `Warning: could not seed from the prior review (${errMsg(err)}) — falling back to the empty scaffold\n`,
+              );
+              return false;
+            }
+          })();
 
-    if (seededFromPrior) {
-      const priorList = (priorFindings as { readonly findings?: unknown }).findings;
-      const count = Array.isArray(priorList) ? priorList.length : 0;
-      process.stderr.write(
-        `Seeded ${outPath} from the prior review (${String(count)} finding(s)) — verify each still holds against the current diff and refine in place\n`,
-      );
-      process.stdout.write("prior\n");
-    } else {
-      writeEmptyScaffold();
-    }
+    // prior-same/prior-new split on whether the seeded review examined this exact commit; an unknown
+    // prior SHA (older comment, or the all-zeros placeholder) falls to prior-new so the agent
+    // re-checks against the current diff rather than assuming the code is unchanged. When nothing
+    // could be seeded, empty-had-prior still tells the agent a prior review exists (vs a true first
+    // review), and none marks even the scaffold write failing.
+    const mode = ((): string => {
+      if (seededFromPrior) {
+        const priorSha = priorBody === null ? null : parseReviewedSha(priorBody);
+        return args["head-sha"] && priorSha && priorSha === args["head-sha"].toLowerCase()
+          ? "prior-same"
+          : "prior-new";
+      }
+      if (!writeScaffold()) return "none";
+      return priorBody === null ? "empty" : "empty-had-prior";
+    })();
+    process.stdout.write(`${mode}\n`);
   },
 });
 

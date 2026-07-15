@@ -168,6 +168,42 @@ describe("extractStructured — rung order (ruling 1)", () => {
     expect(outcome.kind).toBe("ok");
   });
 
+  it("the last-valid fallback recovers findings when --agent-file is invalid, and wins over the native envelope", () => {
+    const native = {
+      structured_output: {
+        schema_version: "0.4.0",
+        summary: "from structured_output — the last-valid fallback must win over this",
+        verdict: "approve",
+        findings: [],
+      },
+    };
+    const outcome = extractStructured({
+      kind: "findings",
+      native,
+      agentFilePath: fixturePath("f08-prose-only.json"), // truncated/invalid — parse failure
+      agentFileFallbackPath: fixturePath("f11-agent-file.json"), // last snapshot that validated
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect((outcome.candidate as { summary: string }).summary).toBe(
+      "Authoritative: from the agent-written file.",
+    );
+  });
+
+  it("--agent-file wins over the last-valid fallback when BOTH validate (catches a reversed rung order)", () => {
+    const outcome = extractStructured({
+      kind: "findings",
+      native: {},
+      agentFilePath: fixturePath("f11-agent-file.json"), // primary
+      agentFileFallbackPath: fixturePath("f11-agent-file-b.json"), // distinct, also valid
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect((outcome.candidate as { summary: string }).summary).toBe(
+      "Authoritative: from the agent-written file.",
+    );
+  });
+
   it("--agent-file is a documented no-op for triage — a valid file does not override the ladder", () => {
     const outcome = extractStructured({
       kind: "triage",
@@ -247,6 +283,29 @@ describe("extractStructured — error-envelope short-circuit (ruling 2)", () => 
   it("a non-null api_error_status short-circuits", () => {
     const native = { api_error_status: 529, result: JSON.stringify({ safe: true, reasons: "r" }) };
     expect(extractStructured({ kind: "triage", native }).kind).toBe("error-envelope");
+  });
+
+  it("a validated agent-file (or its last-valid fallback) outranks an error envelope — a draft from an errored run still posts", () => {
+    const native = { is_error: true, subtype: "error_max_turns" };
+    const withFile = extractStructured({
+      kind: "findings",
+      native,
+      agentFilePath: fixturePath("f11-agent-file.json"),
+    });
+    expect(withFile.kind).toBe("ok");
+    if (withFile.kind === "ok")
+      expect((withFile.candidate as { summary: string }).summary).toBe(
+        "Authoritative: from the agent-written file.",
+      );
+    // and the last-valid snapshot when the live agent-file is truncated on the errored run
+    expect(
+      extractStructured({
+        kind: "findings",
+        native,
+        agentFilePath: fixturePath("f08-prose-only.json"),
+        agentFileFallbackPath: fixturePath("f11-agent-file.json"),
+      }).kind,
+    ).toBe("ok");
   });
 
   it('subtype:"success" and api_error_status:null are not treated as errors', () => {

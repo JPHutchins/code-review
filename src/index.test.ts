@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { runCommand } from "citty";
-import { writeFileSync, mkdirSync, rmSync, readFileSync, statSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { main } from "./index.js";
+import { main, snapshotIfValid } from "./index.js";
+import { lastValidPath } from "./budget.js";
 import { ResultEnvelopeCodec } from "./schema.js";
 import { findingsPointer } from "./surface.js";
 import type { Findings } from "./schema.js";
@@ -156,6 +157,82 @@ describe("cli — budget-hook", () => {
     ]);
     expect(exitCode).toBeNull();
     expect(JSON.parse(stdout)).toEqual({});
+  });
+});
+
+describe("cli — $DRAFT last-valid snapshot (issue #61)", () => {
+  const validFindings = (summary: string): string =>
+    JSON.stringify({ schema_version: "0.4.0", summary, verdict: "comment", findings: [] });
+
+  it("snapshotIfValid copies a validating draft to its .last-valid.json sidecar (postfix before the real extension)", () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    writeFileSync(draft, validFindings("live and valid"));
+    snapshotIfValid(draft);
+    const snap = lastValidPath(draft);
+    expect(snap).toBe(join(tmpDir, "findings-draft.last-valid.json"));
+    expect((JSON.parse(readFileSync(snap, "utf-8")) as { summary: string }).summary).toBe(
+      "live and valid",
+    );
+  });
+
+  it("snapshotIfValid leaves the prior snapshot in place when the draft no longer validates (a wall-kill truncated it)", () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    const snap = lastValidPath(draft);
+    writeFileSync(snap, validFindings("last good"));
+    writeFileSync(draft, "{ truncated mid-write");
+    snapshotIfValid(draft);
+    expect((JSON.parse(readFileSync(snap, "utf-8")) as { summary: string }).summary).toBe(
+      "last good",
+    );
+  });
+
+  it("snapshotIfValid writes no snapshot for an invalid draft when none exists yet", () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    writeFileSync(draft, "not json");
+    snapshotIfValid(draft);
+    expect(existsSync(lastValidPath(draft))).toBe(false);
+  });
+
+  it("adapt recovers findings from --agent-file-fallback when --agent-file was truncated by a wall-kill", async () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    const snap = lastValidPath(draft);
+    writeFileSync(draft, "{ truncated");
+    writeFileSync(snap, validFindings("recovered from the last valid snapshot"));
+    const { stdout, exitCode } = await runCli([
+      "adapt",
+      nativeFixturePath,
+      "--adapter",
+      "claude-code",
+      "--agent-file",
+      draft,
+      "--agent-file-fallback",
+      snap,
+    ]);
+    expect(exitCode).toBeNull();
+    expect((JSON.parse(stdout) as { findings: { summary: string } }).findings.summary).toBe(
+      "recovered from the last valid snapshot",
+    );
+  });
+
+  it("adapt prefers a valid --agent-file over the fallback snapshot", async () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    const snap = lastValidPath(draft);
+    writeFileSync(draft, validFindings("the live draft"));
+    writeFileSync(snap, validFindings("the older snapshot"));
+    const { stdout, exitCode } = await runCli([
+      "adapt",
+      nativeFixturePath,
+      "--adapter",
+      "claude-code",
+      "--agent-file",
+      draft,
+      "--agent-file-fallback",
+      snap,
+    ]);
+    expect(exitCode).toBeNull();
+    expect((JSON.parse(stdout) as { findings: { summary: string } }).findings.summary).toBe(
+      "the live draft",
+    );
   });
 });
 

@@ -15,6 +15,8 @@ export interface ExtractInput {
   readonly kind: ExtractKind;
   // findings only — a documented no-op for triage.
   readonly agentFilePath?: string;
+  // Last valid draft snapshot, tried after agentFilePath and before the native envelope.
+  readonly agentFileFallbackPath?: string;
   readonly native: unknown;
 }
 
@@ -177,6 +179,10 @@ export const ladderFailureDiagnostics = (input: ExtractInput): string => {
         ? "agent-file rung: no --agent-file given"
         : `agent-file rung: ${input.agentFilePath} did not validate (or was unreadable)`,
     );
+    if (input.agentFileFallbackPath !== undefined)
+      lines.push(
+        `last-valid rung: ${input.agentFileFallbackPath} did not validate (or was absent)`,
+      );
   }
   lines.push(
     isNullish(native.structuredOutput)
@@ -212,13 +218,21 @@ const okOutcome = (gated: GatedCandidate): LadderOutcome => ({
 export const extractStructured = (input: ExtractInput): LadderOutcome => {
   const native = parseNativeForExtraction(input.native);
 
-  if (isErrorEnvelope(native)) {
-    return { kind: "error-envelope", detail: describeErrorEnvelope(native) };
+  // The agent-file and its last-valid snapshot are self-validated deliverables written OUTSIDE the
+  // worktree (a PR can't plant them) and checkpointed by us during the run, so they outrank an error
+  // envelope: a run that errored (max-turns, a captured API error) after producing a valid draft
+  // should still post it, not "did not complete". The error-envelope short-circuit below still guards
+  // the less-trusted native rungs (structured_output/result).
+  if (input.kind === "findings") {
+    for (const path of [input.agentFilePath, input.agentFileFallbackPath]) {
+      if (path === undefined) continue;
+      const fromFile = candidateFromJsonText(input.kind, readFileOrNull(path));
+      if (fromFile) return okOutcome(fromFile);
+    }
   }
 
-  if (input.kind === "findings" && input.agentFilePath !== undefined) {
-    const fromFile = candidateFromJsonText(input.kind, readFileOrNull(input.agentFilePath));
-    if (fromFile) return okOutcome(fromFile);
+  if (isErrorEnvelope(native)) {
+    return { kind: "error-envelope", detail: describeErrorEnvelope(native) };
   }
 
   if (native.structuredOutput !== undefined) {
@@ -246,8 +260,9 @@ export const extractStructured = (input: ExtractInput): LadderOutcome => {
     }
   }
 
+  const fallbackRung = input.agentFileFallbackPath ? ", last-valid snapshot" : "";
   return {
     kind: "none",
-    detail: `no --agent-file, structured_output, JSON result, or fenced block validated against the ${input.kind} schema`,
+    detail: `no --agent-file${fallbackRung}, structured_output, JSON result, or fenced block validated against the ${input.kind} schema`,
   };
 };

@@ -265,6 +265,24 @@ describe("adapt — claude-code — absent native envelope (issue #39)", () => {
     expect(result.right.vendor_cost_usd).toBeNull();
   });
 
+  it("recovers findings from the last-valid fallback when the native is absent and --agent-file is invalid (a wall-kill truncated the live draft)", () => {
+    const result = adapt("claude-code", undefined, ladderFixturePath("f08-prose-only.json"), {
+      agentFileFallbackPath: ladderFixturePath("f11-agent-file.json"),
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
+  });
+
+  it("prefers a valid --agent-file over the last-valid fallback", () => {
+    const result = adapt("claude-code", undefined, ladderFixturePath("f11-agent-file.json"), {
+      agentFileFallbackPath: ladderFixturePath("f08-prose-only.json"),
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
+  });
+
   it("stamps route/effort onto the degraded envelope when the native envelope is absent", () => {
     const result = adapt("claude-code", undefined, undefined, {
       route: "full review",

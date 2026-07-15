@@ -9,6 +9,8 @@ import {
   forceBackgroundSpawn,
   mainHasWrittenDraft,
   seedMarkerPath,
+  lastValidPath,
+  isSubagentHookInput,
   evaluateBudgetHook,
   parseWallMs,
   parseFraction,
@@ -471,6 +473,25 @@ describe("mainHasWrittenDraft (fan-out floor)", () => {
 describe("seedMarkerPath", () => {
   it("derives the sidecar beside the draft (the seed-draft ↔ budget-hook convention)", () => {
     expect(seedMarkerPath("/work/findings-draft.json")).toBe("/work/findings-draft.json.seed");
+  });
+});
+
+describe("isSubagentHookInput", () => {
+  it("is true only for a non-empty agent_id — main agent (none or empty) is false", () => {
+    expect(isSubagentHookInput({ agent_id: "sub-1" })).toBe(true);
+    // The "" case the snapshot gate and single-writer deny must agree on.
+    expect(isSubagentHookInput({ agent_id: "" })).toBe(false);
+    expect(isSubagentHookInput({})).toBe(false);
+    expect(isSubagentHookInput(null)).toBe(false);
+  });
+});
+
+describe("lastValidPath", () => {
+  it("inserts the postfix before the real extension so the snapshot stays a .json file", () => {
+    expect(lastValidPath("/work/findings-draft.json")).toBe("/work/findings-draft.last-valid.json");
+  });
+  it("appends the postfix when the draft has no extension", () => {
+    expect(lastValidPath("/work/findings-draft")).toBe("/work/findings-draft.last-valid");
   });
 });
 

@@ -5,7 +5,7 @@
 // citty requires async run() even when the body has no explicit await
 
 import { defineCommand, runMain } from "citty";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
 import { render } from "./render.js";
@@ -21,6 +21,8 @@ import {
   deadlineEpochSec,
   mainHasWrittenDraft,
   seedMarkerPath,
+  lastValidPath,
+  isSubagentHookInput,
   DEFAULT_RESERVE,
   DEADLINE_ENV,
 } from "./budget.js";
@@ -53,7 +55,7 @@ import {
   stopHookSettings,
 } from "./stop-gate.js";
 import { composeReviewSettings } from "./settings.js";
-import { errMsg, tryParseJson } from "./util.js";
+import { asRecord, errMsg, tryParseJson } from "./util.js";
 
 const readJSON = (path: string): unknown => {
   try {
@@ -390,6 +392,26 @@ const transcriptPathOf = (input: unknown): string | undefined => {
   return typeof tp === "string" ? tp : undefined;
 };
 
+/** Snapshot the draft to its last-valid sidecar when it passes the same extraction ladder `adapt`
+ *  will read it back through, so `adapt`'s fallback rung only ever sees a document it accepts.
+ *  Best-effort — a snapshot miss never perturbs the hook's stdout decision. */
+export const snapshotIfValid = (draftPath: string): void => {
+  try {
+    // Validate the LIVE draft only (no agentFileFallbackPath): passing the snapshot as a fallback
+    // here would let a valid snapshot rescue an invalid live draft through the ladder, then copy that
+    // invalid draft over the good snapshot — corrupting the last-valid state we exist to preserve.
+    if (
+      extractStructured({ kind: "findings", native: undefined, agentFilePath: draftPath }).kind ===
+      "ok"
+    )
+      copyFileSync(draftPath, lastValidPath(draftPath));
+  } catch (err) {
+    process.stderr.write(
+      `code-review: could not snapshot the last-valid draft (${errMsg(err)}) — any prior snapshot is unchanged\n`,
+    );
+  }
+};
+
 const budgetHookCmd = defineCommand({
   meta: {
     name: "budget-hook",
@@ -476,6 +498,10 @@ const budgetHookCmd = defineCommand({
           mtimeMsOf(seedMarkerPath(draftPath)),
         ),
       });
+      // Only the main agent writes the draft (single-writer), so a subagent batch never introduces a
+      // new valid state to preserve — snapshot on the main agent's PostToolBatch only.
+      if (asRecord(input)?.["hook_event_name"] === "PostToolBatch" && !isSubagentHookInput(input))
+        snapshotIfValid(draftPath);
       process.stdout.write(`${JSON.stringify(output)}\n`);
     } catch (err) {
       process.stderr.write(`code-review budget-hook: degrading to no-op — ${errMsg(err)}\n`);
@@ -844,6 +870,11 @@ const adaptCmd = defineCommand({
       description:
         "Path to a file the agent was told to write its own validated findings JSON to (wins over the native envelope's structured_output/result when it validates)",
     },
+    "agent-file-fallback": {
+      type: "string",
+      description:
+        "Path to the last-valid findings snapshot, tried after --agent-file and before the native envelope; recovers the last valid state when a wall-clock kill left --agent-file truncated, so the review posts that instead of a 'did not complete' notice",
+    },
     route: {
       type: "string",
       description:
@@ -864,6 +895,7 @@ const adaptCmd = defineCommand({
       adapt(requireAdapterName(args.adapter), readJSONOrAbsent(args.native), args["agent-file"], {
         route: args.route,
         effort: args.effort,
+        agentFileFallbackPath: args["agent-file-fallback"],
         ...(args.transcript
           ? {
               transcriptFallback: (): TranscriptTelemetry =>

@@ -1,0 +1,113 @@
+# code-review's OWN on-demand ChatOps trigger (dogfood). Comment `/code-review [24m] [$1.00] <text>`
+# on a PR to review it now. Mirrors examples/workflows/review-on-comment.yaml, but delegates to the
+# reusable workflow by LOCAL path (./) — like review.yaml — so it always tracks this repo's current
+# pipeline. Field consumers instead pin the published ref (see the example).
+
+name: Code review (on comment)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  gate:
+    if: >-
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/code-review') &&
+      github.event.comment.user.type != 'Bot' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    outputs:
+      should_run:   ${{ steps.parse.outputs.should_run }}
+      head_sha:     ${{ steps.parse.outputs.head_sha }}
+      head_branch:  ${{ steps.parse.outputs.head_branch }}
+      head_repo:    ${{ steps.parse.outputs.head_repo }}
+      duration:     ${{ steps.parse.outputs.duration }}
+      usd:          ${{ steps.parse.outputs.usd }}
+      instructions: ${{ steps.parse.outputs.instructions }}
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install code-review
+        run: npm install -g "@jphutchins/code-review@0.1.0-alpha.24"
+      - name: Parse the command + resolve the PR head
+        id: parse
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          CODE_REVIEW_COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          code-review parse-command \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER" \
+            --trigger "/code-review" \
+            --max-duration 60m \
+            --max-usd 5 \
+            >> "$GITHUB_OUTPUT"
+      - name: Acknowledge the request (👀)
+        if: ${{ steps.parse.outputs.should_run == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add eyes
+
+  review:
+    needs: gate
+    if: ${{ needs.gate.outputs.should_run == 'true' }}
+    uses: ./.github/workflows/review-reusable.yaml
+    with:
+      head_sha:      ${{ needs.gate.outputs.head_sha }}
+      head_branch:   ${{ needs.gate.outputs.head_branch }}
+      head_repo:     ${{ needs.gate.outputs.head_repo }}
+      run_id:        ${{ github.run_id }}
+      conclusion:    success
+      trigger_event: pull_request
+      api_base_url:  ${{ vars.API_BASE_URL }}
+      model_full:    deepseek-v4-pro
+      model_mechanic: deepseek-v4-flash
+      install_command: npm ci
+      duration_override:  ${{ needs.gate.outputs.duration }}
+      usd_override:       ${{ needs.gate.outputs.usd }}
+      extra_instructions: ${{ needs.gate.outputs.instructions }}
+    secrets:
+      MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+
+  ack:
+    needs: [gate, review]
+    if: ${{ always() && needs.gate.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install code-review
+        run: npm install -g "@jphutchins/code-review@0.1.0-alpha.24"
+      - name: Update the acknowledgement (👀 → 🚀 / 😕)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        run: |
+          set -euo pipefail
+          if [ "$REVIEW_RESULT" = "success" ]; then
+            code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add rocket --remove eyes
+          else
+            code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add confused --remove eyes
+          fi

@@ -1,22 +1,13 @@
-# Code review — reusable workflow (two jobs), called via `on: workflow_call`.
-# Consumers own a thin workflow that keeps the trigger and calls this:
-#   jobs.review.uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@vX.Y.Z
-# The consumer keeps: the on: trigger (workflow_run on your CI's name — and/or issue_comment),
-# the SUPERSET permissions the two jobs narrow from, the MODEL_API_KEY secret, .github/prices.json,
-# and the version pin. This file owns: both jobs, the CLI installs (pinned by input default at the
-# tagged release — a version bump is an @ref bump, not a per-repo YAML edit), harden-runner, the two
-# claude -p phases, the gather→triage→review→adapt→post pipeline, and the artifact handoff.
-# review job: model key + read-only token + locked egress
-# comment job: pull-requests:write + issues:write, NO agent, egress-locked to GitHub API
-# The copy-paste single-file variant (examples/workflows/review.yaml) remains for repos that prefer
-# to own the pipeline inline. See: https://github.com/JPHutchins/code-review
+# Two jobs with DISTINCT permissions — the security boundary: review = model key + read-only token +
+# locked egress, runs untrusted PR code; comment = pull-requests/issues:write, no agent, no PR code.
+# A composite/JS/Docker action can't express that (one job, one permission set), so this is a
+# reusable workflow. Consumers call it from a thin ~20-line workflow; see the README.
 
 name: code-review (reusable)
 
 on:
   workflow_call:
     inputs:
-      # --- routing / trigger context (the consumer maps its event → these) ---
       head_sha:
         description: PR head commit SHA to review (resolve from the trusted event, never PR content)
         type: string
@@ -42,7 +33,6 @@ on:
         type: string
         required: false
         default: ""
-      # --- model backend ---
       api_base_url:
         description: Anthropic-compatible endpoint (e.g. https://api.deepseek.com/anthropic). Required; the CLI fails loudly if unset rather than picking an endpoint for your key.
         type: string
@@ -77,12 +67,6 @@ on:
         type: string
         required: false
         default: ""
-      # --- check-running (empty install_command + use_setup_action:false ⇒ STATIC review) ---
-      # Two escape hatches, both optional, both keeping this workflow free of any ecosystem specifics:
-      #   install_command — a shell string for simple installs (npm ci, uv sync, pipx+uv, …).
-      #   use_setup_action — run the consumer's OWN local composite at ./.github/actions/code-review-setup
-      #     for anything needing `uses:` steps (a toolchain installer, a store cache, …). The consumer
-      #     owns that composite in their repo; this workflow just invokes it. It runs before install_command.
       use_setup_action:
         description: Run the consumer's local composite at ./.github/actions/code-review-setup (for uses:-based toolchain/cache setup this workflow can't and shouldn't own).
         type: boolean
@@ -93,10 +77,8 @@ on:
         type: string
         required: false
         default: ""
-      # --- per-route budget walls (AGENT_WALL steers the hooks; HARD_KILL is the timeout backstop).
-      # Size hard_kill ≈ wall × 1.5: the over-budget grace is shared by two consumers — subagents
-      # winding down their final replies AND the main agent's post-join synthesis + $DRAFT write —
-      # so a thin grace can be fully consumed by one slow subagent, leaving main no time to write. ---
+      # Size hard_kill ≈ wall × 1.5: the over-budget grace is shared by winding-down subagents AND the
+      # main agent's post-join write, so a thin grace can leave main no time to land the draft.
       full_wall:
         type: string
         required: false
@@ -113,7 +95,6 @@ on:
         type: string
         required: false
         default: 9m
-      # --- egress ---
       extra_endpoints:
         description: Extra harden-runner allowed-endpoints appended to the baked-in set (host:port). Must be a SINGLE space-separated line — a YAML '|' block scalar injects newlines that break harden-runner's endpoint parser (use a '>-' folded scalar or one line). E.g. your ecosystem's package registries, or the model host if not deepseek/anthropic.
         type: string
@@ -124,7 +105,6 @@ on:
         type: string
         required: false
         default: block
-      # --- pinned toolchain (defaults are the versions this release was tested against) ---
       node_version:
         type: string
         required: false
@@ -143,7 +123,6 @@ on:
         required: true
 
 jobs:
-  # REVIEW — holds the model key + read-only token + locked egress
   review:
     if: >-
       inputs.trigger_event == 'pull_request' &&
@@ -189,7 +168,6 @@ jobs:
             cp .github/prices.json "$RUNNER_TEMP/prices.json"
           fi
 
-      # Agent CLI + ecosystem tooling
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
@@ -202,14 +180,9 @@ jobs:
           CODE_REVIEW_VERSION: ${{ inputs.code_review_version }}
         run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
-      # Optional consumer-owned setup for check-running. This workflow deliberately owns NO ecosystem
-      # toolchain or cache action — those are `uses:` steps it can't take as inputs and shouldn't
-      # hardcode (that way lies a junk drawer of every ecosystem's installer + cache). Instead, when
-      # use_setup_action is true, it invokes a composite the CONSUMER commits at the fixed path
-      # ./.github/actions/code-review-setup — resolved against the consumer's checked-out repo — where
-      # they put their own toolchain installer, store cache, and dep install (e.g. Nix + a nix cache).
-      # Any hosts that composite needs (cache.nixos.org, pypi.org, …) must be reachable at harden-runner
-      # arm time (it arms before any step) — pass them via extra_endpoints.
+      # The workflow owns NO ecosystem toolchain/cache (those are `uses:` steps it can't take as
+      # inputs); the consumer commits its own composite at ./.github/actions/code-review-setup. Hosts
+      # it needs must be reachable at harden-runner arm time (before any step) — pass via extra_endpoints.
       - name: Consumer setup (local composite)
         if: ${{ inputs.use_setup_action }}
         uses: ./.github/actions/code-review-setup
@@ -242,13 +215,8 @@ jobs:
             *.blob.core.windows.net:443
             results-receiver.actions.githubusercontent.com:443
             ${{ inputs.extra_endpoints }}
-      # registry.npmjs.org installs the CLIs; api.<provider> is the model backend; github + objects
-      # + blob + results-receiver cover the GitHub API and artifact up/download. If the agent
-      # installs packages to validate findings, or you set an install_command / setup above, or your
-      # model host isn't deepseek/anthropic, add those hosts via the `extra_endpoints` input, e.g.:
-      #   pypi.org:443
-      #   files.pythonhosted.org:443
-      #   cache.nixos.org:443
+      # Add ecosystem/model hosts your setup needs (registries, a non-deepseek/anthropic API) via the
+      # extra_endpoints input, e.g. pypi.org:443, files.pythonhosted.org:443, cache.nixos.org:443.
 
       # harden-runner can silently fall back to audit when its arm-time setup hits an internal error
       # (upstream: step-security/harden-runner#675) — the job then runs with NO egress enforcement
@@ -289,12 +257,7 @@ jobs:
           fi
           echo "Egress canary could not connect — block policy verified"
 
-      # Gather untrusted data as files (fixed paths, never shell-interpolated). `code-review gather`
-      # resolves the PR from the trusted head SHA (disambiguated by branch), fetches the diff (with a
-      # non-truncating git-diff fallback), the PR title/body, the prior bot review, and — when
-      # CI failed — the failing-job logs. It writes pr.diff, pr_context.json, prior_review.json, and
-      # job_<id>.log into the workspace and prints the step outputs (pr, conclusion, diff_size, or
-      # skip=true) to stdout, which is appended to $GITHUB_OUTPUT.
+      # Untrusted data written to fixed paths, never shell-interpolated.
       - name: Gather review inputs
         id: gather
         env:
@@ -314,15 +277,7 @@ jobs:
             --conclusion "$CONCLUSION" \
             >> "$GITHUB_OUTPUT"
 
-          # Add any extra inputs your review should see below. Files you write into the
-          # workspace here are visible to the agent in Phase 1/2 — e.g. a machine-readable
-          # test report, extra repo context, or CI artifacts. This is the place to customize
-          # input collection; the fixed core above is the everyone-needs-it baseline.
-          # Example (download a CTRF/JUnit report your CI uploaded, then pass it to
-          # `code-review post --test-report` in the comment job):
-          #   gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" > artifacts.json
-
-      # Phase 1 — Data-only security triage (never executes PR code; heuristic filter)
+      # Data-only: never executes PR code.
       - name: Phase 1 — security triage
         id: triage
         if: ${{ steps.gather.outputs.skip != 'true' }}
@@ -405,7 +360,7 @@ jobs:
           mkdir -p transcripts/triage
           cp -r "$HOME/.claude/projects/." transcripts/triage/ 2>/dev/null || true
 
-      # Phase 2 — Agentic review (throwaway runner, read-only token, bypassPermissions safe)
+      # bypassPermissions is safe here: throwaway runner, read-only token.
       - name: Phase 2 — agentic review
         id: review
         if: ${{ steps.gather.outputs.skip != 'true' && steps.triage.outputs.safe == 'true' }}
@@ -511,12 +466,8 @@ jobs:
             "${BUDGET_PRICES[@]}" \
             >"$RUNNER_TEMP/review-settings.json"
 
-          # The findings schema, written outside the worktree so the review agent — and any subagents
-          # it delegates to — can read the authoritative field spec by path. A wall-killed review once
-          # wrote the /code-review skill's finding shape ({file,line,summary,failure_scenario}) into
-          # $DRAFT and then burned its remaining budget reverse-engineering the canonical field names
-          # against `validate`; handing it the schema up front (here, via --json-schema, and named in
-          # the prompt) removes that guesswork.
+          # The findings schema, written outside the worktree so the agent (and its subagents) read the
+          # authoritative field spec by path instead of reverse-engineering the field names.
           SCHEMA_FILE="$RUNNER_TEMP/findings-schema.json"
           code-review print-schema findings >"$SCHEMA_FILE"
 
@@ -552,17 +503,10 @@ jobs:
             echo "::warning::review agent hit its $HARD_KILL hard limit — proceeding with whatever draft it emitted"
           fi
 
-          # Map the CLI's native envelope onto the abstract, vendor-neutral shape — the
-          # native envelope stays local to this step; only the abstract shape leaves as an artifact.
-          # --agent-file prefers the agent's own self-validated $DRAFT over parsing its free-text
-          # result; $DRAFT lives outside the worktree so a PR-planted
-          # repo-root findings-draft.json can never win this rung.
-          #
-          # --transcript recovers real per-model spend from the live session transcript (main +
-          # subagents) when a wall-clock kill left envelope.json empty — otherwise the
-          # comment would report $0.00 despite real cost sitting in the transcript. Pick
-          # the review session's main transcript: the newest .jsonl, excluding subagent files (which
-          # live under <session>/subagents/ and are summed by `adapt` via the main).
+          # --agent-file prefers the agent's self-validated $DRAFT (outside the worktree, so a PR-planted
+          # findings-draft.json can't win) over parsing its free text. --transcript refills per-model
+          # spend from the session transcript when a wall-kill left envelope.json empty (else cost reads
+          # $0.00); pick the newest main .jsonl, excluding subagent files.
           REVIEW_TRANSCRIPT="$(find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
           TRANSCRIPT_ARGS=()
           if [ -n "$REVIEW_TRANSCRIPT" ]; then
@@ -661,10 +605,9 @@ jobs:
 
           echo "has_findings=true" >> "$GITHUB_OUTPUT"
 
-      # No retention-days: these are small text docs and the traceability links (issues #13/#15)
-      # should outlive a short expiry — keep the repo's default (max) retention. `id` exposes
-      # `artifact-id`, threaded to the comment job as a job output so it can point --json-url at
-      # this artifact's own direct download endpoint, not the run's artifacts LIST.
+      # No retention-days — keep the repo default (max) so the traceability links outlive a short
+      # expiry. `id` exposes artifact-id, threaded to the comment job to point --json-url at this
+      # artifact's own download endpoint.
       - uses: actions/upload-artifact@v7
         id: upload-findings
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
@@ -684,8 +627,7 @@ jobs:
           name: code-review-transcript
           path: transcripts/
 
-  # COMMENT — write token, NO agent/PR code, egress-locked to GitHub API.
-  # Deterministic: code-review post → gh api (all JSON-safe, no shell interpolation).
+  # Write token, no agent/PR code; deterministic (no shell interpolation).
   comment:
     needs: review
     if: ${{ always() && needs.review.outputs.has_findings == 'true' }}
@@ -749,8 +691,6 @@ jobs:
           fi
           echo "Egress canary could not connect — block policy verified"
 
-      # code-review post: resolve PR, fetch diff, inline+render, post review (COMMENT),
-      # upsert sticky comment. Exit 0 when no PR; non-zero on posting failure.
       - name: Post the review
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

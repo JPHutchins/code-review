@@ -1,16 +1,8 @@
-// Version-aware schema registry: maps each schema kind's supported major.minor(s) to a bundled
-// schema file, io-ts codec, and upcast normalizer (identity for every entry today). Findings is a
-// single current minor (0.4): the 0.4 shape REQUIRES `reasoning`/`confidence`, which cannot be
-// honestly upcast from a 0.2/0.3 document (a confidence score cannot be fabricated), so those older
-// minors are dropped from the table and now degrade to the §5.5 unsupported-version notice.
-// `resolve` is pure (no IO); `schemaPathFor` only computes a path string from the tables below.
-//
-// This module imports from schema.ts (codecs, DEFAULT_SCHEMA_VERSION), never the reverse — schema.ts
-// stays a dependency-free leaf so the registry can compose it without an import cycle.
-//
-// Bundled schema files resolve relative to the installed package exactly like index.ts's
-// bundledPath: tsup bundles this module into the same dist/index.js as index.ts, so
-// import.meta.dirname here resolves identically at runtime, in dev, and from the published package.
+// Findings 0.4 REQUIRES reasoning/confidence, which can't be honestly upcast from a 0.2/0.3 document
+// (confidence can't be fabricated) — so older minors are dropped from the table and degrade to the
+// unsupported-version notice. Imports schema.ts one-way (schema.ts stays a leaf; no import cycle).
+// Bundled schema paths resolve via tsup into the same dist as index.ts, so import.meta.dirname
+// matches at runtime, in dev, and from the published package.
 
 import { resolve as resolvePath } from "node:path";
 import type { Decoder, Encoder, Errors, ValidationError } from "io-ts";
@@ -31,7 +23,6 @@ interface VersionEntry<K extends SchemaKind, A> {
   /** full semver stamped when a document omits `schema_version` (findings) or reported as the
    *  resolved version for kinds with no in-data signal (triage, prices). */
   readonly defaultVersion: string;
-  /** path relative to schema/: flat name for the latest entry, "v<minor>/…" once frozen. */
   readonly schemaFile: string;
   readonly codec: Decoder<unknown, A> & Encoder<A, unknown>;
   /** upcast to the latest shape for this kind; identity when the codec already accepts both
@@ -108,7 +99,6 @@ const describeValidationError = (e: ValidationError): string => {
 
 const formatErrors = (errors: Errors): readonly string[] => errors.map(describeValidationError);
 
-/** The declared `schema_version` of a raw document, when present as a string. */
 export const declaredVersion = (raw: unknown): string | undefined =>
   typeof raw === "object" && raw !== null && "schema_version" in raw
     ? typeof raw.schema_version === "string"
@@ -128,7 +118,6 @@ export const defaultVersion = (kind: SchemaKind): string => {
 const bundledSchemaPath = (relativePath: string): string =>
   resolvePath(import.meta.dirname, "..", "schema", relativePath);
 
-/** Resolve the bundled schema path for a kind + optional version; no version → flat latest file. */
 export const schemaPathFor = (kind: SchemaKind, version?: string): string => {
   const table = tableFor(kind);
   const entry =

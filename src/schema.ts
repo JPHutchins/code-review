@@ -1,6 +1,5 @@
-// io-ts codecs for de/serialization at the boundary.
-// These ARE the source of truth for the data shapes — types are materialized via t.TypeOf<>.
-// No hand-written DTO types exist elsewhere; import types from here.
+// These codecs ARE the source of truth for the data shapes (types via t.TypeOf<>); no hand-written
+// DTO types exist elsewhere — import types from here.
 
 import * as t from "io-ts";
 
@@ -23,9 +22,8 @@ const LineNumber = t.refinement(
 
 const Confidence = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Confidence");
 
-// Mirrors findings.schema.json's `schema_version.pattern` exactly, so `resolve()` (registry.ts,
-// consumed by post.ts's §5.5 malformed-doc path) never accepts a value that ajv (validate.ts, the
-// extraction ladder's candidate gate) would reject — e.g. a truncated "0.2" or an over-long "0.2.0.0".
+// Mirrors findings.schema.json's schema_version.pattern exactly, so resolve() never accepts a value
+// the ajv gate would reject (e.g. a truncated "0.2" or an over-long "0.2.0.0").
 const SCHEMA_VERSION_RE =
   /^(0|[1-9]\d*)\.(\d+)\.(\d+)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
@@ -141,17 +139,15 @@ export const TestSummaryCodec = t.intersection([
   }),
 ]);
 
-// The supported-minor allowlist and version dispatch live in the registry (src/registry.ts),
-// which sources its findings entry's defaultVersion from this constant.
-/** Full semver used when an adapter's native output omits `schema_version` (SPEC §6.1). */
+// Used when an adapter's native output omits schema_version; the registry sources its findings
+// defaultVersion from this.
 export const DEFAULT_SCHEMA_VERSION = "0.4.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
 
-/** A valid, empty-findings document carrying `summary` as its only content — the single shape used
- *  for a sticky-only notice (post.ts, SPEC §5.5) and a "did not complete" degraded envelope
- *  (adapt.ts, issue #18). Callers supply the fully-formatted markdown summary. */
+// A valid empty-findings document carrying `summary` as its only content — the single shape for a
+// notice and a "did not complete" envelope. Callers supply fully-formatted markdown.
 export const noticeFindings = (summary: string): Findings => ({
   schema_version: DEFAULT_SCHEMA_VERSION,
   summary,

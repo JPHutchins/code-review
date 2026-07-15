@@ -1,27 +1,21 @@
-// Stop-hook deliverable gate. A Claude Code `Stop` hook that refuses to let the review agent end
-// its turn until it has written a findings document that validates against the schema — turning
-// the "write your draft and validate before stopping" instruction from a hope into an invariant.
-// The check is the same validation `code-review validate` performs.
+// A Claude Code Stop hook that refuses to let the review agent end its turn until it has written a
+// findings document that validates against the schema — turning "validate before stopping" from a
+// hope into an invariant. Same validation as `code-review validate`.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { validateAgainstSchema } from "./validate.js";
 
-/** Validation state of the agent's draft deliverable at the moment it tries to stop. A sum type so
- *  `decideGate` can reprompt precisely per case — critically, distinguishing an UNREADABLE file
- *  (EACCES/EISDIR) from an INVALID one, since "does not validate against the schema" is a lie when
- *  the file could not even be read. */
+// Distinguishes an UNREADABLE file (EACCES/EISDIR) from an INVALID one — "does not validate" is a
+// lie when the file could not even be read.
 export type DraftState =
   | { readonly kind: "missing" }
   | { readonly kind: "unreadable"; readonly error: string }
   | { readonly kind: "invalid"; readonly errors: readonly string[] }
   | { readonly kind: "valid" };
 
-/** A Stop-hook outcome: `block` feeds `reason` back to the agent so it keeps working; `allow`
- *  lets the turn end. */
 export type GateDecision =
   { readonly kind: "allow" } | { readonly kind: "block"; readonly reason: string };
 
-/** The precise "what's wrong" clause per non-valid draft state — honest about unreadable vs invalid. */
 const whatsWrong = (
   state: Exclude<DraftState, { kind: "valid" }>,
   draftPath: string,
@@ -39,7 +33,6 @@ const whatsWrong = (
   }
 };
 
-/** The settings shape Claude Code reads from a `--settings` file to wire a Stop hook command. */
 export interface StopHookSettings {
   readonly hooks: {
     readonly Stop: readonly {
@@ -48,9 +41,6 @@ export interface StopHookSettings {
   };
 }
 
-/** Allow when the draft validates or the nudge budget is spent; otherwise block with a reason
- *  that names what is wrong and reprompts the agent about the ONLY deliverable — a document
- *  validating against `kind`'s schema — so it can fix it. */
 export const decideGate = (
   state: DraftState,
   nudges: number,
@@ -70,10 +60,8 @@ export const decideGate = (
   };
 };
 
-/** Read and validate the draft, resolving the schema from the parsed document when needed. Never
- *  throws — every failure mode (missing file, unreadable file, invalid JSON, an unresolvable or
- *  crashing schema lookup, a validator crash) degrades to a `DraftState` the gate can act on,
- *  rather than crashing the hook and letting the agent stop by default. */
+// Never throws — every failure mode degrades to a DraftState the gate can act on, rather than
+// crashing the hook and letting the agent stop by default.
 export const draftState = (
   draftPath: string,
   resolveSchema: (parsed: unknown) => string,
@@ -110,8 +98,7 @@ export const draftState = (
   }
 };
 
-/** Nudge count persisted beside the draft across hook invocations within one review. Absent or
- *  unparseable counts read as 0, so a fresh review starts with a full budget. */
+// Absent or unparseable reads as 0, so a fresh review starts with a full nudge budget.
 export const readNudges = (counterPath: string): number => {
   try {
     const n = Number.parseInt(readFileSync(counterPath, "utf-8").trim(), 10);
@@ -121,19 +108,14 @@ export const readNudges = (counterPath: string): number => {
   }
 };
 
-/** Persist the incremented nudge count (`current + 1`). The caller reads `current` immediately
- *  prior (via `readNudges`) and passes it here, so there is no second read to go stale. May throw
- *  on a write failure — the caller decides how to handle that (index.ts allows the stop rather than
- *  emit an unbounded block). */
+// The caller passes the `current` it just read (no stale second read). May throw on a write failure —
+// the caller decides how to handle that.
 export const bumpNudges = (counterPath: string, current: number): void => {
   writeFileSync(counterPath, `${String(current + 1)}\n`);
 };
 
-/** POSIX single-quote a string for safe embedding in a hook command line. */
 export const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/** The default hook command: this CLI re-invoked as the gate, carrying the same schema/budget
- *  flags so the hook validates exactly as the caller intended. */
 export const defaultHookCommand = (
   draftPath: string,
   opts: {
@@ -154,7 +136,6 @@ export const defaultHookCommand = (
     ...(opts.counter ? ["--counter", shellQuote(opts.counter)] : []),
   ].join(" ");
 
-/** The settings object that wires `command` as a Stop hook. */
 export const stopHookSettings = (command: string): StopHookSettings => ({
   hooks: { Stop: [{ hooks: [{ type: "command", command }] }] },
 });

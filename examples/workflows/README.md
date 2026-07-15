@@ -43,7 +43,7 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
         github.event.workflow_run.event == 'pull_request' &&
         (github.event.workflow_run.conclusion == 'success' ||
          github.event.workflow_run.conclusion == 'failure')
-      uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.19
+      uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.20
       with:
         head_sha:      ${{ github.event.workflow_run.head_sha }}
         head_branch:   ${{ github.event.workflow_run.head_branch }}

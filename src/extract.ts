@@ -1,16 +1,9 @@
 // Extraction ladder: recovers a schema-conforming candidate (findings or triage) from a native
-// agent-CLI result envelope when structured-output enforcement is imperfect or absent. Rung order
-// is a fixed priority: --agent-file > structured_output > pure-JSON result > fenced code blocks.
-// The first rung producing exactly one distinct schema-validating candidate wins (fenced-block
-// candidates are deduplicated by canonical value first — an exact duplicate is not a conflict); an
-// error envelope (the agent run did not complete) short-circuits before any rung runs. See
-// docs/adapters.md "Extraction ladder" for the security rationale (exactly-one-distinct-validating
-// defeats block-injection).
-//
-// Candidate gate: ajv (via validateAgainstSchema, additionalProperties:false) rejects shape and
-// injection attempts; the registry's io-ts codec (via resolve) then materializes the value,
-// additionally enforcing invariants ajv cannot express (e.g. end_line >= start_line). A candidate
-// must pass both to count as "validating".
+// agent-CLI envelope when structured-output enforcement is imperfect or absent. Security rationale:
+// a rung wins only on EXACTLY ONE distinct schema-validating candidate (fenced blocks deduped by
+// canonical value first), which defeats block-injection; disagreeing candidates are refused. Every
+// candidate must pass BOTH gates — ajv (shape + additionalProperties:false) and the registry's io-ts
+// codec (cross-field invariants ajv can't express, e.g. end_line >= start_line).
 
 import { readFileOrNull } from "./util.js";
 import { resolve, schemaPathFor, defaultVersion } from "./registry.js";
@@ -20,10 +13,9 @@ export type ExtractKind = "findings" | "triage";
 
 export interface ExtractInput {
   readonly kind: ExtractKind;
-  readonly native: unknown;
-  /** Path to a file the agent was told to write its own validated JSON to (findings only — a
-   *  documented no-op for triage, per the rung order's "agent-file wins" test). */
+  // findings only — a documented no-op for triage.
   readonly agentFilePath?: string;
+  readonly native: unknown;
 }
 
 export type LadderOutcome =
@@ -55,7 +47,6 @@ const parseNativeForExtraction = (raw: unknown): NativeForExtraction => ({
 
 const isNullish = (value: unknown): boolean => value === null || value === undefined;
 
-/** is_error===true OR (subtype not null/undefined and != "success") OR api_error_status not null/undefined. */
 const isErrorEnvelope = (native: NativeForExtraction): boolean =>
   native.isError === true ||
   (!isNullish(native.subtype) && native.subtype !== "success") ||
@@ -74,7 +65,6 @@ const describeErrorEnvelope = (native: NativeForExtraction): string => {
   return `agent run did not complete successfully (${parts.join(", ")})`;
 };
 
-/** Default `schema_version` onto a findings candidate when the agent omitted it; identity for triage. */
 export const withDefaultSchemaVersion = (candidate: unknown): unknown =>
   typeof candidate === "object" &&
   candidate !== null &&
@@ -102,12 +92,11 @@ const safeSchemaPathFor = (kind: ExtractKind, version: string | undefined): stri
 
 interface GatedCandidate {
   readonly version: string;
-  /** The survivor after `schema_version` injection, pre-registry-normalize (identical for alpha) —
-   *  what the extract CLI prints, per the registry seam ruling. */
+  // Pre-registry-normalize (identical for alpha) — what the extract CLI prints, per the registry seam.
   readonly candidate: unknown;
 }
 
-/** Recursively sort object keys so two values that differ only in key order canonicalize equal. */
+// Sort keys recursively so two values differing only in key order canonicalize equal.
 const canonicalize = (value: unknown): unknown =>
   Array.isArray(value)
     ? value.map(canonicalize)
@@ -119,10 +108,8 @@ const canonicalize = (value: unknown): unknown =>
         )
       : value;
 
-/** Collapse gated candidates that are exact duplicates once canonicalized — a model re-emitting its
- *  answer verbatim is a plausible benign case, not a conflict. Two candidates that differ in any
- *  value still remain distinct, so the injection defense (refusing to pick a survivor among
- *  disagreeing candidates) is unweakened. */
+// A model re-emitting its answer verbatim is benign, not a conflict; candidates differing in any
+// value stay distinct, so the injection defense (refusing a survivor among disagreeing candidates) holds.
 const dedupCandidates = (candidates: readonly GatedCandidate[]): readonly GatedCandidate[] => {
   const seen = new Set<string>();
   return candidates.filter((c) => {
@@ -133,8 +120,8 @@ const dedupCandidates = (candidates: readonly GatedCandidate[]): readonly GatedC
   });
 };
 
-/** Gate a raw candidate through ajv (shape + injection defense) then the registry's io-ts codec
- *  (materialization + cross-field invariants); null when either gate rejects it. */
+// Both gates: ajv (shape + injection defense) then the registry's io-ts codec (materialization +
+// cross-field invariants). Null when either rejects.
 const gateCandidate = (kind: ExtractKind, rawCandidate: unknown): GatedCandidate | null => {
   const candidate = normalizeCandidate(kind, rawCandidate);
   const schemaPath = safeSchemaPathFor(kind, candidateVersion(kind, candidate));
@@ -169,10 +156,7 @@ interface FenceScanState {
 const FENCE_OPEN = /^\s*(`{3,})/;
 const FENCE_MARKER_ONLY = /^`+$/;
 
-/** Fold one line into the fence-scan state. Opens on a line whose first non-whitespace run is
- *  >=3 backticks (the rest of the line — an info string like "json" — is ignored); closes on the
- *  next line that, trimmed, is only backticks of length >= the opening fence. Line-based by
- *  design — no regex spans more than one line, so there is no catastrophic-backtracking surface. */
+// Line-based by design — no regex spans more than one line, so no catastrophic-backtracking surface.
 const scanLine = (state: FenceScanState, line: string): FenceScanState => {
   if (state.openLength === null) {
     const opened = FENCE_OPEN.exec(line)?.[1]?.length;
@@ -185,14 +169,11 @@ const scanLine = (state: FenceScanState, line: string): FenceScanState => {
     : { ...state, buffer: [...state.buffer, line] };
 };
 
-/** Extract fenced code-block contents from `text` (both ` ```json ` and bare ` ``` `); text before,
- *  between, and after fences (and an unterminated trailing fence) is discarded. */
 export const scanFencedBlocks = (text: string): readonly string[] =>
   text.split("\n").reduce(scanLine, { blocks: [], openLength: null, buffer: [] }).blocks;
 
-/** Operator-facing breakdown of what each rung actually saw when recovery fails — for stderr/logs,
- *  never for the fail-closed reasons (which stay generic). Turns an opaque "no candidate" into an
- *  actionable trace: a null structured_output points at a CLI not enforcing `--json-schema`. */
+// Operator-facing trace for stderr/logs (never the fail-closed reasons, which stay generic): e.g. a
+// null structured_output points at a CLI not enforcing --json-schema.
 export const ladderFailureDiagnostics = (input: ExtractInput): string => {
   const native = parseNativeForExtraction(input.native);
   const preview = (s: string): string => {
@@ -220,7 +201,6 @@ export const ladderFailureDiagnostics = (input: ExtractInput): string => {
   return lines.join("\n");
 };
 
-/** Render a non-"ok" ladder outcome as a single human-readable message. */
 export const describeLadderFailure = (outcome: Exclude<LadderOutcome, { kind: "ok" }>): string => {
   switch (outcome.kind) {
     case "error-envelope":
@@ -238,7 +218,7 @@ const okOutcome = (gated: GatedCandidate): LadderOutcome => ({
   candidate: gated.candidate,
 });
 
-/** Run the extraction ladder. Pure aside from an optional `--agent-file` read. */
+// Pure aside from an optional --agent-file read.
 export const extractStructured = (input: ExtractInput): LadderOutcome => {
   const native = parseNativeForExtraction(input.native);
 

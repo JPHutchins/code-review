@@ -131,6 +131,12 @@ on:
         description: Burner model API key with a hard spend cap (exposed to untrusted PR code during the contained phase-2 window)
         required: true
 
+# code-review is pinned here, not exposed as an input: the CLI and this workflow are one system
+# released together, so the @ref the consumer trusts carries its matching CLI. One definition both
+# jobs install from, so a release bump can't skew them. Bumped in the release commit with package.json.
+env:
+  CODE_REVIEW_VERSION: 0.1.0-alpha.22
+
 jobs:
   review:
     if: >-
@@ -181,13 +187,10 @@ jobs:
         with:
           node-version: "22"
 
-      # code-review is pinned here, not exposed as an input: the CLI and this workflow are one system
-      # released together, so the @ref the consumer trusts carries its own matching CLI. Bumped in the
-      # release commit alongside package.json.
       - name: Install code-review + agent CLI
         env:
           CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
-        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@jphutchins/code-review@0.1.0-alpha.22"
+        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # The workflow owns NO ecosystem toolchain/cache (those are `uses:` steps it can't take as
       # inputs); the consumer commits its own composite at ./.github/actions/code-review-setup. Hosts
@@ -452,8 +455,16 @@ jobs:
           # HARD_KILL is the `timeout` SIGTERM deadline = time limit + grace; the grace is the
           # over-budget window in which the hooks keep denying every tool but reading and
           # writing/validating $DRAFT, so a review still finalizing lands before the kill. Durations are
-          # summed in whole seconds (timeout accepts a bare-seconds deadline).
-          dur_to_secs() { case "$1" in *h) echo "$(( ${1%h} * 3600 ))";; *m) echo "$(( ${1%m} * 60 ))";; *s) echo "${1%s}";; *) echo "$1";; esac; }
+          # summed in whole seconds (timeout accepts a bare-seconds deadline). A whole number with an
+          # optional h/m/s suffix; anything else fails loudly rather than crashing $(( )) under set -e.
+          dur_to_secs() {
+            [[ "$1" =~ ^([0-9]+)([hms])?$ ]] || { echo "::error::invalid duration '$1' — use a whole number optionally suffixed h/m/s (e.g. 24m, 90s, 1h)"; exit 1; }
+            case "${BASH_REMATCH[2]}" in
+              h) echo "$(( BASH_REMATCH[1] * 3600 ))" ;;
+              m) echo "$(( BASH_REMATCH[1] * 60 ))" ;;
+              *) echo "${BASH_REMATCH[1]}" ;;
+            esac
+          }
           if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL="$MECHANIC_TIME_LIMIT"; GRACE="$MECHANIC_GRACE"; USD_LIMIT="$MECHANIC_USD"; else AGENT_WALL="$FULL_TIME_LIMIT"; GRACE="$FULL_GRACE"; USD_LIMIT="$FULL_USD"; fi
           HARD_KILL=$(( $(dur_to_secs "$AGENT_WALL") + $(dur_to_secs "$GRACE") ))
 
@@ -667,7 +678,7 @@ jobs:
           node-version: "22"
 
       - name: Install code-review
-        run: npm install -g "@jphutchins/code-review@0.1.0-alpha.22"
+        run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download.

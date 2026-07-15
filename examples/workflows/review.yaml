@@ -13,6 +13,9 @@ concurrency:                 # a newer CI run for the same PR branch cancels an 
   group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
+env:                         # one definition both jobs install from, so the two never skew
+  CODE_REVIEW_VERSION: 0.1.0-alpha.22
+
 jobs:
   # REVIEW — holds the model key + read-only token + locked egress
   review:
@@ -56,7 +59,7 @@ jobs:
           node-version: "22"
 
       # Install the CLI and the deterministic commenter.
-      - run: npm install -g @anthropic-ai/claude-code@2.1.197 @jphutchins/code-review@0.1.0-alpha.22
+      - run: npm install -g @anthropic-ai/claude-code@2.1.197 "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Install project deps so the agent can validate findings — swap this for your ecosystem's
       # install command (this repo is npm-based; a Python project would `uv sync`, etc.).
@@ -284,8 +287,16 @@ jobs:
           # over-budget window in which the hooks keep denying every tool but reading and
           # writing/validating $DRAFT, so a review still finalizing lands before the kill. USD_LIMIT
           # caps spend on the cost axis when a price map prices the run. Durations are summed in whole
-          # seconds. Edit these four literals to retune the routes.
-          dur_to_secs() { case "$1" in *h) echo "$(( ${1%h} * 3600 ))";; *m) echo "$(( ${1%m} * 60 ))";; *s) echo "${1%s}";; *) echo "$1";; esac; }
+          # seconds. Edit the six literals below (time limit, grace, USD cap per route) to retune. A
+          # whole number with an optional h/m/s suffix; anything else fails loudly.
+          dur_to_secs() {
+            [[ "$1" =~ ^([0-9]+)([hms])?$ ]] || { echo "::error::invalid duration '$1' — use a whole number optionally suffixed h/m/s (e.g. 24m, 90s, 1h)"; exit 1; }
+            case "${BASH_REMATCH[2]}" in
+              h) echo "$(( BASH_REMATCH[1] * 3600 ))" ;;
+              m) echo "$(( BASH_REMATCH[1] * 60 ))" ;;
+              *) echo "${BASH_REMATCH[1]}" ;;
+            esac
+          }
           if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; GRACE=3m; USD_LIMIT=0.10; else AGENT_WALL=24m; GRACE=12m; USD_LIMIT=1; fi
           HARD_KILL=$(( $(dur_to_secs "$AGENT_WALL") + $(dur_to_secs "$GRACE") ))
 
@@ -493,7 +504,7 @@ jobs:
         with:
           node-version: "22"
 
-      - run: npm install -g @jphutchins/code-review@0.1.0-alpha.22
+      - run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download.

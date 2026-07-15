@@ -71,6 +71,12 @@ in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the ad
    introducing PR won't review itself — then open a test PR.
 5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
    ([SPEC Appendix A](SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
+6. Optional — add on-demand reviews too: copy
+   [examples/workflows/review-on-comment.yaml](examples/workflows/review-on-comment.yaml) so a
+   write-access user can comment `/code-review [24m] [$1.00] <instructions>` on a PR to review it
+   now, with an optional per-run budget and focus. See the
+   [ChatOps section](examples/workflows/README.md#comment--chatops-trigger-on-demand-reviews) for the
+   security model.
 
 Every model knob is committed step `env` on the workflow's triage and review steps — models,
 efforts, the subagent model, and the tier aliases, right where each is consumed — edited and

@@ -102,9 +102,6 @@ const readJSONOrAbsent = (path: string): unknown => {
   }
 };
 
-/** Read and parse the hook payload delivered on stdin, defensively: a TTY (manual run), absent stdin,
- *  or non-JSON all yield null. The budget hook then decides from its flags alone (no live signal),
- *  never crashing on a missing or malformed payload. */
 const readStdinJSON = (): unknown => {
   if (process.stdin.isTTY) return null;
   const raw = ((): string => {
@@ -170,15 +167,12 @@ const resolveTemplatePath = (templateArg: string | undefined): string =>
 const resolveInlineTemplatePath = (templateArg: string | undefined): string =>
   templateArg ? resolve(templateArg) : bundledPath("templates", "inline.eta");
 
-/** Price-map resolution with explicit provenance: `provided` is a real caller-supplied map,
- *  `absent` is the bundled all-zero example standing in for one (loaded only to satisfy the codec /
- *  computeCost shape). The render layer is TOLD which, so it reports cost as N/A rather than a false
- *  $0.00 when absent — never inferring it from the path. */
+// `provided` = a real caller map; `absent` = the bundled all-zero example. The render layer is told
+// which, so an absent map reports cost as N/A, never a false $0.00.
 type PriceResolution =
   | { readonly kind: "provided"; readonly path: string }
   | { readonly kind: "absent"; readonly path: string };
 
-/** `--prices` defaults to the bundled (all-zero) example prices when omitted, with a warning. */
 const resolvePrices = (pricesArg: string | undefined): PriceResolution => {
   if (pricesArg) return { kind: "provided", path: resolve(pricesArg) };
   process.stderr.write(

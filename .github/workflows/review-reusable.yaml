@@ -116,7 +116,7 @@ on:
       code_review_version:
         type: string
         required: false
-        default: 0.1.0-alpha.21
+        default: 0.1.0-alpha.22
     secrets:
       MODEL_API_KEY:
         description: Burner model API key with a hard spend cap (exposed to untrusted PR code during the contained phase-2 window)

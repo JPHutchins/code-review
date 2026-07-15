@@ -373,6 +373,7 @@ jobs:
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.sonnet_model != '' && inputs.sonnet_model || inputs.model_full }} # internal model picks resolve to
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model != '' && inputs.haiku_model || inputs.model_mechanic }}
           CONCLUSION: ${{ steps.gather.outputs.conclusion }}
+          HEAD_SHA: ${{ inputs.head_sha }}
           FULL_WALL: ${{ inputs.full_wall }}
           FULL_HARD_KILL: ${{ inputs.full_hard_kill }}
           MECHANIC_WALL: ${{ inputs.mechanic_wall }}
@@ -389,21 +390,26 @@ jobs:
           rm -f "$DRAFT" "$DRAFT.nudges"
 
           # Seed $DRAFT with a VALID findings document before the agent runs, so a valid deliverable
-          # exists from turn 0. On a re-review, `seed-draft` decodes the prior
-          # review's embedded findings (from prior_review.json gather staged) and writes them here, so
-          # the agent verifies-and-refines rather than redoing a cold review; on a first review — or
-          # when the prior findings no longer validate — it writes an empty-but-valid scaffold for the
-          # agent to fill. It always exits 0 and prints the mode (prior|empty) chosen. The seed comes
-          # from the bot's OWN prior output (not attacker-controlled PR content) and $DRAFT lives in
-          # $RUNNER_TEMP, so this can't be won by a planted file.
-          SEED_MODE="$(code-review seed-draft --prior prior_review.json --out "$DRAFT")"
-          if [ "$SEED_MODE" = "prior" ]; then
-            SEED_NOTE=" $DRAFT is PRE-SEEDED with the previous review's findings for this PR — treat them as your starting point: re-verify each against the CURRENT diff (drop any now fixed or no longer applicable, keep those that still hold), then add anything new, refining it in place rather than starting over."
-          elif [ "$SEED_MODE" = "empty" ]; then
-            SEED_NOTE=" $DRAFT already holds a valid but EMPTY findings document — populate it as you review; it is a template to fill in, not a file you must create from scratch."
-          else
-            SEED_NOTE=""
-          fi
+          # exists from turn 0. On a re-review, seed-draft decodes the prior review's embedded findings
+          # (from prior_review.json gather staged) so the agent verifies-and-refines rather than redoing
+          # a cold review, and --head-sha lets it tell a same-commit re-review from one with new commits
+          # so the guidance below matches; on a first review, or when the prior findings no longer
+          # validate, it writes an empty-but-valid scaffold. The seed comes from the bot's OWN prior
+          # output (not attacker-controlled PR content) and $DRAFT lives in $RUNNER_TEMP, so a planted
+          # file can't win.
+          SEED_MODE="$(code-review seed-draft --prior prior_review.json --head-sha "$HEAD_SHA" --out "$DRAFT")"
+          case "$SEED_MODE" in
+            prior-same)
+              SEED_NOTE=" $DRAFT is PRE-SEEDED with your previous review of THIS SAME commit — the code under review has not changed since. Use those findings to steer your investigation: reconfirm each still holds (correct any that were wrong or imprecise), then spend the remaining budget hunting for NEW issues the earlier pass missed rather than only re-checking old ones. Refine $DRAFT in place." ;;
+            prior-new)
+              SEED_NOTE=" $DRAFT is PRE-SEEDED with your previous review of an EARLIER commit of this PR; new commits have landed since. Treat those findings as the prior state: for each, decide whether the new commits ADDRESSED it — drop it if fixed or no longer applicable, keep it if it still holds — then review the newly-changed code for issues the earlier pass never saw. Add new findings freely and refine $DRAFT in place." ;;
+            empty-had-prior)
+              SEED_NOTE=" $DRAFT holds a valid but EMPTY findings document to populate as you review. A previous review of this PR exists but its findings could not be pre-loaded here — do a full, fresh review and treat every finding as new." ;;
+            empty)
+              SEED_NOTE=" $DRAFT already holds a valid but EMPTY findings document — populate it as you review; it is a template to fill in, not a file you must create from scratch." ;;
+            *)
+              SEED_NOTE="" ;;
+          esac
 
           # Route + effort are decided once here and stamped into the envelope by `adapt` below,
           # so the comment footer reflects the run instead of re-deriving and risking drift.

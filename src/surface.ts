@@ -53,6 +53,14 @@ export const findingPointer = (
   limit = EMBED_LIMIT,
 ): string => encodeMarker({ schema_version: schemaVersion, findings: [finding] }, jsonUrl, limit);
 
+// null when the marker is absent or holds the all-zeros placeholder (no head SHA was stamped),
+// so callers treat an unknown prior commit as a new-commit re-review rather than asserting a match.
+const ZERO_SHA = "0000000000000000000000000000000000000000";
+export const parseReviewedSha = (body: string): string | null => {
+  const sha = /<!-- reviewed-sha: ([0-9a-fA-F]{7,40}) -->/.exec(body)?.[1]?.toLowerCase();
+  return sha && sha !== ZERO_SHA ? sha : null;
+};
+
 // null when the body carries no base64 marker (e.g. the jsonUrl-link fallback for oversized findings)
 // or the payload isn't valid JSON. Callers validate the result — a prior run may predate the shape.
 export const parseFindingsMarker = (body: string): unknown => {

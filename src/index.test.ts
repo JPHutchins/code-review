@@ -1014,14 +1014,14 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     return p;
   };
 
-  it("seeds $DRAFT from a prior review's embedded findings and reports 'prior'", async () => {
+  it("seeds $DRAFT from a prior review's embedded findings and reports 'prior-new' when no head SHA is given to compare", async () => {
     const prior = writePrior(
       `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}\nold sticky`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
-    expect(stdout.trim()).toBe("prior");
+    expect(stdout.trim()).toBe("prior-new");
     const seeded = JSON.parse(readFileSync(out, "utf-8")) as typeof priorFindings;
     expect(seeded.findings).toHaveLength(1);
     expect(seeded.findings[0]!.title).toBe("Prior finding");
@@ -1034,12 +1034,12 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
   });
 
-  it("seeds an empty valid scaffold and reports 'empty' when the prior review has no marker", async () => {
+  it("reports 'empty-had-prior' when a prior review comment exists but carries no decodable findings marker", async () => {
     const prior = writePrior("<!-- code-review -->\njust prose, no findings marker");
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
-    expect(stdout.trim()).toBe("empty");
+    expect(stdout.trim()).toBe("empty-had-prior");
     const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
       readonly summary: string;
       readonly findings: readonly unknown[];
@@ -1080,7 +1080,7 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(statSync(`${out}.seed`).isFile()).toBe(true);
   });
 
-  it("falls back to the empty scaffold when the prior findings don't validate against the current schema", async () => {
+  it("falls back to the scaffold and reports 'empty-had-prior' when the prior findings don't validate against the current schema", async () => {
     const skillShaped = {
       schema_version: "0.4.0",
       summary: "x",
@@ -1091,7 +1091,7 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
-    expect(stdout.trim()).toBe("empty");
+    expect(stdout.trim()).toBe("empty-had-prior");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
   });
@@ -1111,9 +1111,69 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
       "9.9",
     ]);
     expect(exitCode).toBeNull();
-    expect(stdout.trim()).toBe("empty");
+    expect(stdout.trim()).toBe("empty-had-prior");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
+  });
+
+  const shaA = "a".repeat(40);
+  const shaB = "b".repeat(40);
+  const priorWithSha = (sha: string): string =>
+    writePrior(
+      `<!-- code-review -->\n<!-- reviewed-sha: ${sha} -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+    );
+
+  it("reports 'prior-same' when --head-sha matches the prior review's reviewed-sha", async () => {
+    const prior = priorWithSha(shaA);
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--out",
+      out,
+      "--head-sha",
+      shaA,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-same");
+    expect((JSON.parse(readFileSync(out, "utf-8")) as typeof priorFindings).findings).toHaveLength(
+      1,
+    );
+  });
+
+  it("reports 'prior-new' when --head-sha differs from the prior review's reviewed-sha", async () => {
+    const prior = priorWithSha(shaA);
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--out",
+      out,
+      "--head-sha",
+      shaB,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+  });
+
+  it("reports 'prior-new' when the prior review has no reviewed-sha to compare, even with --head-sha", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--out",
+      out,
+      "--head-sha",
+      shaA,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
   });
 });
 

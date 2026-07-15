@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseFindingsMarker, findingsPointer } from "./surface.js";
+import { parseFindingsMarker, parseReviewedSha, findingsPointer } from "./surface.js";
 import type { Findings } from "./schema.js";
 
 const findings = {
@@ -57,5 +57,21 @@ describe("parseFindingsMarker", () => {
     const first = findingsPointer(findings, undefined);
     const second = findingsPointer({ ...findings, summary: "second" }, undefined);
     expect(parseFindingsMarker(`${first}\n${second}`)).toEqual(findings);
+  });
+});
+
+describe("parseReviewedSha", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+
+  it("extracts the reviewed-sha the comment template embeds, lowercased", () => {
+    expect(parseReviewedSha(`<!-- reviewed-sha: ${sha.toUpperCase()} -->\nsticky`)).toBe(sha);
+  });
+
+  it("returns null when the body carries no reviewed-sha marker", () => {
+    expect(parseReviewedSha("just prose, no marker")).toBeNull();
+  });
+
+  it("returns null for the all-zeros placeholder (no head SHA was stamped)", () => {
+    expect(parseReviewedSha(`<!-- reviewed-sha: ${"0".repeat(40)} -->`)).toBeNull();
   });
 });

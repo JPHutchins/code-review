@@ -129,9 +129,12 @@ this doc.
   whole review, so validation is mandatory either way and the single call is simpler.
 - **Price-map SSOT.** A committed, date-stamped example price map (readers fork it) rather than a
   hard-coded table — prices drift and belong in data, not code.
-- **Incremental vs full review each run, and re-run stacking.** A `<!-- reviewed-sha: … -->` marker
-  enables incremental review over the delta; the sticky *summary* comment is editable (find-and-PATCH)
-  while a fresh *review* is posted per head SHA with the prior bot review dismissed.
+- **Incremental vs full review each run, and re-run stacking.** On a re-review the seed compares the
+  prior comment's `<!-- reviewed-sha: … -->` against the current head to steer the agent — validate the
+  seeded findings and spend the rest of the budget on new ones when the commit is unchanged, or check
+  what the new commits addressed and review the newly-changed code when it moved. The sticky *summary*
+  comment is editable (find-and-PATCH) while a fresh *review* is posted per head SHA with the prior bot
+  review dismissed.
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
 

@@ -6,6 +6,7 @@
 
 import { defineCommand, runMain } from "citty";
 import { copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
 import { render } from "./render.js";
@@ -38,6 +39,9 @@ import {
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import { parseFindingsMarker, parseReviewedSha } from "./surface.js";
 import { post } from "./post.js";
+import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.js";
+import { react, isReaction, REACTIONS } from "./react.js";
+import type { Reaction } from "./react.js";
 import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName, TranscriptTelemetry } from "./adapt.js";
@@ -1357,6 +1361,133 @@ const postCmd = defineCommand({
   },
 });
 
+/** Parse a `--max-duration`/ceiling flag to whole seconds; a bad value is trusted-config error, so
+ *  fail loudly rather than silently disabling the clamp. undefined ⇒ no ceiling. */
+const requireCeilingSec = (raw: string | undefined): number | null => {
+  if (raw === undefined) return null;
+  const ms = parseWallMs(raw);
+  if (ms === null)
+    return fail(`--max-duration must be a duration like 60m, 3600s, or 1h (got "${raw}")`);
+  return Math.floor(ms / 1000);
+};
+
+const requireCeilingUsd = (raw: string | undefined): number | null => {
+  if (raw === undefined) return null;
+  const n = Number.parseFloat(raw.replace(/^\$/, ""));
+  if (!Number.isFinite(n) || n < 0) fail(`--max-usd must be a non-negative number (got "${raw}")`);
+  return n;
+};
+
+const requireMaxInstructions = (raw: string | undefined): number => {
+  if (raw === undefined) return 4000;
+  if (!/^\d+$/.test(raw)) fail(`--max-instructions must be a non-negative integer (got "${raw}")`);
+  return Number.parseInt(raw, 10);
+};
+
+const requirePositiveInt = (raw: string, flag: string): number => {
+  const n = Number.parseInt(raw, 10);
+  return Number.isInteger(n) && n > 0 && /^\d+$/.test(raw)
+    ? n
+    : fail(`${flag} must be a positive integer; got "${raw}"`);
+};
+
+const parseCommandCmd = defineCommand({
+  meta: {
+    name: "parse-command",
+    description:
+      'Resolve a PR\'s head (SHA/branch/repo) from its NUMBER via the API and parse a ChatOps trigger comment ("/code-review [24m] [$1.00] <instructions>") into $GITHUB_OUTPUT lines. The untrusted comment is parsed here in type-safe code, never in workflow bash, and the head is resolved from the trusted PR number, never from the comment text. Emits should_run=false (and nothing else) when the comment is not the trigger, the PR is closed, or resolution fails.',
+  },
+  args: {
+    repo: { type: "string", description: "Repository (owner/name)", required: true },
+    pr: {
+      type: "string",
+      description: "PR number (from github.event.issue.number — trusted event data)",
+      required: true,
+    },
+    "comment-body": {
+      type: "string",
+      description:
+        "The comment body to parse (default: the CODE_REVIEW_COMMENT_BODY env var — the safe way to pass untrusted text without shell interpolation)",
+    },
+    trigger: {
+      type: "string",
+      description: 'Trigger token the comment must begin with (default: "/code-review")',
+    },
+    "max-duration": {
+      type: "string",
+      description:
+        "Ceiling the requested duration is clamped to (e.g. 60m); omit for no clamp — a comment could then request an unbounded wall, so set this",
+    },
+    "max-usd": {
+      type: "string",
+      description: "Ceiling the requested USD budget is clamped to (e.g. 5); omit for no clamp",
+    },
+    "max-instructions": {
+      type: "string",
+      description: "Max characters of free-form instructions kept (default: 4000)",
+    },
+  },
+  run: async ({ args }) => {
+    const body = args["comment-body"] || process.env["CODE_REVIEW_COMMENT_BODY"] || "";
+    const result = await parseCommand({
+      repo: args.repo,
+      prNumber: requirePositiveInt(args.pr, "--pr"),
+      body,
+      options: {
+        trigger: args.trigger || "/code-review",
+        maxDurationSec: requireCeilingSec(args["max-duration"]),
+        maxUsd: requireCeilingUsd(args["max-usd"]),
+        maxInstructionsLen: requireMaxInstructions(args["max-instructions"]),
+      },
+    });
+    if (result.kind === "skip") {
+      process.stderr.write(`code-review parse-command: not running — ${result.reason}\n`);
+      process.stdout.write(renderCommandOutputs(result, "UNUSED"));
+      return;
+    }
+    for (const note of result.args.notes)
+      process.stderr.write(`code-review parse-command: ${note}\n`);
+    const delim = safeHeredocDelim(result.args.instructions, () => randomBytes(16).toString("hex"));
+    process.stdout.write(renderCommandOutputs(result, delim));
+  },
+});
+
+const requireReaction = (name: string): Reaction =>
+  isReaction(name) ? name : fail(`Unknown reaction "${name}" — one of: ${REACTIONS.join(", ")}`);
+
+const reactCmd = defineCommand({
+  meta: {
+    name: "react",
+    description:
+      "Add and/or remove a GitHub reaction on a PR/issue comment — the ChatOps acknowledgement (👀 on receipt, swapped to 🚀 on completion). Cosmetic: warns and exits 0 on any API error so a reaction never fails the job.",
+  },
+  args: {
+    repo: { type: "string", description: "Repository (owner/name)", required: true },
+    "comment-id": {
+      type: "string",
+      description: "Comment id to react on (github.event.comment.id)",
+      required: true,
+    },
+    add: { type: "string", description: `Reaction to add: ${REACTIONS.join(" | ")}` },
+    remove: {
+      type: "string",
+      description: "Reaction (of the token owner) to remove after adding — for the 👀→🚀 swap",
+    },
+  },
+  run: async ({ args }) => {
+    const commentId = requirePositiveInt(args["comment-id"], "--comment-id");
+    const add = args.add ? requireReaction(args.add) : undefined;
+    const remove = args.remove ? requireReaction(args.remove) : undefined;
+    if (add === undefined && remove === undefined)
+      fail("react: nothing to do — pass --add and/or --remove");
+    await react({ repo: args.repo, commentId, add, remove }).catch((err: unknown) =>
+      process.stderr.write(
+        `code-review react: reaction update failed (${errMsg(err)}) — continuing (reactions are cosmetic)\n`,
+      ),
+    );
+  },
+});
+
 export const main = defineCommand({
   meta: {
     name: "code-review",
@@ -1365,6 +1496,8 @@ export const main = defineCommand({
   },
   subCommands: {
     gather: gatherCmd,
+    "parse-command": parseCommandCmd,
+    react: reactCmd,
     render: renderCmd,
     inline: inlineCmd,
     post: postCmd,

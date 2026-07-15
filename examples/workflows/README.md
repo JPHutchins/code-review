@@ -94,6 +94,61 @@ deliberately owns **no** ecosystem toolchain or cache action:
   be reachable when harden-runner arms — run `egress_policy: audit` first to discover them, then pin
   via `extra_endpoints` and switch back to `block`.
 
+## Comment / ChatOps trigger (on-demand reviews)
+
+Beyond reviewing on CI completion, you can let people **request a review from a PR comment**, with
+optional in-comment arguments — a bigger budget for a thorny PR, a one-off focus, or both:
+
+```
+/code-review 24m $2.00 I'm especially concerned about docstring/README/inline-comment sync — audit that.
+```
+
+`/code-review` alone runs a normal full review. This is **additive** — the pipeline is the same
+trigger-agnostic reusable workflow; comment-triggering is just a consumer-side trigger recipe plus a
+trusted gate. Copy [`review-on-comment.yaml`](review-on-comment.yaml) into `.github/workflows/` (run
+it alongside `review.yaml`, or on its own).
+
+**Argument grammar** — an optional leading duration and/or dollar amount, in either order, then
+free-form instructions (a `/` slash command, like prow's `/lgtm` or `slash-command-dispatch`, not an
+`@mention` — there is no `code-review` account to notify, and `/` never mislinks):
+
+| token | example | effect |
+| --- | --- | --- |
+| duration | `24m`, `90s`, `1h` | overrides the full-review wall for this run, **clamped** to `--max-duration` |
+| dollar amount | `$2.00`, `$0.50` | overrides the USD spend cap for this run, **clamped** to `--max-usd` |
+| everything else | `audit the error paths` | appended to the review agent's system prompt as guidance |
+
+A duration/dollar token is only recognized when it **leads** — `spend 24m on it` keeps `24m` as prose.
+`code-review parse-command` parses this in type-safe code (not workflow bash), clamps to the ceilings
+you set, resolves the PR head from the comment's **PR number via the API** (never a SHA in the
+comment), and emits the outputs the review job consumes.
+
+**Acknowledgement** — the trusted gate reacts 👀 to your comment on receipt; on completion the `ack`
+job swaps it for 🚀 (review posted — read the sticky summary) or 😕 (the run failed). The review job
+itself is read-only and runs untrusted PR code, so it can't post progress; the sticky comment is the
+result, exactly as with the CI trigger.
+
+**Security model** — comment-triggering opens surfaces the CI trigger doesn't, so the recipe closes
+each in the *trusted* default-branch context (`issue_comment` runs there, never in PR-fork context):
+
+- **Authorization.** The gate's `if:` requires `author_association ∈ {OWNER, MEMBER, COLLABORATOR}` —
+  without it, any stranger on a public PR could drain your model budget or steer the agent. (Same
+  posture as `anthropics/claude-code-action`.)
+- **Cost is bounded.** `parse-command --max-duration` / `--max-usd` clamp what a comment can request;
+  a commenter may lower cost or raise it *within your ceiling*, never unbounded. The USD cap still
+  applies on top (with a committed `.github/prices.json`).
+- **`extra_instructions` is a trust boundary.** It flows into the agent's system prompt and **bypasses
+  the diff security triage** (which screens the diff, not the comment). It's acceptable *only* because
+  it's gated to write-access users — who can already push code the agent runs — and it's length-capped
+  (`--max-instructions`, default 4000). It does not override the schema, safety, or single-writer rules.
+- **Head resolved from the API, never the comment.** `parse-command` resolves the head SHA/branch from
+  the trusted PR number, so a comment can't point the review at arbitrary content.
+- **No self-triggering.** The gate ignores bot comments (`comment.user.type != 'Bot'`), and the bot's
+  own sticky never begins with `/code-review`.
+
+The gate/ack jobs run only trusted code (your workflow + the CLI + the GitHub API), never PR code, so
+the egress lock stays where untrusted code executes — the reusable workflow's review job.
+
 ## Setup (both paths)
 
 1. **Add the workflow.** Copy-paste: drop `review.yaml` into `.github/workflows/`. Reusable: add the

@@ -1140,6 +1140,10 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect((JSON.parse(readFileSync(out, "utf-8")) as typeof priorFindings).findings).toHaveLength(
       1,
     );
+    // The seeded path drops the sidecar marker after the seed, same as the scaffold path, so the
+    // fan-out floor can tell the untouched seed from an agent-written draft.
+    expect(statSync(`${out}.seed`).isFile()).toBe(true);
+    expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
   });
 
   it("reports 'prior-new' when --head-sha differs from the prior review's reviewed-sha", async () => {

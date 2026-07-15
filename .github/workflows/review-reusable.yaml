@@ -339,26 +339,15 @@ jobs:
           jq -c . triage.parsed.json
 
           PARSED_SAFE=$(jq -r '.safe' triage.parsed.json)
+          REASONS=$(jq -r '.reasons' triage.parsed.json)
           if [ "$PARSED_SAFE" = "true" ]; then
             SAFE=true
-            REASONS=$(jq -r '.reasons' triage.parsed.json)
           elif [ "$PARSED_SAFE" = "false" ]; then
             SAFE=false
-            REASONS=$(jq -r '.reasons' triage.parsed.json)
           else
             SAFE=false
             REASONS="Triage produced a non-boolean safe value (\"$PARSED_SAFE\") — failing closed."
           fi
-
-      # Best-effort capture of the triage agent's full session transcript (prompts + tool results —
-      # the PR code is already public; no secrets live here) for advisory auditability only — it
-      # never affects the review, so a copy miss (e.g. no transcript dir on a skip) must not fail
-      # the job.
-      - name: Capture triage transcript
-        if: ${{ always() && steps.gather.outputs.skip != 'true' }}
-        run: |
-          mkdir -p transcripts/triage
-          cp -r "$HOME/.claude/projects/." transcripts/triage/ 2>/dev/null || true
 
       # bypassPermissions is safe here: throwaway runner, read-only token.
       - name: Phase 2 — agentic review
@@ -426,8 +415,9 @@ jobs:
           if [ -n "${SUBAGENT_MODEL:-}" ]; then export CLAUDE_CODE_SUBAGENT_MODEL="$SUBAGENT_MODEL"; fi
           echo "::group::Route: $CONCLUSION → $ROUTE (effort: $EFFORT)"
 
-          if ! git apply --3way pr.diff 2>/dev/null && ! git apply pr.diff 2>/dev/null; then
-            echo "::warning::Could not apply pr.diff to the checked-out base — skipping the review rather than running it against an unmodified tree"
+          APPLY_ERR="$RUNNER_TEMP/git-apply.err"
+          if ! git apply --3way pr.diff 2>>"$APPLY_ERR" && ! git apply pr.diff 2>>"$APPLY_ERR"; then
+            echo "::warning::Could not apply pr.diff to the checked-out base — skipping the review rather than running it against an unmodified tree. git apply: $(tr '\n' ' ' <"$APPLY_ERR")"
             mkdir -p findings
             jq -n \
               '{schema_version: "0.4.0", summary: "### ⚠️ Could not apply the diff\n\nThe PR diff could not be applied to the checked-out base commit, so the review was skipped rather than run against an unmodified tree. See workflow logs.", verdict: "comment", findings: []}' \
@@ -507,6 +497,8 @@ jobs:
           set -e
           if [ "$AGENT_RC" = "124" ] || [ "$AGENT_RC" = "137" ]; then
             echo "::warning::review agent hit its $HARD_KILL hard limit — proceeding with whatever draft it emitted"
+          elif [ "$AGENT_RC" != "0" ]; then
+            echo "::warning::review agent exited non-zero ($AGENT_RC) without hitting the hard limit (e.g. API error, auth, crash) — proceeding with whatever it emitted; adapt recovers the draft if it still validates, else posts a 'did not complete' notice"
           fi
 
           # --agent-file prefers the agent's self-validated $DRAFT (outside the worktree, so a PR-planted
@@ -532,10 +524,11 @@ jobs:
           mv findings/findings.validated.json findings/findings.json
           echo "::endgroup::"
 
-      # Best-effort capture of the review agent's full session transcript — same rationale as the
-      # triage capture above; this run also holds the triage transcript already copied into
-      # transcripts/triage, so transcripts/review is a superset.
-      - name: Capture review transcript
+      # Best-effort capture of the whole session transcript tree (both the triage and review agents —
+      # the PR code is already public; no secrets live here) for advisory auditability only. Runs on
+      # always() so a skipped/failed Phase 2 still preserves the triage transcript; a copy miss must
+      # never fail the job.
+      - name: Capture session transcripts
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         run: |
           mkdir -p transcripts/review

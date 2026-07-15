@@ -15,6 +15,7 @@ import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
+import { errMsg, tryParseJson, asRecord } from "./util.js";
 
 export interface PostInput {
   readonly repo: string;
@@ -124,7 +125,7 @@ const loadTestReport = (path: string): TestSummary | undefined => {
     raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
   } catch (err) {
     process.stderr.write(
-      `Warning: could not read test report at ${path}: ${err instanceof Error ? err.message : String(err)} — omitting test panel\n`,
+      `Warning: could not read test report at ${path}: ${errMsg(err)} — omitting test panel\n`,
     );
     return undefined;
   }
@@ -139,12 +140,9 @@ const loadTestReport = (path: string): TestSummary | undefined => {
 };
 
 const parseHtmlUrl = (raw: string): string | undefined => {
-  try {
-    const parsed = JSON.parse(raw) as { html_url?: unknown };
-    return typeof parsed.html_url === "string" ? parsed.html_url : undefined;
-  } catch {
-    return undefined;
-  }
+  const parsed = tryParseJson(raw);
+  const htmlUrl = parsed.ok ? asRecord(parsed.value)?.["html_url"] : undefined;
+  return typeof htmlUrl === "string" ? htmlUrl : undefined;
 };
 
 const commentPayload = (c: InlineComment): Record<string, unknown> => ({
@@ -191,7 +189,7 @@ const postInlineReview = async (
     // A body-only review that itself fails (no comments) is a genuine error and propagates.
     if (comments.length === 0) throw err;
     process.stderr.write(
-      `Warning: the batched inline review on PR #${String(prNumber)} was rejected (${err instanceof Error ? err.message : String(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
+      `Warning: the batched inline review on PR #${String(prNumber)} was rejected (${errMsg(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
     );
     const url = parseHtmlUrl(await ghApi(reviewsEndpoint, reviewBody(false)));
     const commentsEndpoint = [`repos/${repo}/pulls/${String(prNumber)}/comments`, "--input", "-"];
@@ -205,7 +203,7 @@ const postInlineReview = async (
         const finding = inDiff[i];
         if (finding) unposted.push(finding);
         process.stderr.write(
-          `Warning: inline comment on ${c.path}:${String(c.line)} rejected (${e instanceof Error ? e.message : String(e)}) — surfacing that finding in the sticky instead (issue #57)\n`,
+          `Warning: inline comment on ${c.path}:${String(c.line)} rejected (${errMsg(e)}) — surfacing that finding in the sticky instead (issue #57)\n`,
         );
       }
     }
@@ -241,14 +239,11 @@ const findBotComment = async (
 const parseCommentRef = (
   raw: string,
 ): { readonly id: number; readonly html_url: string } | null => {
-  try {
-    const parsed = JSON.parse(raw) as { id?: unknown; html_url?: unknown };
-    return typeof parsed.id === "number" && typeof parsed.html_url === "string"
-      ? { id: parsed.id, html_url: parsed.html_url }
-      : null;
-  } catch {
-    return null;
-  }
+  const parsed = tryParseJson(raw);
+  const rec = parsed.ok ? asRecord(parsed.value) : null;
+  const id = rec?.["id"];
+  const html_url = rec?.["html_url"];
+  return typeof id === "number" && typeof html_url === "string" ? { id, html_url } : null;
 };
 
 const patchComment = async (
@@ -353,7 +348,7 @@ const dismissReviews = async (
       );
     } catch (err) {
       process.stderr.write(
-        `Warning: failed to dismiss prior review #${String(id)} on PR #${String(prNumber)}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `Warning: failed to dismiss prior review #${String(id)} on PR #${String(prNumber)}: ${errMsg(err)}\n`,
       );
     }
   }
@@ -441,7 +436,7 @@ const listPriorBotCommentIds = async (
     ]);
   } catch (err) {
     process.stderr.write(
-      `Warning: could not list review threads to minimize stale comments on PR #${String(prNumber)}: ${err instanceof Error ? err.message : String(err)}\n`,
+      `Warning: could not list review threads to minimize stale comments on PR #${String(prNumber)}: ${errMsg(err)}\n`,
     );
     return [];
   }
@@ -467,7 +462,7 @@ const minimizeComments = async (
       minimized += 1;
     } catch (err) {
       process.stderr.write(
-        `Warning: failed to minimize a stale review comment on PR #${String(prNumber)}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `Warning: failed to minimize a stale review comment on PR #${String(prNumber)}: ${errMsg(err)}\n`,
       );
     }
   }
@@ -714,7 +709,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       );
     } catch (err) {
       process.stderr.write(
-        `Warning: failed to update the sticky summary after the review: ${err instanceof Error ? err.message : String(err)}\n`,
+        `Warning: failed to update the sticky summary after the review: ${errMsg(err)}\n`,
       );
     }
   }

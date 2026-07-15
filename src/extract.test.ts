@@ -168,6 +168,28 @@ describe("extractStructured — rung order (ruling 1)", () => {
     expect(outcome.kind).toBe("ok");
   });
 
+  it("the last-valid fallback recovers findings when --agent-file is invalid, and wins over the native envelope", () => {
+    const native = {
+      structured_output: {
+        schema_version: "0.4.0",
+        summary: "from structured_output — the last-valid fallback must win over this",
+        verdict: "approve",
+        findings: [],
+      },
+    };
+    const outcome = extractStructured({
+      kind: "findings",
+      native,
+      agentFilePath: fixturePath("f08-prose-only.json"), // truncated/invalid — parse failure
+      agentFileFallbackPath: fixturePath("f11-agent-file.json"), // last snapshot that validated
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect((outcome.candidate as { summary: string }).summary).toBe(
+      "Authoritative: from the agent-written file.",
+    );
+  });
+
   it("--agent-file is a documented no-op for triage — a valid file does not override the ladder", () => {
     const outcome = extractStructured({
       kind: "triage",

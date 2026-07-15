@@ -70,6 +70,9 @@ export interface RunMeta {
   readonly route?: string;
   readonly effort?: string;
   readonly transcriptFallback?: () => TranscriptTelemetry;
+  // Last valid draft snapshot, recovered when the live agent-file no longer validates (e.g. a
+  // wall-kill truncated it).
+  readonly agentFileFallbackPath?: string;
 }
 
 // Every ladder outcome maps onto a findings result, never a fatal one — a findings miss must not
@@ -78,8 +81,17 @@ type FindingsOutcome =
   | { readonly kind: "ok"; readonly version: string; readonly findings: Findings }
   | { readonly kind: "telemetry-only"; readonly reason: string };
 
-const findingsOutcome = (native: unknown, agentFilePath: string | undefined): FindingsOutcome => {
-  const ladder = extractStructured({ kind: "findings", native, agentFilePath });
+const findingsOutcome = (
+  native: unknown,
+  agentFilePath: string | undefined,
+  agentFileFallbackPath: string | undefined,
+): FindingsOutcome => {
+  const ladder = extractStructured({
+    kind: "findings",
+    native,
+    agentFilePath,
+    agentFileFallbackPath,
+  });
   if (ladder.kind !== "ok")
     return { kind: "telemetry-only", reason: describeLadderFailure(ladder) };
   // Re-resolving materializes the typed, normalized value the ladder deliberately didn't keep.
@@ -170,8 +182,9 @@ const buildEnvelope = (
   telemetry: Telemetry,
   native: unknown,
   agentFilePath: string | undefined,
+  agentFileFallbackPath: string | undefined,
 ): ResultEnvelope => {
-  const outcome = findingsOutcome(native, agentFilePath);
+  const outcome = findingsOutcome(native, agentFilePath, agentFileFallbackPath);
   switch (outcome.kind) {
     case "ok":
       return { schema_version: outcome.version, findings: outcome.findings, ...telemetry };
@@ -197,11 +210,25 @@ export const adapt = (
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exhaustive by design; AdapterName grows (e.g. "opencode") without collapsing this switch to an if
     case "claude-code": {
       if (native === undefined || native === null)
-        return right(buildEnvelope(absentTelemetry(meta), undefined, agentFilePath));
+        return right(
+          buildEnvelope(
+            absentTelemetry(meta),
+            undefined,
+            agentFilePath,
+            meta.agentFileFallbackPath,
+          ),
+        );
       const decoded = ClaudeCodeEnvelopeCodec.decode(native);
       if (decoded._tag === "Left")
         return left("native envelope does not match the Claude Code output shape");
-      return right(buildEnvelope(nativeTelemetry(decoded.right, meta), native, agentFilePath));
+      return right(
+        buildEnvelope(
+          nativeTelemetry(decoded.right, meta),
+          native,
+          agentFilePath,
+          meta.agentFileFallbackPath,
+        ),
+      );
     }
   }
 };

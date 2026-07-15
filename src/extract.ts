@@ -15,6 +15,8 @@ export interface ExtractInput {
   readonly kind: ExtractKind;
   // findings only — a documented no-op for triage.
   readonly agentFilePath?: string;
+  // Last valid draft snapshot, tried after agentFilePath and before the native envelope.
+  readonly agentFileFallbackPath?: string;
   readonly native: unknown;
 }
 
@@ -177,6 +179,10 @@ export const ladderFailureDiagnostics = (input: ExtractInput): string => {
         ? "agent-file rung: no --agent-file given"
         : `agent-file rung: ${input.agentFilePath} did not validate (or was unreadable)`,
     );
+    if (input.agentFileFallbackPath !== undefined)
+      lines.push(
+        `last-valid rung: ${input.agentFileFallbackPath} did not validate (or was absent)`,
+      );
   }
   lines.push(
     isNullish(native.structuredOutput)
@@ -216,9 +222,12 @@ export const extractStructured = (input: ExtractInput): LadderOutcome => {
     return { kind: "error-envelope", detail: describeErrorEnvelope(native) };
   }
 
-  if (input.kind === "findings" && input.agentFilePath !== undefined) {
-    const fromFile = candidateFromJsonText(input.kind, readFileOrNull(input.agentFilePath));
-    if (fromFile) return okOutcome(fromFile);
+  if (input.kind === "findings") {
+    for (const path of [input.agentFilePath, input.agentFileFallbackPath]) {
+      if (path === undefined) continue;
+      const fromFile = candidateFromJsonText(input.kind, readFileOrNull(path));
+      if (fromFile) return okOutcome(fromFile);
+    }
   }
 
   if (native.structuredOutput !== undefined) {

@@ -1,6 +1,6 @@
 // Pure — the CLI (index.ts) owns IO and degrades any error to an allow-everything no-op.
 
-import { basename } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 
 import { shellQuote } from "./stop-gate.js";
 import { asRecord } from "./util.js";
@@ -156,6 +156,15 @@ export const singleWriterMessage = (draftPath: string): string =>
 
 // Written AFTER the seed so its mtime bounds the seed's; the convention is shared with mainHasWrittenDraft.
 export const seedMarkerPath = (draftPath: string): string => `${draftPath}.seed`;
+
+// Holds only ever a document that passed the extraction ladder: the budget hook snapshots the draft
+// here whenever it validates, so a wall-kill that leaves the live draft truncated still recovers the
+// last valid state (down to the seed) instead of posting "did not complete". The postfix goes before
+// the extension so the snapshot keeps the draft's real type (findings-draft.last-valid.json).
+export const lastValidPath = (draftPath: string): string => {
+  const ext = extname(draftPath);
+  return join(dirname(draftPath), `${basename(draftPath, ext)}.last-valid${ext}`);
+};
 
 // mtime, not content: a rewrite that reproduces the seed bytes still counts as agent-written.
 export const mainHasWrittenDraft = (

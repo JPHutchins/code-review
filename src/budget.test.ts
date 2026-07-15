@@ -9,6 +9,7 @@ import {
   forceBackgroundSpawn,
   mainHasWrittenDraft,
   seedMarkerPath,
+  lastValidPath,
   evaluateBudgetHook,
   parseWallMs,
   parseFraction,
@@ -471,6 +472,15 @@ describe("mainHasWrittenDraft (fan-out floor)", () => {
 describe("seedMarkerPath", () => {
   it("derives the sidecar beside the draft (the seed-draft ↔ budget-hook convention)", () => {
     expect(seedMarkerPath("/work/findings-draft.json")).toBe("/work/findings-draft.json.seed");
+  });
+});
+
+describe("lastValidPath", () => {
+  it("inserts the postfix before the real extension so the snapshot stays a .json file", () => {
+    expect(lastValidPath("/work/findings-draft.json")).toBe("/work/findings-draft.last-valid.json");
+  });
+  it("appends the postfix when the draft has no extension", () => {
+    expect(lastValidPath("/work/findings-draft")).toBe("/work/findings-draft.last-valid");
   });
 });
 

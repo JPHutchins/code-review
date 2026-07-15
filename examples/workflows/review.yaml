@@ -232,7 +232,7 @@ jobs:
           # file before invoking the agent so a leftover from a prior run is never mistaken for this
           # run's self-validated output.
           DRAFT="$RUNNER_TEMP/findings-draft.json"
-          rm -f "$DRAFT" "$DRAFT.nudges"
+          rm -f "$DRAFT" "$DRAFT.nudges" "$DRAFT.seed" "${DRAFT%.json}.last-valid.json"
 
           # Seed $DRAFT with a VALID findings document before the agent runs, so a valid deliverable
           # exists from turn 0. On a re-review, seed-draft decodes the prior review's embedded findings
@@ -352,16 +352,19 @@ jobs:
           fi
 
           # --agent-file prefers the agent's self-validated $DRAFT (outside the worktree, so a PR-planted
-          # findings-draft.json can't win) over parsing its free text. --transcript refills per-model
-          # spend from the session transcript when a wall-kill left envelope.json empty (else cost reads
-          # $0.00); pick the newest main .jsonl, excluding subagent files.
+          # findings-draft.json can't win) over parsing its free text. --agent-file-fallback is the
+          # last-valid snapshot the budget hook wrote whenever $DRAFT validated during the run:
+          # a wall-kill that leaves $DRAFT truncated then recovers the last valid state (down to the
+          # seed) instead of "did not complete". --transcript refills per-model spend from the session
+          # transcript when a wall-kill left envelope.json empty (else cost reads $0.00); pick the newest
+          # main .jsonl, excluding subagent files.
           REVIEW_TRANSCRIPT="$(find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
           TRANSCRIPT_ARGS=()
           if [ -n "$REVIEW_TRANSCRIPT" ]; then
             TRANSCRIPT_ARGS=(--transcript "$REVIEW_TRANSCRIPT")
           fi
           mkdir -p findings
-          code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" --route "$ROUTE" --effort "$EFFORT" "${TRANSCRIPT_ARGS[@]}" >findings/envelope.json
+          code-review adapt envelope.json --adapter claude-code --agent-file "$DRAFT" --agent-file-fallback "${DRAFT%.json}.last-valid.json" --route "$ROUTE" --effort "$EFFORT" "${TRANSCRIPT_ARGS[@]}" >findings/envelope.json
           jq -c '.findings' findings/envelope.json >findings/findings.json
 
           # Discard the agent's edits and restore the clean PR-head snapshot — `--hard` doesn't

@@ -229,7 +229,7 @@ jobs:
       # npm install above — so the allowlist must cover EVERY host the job contacts, not just the
       # agent's traffic. Run egress-policy: audit once to discover the real set, then pin to block.
       - name: Lock network egress
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
         with:
           egress-policy: ${{ inputs.egress_policy }}
           allowed-endpoints: >
@@ -681,7 +681,7 @@ jobs:
       # discover with egress-policy: audit), the commenter's host set is fixed and fully known, and
       # this job holds the write token. It must never run unenforced, so it ignores inputs.egress_policy.
       - name: Lock network egress
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
         with:
           egress-policy: block
           allowed-endpoints: >

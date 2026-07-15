@@ -53,13 +53,13 @@ import {
   stopHookSettings,
 } from "./stop-gate.js";
 import { composeReviewSettings } from "./settings.js";
+import { errMsg, tryParseJson } from "./util.js";
 
 const readJSON = (path: string): unknown => {
   try {
     return JSON.parse(readFileSync(resolve(path), "utf-8")) as unknown;
   } catch (err) {
-    fail(`Cannot read ${path}: ${err instanceof Error ? err.message : String(err)}`);
-    throw new Error("unreachable", { cause: err }); // fail() always exits
+    return fail(`Cannot read ${path}: ${errMsg(err)}`);
   }
 };
 
@@ -77,7 +77,7 @@ const readJSONOrAbsent = (path: string): unknown => {
     try {
       return { text: readFileSync(resolve(path), "utf-8") };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      return { error: errMsg(err) };
     }
   })();
   if ("error" in read) {
@@ -96,7 +96,7 @@ const readJSONOrAbsent = (path: string): unknown => {
     return JSON.parse(read.text) as unknown;
   } catch (err) {
     process.stderr.write(
-      `code-review: native envelope ${path} is not valid JSON (${err instanceof Error ? err.message : String(err)}) — proceeding with no native telemetry\n`,
+      `code-review: native envelope ${path} is not valid JSON (${errMsg(err)}) — proceeding with no native telemetry\n`,
     );
     return undefined;
   }
@@ -112,20 +112,16 @@ const readStdinJSON = (): unknown => {
     }
   })();
   if (raw.trim() === "") return null;
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return null;
-  }
+  const parsed = tryParseJson(raw);
+  return parsed.ok ? parsed.value : null;
 };
 
 const decode = <A>(either: Either<unknown, A>, label: string): A => {
   try {
     return unsafeUnwrap(either);
   } catch {
-    fail(`${label} does not match expected shape`);
+    return fail(`${label} does not match expected shape`);
   }
-  throw new Error("unreachable"); // fail() always exits
 };
 
 /** Unwrap an adapter's Either, surfacing its own message rather than a generic one. */
@@ -134,9 +130,8 @@ const unwrapAdapt = <A>(either: Either<string, A>): A => {
     if (either._tag === "Left") throw new Error(either.left);
     return either.right;
   } catch (err) {
-    fail(err instanceof Error ? err.message : String(err));
+    return fail(errMsg(err));
   }
-  throw new Error("unreachable"); // fail() always exits
 };
 
 /** Telemetry from a session transcript tree (main + subagents) for the true wall + turns the native
@@ -483,9 +478,7 @@ const budgetHookCmd = defineCommand({
       });
       process.stdout.write(`${JSON.stringify(output)}\n`);
     } catch (err) {
-      process.stderr.write(
-        `code-review budget-hook: degrading to no-op — ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+      process.stderr.write(`code-review budget-hook: degrading to no-op — ${errMsg(err)}\n`);
       process.stdout.write("{}\n");
     }
   },
@@ -736,7 +729,7 @@ const seedDraftCmd = defineCommand({
         writeFileSync(seedMarkerPath(outPath), "code-review seed marker\n");
       } catch (err) {
         process.stderr.write(
-          `Warning: could not write the seed marker beside ${outPath} (${err instanceof Error ? err.message : String(err)}) — the seeded draft will count as agent-written\n`,
+          `Warning: could not write the seed marker beside ${outPath} (${errMsg(err)}) — the seeded draft will count as agent-written\n`,
         );
       }
     };
@@ -753,7 +746,7 @@ const seedDraftCmd = defineCommand({
         // The scaffold write itself failed — report "none" (not "empty"), so the workflow doesn't
         // tell the agent a scaffold exists that isn't there; the agent writes $DRAFT itself.
         process.stderr.write(
-          `Warning: could not write the seed scaffold to ${outPath} (${err instanceof Error ? err.message : String(err)}) — the agent will create $DRAFT itself\n`,
+          `Warning: could not write the seed scaffold to ${outPath} (${errMsg(err)}) — the agent will create $DRAFT itself\n`,
         );
         process.stdout.write("none\n");
       }
@@ -797,7 +790,7 @@ const seedDraftCmd = defineCommand({
         return true;
       } catch (err) {
         process.stderr.write(
-          `Warning: could not seed from the prior review (${err instanceof Error ? err.message : String(err)}) — falling back to the empty scaffold\n`,
+          `Warning: could not seed from the prior review (${errMsg(err)}) — falling back to the empty scaffold\n`,
         );
         return false;
       }
@@ -871,13 +864,11 @@ const adaptCmd = defineCommand({
 
 const isExtractSchemaKind = (s: string): s is ExtractKind => s === "findings" || s === "triage";
 
-/** Narrow to a schema kind the extraction ladder supports (no "prices" — unlike print-schema's),
- *  or fail with a clear message (never falls through). */
-const requireExtractSchemaKind = (name: string): ExtractKind => {
-  if (isExtractSchemaKind(name)) return name;
-  fail(`Unknown kind "${name}" for extract — expected one of: findings, triage`);
-  throw new Error("unreachable"); // fail() always exits
-};
+// no "prices" — unlike print-schema's kinds.
+const requireExtractSchemaKind = (name: string): ExtractKind =>
+  isExtractSchemaKind(name)
+    ? name
+    : fail(`Unknown kind "${name}" for extract — expected one of: findings, triage`);
 
 /** Fail-closed triage synthesized when the ladder can't recover a validated triage verdict — never
  *  defaults to safe. */
@@ -1011,31 +1002,23 @@ const validatePatchesCmd = defineCommand({
   },
 });
 
-/** Narrow to a known adapter name, or fail with a clear message (never falls through). */
-const requireAdapterName = (name: string): AdapterName => {
-  if (isAdapterName(name)) return name;
-  fail(`Unknown adapter "${name}" — supported: claude-code`);
-  throw new Error("unreachable"); // fail() always exits
-};
+const requireAdapterName = (name: string): AdapterName =>
+  isAdapterName(name) ? name : fail(`Unknown adapter "${name}" — supported: claude-code`);
 
 const isSchemaKind = (s: string): s is SchemaKind =>
   s === "findings" || s === "triage" || s === "prices";
 
-/** Narrow to a known schema kind, or fail with a clear message (never falls through). */
-const requireSchemaKind = (name: string): SchemaKind => {
-  if (isSchemaKind(name)) return name;
-  fail(`Unknown schema "${name}" — expected one of: findings, triage, prices`);
-  throw new Error("unreachable"); // fail() always exits
-};
+const requireSchemaKind = (name: string): SchemaKind =>
+  isSchemaKind(name)
+    ? name
+    : fail(`Unknown schema "${name}" — expected one of: findings, triage, prices`);
 
-/** Resolve a bundled schema path via the registry, or fail listing what's supported. */
 const requireSchemaPath = (kind: SchemaKind, version: string | undefined): string => {
   try {
     return schemaPathFor(kind, version);
   } catch (err) {
-    fail(err instanceof Error ? err.message : String(err));
+    return fail(errMsg(err));
   }
-  throw new Error("unreachable"); // fail() always exits
 };
 
 const printSchemaCmd = defineCommand({
@@ -1169,7 +1152,7 @@ const stopGateCmd = defineCommand({
         bumpNudges(counterPath, nudges);
       } catch (err) {
         process.stderr.write(
-          `stop-gate: cannot persist nudge counter at ${counterPath} → allowing to avoid an unbounded block loop: ${err instanceof Error ? err.message : String(err)}\n`,
+          `stop-gate: cannot persist nudge counter at ${counterPath} → allowing to avoid an unbounded block loop: ${errMsg(err)}\n`,
         );
         return;
       }

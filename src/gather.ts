@@ -7,6 +7,7 @@ import * as t from "io-ts";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
+import { errMsg } from "./util.js";
 
 export interface GatherInput {
   readonly repo: string;
@@ -136,7 +137,7 @@ const downloadFailingJobLogs = async (
       writeFileSync(join(outDir, `job_${String(job.id)}.log`), log);
     } catch (err) {
       process.stderr.write(
-        `Warning: failed to download logs for job ${String(job.id)}: ${err instanceof Error ? err.message : String(err)} — continuing with the logs retrieved so far\n`,
+        `Warning: failed to download logs for job ${String(job.id)}: ${errMsg(err)} — continuing with the logs retrieved so far\n`,
       );
     }
   }

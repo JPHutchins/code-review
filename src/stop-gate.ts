@@ -4,6 +4,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { validateAgainstSchema } from "./validate.js";
+import { errMsg } from "./util.js";
 
 // Distinguishes an UNREADABLE file (EACCES/EISDIR) from an INVALID one — "does not validate" is a
 // lie when the file could not even be read.
@@ -73,7 +74,7 @@ export const draftState = (
     if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
       return { kind: "missing" };
     }
-    return { kind: "unreadable", error: err instanceof Error ? err.message : String(err) };
+    return { kind: "unreadable", error: errMsg(err) };
   }
   let parsed: unknown;
   try {
@@ -81,20 +82,20 @@ export const draftState = (
   } catch (err) {
     return {
       kind: "invalid",
-      errors: [`not valid JSON: ${err instanceof Error ? err.message : String(err)}`],
+      errors: [`not valid JSON: ${errMsg(err)}`],
     };
   }
   let schemaPath: string;
   try {
     schemaPath = resolveSchema(parsed);
   } catch (err) {
-    return { kind: "invalid", errors: [err instanceof Error ? err.message : String(err)] };
+    return { kind: "invalid", errors: [errMsg(err)] };
   }
   try {
     const { valid, errors } = validateAgainstSchema(parsed, schemaPath);
     return valid ? { kind: "valid" } : { kind: "invalid", errors };
   } catch (err) {
-    return { kind: "invalid", errors: [err instanceof Error ? err.message : String(err)] };
+    return { kind: "invalid", errors: [errMsg(err)] };
   }
 };
 

@@ -171,8 +171,6 @@ jobs:
           REASONS="Security triage did not complete successfully (operational error) — failing closed."
 
           emit_triage_output() {
-            local delim
-            delim="TRIAGE_EOF_$(openssl rand -hex 16)"
             {
               echo "safe=$SAFE"
               echo "reasons<<$delim"
@@ -180,12 +178,17 @@ jobs:
               echo "$delim"
             } >>"$GITHUB_OUTPUT"
           }
+          # Per-run heredoc delimiter, derived ONCE from openssl (else /dev/urandom) so untrusted
+          # reasons text can never forge a safe=true output by embedding a fixed delimiter. Computed
+          # up front — not inside the EXIT trap — and set before the trap is registered, so the trap
+          # reuses this value instead of re-deriving it (and possibly degrading to a guessable
+          # literal) on the exit path.
+          delim="TRIAGE_EOF_$(openssl rand -hex 16 2>/dev/null || od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
           trap emit_triage_output EXIT
 
-          # openssl seeds the per-run heredoc delimiter above; if it is absent the delimiter degrades
-          # to the predictable literal TRIAGE_EOF_, which untrusted reasons text could forge. Fail
-          # closed (the trap emits SAFE=false) rather than run the gate with a guessable delimiter.
-          command -v openssl >/dev/null 2>&1 || { echo "::error::openssl not found — cannot generate a secure triage delimiter; failing closed"; REASONS="openssl unavailable — the triage gate cannot run securely; failing closed."; exit 1; }
+          # Fail closed if neither randomness source was available (the delimiter would otherwise be
+          # the guessable literal TRIAGE_EOF_); the trap still emits SAFE=false.
+          [ "$delim" != "TRIAGE_EOF_" ] || { echo "::error::cannot generate a secure triage delimiter (no openssl or /dev/urandom); failing closed"; REASONS="secure triage delimiter unavailable; failing closed."; exit 1; }
 
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "::error::MODEL_API_KEY secret is not set"; REASONS="MODEL_API_KEY secret is not set"; exit 1; }
           [ -n "$ANTHROPIC_BASE_URL" ] || { echo "::error::API_BASE_URL variable is not set (e.g. https://api.deepseek.com/anthropic) — refusing to let the CLI pick an endpoint for your key"; REASONS="API_BASE_URL variable is not set"; exit 1; }
@@ -438,6 +441,13 @@ jobs:
               '{schema_version: "0.4.0", summary: ("### 🛑 Code review skipped by the security gate\n\nThe diff was flagged as unsafe to apply and execute:\n\n> " + $reasons), verdict: "comment", findings: []}' \
               >findings/findings.json
             wrap_envelope
+          elif [ "$SAFE_RAW" = "false" ]; then
+            # Triage returned unsafe but with no reason string (valid per the triage schema) — still
+            # a gate block, so don't fall through to the "passed triage" text below; omit the reason.
+            jq -n \
+              '{schema_version: "0.4.0", summary: "### 🛑 Code review skipped by the security gate\n\nThe security triage returned an unsafe verdict without a reason. See workflow logs.", verdict: "comment", findings: []}' \
+              >findings/findings.json
+            wrap_envelope
           elif [ -z "$SAFE_RAW" ]; then
             # Triage never emitted a verdict — the job errored before the gate ran (dependency
             # install or setup), not a security decision. Never render the gate message here.
@@ -446,7 +456,7 @@ jobs:
               >findings/findings.json
             wrap_envelope
           else
-            # Triage passed (or returned no usable reason) but the review produced no findings.
+            # Triage passed (safe=true) but the review produced no findings.
             jq -n \
               '{schema_version: "0.4.0", summary: "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs.", verdict: "comment", findings: []}' \
               >findings/findings.json

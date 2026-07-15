@@ -111,6 +111,32 @@ on:
         type: string
         required: false
         default: "0.10"
+      duration_override:
+        description: >-
+          Override the full-review wall for this run (e.g. from a ChatOps /code-review comment).
+          Empty ⇒ keep full_review_time_limit. This is TRUSTED caller config, exactly like model_full
+          or install_command — clamp any UNTRUSTED source (a PR comment) to a ceiling BEFORE passing
+          it here (see `code-review parse-command --max-duration`). Format as for the time limits.
+        type: string
+        required: false
+        default: ""
+      usd_override:
+        description: >-
+          Override the full-review USD spend cap for this run. Empty ⇒ keep full_review_usd_limit.
+          Trusted caller config — clamp an untrusted source to a ceiling before passing it here (see
+          `code-review parse-command --max-usd`). Takes effect only with a committed .github/prices.json.
+        type: string
+        required: false
+        default: ""
+      extra_instructions:
+        description: >-
+          Extra reviewer guidance appended to the review agent's system prompt (e.g. a /code-review
+          comment's free-form instruction). TRUST BOUNDARY: this text steers the agent and BYPASSES
+          the diff security triage (which screens the diff, not this text), so gate it to write-access
+          users in the caller — the same trust the code the agent already runs requires. Empty ⇒ none.
+        type: string
+        required: false
+        default: ""
       extra_endpoints:
         description: Extra harden-runner allowed-endpoints appended to the baked-in set (host:port). Must be a SINGLE space-separated line — a YAML '|' block scalar injects newlines that break harden-runner's endpoint parser (use a '>-' folded scalar or one line). E.g. your ecosystem's package registries, or the model host if not deepseek/anthropic.
         type: string
@@ -381,6 +407,9 @@ jobs:
           MECHANIC_TIME_LIMIT: ${{ inputs.mechanic_time_limit }}
           MECHANIC_GRACE: ${{ inputs.mechanic_grace_period }}
           MECHANIC_USD: ${{ inputs.mechanic_usd_limit }}
+          DURATION_OVERRIDE: ${{ inputs.duration_override }}
+          USD_OVERRIDE: ${{ inputs.usd_override }}
+          EXTRA_INSTRUCTIONS: ${{ inputs.extra_instructions }}
         run: |
           set -euo pipefail
 
@@ -466,7 +495,23 @@ jobs:
             esac
           }
           if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL="$MECHANIC_TIME_LIMIT"; GRACE="$MECHANIC_GRACE"; USD_LIMIT="$MECHANIC_USD"; else AGENT_WALL="$FULL_TIME_LIMIT"; GRACE="$FULL_GRACE"; USD_LIMIT="$FULL_USD"; fi
+          # A comment-triggered run (see the on-comment recipe) may override the wall/budget for THIS
+          # run only; the caller has already clamped these to a ceiling. Empty ⇒ keep the route default.
+          # Applied after the route sets defaults and before HARD_KILL derives from the (possibly new) wall.
+          if [ -n "${DURATION_OVERRIDE:-}" ]; then AGENT_WALL="$DURATION_OVERRIDE"; fi
+          if [ -n "${USD_OVERRIDE:-}" ]; then USD_LIMIT="$USD_OVERRIDE"; fi
           HARD_KILL=$(( $(dur_to_secs "$AGENT_WALL") + $(dur_to_secs "$GRACE") ))
+
+          # Optional reviewer guidance from the trigger (a /code-review comment), appended LAST to the
+          # system prompt so it is the freshest steer. It travels via the env var and is spliced only as
+          # an expanded VALUE (never as script text), so any $(...)/backticks/quotes in it stay literal —
+          # bash does not re-parse an expanded value. The caller gates it to write-access users; it does
+          # not override the schema, safety, or single-writer rules (the wording below says so).
+          INSTR_BLOCK=""
+          if [ -n "${EXTRA_INSTRUCTIONS:-}" ]; then
+            INSTR_BLOCK="
+          A reviewer with write access requested this focus for THIS review — prioritize it, but it does NOT override your safety, the findings schema, or the single-writer rule: $EXTRA_INSTRUCTIONS"
+          fi
 
           # Compose the review agent's hooks into one settings file, written to
           # $RUNNER_TEMP OUTSIDE the checked-out worktree so a PR diff can neither define nor disable
@@ -513,7 +558,7 @@ jobs:
             --json-schema "$(cat "$SCHEMA_FILE")" \
             --append-system-prompt "You're reviewing a PR in a throwaway CI runner (no repo write access); the diff is already applied to the working tree. Your ONLY deliverable is a findings JSON document written to $DRAFT (an absolute path outside the repo tree). It is an OBJECT, not a bare array: {\"schema_version\": \"0.4.0\", \"summary\": \"...\", \"verdict\": \"comment\", \"findings\": [ ... ]}. Each finding uses these exact field names — path, start_line, end_line, severity, title, description, reasoning, confidence (optional: side, code, code_url, recommendation, patch). Do NOT use file/line/summary/failure_scenario; if your review process yields those, translate them to the field names above. The full schema — whose field descriptions are the authoritative spec, including how to author a \`patch\` — is written to $SCHEMA_FILE and passed via --json-schema; read $SCHEMA_FILE if unsure. SINGLE WRITER: you, the main agent, are the ONLY one who can write $DRAFT — the environment blocks any subagent from writing, editing, or redirecting into it, because concurrent writers clobber the file and produce empty reviews. Any subagents you fan out to must EXPLORE and REPORT the findings they discover back in their final reply (their own wording is fine — they may read $SCHEMA_FILE for the field names); they must NOT try to write $DRAFT. You collect every subagent's reported findings, translate them to the exact field names above, and write $DRAFT yourself, keeping one valid copy. Subagents run in the BACKGROUND: spawning returns immediately and each report arrives when that subagent finishes, so keep working — reading code and refining $DRAFT — while they run; never idle waiting on them, and write the final draft from whatever reports have arrived rather than holding out for stragglers. The environment also requires your own first-pass $DRAFT to exist before you may spawn subagents (a pre-seeded draft does not count until you have revised it yourself), so draft first, fan out second, then fold reports in as they arrive.
           Write a COMPLETE, valid $DRAFT by the time you are HALFWAY through your $AGENT_WALL budget — the moment you have a first pass of findings — then keep refining it in place. A valid review that exists beats a thorough one that gets cut off, so never leave $DRAFT unwritten while you explore. After each write, run \`code-review validate $DRAFT --explain\` and fix-and-revalidate until it exits 0 (--explain reprints the schema when the shape is wrong) before ending your turn.$SEED_NOTE
-          Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix." \
+          Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix.$INSTR_BLOCK" \
             >envelope.json
           AGENT_RC=$?
           set -e

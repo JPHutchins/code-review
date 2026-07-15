@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// CLI entry point — citty subcommands for render, inline, post, cost, check-cost, validate, adapt,
-// extract, validate-patches, print-schema, stop-gate, budget-hook, print-settings, deadline.
+// CLI entry point — the citty subcommands wired in `main` at the bottom.
 
 /* eslint-disable @typescript-eslint/require-await */
 // citty requires async run() even when the body has no explicit await
@@ -69,13 +68,10 @@ const fail = (msg: string): never => {
   process.exit(1);
 };
 
-/** Like `readJSON` but tolerant: returns `undefined` (never exits) when the file is unreadable,
- *  empty, or not valid JSON. Used ONLY for `adapt`'s native positional arg, which a wall-clock
- *  `timeout` kill can leave empty/truncated (issue #39) — `adapt` then degrades to a no-telemetry
- *  envelope and still recovers findings from `--agent-file`, instead of crashing the whole review
- *  step. Each degrade path names its specific cause on stderr — surfacing the real read error so an
- *  EACCES/EISDIR is not misreported as "empty" — to stay diagnosable; genuinely-required inputs keep
- *  the strict `readJSON`. */
+/** Tolerant `readJSON`: returns `undefined` (never exits) when the file is unreadable, empty, or not
+ *  valid JSON, naming the specific cause on stderr. Used only for `adapt`'s native envelope, which a
+ *  wall-clock kill can leave empty/truncated — `adapt` then degrades to no telemetry rather than
+ *  crashing the review step. */
 const readJSONOrAbsent = (path: string): unknown => {
   const read = ((): { readonly text: string } | { readonly error: string } => {
     try {
@@ -86,13 +82,13 @@ const readJSONOrAbsent = (path: string): unknown => {
   })();
   if ("error" in read) {
     process.stderr.write(
-      `code-review: native envelope ${path} could not be read (${read.error}) — proceeding with no native telemetry (issue #39)\n`,
+      `code-review: native envelope ${path} could not be read (${read.error}) — proceeding with no native telemetry\n`,
     );
     return undefined;
   }
   if (read.text.trim() === "") {
     process.stderr.write(
-      `code-review: native envelope ${path} is empty — proceeding with no native telemetry (issue #39)\n`,
+      `code-review: native envelope ${path} is empty — proceeding with no native telemetry\n`,
     );
     return undefined;
   }
@@ -100,15 +96,12 @@ const readJSONOrAbsent = (path: string): unknown => {
     return JSON.parse(read.text) as unknown;
   } catch (err) {
     process.stderr.write(
-      `code-review: native envelope ${path} is not valid JSON (${err instanceof Error ? err.message : String(err)}) — proceeding with no native telemetry (issue #39)\n`,
+      `code-review: native envelope ${path} is not valid JSON (${err instanceof Error ? err.message : String(err)}) — proceeding with no native telemetry\n`,
     );
     return undefined;
   }
 };
 
-/** Read and parse the hook payload delivered on stdin, defensively: a TTY (manual run), absent stdin,
- *  or non-JSON all yield null. The budget hook then decides from its flags alone (no live signal),
- *  never crashing on a missing or malformed payload. */
 const readStdinJSON = (): unknown => {
   if (process.stdin.isTTY) return null;
   const raw = ((): string => {
@@ -146,17 +139,15 @@ const unwrapAdapt = <A>(either: Either<string, A>): A => {
   throw new Error("unreachable"); // fail() always exits
 };
 
-/** Telemetry from a session transcript tree (main + subagents), which `adapt` uses for the true
- *  WALL + TURNS whenever it's available — the native envelope only sees the main agent and under-
- *  reports a subagent fan-out (issue #59) — and for per-model usage too on a wall-kill that left the
- *  native empty (issue #36), so cost computes from real models×prices instead of $0.00. A
+/** Telemetry from a session transcript tree (main + subagents) for the true wall + turns the native
+ *  envelope under-reports, and for per-model usage when the native envelope is empty. A
  *  missing/unreadable transcript yields empty models + a zero span, which `adapt` treats as "no
- *  transcript" (keeping the native's own figures). */
+ *  transcript". */
 const transcriptFallbackFrom = (path: string): TranscriptTelemetry => {
   const tree = readTranscriptTree(resolve(path));
   if (tree.missing)
     process.stderr.write(
-      `code-review adapt: transcript ${path} is unreadable — no telemetry fallback (issue #36)\n`,
+      `code-review adapt: transcript ${path} is unreadable — no telemetry fallback\n`,
     );
   const usage = sumTranscriptUsage(tree.entries);
   return { models: usage.models, turns: usage.turns, durationMs: usage.durationMs };
@@ -170,24 +161,18 @@ const packageVersion = (
   JSON.parse(readFileSync(bundledPath("package.json"), "utf-8")) as { version: string }
 ).version;
 
-/** `--template` defaults to the bundled comment template when omitted. */
 const resolveTemplatePath = (templateArg: string | undefined): string =>
   templateArg ? resolve(templateArg) : bundledPath("templates", "comment.eta");
 
-/** `--inline-template` defaults to the bundled inline template when omitted (inline.eta is the
- *  per-surface SSOT — issue #22 — mirroring resolveTemplatePath's sticky default). */
 const resolveInlineTemplatePath = (templateArg: string | undefined): string =>
   templateArg ? resolve(templateArg) : bundledPath("templates", "inline.eta");
 
-/** Price-map resolution with explicit provenance: `provided` is a real caller-supplied map,
- *  `absent` is the bundled all-zero example standing in for one (loaded only to satisfy the codec /
- *  computeCost shape). The render layer is TOLD which, so it reports cost as N/A rather than a false
- *  $0.00 when absent (SPEC §6.2) — never inferring it from the path. */
+// `provided` = a real caller map; `absent` = the bundled all-zero example. The render layer is told
+// which, so an absent map reports cost as N/A, never a false $0.00.
 type PriceResolution =
   | { readonly kind: "provided"; readonly path: string }
   | { readonly kind: "absent"; readonly path: string };
 
-/** `--prices` defaults to the bundled (all-zero) example prices when omitted, with a warning. */
 const resolvePrices = (pricesArg: string | undefined): PriceResolution => {
   if (pricesArg) return { kind: "provided", path: resolve(pricesArg) };
   process.stderr.write(
@@ -333,7 +318,7 @@ const checkCostCmd = defineCommand({
   meta: {
     name: "check-cost",
     description:
-      "Sum real USD spend from a live/finished Claude Code transcript tree (main session + subagents) against a price map — the correct cost when no clean result envelope exists (issue #36) and the outlook the review agent tracks in flight (issue #38)",
+      "Sum real USD spend from a Claude Code transcript tree (main + subagents) against a price map",
   },
   args: {
     transcript: {
@@ -351,7 +336,7 @@ const checkCostCmd = defineCommand({
     const tree = readTranscriptTree(resolve(args.transcript));
     if (tree.missing) {
       process.stderr.write(
-        `code-review check-cost: transcript ${args.transcript} is unreadable — reporting zero spend (issue #36)\n`,
+        `code-review check-cost: transcript ${args.transcript} is unreadable — reporting zero spend\n`,
       );
     }
     const usage = sumTranscriptUsage(tree.entries);
@@ -394,7 +379,6 @@ const parseBudgetUsd = (raw: string | undefined): number | null => {
   return Number.isFinite(n) && n >= 0 ? n : null;
 };
 
-/** A file's mtime in epoch ms, or null when it does not exist (or cannot be statted). */
 const mtimeMsOf = (path: string): number | null => {
   try {
     return statSync(path).mtimeMs;
@@ -415,7 +399,7 @@ const budgetHookCmd = defineCommand({
   meta: {
     name: "budget-hook",
     description:
-      "Self-dispatching Claude Code hook for budget discipline (issue #38): on PostToolBatch, steer the agent to converge once spend or wall-clock enters its soft wind-down reserve; on PreToolUse, inside the hard reserve, deny the budget-burning tools (subagent spawns, arbitrary shell, web) while leaving the draft-delivery path open. At every phase, the main agent's subagent spawns are denied until it has written its own first-pass draft (seed-draft's sidecar marker tells the seed apart), and permitted spawns are rewritten to run in the background so no batch join can block the spawner (issue #73). Reads the hook payload on stdin, measures spend from its transcript, and decides on $ and/or time. Degrades to a no-op on any error.",
+      "Self-dispatching Claude Code budget hook: on PostToolBatch steer the agent to converge as spend/wall-clock nears the budget; on PreToolUse deny budget-burning tools under the hard reserve, gate subagent spawns until the main agent has drafted, and run permitted spawns in the background. Reads the hook payload on stdin; degrades to a no-op on error.",
   },
   args: {
     draft: {
@@ -471,7 +455,7 @@ const budgetHookCmd = defineCommand({
         prices !== null && usage ? computeCost(usage.models, prices).totalCostUSD : null;
       // The absolute anchor (set by the review job, inherited by every hook incl. fan-out subagents)
       // is the true remaining wall; the per-transcript first timestamp is only the fallback — it
-      // reads ≈0 in a fresh subagent and leaves the fan-out unsteered (issue #45).
+      // reads ≈0 in a fresh subagent and leaves the fan-out unsteered.
       const wallMs = args.wall ? parseWallMs(args.wall) : null;
       const output = evaluateBudgetHook(input, {
         spentUsd,
@@ -511,7 +495,7 @@ const printSettingsCmd = defineCommand({
   meta: {
     name: "print-settings",
     description:
-      "Emit ONE Claude Code --settings JSON composing the review agent's discipline (issue #38): the Stop deliverable gate plus the budget hooks (PreToolUse forced convergence + PostToolBatch steer) wired from one self-dispatching command. The review job generates this once and passes it as --settings.",
+      "Emit one Claude Code --settings JSON composing the Stop deliverable gate and the budget hooks (PreToolUse convergence + PostToolBatch steer) from one self-dispatching command",
   },
   args: {
     draft: {
@@ -603,7 +587,7 @@ const deadlineCmd = defineCommand({
   meta: {
     name: "deadline",
     description:
-      "Print the run's absolute deadline as Unix epoch seconds (now + --wall). The review job exports this as CODE_REVIEW_DEADLINE_EPOCH right before `claude -p` so every budget hook — the main agent's and each fan-out subagent's — measures the SAME true remaining wall instead of its own transcript's start, which reads ≈0 in a fresh subagent and leaves the fan-out unsteered (issue #45).",
+      "Print the run's absolute deadline as Unix epoch seconds (now + --wall) — exported as CODE_REVIEW_DEADLINE_EPOCH so every budget hook (main and subagents) measures the same remaining wall",
   },
   args: {
     wall: {
@@ -699,7 +683,7 @@ const seedDraftCmd = defineCommand({
   meta: {
     name: "seed-draft",
     description:
-      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0 (issues #52, #53). Also drops a sidecar marker beside the seed so the budget hook can tell the untouched seed from a draft the agent wrote itself (issue #73). Prints the mode chosen (prior|empty|none — none when even the scaffold write failed) to stdout; always exits 0",
+      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0. Also drops a sidecar marker beside the seed so the budget hook can tell the untouched seed from a draft the agent wrote itself. Prints the mode chosen (prior|empty|none — none when even the scaffold write failed) to stdout; always exits 0",
   },
   args: {
     prior: {
@@ -835,7 +819,7 @@ const seedDraftCmd = defineCommand({
 const adaptCmd = defineCommand({
   meta: {
     name: "adapt",
-    description: "Map a native agent-CLI result envelope onto the abstract SPEC §6.1 envelope",
+    description: "Map a native agent-CLI result envelope onto the abstract SPEC envelope",
   },
   args: {
     native: {
@@ -865,7 +849,7 @@ const adaptCmd = defineCommand({
     transcript: {
       type: "string",
       description:
-        "Path to the session transcript (the main .jsonl). Its tree (main + subagents) is the source of the true wall + turn count — the native envelope only sees the main agent and under-reports a fan-out (issue #59) — and refills per-model usage too when the native has none (a wall-clock kill leaves it empty, so cost is real not $0.00 — issues #39/#36)",
+        "Path to the session transcript (main .jsonl). Its tree (main + subagents) gives the true wall + turn count the native envelope under-reports, and refills per-model usage when the native envelope is empty (e.g. after a wall-clock kill)",
     },
   },
   run: async ({ args }) => {
@@ -896,7 +880,7 @@ const requireExtractSchemaKind = (name: string): ExtractKind => {
 };
 
 /** Fail-closed triage synthesized when the ladder can't recover a validated triage verdict — never
- *  defaults to safe (§7.3). */
+ *  defaults to safe. */
 const failClosedTriage = (outcome: Exclude<LadderOutcome, { kind: "ok" }>): Triage => ({
   safe: false,
   reasons: describeLadderFailure(outcome),
@@ -953,14 +937,12 @@ const extractCmd = defineCommand({
   },
 });
 
-/** `finding` with its `patch` field removed — a fresh shallow copy, `finding` itself untouched. */
 const withoutPatch = (finding: Finding): Finding => {
   const copy = { ...finding };
   delete copy.patch;
   return copy;
 };
 
-/** A file's lines, LF-split and without a trailing-newline artifact entry; null when unreadable. */
 const readFileLines = (path: string): readonly string[] | null => {
   try {
     const rawLines = readFileSync(path, "utf-8").split("\n");
@@ -972,12 +954,9 @@ const readFileLines = (path: string): readonly string[] | null => {
   }
 };
 
-/** Validate one finding's `patch` (when present) against the real file at `<repoRoot>/<finding.path>`,
- *  aligning the finding's `start_line`/`end_line` to the patch's removed range when it anchors one, or
- *  keeping the patch as-is when it's a pure insertion with no range to anchor — either way the patch
- *  is KEPT for the renderer to project. Drop the patch (logging why to stderr) when the file can't be
- *  read or the patch doesn't apply cleanly — the finding survives without it, never writing a
- *  suggestion. A finding with no patch passes through untouched. Never throws. */
+/** Align/keep/drop one finding's `patch` against the real file at `<repoRoot>/<finding.path>`:
+ *  aligned to the patch's removed range, kept as-is for a pure insertion, or dropped (logged) when
+ *  the file can't be read or the patch doesn't apply. Never throws; a no-patch finding passes through. */
 const validateFinding = (finding: Finding, repoRoot: string): Finding => {
   if (finding.patch === undefined) return finding;
   const lines = readFileLines(resolve(repoRoot, finding.path));
@@ -1007,7 +986,7 @@ const validatePatchesCmd = defineCommand({
   meta: {
     name: "validate-patches",
     description:
-      "Validate each finding's patch against the real PR-head tree, aligning the finding's range and keeping the patch when it anchors, keeping it unaligned when it's a pure insertion, or dropping it when it doesn't apply (issue #10)",
+      "Validate each finding's patch against the real PR-head tree: align the finding's range and keep the patch when it anchors, keep it unaligned for a pure insertion, or drop it when it doesn't apply",
   },
   args: {
     findings: {
@@ -1085,13 +1064,10 @@ const printSchemaCmd = defineCommand({
 
 const MAX_NUDGES_DEFAULT = 5;
 
-/** Drain the Stop-hook payload delivered on stdin so the caller never sees EPIPE; its content is
- *  not needed — the decision comes from the draft on disk. Skips draining on a TTY (an interactive,
- *  manual run with nothing piped in) since readFileSync(0) would otherwise block forever waiting
- *  for EOF that never comes; absent/empty piped stdin otherwise is fine.
- *  DEFERRED (known low-risk edge): a pipe held open without data + EOF could still block here, but
- *  the real Stop hook writes its payload then closes (EOF), and the TTY case is guarded above, so
- *  the held-open-forever case isn't the production path. Revisit only if hangs are observed. */
+/** Drain the Stop-hook payload on stdin so the caller never sees EPIPE; its content is unused (the
+ *  decision comes from the draft on disk). Skips on a TTY, where readFileSync(0) would block forever
+ *  waiting for an EOF that never comes; the real Stop hook writes then closes, so a held-open pipe
+ *  isn't the production path. */
 const drainStdin = (): void => {
   if (process.stdin.isTTY) return;
   try {
@@ -1356,8 +1332,7 @@ export const main = defineCommand({
   meta: {
     name: "code-review",
     version: packageVersion,
-    description:
-      "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, validate-patches, cost, check-cost, validate, seed-draft, stop-gate, budget-hook, print-settings, and deadline",
+    description: "Deterministic commenter for agentic PR review",
   },
   subCommands: {
     gather: gatherCmd,

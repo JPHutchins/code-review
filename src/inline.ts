@@ -1,22 +1,14 @@
-// Inline review payload builder. Validates findings against the diff,
-// builds the GitHub reviews API comments[] array, and demotes strays.
-
 import { Eta } from "eta";
 import { partitionFindings, indexDiff, defaultSide } from "./diff.js";
 import { severityEmoji, findingPointer, projectPatch, formatConfidence } from "./surface.js";
 import type { Finding, Findings } from "./schema.js";
 import type { InlineComment, InlineResult } from "./types.js";
 
-/** Backtick-wrapped, `/`-joined model names for the disclosure line (issue #16), falling back to
- *  a plain phrase when no models are known. */
 const formatModels = (models: readonly string[]): string =>
   models.length > 0 ? models.map((m) => `\`${m}\``).join("/") : "an AI model";
 
-/** Render a finding's inline comment body via the inline Eta template (bundled by default — see
- *  resolveInlineTemplatePath, index.ts). The template is the SSOT for all body text — severity
- *  header, description, recommendation, the projected patch block, and the [!TIP] disclosure fold;
- *  TS supplies only data. The patch is projected here (never a `suggestion` field — that field is
- *  gone as of schema 0.4). */
+// The template is the SSOT for all body text; TS supplies only data. The patch is projected here
+// (never a `suggestion` field — that field is gone as of schema 0.4).
 const renderCommentBody = (
   f: Finding,
   eta: Eta,
@@ -37,22 +29,15 @@ const renderCommentBody = (
     findingsPointer: pointer,
   }) as string;
 
-/** Extra context threaded into each inline comment beyond the finding itself. */
 export interface InlineContext {
-  /** Eta template for each comment's body — bundled by default (index.ts's
-   *  resolveInlineTemplatePath), overridable via --inline-template. */
   readonly inlineTemplate: string;
-  /** Model name(s) that produced the review, for the template's disclosure line (issue #16). */
   readonly models?: readonly string[];
-  /** Findings-json artifact URL — the marker's fallback when the embedded form is too large (#19). */
   readonly jsonUrl?: string;
-  /** The full findings document — each in-diff comment embeds only its OWN finding (issue #31), but
-   *  needs the document's `schema_version` to do so; omitted when the caller has no document at all
-   *  (each comment's marker is then omitted too). */
+  // Each in-diff comment embeds only its OWN finding, but needs the document's schema_version to do
+  // so; omitted when the caller has no document (each comment's marker is then omitted too).
   readonly findings?: Findings;
 }
 
-/** Build the GitHub reviews API comments[] array from in-diff findings. Strays are demoted. */
 export const buildInlineComments = (
   findings: readonly Finding[],
   diff: string,
@@ -85,7 +70,6 @@ export const buildInlineComments = (
   return { comments, strays, inDiff };
 };
 
-/** Render the demoted (stray) findings as a markdown section for the summary. */
 export const renderStraysSection = (strays: readonly Finding[]): string => {
   if (strays.length === 0) return "";
 

@@ -1,9 +1,7 @@
-// Adapter: maps a coding-agent CLI's native result envelope onto the abstract
-// result envelope (SPEC §6.1). Claude Code is the reference adapter — see docs/adapters.md.
-// A present-but-wrong-shaped native surfaces as a Left; an *absent* native (undefined or null — the
-// caller could not read/parse it, e.g. a wall-clock timeout killed `claude -p` mid-flush, issue #39)
-// still recovers findings from --agent-file, and refills telemetry from the transcript fallback when
-// the caller supplies one (issue #36) so cost is real, not $0.00. Never throws.
+// Maps a coding-agent CLI's native result envelope onto the abstract envelope. An absent native
+// (undefined/null — the caller couldn't read/parse it, e.g. a wall-clock kill hit `claude -p`
+// mid-flush) still recovers findings from --agent-file and refills telemetry from the transcript
+// fallback; a present-but-wrong-shaped native is a Left. Never throws.
 
 import * as t from "io-ts";
 import type { Either } from "fp-ts/Either";
@@ -12,10 +10,8 @@ import { extractStructured, describeLadderFailure } from "./extract.js";
 import { DEFAULT_SCHEMA_VERSION, noticeFindings } from "./schema.js";
 import type { Findings, ModelUsageEntry, ResultEnvelope } from "./schema.js";
 
-// No value-level import from fp-ts (a bare "fp-ts/Either" subpath import breaks under strict
-// Node ESM — see fp-ts's lack of a package.json "exports" map). Either values are constructed
-// as plain tagged literals and consumed via ._tag, matching this codebase's existing convention
-// (validate.ts, index.ts) of importing only the Either *type*.
+// No value-level fp-ts import: a bare "fp-ts/Either" subpath import breaks under strict Node ESM
+// (fp-ts ships no "exports" map), so Either values are plain tagged literals, as in validate.ts.
 const left = <A>(message: string): Either<string, A> => ({ _tag: "Left", left: message });
 const right = <A>(value: A): Either<string, A> => ({ _tag: "Right", right: value });
 
@@ -62,30 +58,22 @@ const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsage
       : {}),
   }));
 
-/** Telemetry recovered from the session transcript tree, supplied by the caller. It is the source of
- *  the envelope's wall + turn count whenever a transcript is available (the native envelope reports
- *  only the main agent's active time/turns and under-reports a subagent fan-out — issue #59), and it
- *  refills per-model USAGE too when the native has none — a wall-clock kill leaves the native
- *  absent/empty (issue #39), yet the transcript still records the real spend (issue #36), so cost
- *  computes from real models×prices downstream instead of a false $0.00. */
 export interface TranscriptTelemetry {
   readonly models: readonly ModelUsageEntry[];
   readonly turns: number;
   readonly durationMs: number;
 }
 
-/** Run context the caller stamps into the envelope: route/effort (SPEC §6.1) and an optional
- *  transcript telemetry fallback. The fallback is a THUNK — invoked once when supplied (the read can
- *  be megabytes on a large fan-out, so callers pass it only when a transcript path was given). */
+// transcriptFallback is a THUNK — the read can be megabytes on a large fan-out, so callers pass it
+// only when a transcript path was given.
 export interface RunMeta {
   readonly route?: string;
   readonly effort?: string;
   readonly transcriptFallback?: () => TranscriptTelemetry;
 }
 
-/** The extraction ladder's outcome, reduced to what `buildEnvelope` needs: either a materialized
- *  findings document, or a reason findings are unavailable. Never a reason to drop telemetry
- *  (issue #18) — every ladder outcome maps onto a *findings* result, not a fatal one. */
+// Every ladder outcome maps onto a findings result, never a fatal one — a findings miss must not
+// drop telemetry.
 type FindingsOutcome =
   | { readonly kind: "ok"; readonly version: string; readonly findings: Findings }
   | { readonly kind: "telemetry-only"; readonly reason: string };
@@ -94,8 +82,7 @@ const findingsOutcome = (native: unknown, agentFilePath: string | undefined): Fi
   const ladder = extractStructured({ kind: "findings", native, agentFilePath });
   if (ladder.kind !== "ok")
     return { kind: "telemetry-only", reason: describeLadderFailure(ladder) };
-  // The ladder already confirmed this candidate resolves via the registry; re-resolving here just
-  // materializes the typed, normalized value it deliberately didn't keep (see extract.ts).
+  // Re-resolving materializes the typed, normalized value the ladder deliberately didn't keep.
   const resolution = resolve("findings", ladder.candidate);
   return resolution.kind === "ok"
     ? { kind: "ok", version: resolution.version, findings: resolution.value }
@@ -106,8 +93,6 @@ const findingsOutcome = (native: unknown, agentFilePath: string | undefined): Fi
       };
 };
 
-/** The abstract envelope's telemetry fields (SPEC §6.1), split out so both a decoded native
- *  envelope and an absent one (issue #39) assemble the same shape. */
 interface Telemetry {
   readonly models: ModelUsageEntry[];
   readonly turns: number;
@@ -123,24 +108,14 @@ const withMeta = (base: Omit<Telemetry, "route" | "effort">, meta: RunMeta): Tel
   ...(meta.effort ? { effort: meta.effort } : {}),
 });
 
-/** Assemble telemetry, taking each field from the source that is authoritative for it — NOT simply
- *  "always the transcript." Two sources, two strengths:
- *
- *  - WALL + TURNS come from the transcript whenever one is available. The native envelope reports only
- *    the MAIN agent's active time and turn count, which wildly under-report a review that fanned out
- *    subagents — a 12-subagent, ~12-minute run otherwise surfaces as "5 turns, 42s" (issue #59). The
- *    transcript tree spans the whole session (main + subagents), so its span is the true wall and its
- *    message count the real work.
- *  - Per-model USAGE stays native-authoritative when present. Claude Code's rollup already includes
- *    the subagents (issue #18), and it is MORE accurate than the transcript for output tokens: summing
- *    the per-message `usage` under-counts output badly (measured ~5.7× low on the #59 fixture —
- *    32,945 vs the native's 188,952 output tokens on the same run, while input + cache-read matched),
- *    because the transcript doesn't record every message's full output. So using the transcript for
- *    cost would under-count it several-fold — DO NOT "simplify" this to always-transcript. The
- *    transcript refills usage ONLY when the native has none (a `timeout` kill leaves it absent/empty —
- *    issues #39/#36), where an under-count still beats a false $0.00.
- *
- *  The vendor's own cost figure is carried through from the native whenever it had one. */
+// Each field from whichever source is authoritative for it — NOT always the transcript:
+//   - Wall + turns: the transcript when available. The native envelope reports only the main agent's
+//     active time/turns and wildly under-reports a fan-out (a 12-subagent ~12-min run reads as "5
+//     turns, 42s"); the transcript tree spans the whole session.
+//   - Per-model usage: native-authoritative when present. Summing the transcript's per-message usage
+//     under-counts output badly (measured ~5.7× low), so DO NOT "simplify" this to always-transcript;
+//     the transcript refills usage ONLY when the native has none (a `timeout` kill left it empty).
+// The vendor's own cost figure is carried through from the native whenever it had one.
 const resolveTelemetry = (
   native: {
     models: ModelUsageEntry[];
@@ -150,8 +125,7 @@ const resolveTelemetry = (
   },
   meta: RunMeta,
 ): Telemetry => {
-  // Reading the transcript must never fail the adapt step (§5.5) — a thunk that throws degrades to
-  // "no transcript", i.e. the native's own figures.
+  // A thunk that throws degrades to "no transcript" (the native's own figures) — never fails adapt.
   const fb = ((): TranscriptTelemetry | undefined => {
     try {
       return meta.transcriptFallback?.();
@@ -159,8 +133,7 @@ const resolveTelemetry = (
       return undefined;
     }
   })();
-  // Wall + turns come from the transcript together (never one source for turns and another for the
-  // wall) whenever it yields a real span; otherwise both from the native envelope.
+  // Wall + turns move together — never one source for turns and another for the wall.
   const wallTurns =
     fb !== undefined && fb.durationMs > 0
       ? { turns: fb.turns, duration_ms: fb.durationMs }
@@ -175,9 +148,6 @@ const resolveTelemetry = (
   );
 };
 
-/** Telemetry from a decoded native envelope: its per-model usage + vendor cost, plus wall/turns that
- *  `resolveTelemetry` overrides from the transcript when one is available (issue #59) or that the
- *  transcript refills entirely on a wall-kill that left the native empty (issues #39/#36/#18). */
 const nativeTelemetry = (native: ClaudeCodeEnvelope, meta: RunMeta): Telemetry =>
   resolveTelemetry(
     {
@@ -189,16 +159,13 @@ const nativeTelemetry = (native: ClaudeCodeEnvelope, meta: RunMeta): Telemetry =
     meta,
   );
 
-/** Telemetry when the native envelope is absent/unreadable (issue #39): a wall-clock `timeout` can
- *  kill `claude -p` mid-flush, leaving no parseable envelope. The transcript fallback (issue #36)
- *  refills real spend when present; otherwise zeros. Either way the findings ladder still runs (its
- *  --agent-file rung needs no native), so a checkpointed $DRAFT survives the cutoff. */
+// Native absent/unreadable (a wall-clock kill can leave no parseable envelope): the transcript
+// fallback refills real spend when present, else zeros. The findings ladder still runs (its
+// --agent-file rung needs no native), so a checkpointed $DRAFT survives the cutoff.
 const absentTelemetry = (meta: RunMeta): Telemetry =>
   resolveTelemetry({ models: [], turns: 0, durationMs: 0, vendorCostUsd: null }, meta);
 
-/** Assemble the abstract envelope (SPEC §6.1): `findings`/`schema_version` from the extraction
- *  ladder (which reads --agent-file and defensively reads the raw native), telemetry from the
- *  caller. A ladder miss becomes a "did not complete" notice — never a discarded envelope. */
+// A ladder miss becomes a "did not complete" notice, never a discarded envelope.
 const buildEnvelope = (
   telemetry: Telemetry,
   native: unknown,
@@ -217,12 +184,9 @@ const buildEnvelope = (
   }
 };
 
-/** Map a native agent-CLI result envelope onto the abstract envelope (SPEC §6.1). `agentFilePath`
- *  is meaningful only for the findings recovery (a documented no-op otherwise). A `native` of
- *  `undefined` or `null` means the caller could not read/parse the envelope (empty/truncated, or a
- *  literal JSON `null` — issue #39): rather than fail the run, the adapter emits a no-telemetry
- *  envelope and still recovers findings from --agent-file. A *present* but wrong-shaped native is
- *  still a Left (a real adapter mismatch). */
+// native undefined/null ⇒ the caller couldn't read/parse the envelope: emit a no-telemetry envelope
+// and still recover findings from --agent-file, rather than failing the run. A present but
+// wrong-shaped native is a Left (a real adapter mismatch).
 export const adapt = (
   adapterName: AdapterName,
   native: unknown,

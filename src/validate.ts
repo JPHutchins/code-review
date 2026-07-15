@@ -1,5 +1,4 @@
-// Schema validation wrapper. Validates findings JSON against the published schema.
-// Minor command — defense-in-depth; the CLI enforces the schema on the agent side already.
+// Defense-in-depth: the CLI already enforces the schema on the agent side.
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ValidateFunction as AjvValidateFunction } from "ajv/dist/2020.js";
@@ -11,10 +10,8 @@ import type { Findings } from "./schema.js";
 
 const addFormats = _addFormats as unknown as (ajv: Ajv2020) => void;
 
-/** Module-level cache of compiled validators keyed by schema path. */
 const validatorCache = new Map<string, AjvValidateFunction>();
 
-/** Compile a JSON Schema validator from the given file path (cached). */
 const compileSchema = (schemaPath: string): AjvValidateFunction => {
   const cached = validatorCache.get(schemaPath);
   if (cached) return cached;
@@ -54,11 +51,9 @@ export const validateAgainstSchema = (findings: unknown, schemaPath: string): Va
   return { valid, errors };
 };
 
-/** Extract the right value from an io-ts Either, or throw. */
 export const unsafeUnwrap = <A>(decoded: Either<unknown, A>): A => {
   if (decoded._tag === "Right") return decoded.right;
   throw new Error("io-ts decode failed — data does not match expected shape");
 };
 
-/** Decode findings, throwing on failure. */
 export const decodeFindings = (data: unknown): Findings => unsafeUnwrap(FindingsCodec.decode(data));

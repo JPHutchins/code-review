@@ -1,5 +1,5 @@
-// Domain types NOT derived from io-ts codecs.
-// For DTO types (Finding, Findings, ResultEnvelope, PriceMap, TestSummary, etc.) import from ./schema.js.
+// Domain types NOT derived from io-ts codecs. For DTO types (Finding, Findings, ResultEnvelope,
+// PriceMap, TestSummary, etc.) import from ./schema.js.
 
 import type {
   Finding,
@@ -23,14 +23,12 @@ export interface InlineComment {
 export interface InlineResult {
   readonly comments: readonly InlineComment[];
   readonly strays: readonly Finding[];
-  /** The in-diff findings the `comments` were built from — surfaced in the sticky (as extra strays)
-   *  when the inline review can't be posted and falls back to body-only (issue #57). */
+  // Surfaced in the sticky (as extra strays) when the inline review falls back to body-only.
   readonly inDiff: readonly Finding[];
 }
 
 export type SeverityCounts = Readonly<Record<Severity, number>>;
 
-/** What actually happened to the inline review, so the sticky's pointer states the truth (SPEC §5.1). */
 export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
@@ -39,43 +37,29 @@ export type InlineDisposition =
 
 export interface RenderInput {
   readonly findings: Findings;
-  /** null when the result envelope is unavailable or malformed — renders a "usage unavailable" note. */
   readonly envelope: ResultEnvelope | null;
-  readonly prices: PriceMap;
-  /** Whether `prices` is a real, caller-supplied price map (`true`) or the bundled all-zero example
-   *  standing in for an absent one (`false`). An explicit signal the render layer is TOLD — never
-   *  inferred from the map's contents or path — so cost renders as `N/A` (never a false `$0.00`)
-   *  with a "no price map" footnote when absent (SPEC §6.2). Omitted ⇒ treated as provided. */
+  // An explicit signal, never inferred from the map: an absent (all-zero) map renders cost as N/A,
+  // never a false $0.00. Omitted ⇒ treated as provided.
   readonly pricesProvided?: boolean;
+  readonly prices: PriceMap;
   readonly template: string;
   readonly reviewedSha?: string;
-  /** Preformatted UTC post time (e.g. "2026-07-07 18:42 UTC"), leading the sticky's "**Reviewed**
-   *  `<sha>` at <postedAt>" meta segment (issue #28) — computed at the IO boundary (post.ts/CLI)
-   *  via `formatUtc`, never here, so `render()` stays pure/clockless. Omitted ⇒ segment suppressed. */
+  // Computed at the IO boundary so render() stays pure/clockless. Omitted ⇒ segment suppressed.
   readonly postedAt?: string;
-  /** Overrides the envelope's `route`/`effort` (SPEC §6.1) when set; otherwise the envelope is the source. */
   readonly route?: string;
   readonly effort?: string;
   readonly testReport?: TestSummary;
-  /** Severity histogram for the summary counts line; derived from `findings` when omitted. */
   readonly severityCounts?: SeverityCounts;
-  /** Findings that couldn't be anchored inline (SPEC §5.2 rule 1) — the sticky's only per-finding detail. */
   readonly strays?: readonly Finding[];
-  /** How many of `strays` are in-diff findings whose inline comment GitHub rejected (issue #57),
-   *  rather than genuinely out-of-diff. When > 0 the sticky titles the section "Findings" and adds a
-   *  note that they couldn't be posted inline. Omitted/0 ⇒ all strays are genuinely out-of-diff. */
+  // How many of `strays` are in-diff findings GitHub rejected inline, rather than out-of-diff; > 0
+  // titles the section "Findings" and notes they couldn't be posted inline. Omitted/0 ⇒ all out-of-diff.
   readonly unanchoredCount?: number;
   readonly inlineDisposition?: InlineDisposition;
-  /** Workflow run URL (transcript/traces) — populated later by the wiring implementer. Renders a link in the LLM Disclosure aside when present, omitted otherwise. */
   readonly runUrl?: string;
-  /** URL to the machine-readable findings JSON artifact — the findings-json marker's fallback when
-   *  the embedded form is too large (issue #19). */
+  // Findings-json marker's fallback when the embedded form is too large.
   readonly jsonUrl?: string;
-  /** Precomputed findings-json marker (issue #19) — when set, used verbatim instead of recomputing
-   *  from `findings`/`jsonUrl`, so `post()` base64-encodes the findings once and reuses it across
-   *  surfaces. An empty string is a valid value (no marker). Omitted ⇒ computed here. */
+  // Precomputed marker used verbatim (empty string = no marker), so post() base64-encodes once and
+  // reuses it across surfaces. Omitted ⇒ computed here.
   readonly findingsPointer?: string;
-  /** The inline review's `html_url` (issue #21) — turns "see the review" into a link once the
-   *  review is known to exist; populated by the wiring implementer's post-review pass. */
   readonly reviewUrl?: string;
 }

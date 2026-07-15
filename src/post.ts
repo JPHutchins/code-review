@@ -1,9 +1,5 @@
-// Deterministic GH posting: resolve PR, fetch diff, run inline, post inline review,
-// render summary, upsert sticky comment. Pure core with a thin gh-api effect.
-//
-// Ordering (CO-R3): all reads, decodes, diff validation, and rendering complete before
-// the first API write; then the sticky is posted, and the inline review second. A posting
-// failure propagates and exits the process non-zero (never partially posts).
+// Ordering invariant: all reads, decodes, and rendering complete before the first API write; then
+// the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
 import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
@@ -27,36 +23,26 @@ export interface PostInput {
   readonly findingsPath: string;
   readonly envelopePath: string;
   readonly pricesPath: string;
-  /** Whether `pricesPath` is a real caller-supplied price map or the bundled all-zero example
-   *  standing in for an absent one — threaded to the render layer so cost shows N/A, not a false
-   *  $0.00, when absent (SPEC §6.2). */
+  // false ⇒ the bundled all-zero example; the render layer shows cost as N/A, never a false $0.00.
   readonly pricesProvided: boolean;
   readonly templatePath: string;
   readonly inlineTemplatePath: string;
-  /** Overrides the envelope's route (SPEC §6.1) when set; otherwise the envelope is the source. */
   readonly route?: string;
   readonly headBranch?: string;
   readonly testReportPath?: string;
   readonly effort?: string;
-  /** Workflow run URL, threaded into the sticky's LLM Disclosure aside (SPEC §5.1 item 6). */
   readonly runUrl?: string;
-  /** Findings-json artifact URL — the marker's fallback on every surface (sticky, each inline
-   *  comment, and the review body itself) when the embedded form is too large (SPEC §5.1 item 7,
-   *  §5.2, issue #19). */
+  // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
-  /** Preformatted UTC post time, leading the sticky's "**Reviewed** `<sha>` at <postedAt>" meta
-   *  segment (issue #28) — computed by the caller (index.ts's post command) via `formatUtc`, not here,
-   *  so `post()` stays a thin, testable pass-through of the timestamp into `render()`. */
+  // Computed by the caller via formatUtc so post() stays a clockless pass-through into render().
   readonly postedAt?: string;
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
 const MAX_SUGGESTION_LINES = 10;
 
-/** Count lines in a suggestion string (empty suggestion "" = 1 line — delete range). */
 const countSuggestionLines = (text: string): number => text.split("\n").length;
 
-/** Extract and check suggestion blocks in a comment body, stripping those that are too long. */
 const checkLongSuggestions = (
   comments: readonly InlineComment[],
 ): { readonly comments: readonly InlineComment[]; readonly longFiles: readonly string[] } => {
@@ -78,8 +64,8 @@ const checkLongSuggestions = (
   return { comments: adjusted, longFiles };
 };
 
-// Loaders below never throw on untrusted artifacts (SPEC §5.5) — malformed input degrades to a
-// tagged result the caller renders as a notice, rather than crashing the post.
+// Loaders never throw on untrusted artifacts — malformed input degrades to a tagged result the
+// caller renders as a notice, never crashing the post.
 type FindingsLoadResult =
   | { readonly kind: "ok"; readonly findings: Findings }
   | { readonly kind: "corrupt" }
@@ -120,7 +106,6 @@ const noticeMessageFor = (result: Exclude<FindingsLoadResult, { kind: "ok" }>): 
   }
 };
 
-/** Load the result envelope; null on any read/decode failure (SPEC §5.5 — degrade, never crash). */
 const loadEnvelope = (path: string): ResultEnvelope | null => {
   let raw: unknown;
   try {
@@ -132,8 +117,7 @@ const loadEnvelope = (path: string): ResultEnvelope | null => {
   return decoded._tag === "Right" ? decoded.right : null;
 };
 
-/** Load an optional test report; undefined (and a warning) on any read/decode failure — REQ-CO-9
- *  enrichment is optional and MUST degrade gracefully, never abort the post. */
+// Optional enrichment: any failure warns and returns undefined, never aborts the post.
 const loadTestReport = (path: string): TestSummary | undefined => {
   let raw: unknown;
   try {
@@ -154,8 +138,6 @@ const loadTestReport = (path: string): TestSummary | undefined => {
   return decoded.right;
 };
 
-/** Parse an `html_url` field out of a `gh api` JSON response; a malformed or unexpected response
- *  degrades to undefined rather than throwing — a missing link must never fail the post (§5.5). */
 const parseHtmlUrl = (raw: string): string | undefined => {
   try {
     const parsed = JSON.parse(raw) as { html_url?: unknown };
@@ -165,8 +147,6 @@ const parseHtmlUrl = (raw: string): string | undefined => {
   }
 };
 
-/** A single comment's position payload, shared by the batched review POST and the per-comment
- *  salvage POST below. */
 const commentPayload = (c: InlineComment): Record<string, unknown> => ({
   path: c.path,
   line: c.line,
@@ -177,12 +157,8 @@ const commentPayload = (c: InlineComment): Record<string, unknown> => ({
   body: formatMarkdown(c.body),
 });
 
-/** Post the inline review, pointing its body at the sticky (issue #11) when the sticky's URL is
- *  known, and prepending the precomputed findings-json marker (issue #19) so the review body carries
- *  it too. `comments[i]` is the rendered comment for finding `inDiff[i]` (1:1, same order). Returns
- *  the review's `html_url` (undefined on a malformed response), how many inline comments actually
- *  posted, and the findings whose comment GitHub rejected — so the caller can surface exactly those
- *  in the sticky (issue #57) and keep the disposition count truthful (issue #21). */
+// comments[i] is the rendered comment for inDiff[i] (1:1, same order). Returns the review url, the
+// count that actually posted, and the findings GitHub rejected (for the caller to surface in the sticky).
 const postInlineReview = async (
   repo: string,
   prNumber: number,
@@ -210,12 +186,9 @@ const postInlineReview = async (
     const stdout = await ghApi(reviewsEndpoint, reviewBody(true));
     return { url: parseHtmlUrl(stdout), inlinePosted: comments.length, unposted: [] };
   } catch (err) {
-    // The reviews endpoint is atomic: one comment on a position GitHub won't accept rejects the WHOLE
-    // batch (issue #57). Rather than fail the job — or drop every comment — post the review body-only
-    // (so the event + findings marker exist) and then re-post each comment individually, keeping the
-    // ones GitHub accepts and collecting the finding behind each one it rejects for the caller to
-    // surface in the sticky. Degrade, never crash (§5.5). A body-only review that itself fails
-    // (comments.length === 0) is a genuine error and propagates.
+    // The reviews endpoint is atomic — one rejected position fails the whole batch — so on rejection
+    // post the body only, then re-post each comment individually, collecting the ones GitHub rejects.
+    // A body-only review that itself fails (no comments) is a genuine error and propagates.
     if (comments.length === 0) throw err;
     process.stderr.write(
       `Warning: the batched inline review on PR #${String(prNumber)} was rejected (${err instanceof Error ? err.message : String(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
@@ -265,9 +238,6 @@ const findBotComment = async (
   return { id: parsed.id, body: parsed.body };
 };
 
-/** Parse an issue-comment create/patch response for `id`/`html_url`; malformed responses degrade
- *  to null rather than throwing (§5.5, issue #11 ROBUSTNESS — a missing link must never fail the
- *  post). */
 const parseCommentRef = (
   raw: string,
 ): { readonly id: number; readonly html_url: string } | null => {
@@ -291,8 +261,7 @@ const patchComment = async (
     [`repos/${repo}/issues/comments/${String(commentId)}`, "--input", "-"],
     JSON.stringify({ body }),
   );
-  // Only `html_url` is needed here — the id is already known by the caller — so this doesn't
-  // require `id` in the response the way parseCommentRef (used for a brand-new comment) does.
+  // Only html_url is needed — the id is already known — unlike parseCommentRef for a new comment.
   const htmlUrl = parseHtmlUrl(stdout);
   return htmlUrl !== undefined ? { html_url: htmlUrl } : null;
 };
@@ -310,10 +279,8 @@ const postComment = async (
   return parseCommentRef(stdout);
 };
 
-/** Upsert the sticky summary — trust by author identity (bot login), not marker alone (§5.3).
- *  Returns the sticky's id + `html_url` (url undefined on a malformed response) so the caller can
- *  re-patch it with a link to the review once posted (issue #11). Returns null only when a *new*
- *  comment's response couldn't be parsed at all — there is then no id to re-patch with. */
+// Trust by author identity (bot login), not the marker alone. Returns null only when a NEW comment's
+// response couldn't be parsed — there is then no id to re-patch with the review link.
 const upsertSticky = async (
   repo: string,
   prNumber: number,
@@ -333,8 +300,7 @@ const upsertSticky = async (
   return posted ? { id: posted.id, url: posted.html_url } : null;
 };
 
-/** A non-dismissed bot-authored review. Only its id is needed — every prior bot review is
- *  superseded regardless of which commit it reviewed (issue #53). */
+// Only the id is needed — every prior bot review is superseded regardless of the commit it reviewed.
 interface BotReviewRef {
   readonly id: number;
 }
@@ -346,7 +312,6 @@ const isBotReview = (r: unknown): r is { id: number; user: { login: string }; st
   typeof (r as { state?: unknown }).state === "string" &&
   typeof (r as { user?: { login?: unknown } }).user?.login === "string";
 
-/** List the PR's non-dismissed bot-authored reviews. */
 const fetchBotReviews = async (
   repo: string,
   prNumber: number,
@@ -367,7 +332,7 @@ const fetchBotReviews = async (
     .map((r) => ({ id: r.id }));
 };
 
-/** Dismiss superseded bot-authored reviews (REC-CO-2). Failures are logged, never fail the job. */
+// Best-effort: a dismissal failure is logged, never fails the job.
 const dismissReviews = async (
   repo: string,
   prNumber: number,
@@ -394,20 +359,15 @@ const dismissReviews = async (
   }
 };
 
-/** GraphQL: list a PR's review-thread comments — author + whether already minimized — enough to find
- *  the bot's own inline comments left by prior reviews. Capped at the first 100 threads (×100 comments
- *  each); `pageInfo.hasNextPage` flags a PR that exceeds the cap. */
+// Capped at the first 100 threads (×100 comments each); hasNextPage flags a PR that exceeds it.
 const REVIEW_THREAD_COMMENTS_QUERY =
   "query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100){pageInfo{hasNextPage}nodes{comments(first:100){nodes{id isMinimized author{login}}}}}}}}";
 
-/** GraphQL: hide one comment as OUTDATED. Reversible — minimized, not deleted. */
+// Reversible — minimized as OUTDATED, not deleted.
 const MINIMIZE_COMMENT_MUTATION =
   "mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}";
 
-/** The comment's node id when it is a bot-authored, not-yet-minimized inline comment; null otherwise.
- *  GraphQL reports the bare login (`github-actions`), so the bot login is matched with and without the
- *  REST `[bot]` suffix. Which SHA it was authored against no longer matters — the caller snapshots the
- *  set BEFORE posting the fresh review, so every match is by definition a prior (stale) comment. Pure. */
+// GraphQL reports the bare login (github-actions), so match with and without the REST [bot] suffix.
 const priorBotCommentId = (c: unknown, logins: readonly string[]): string | null => {
   if (typeof c !== "object" || c === null) return null;
   const o = c as { id?: unknown; isMinimized?: unknown; author?: { login?: unknown } | null };
@@ -420,9 +380,6 @@ const priorBotCommentId = (c: unknown, logins: readonly string[]): string | null
     : null;
 };
 
-/** Parse the review-threads response into the bot's not-yet-minimized inline comment ids, degrading
- *  to an empty list on any malformed shape (§5.5), and flagging whether the 100-thread cap was hit.
- *  Pure. */
 const priorBotCommentIds = (
   raw: string,
   botLogin: string,
@@ -457,10 +414,8 @@ const priorBotCommentIds = (
   return { ids, truncated };
 };
 
-/** Snapshot the bot's own not-yet-minimized inline review comments currently on the PR — the stale
- *  threads left by prior reviews (issue #31/#53). Called BEFORE the fresh review is posted, so the set
- *  is exactly the prior comments (whether on a superseded commit or an earlier review of this same
- *  SHA) and never the fresh ones. Best-effort: any listing failure logs and returns []. */
+// Snapshot BEFORE posting the fresh review, so the set is exactly the prior (stale) comments.
+// Best-effort: a listing failure logs and returns [].
 const listPriorBotCommentIds = async (
   repo: string,
   prNumber: number,
@@ -499,9 +454,7 @@ const listPriorBotCommentIds = async (
   return ids;
 };
 
-/** Minimize (as OUTDATED, reversibly) the given bot inline comment node ids — the pre-post snapshot of
- *  stale threads — so a re-reviewed PR doesn't accumulate them (issue #31/#53). Best-effort: any
- *  minimize failure is logged and never fails the post. */
+// Best-effort: a minimize failure is logged, never fails the post.
 const minimizeComments = async (
   prNumber: number,
   ids: readonly string[],
@@ -526,7 +479,7 @@ const minimizeComments = async (
 };
 
 export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<void> => {
-  // Phase 1 (CO-R3): reads, decodes, diff validation, rendering — no writes yet.
+  // Phase 1: reads + rendering, no writes yet.
   const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
   const resolution = resolvePr(candidates, input.headBranch);
   if (resolution.kind === "none") {
@@ -627,10 +580,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     process.exit(0);
   }
 
-  // Issue #19 + review fix #5: base64-encode the whole-document marker ONCE and reuse it on the two
-  // single-per-review surfaces (both sticky renders, the review body). Each inline comment instead
-  // embeds only its OWN finding (issue #31) — buildInlineComments derives that per-finding marker
-  // itself from `findings` below, rather than reusing this whole-document one.
+  // Base64-encode the whole-document marker once, reused across sticky + review body; each inline
+  // comment embeds only its own finding instead.
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
 
   const {
@@ -650,17 +601,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     );
   }
 
-  // The bot's prior reviews (identity via the reviews API `commit_id`), fetched to supersede every
-  // one of them — including any already on THIS head SHA — before posting the fresh review below.
-  // We ran the review agent and paid for it, so its result must be surfaced: a re-request (or an
-  // incidental CI re-run) on the same commit dismisses the stale review and posts the new one rather
-  // than being skipped (issue #53). Fetched unconditionally now that a review is always posted (#43).
+  // All prior bot reviews, fetched to supersede below — a re-run on the same commit still posts a
+  // fresh review rather than being skipped.
   const botReviews = await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi);
 
-  // Issue #21: the "posted — see the review" disposition is constructed ONLY from the actual
-  // postInlineReview result below, never optimistically — a review that doesn't yet exist (or
-  // never will, if this process dies before posting it) must never be claimed. Everything knowable
-  // from reads alone (no-in-diff-findings) is truthful up front and stays as-is.
+  // The "posted" disposition is only ever built from the actual post result below, never optimistically.
   const initialDisposition: InlineDisposition | undefined =
     comments.length === 0 && strays.length > 0 ? { kind: "none-in-diff" } : undefined;
 
@@ -685,9 +630,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     longFiles.length > 0
       ? `\n\n---\n\n> **Note:** ${String(longFiles.length)} suggestion(s) exceeded GitHub's ~10-line inline suggestion limit and were omitted from the inline comments; the affected findings remain in the review.\n`
       : "";
-  // Renders the sticky body; called twice (issue #11) — once before the review exists (no
-  // disposition claim beyond what reads already confirmed), once after (with the confirmed
-  // disposition + reviewUrl) to report the truth and link the sticky back to the review.
+  // Called twice: before the review exists (no disposition claim) and after (with reviewUrl + truth).
   const renderBody = (
     inlineDisposition: InlineDisposition | undefined,
     reviewUrl?: string,
@@ -704,7 +647,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }) + longFilesNote,
     );
 
-  // Phase 2 (CO-R3): writes — sticky first, inline second; failure exits non-zero.
+  // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,
     prNumber,
@@ -713,14 +656,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ghApi,
   );
 
-  // Issue #43: a COMMENT review is posted on EVERY run, even with no in-diff comments, so tooling and
-  // agents get a review event every time — its body points at the sticky (for humans) and carries the
-  // findings-JSON marker (for agents).
-
-  // Issue #31/#53: snapshot the bot's existing inline comments BEFORE posting the fresh review, so the
-  // stale ones can be minimized afterward without touching the fresh ones. Timing — not the comment's
-  // commit SHA — separates stale from fresh: everything present now is from a prior review (on a
-  // superseded commit OR an earlier review of this same SHA); the fresh comments are posted below.
+  // Snapshot stale comments BEFORE posting the fresh ones; timing (not commit SHA) separates them.
   const priorInlineComments = await listPriorBotCommentIds(
     input.repo,
     prNumber,
@@ -728,9 +664,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ghApi,
   );
 
-  // Post the fresh review FIRST, THEN supersede the prior ones (REC-CO-2 + issue #53): posting before
-  // dismissing means the PR is never left without a review even if the process dies between the two —
-  // a re-review of the same commit dismisses the stale review only after its replacement exists.
+  // Post first, THEN dismiss: the PR is never left review-less if the process dies between the two.
   const {
     url: reviewUrl,
     inlinePosted,
@@ -749,35 +683,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`,
   );
 
-  // Supersede EVERY prior bot review — those on other commits and any already on this head SHA.
-  // Best-effort: a dismissal that fails leaves a stale review beside the fresh one (logged), which
-  // beats failing the job now that the fresh review is already posted. Concurrent runs on the same
-  // commit are bounded by the workflow's concurrency group; GitHub itself tolerates multiple reviews.
+  // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.
   const priorReviewIds = botReviews.map((r) => r.id);
   if (priorReviewIds.length > 0) {
     await dismissReviews(input.repo, prNumber, priorReviewIds, ghApi);
   }
 
-  // Issue #31/#53: minimize the pre-post snapshot — the stale threads from the reviews just
-  // superseded — so a re-reviewed PR doesn't accumulate them. The fresh review's comments were posted
-  // after the snapshot, so they are untouched. Best-effort — the fresh review is already posted.
+  // Minimize the pre-post snapshot (stale threads); the fresh comments were posted after it, untouched.
   await minimizeComments(prNumber, priorInlineComments, ghApi);
 
-  // Issue #11/#21/#57: now that postInlineReview has resolved, re-render the sticky to the truth.
-  // - `inlinePosted > 0` → "posted N" + the review link (N is the count that ACTUALLY posted, so a
-  //   partial #57 salvage reports only the anchored ones).
-  // - `unposted` (issue #57) → the in-diff findings GitHub rejected are appended to the real
-  //   out-of-diff strays so no finding is lost to human view; `unanchoredCount` drives the section's
-  //   note. When NONE anchored, the disposition says the inline surface was unavailable, never a
-  //   false "posted" (issue #21).
-  // - Neither → a body-only review with no in-diff comments (issue #43) keeps the initial sticky.
-  // Best-effort — the sticky and review are already posted, so a failure here must never fail the job.
+  // Re-render the sticky to the truth: "posted N" is the count that ACTUALLY anchored, any
+  // GitHub-rejected in-diff findings join the strays, and none-anchored says "inline unavailable",
+  // never a false "posted". Best-effort — the sticky and review are already posted.
   const unanchoredCount = unposted.length;
   const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
   if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
-    // Inside the guard exactly one holds: some comments anchored ("posted N"), or none did but
-    // findings were rejected ("inline unavailable"). A body-only review with nothing to say keeps
-    // the initial sticky and never reaches here.
     const finalDisposition: InlineDisposition =
       inlinePosted > 0
         ? { kind: "posted", count: inlinePosted, sha: input.headSha }

@@ -1,7 +1,4 @@
-// Gather review inputs (SPEC §8.2): resolve the PR from the trusted head SHA, fetch the diff (with
-// a non-truncating git-diff fallback), the PR context, the prior bot review, and — when CI
-// failed — the failing-job logs. Mirrors the bash "Gather review inputs" step 1:1, but as
-// vitest-tested TypeScript, sharing `post`'s PR resolution so the two jobs never split-brain.
+// Shares post's PR resolution so the review and comment jobs never split-brain on which PR.
 
 import { execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -30,7 +27,6 @@ export type GatherResult =
       readonly diffSize: number;
     };
 
-/** The GitHub-outputs lines the step appends to $GITHUB_OUTPUT. CI-agnostic + directly testable. */
 export const renderOutputs = (result: GatherResult): string => {
   switch (result.kind) {
     case "skip":
@@ -91,7 +87,6 @@ const fetchPrMeta = async (repo: string, prNumber: number, ghApi: GhApi): Promis
   return decoded.right;
 };
 
-/** Fetch the diff via the API; null on failure (drives the git fallback). */
 const fetchApiDiff = async (
   repo: string,
   prNumber: number,
@@ -104,7 +99,6 @@ const fetchApiDiff = async (
   }
 };
 
-/** Last comment authored by botLogin, or null. Degrades to null on ANY failure (bash `|| echo null`). */
 const fetchPriorReview = async (
   repo: string,
   prNumber: number,
@@ -123,9 +117,8 @@ const fetchPriorReview = async (
   }
 };
 
-/** Download each failing job's logs → <outDir>/job_<id>.log. Jobs-list failure is fatal; a
- *  per-log download failure degrades (warns to stderr, keeps whatever logs were retrieved) —
- *  logs are advisory input, and partial logs plus the diff beat a dead review. */
+// Jobs-list failure is fatal; a per-log download failure degrades — logs are advisory, and partial
+// logs plus the diff beat a dead review.
 const downloadFailingJobLogs = async (
   repo: string,
   runId: string,

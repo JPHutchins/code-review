@@ -1,5 +1,4 @@
-// Deterministic comment renderer. Takes findings + envelope + prices → comment markdown.
-// Uses Eta templates; pure data-in, string-out — no side effects, no model invocation.
+// Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
 import type { Finding, Severity } from "./schema.js";
@@ -8,16 +7,14 @@ import { computeCost } from "./cost.js";
 import { severityEmoji, findingsPointer, projectPatch, formatConfidence } from "./surface.js";
 import type { PatchProjection } from "./surface.js";
 
-/** Escape pipe characters so they don't break markdown table columns. */
+// pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 
-/** Replace backticks so they don't break inline code spans. */
+// backticks break inline code spans.
 const escapeCodeBackticks = (text: string): string => text.replace(/`/g, "-");
 
-/** A stray finding with its sanitized fields plus its projected patch block for the strays list. */
 type StrayView = Finding & { readonly patchProjection: PatchProjection };
 
-/** Sanitize a stray finding's fields and attach its patch projection for the strays section. */
 const sanitizeFinding = (f: Finding): StrayView => ({
   ...f,
   title: escapePipes(f.title),
@@ -32,14 +29,12 @@ const emptySeverityCounts = (): Record<Severity, number> => ({
   nit: 0,
 });
 
-/** Tally findings by severity for the summary counts line. Ignores out-of-domain severities. */
 export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCounts =>
   findings.reduce<Record<Severity, number>>(
     (acc, f) => (f.severity in acc ? { ...acc, [f.severity]: acc[f.severity] + 1 } : acc),
     emptySeverityCounts(),
   );
 
-/** Render a code-review comment from findings, envelope, and prices. Pure. */
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
   const usageAvailable = input.envelope !== null;
@@ -71,8 +66,7 @@ export const render = (input: RenderInput): string => {
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
-    // Cost cells render N/A (never a false $0.00) when no real price map was provided — there are
-    // real tokens spent, we simply have no rates to price them (SPEC §6.2).
+    // N/A (never a false $0.00) when no real price map was provided — real tokens, no rates to price them.
     formatCost: (n: number): string =>
       !pricesProvided
         ? "N/A"

@@ -218,16 +218,21 @@ const okOutcome = (gated: GatedCandidate): LadderOutcome => ({
 export const extractStructured = (input: ExtractInput): LadderOutcome => {
   const native = parseNativeForExtraction(input.native);
 
-  if (isErrorEnvelope(native)) {
-    return { kind: "error-envelope", detail: describeErrorEnvelope(native) };
-  }
-
+  // The agent-file and its last-valid snapshot are self-validated deliverables written OUTSIDE the
+  // worktree (a PR can't plant them) and checkpointed by us during the run, so they outrank an error
+  // envelope: a run that errored (max-turns, a captured API error) after producing a valid draft
+  // should still post it, not "did not complete". The error-envelope short-circuit below still guards
+  // the less-trusted native rungs (structured_output/result).
   if (input.kind === "findings") {
     for (const path of [input.agentFilePath, input.agentFileFallbackPath]) {
       if (path === undefined) continue;
       const fromFile = candidateFromJsonText(input.kind, readFileOrNull(path));
       if (fromFile) return okOutcome(fromFile);
     }
+  }
+
+  if (isErrorEnvelope(native)) {
+    return { kind: "error-envelope", detail: describeErrorEnvelope(native) };
   }
 
   if (native.structuredOutput !== undefined) {

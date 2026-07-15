@@ -407,7 +407,7 @@ export const snapshotIfValid = (draftPath: string): void => {
       copyFileSync(draftPath, lastValidPath(draftPath));
   } catch (err) {
     process.stderr.write(
-      `code-review: could not snapshot the last-valid draft (${errMsg(err)}) — keeping the prior snapshot\n`,
+      `code-review: could not snapshot the last-valid draft (${errMsg(err)}) — any prior snapshot is unchanged\n`,
     );
   }
 };
@@ -895,9 +895,7 @@ const adaptCmd = defineCommand({
       adapt(requireAdapterName(args.adapter), readJSONOrAbsent(args.native), args["agent-file"], {
         route: args.route,
         effort: args.effort,
-        ...(args["agent-file-fallback"]
-          ? { agentFileFallbackPath: args["agent-file-fallback"] }
-          : {}),
+        agentFileFallbackPath: args["agent-file-fallback"],
         ...(args.transcript
           ? {
               transcriptFallback: (): TranscriptTelemetry =>

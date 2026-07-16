@@ -36,6 +36,8 @@ jobs:
     #    on a public PR could drain your model budget or feed the agent instructions — which is exactly
     #    why anthropics/claude-code-action gates on write permission.
     #  • comment.user.type != 'Bot'       → never re-trigger on a bot's own comment.
+    # NOTE: this `startsWith` is a coarse pre-filter (the CLI re-checks the trigger as a WHOLE word);
+    # if you set a custom `trigger:` in the `with:` block below, change this token to match it.
     if: >-
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/code-review') &&

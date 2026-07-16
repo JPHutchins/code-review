@@ -68,7 +68,7 @@ on:
         type: string
         required: true
       model_mechanic:
-        description: Model for the fast fix route (a comment trigger always routes the full review, but review-reusable requires it)
+        description: Model for the fast fix (mechanic) route, used when the head's CI concluded 'failure'
         type: string
         required: true
       subagent_model:
@@ -150,6 +150,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read            # await-ci lists the head's CI workflow runs (Actions API ⇒ actions:read)
       # write, not read: a reaction on a PR comment is scoped to Pull requests (issues:write does NOT
       # cover it — GitHub 403s). The same write also covers resolving the PR head by number.
       pull-requests: write

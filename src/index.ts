@@ -1523,15 +1523,20 @@ const awaitCiCmd = defineCommand({
     },
   },
   run: async ({ args }) => {
+    const workflowName = args["ci-workflow"] || "CI";
     const outcome = await awaitCiConclusion(args.repo, args["head-sha"], {
-      workflowName: args["ci-workflow"] || "CI",
+      workflowName,
       pollIntervalMs: requireWallMs(args["poll-interval"], "--poll-interval", "15s"),
       timeoutMs: requireWallMs(args.timeout, "--timeout", "30m"),
     });
     process.stderr.write(
       outcome.kind === "concluded"
-        ? `code-review await-ci: CI run ${String(outcome.runId)} concluded "${outcome.conclusion}"\n`
-        : `code-review await-ci: no conclusive CI result before the timeout — not reviewing\n`,
+        ? `code-review await-ci: CI run ${String(outcome.runId)} ("${workflowName}") concluded "${outcome.conclusion}"\n`
+        : `code-review await-ci: no run named "${workflowName}" concluded before the timeout — not reviewing.${
+            outcome.seenNames.length > 0
+              ? ` Workflow names seen for this head SHA: ${outcome.seenNames.join(", ")} — check --ci-workflow matches one.`
+              : " No workflow runs were seen for this head SHA at all."
+          }\n`,
     );
     process.stdout.write(renderCiOutputs(outcome));
   },

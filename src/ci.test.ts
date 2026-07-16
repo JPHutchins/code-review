@@ -48,13 +48,16 @@ const run = (over: Partial<RunJson> & Pick<RunJson, "run_number">): RunJson => (
 describe("resolveCiRun", () => {
   const api = (runs: readonly RunJson[]): GhApi => mkSeqGhApi([runsJson(runs)]);
 
-  it("returns null when no run matches the workflow name", async () => {
+  it("returns run=null but reports the seen names when none matches the workflow name", async () => {
     const got = await resolveCiRun("o/r", "sha", "CI", api([run({ run_number: 1, name: "Lint" })]));
-    expect(got).toBeNull();
+    expect(got.run).toBeNull();
+    expect(got.seenNames).toEqual(["Lint"]);
   });
 
-  it("returns null when there are no runs at all (CI has not queued yet)", async () => {
-    expect(await resolveCiRun("o/r", "sha", "CI", api([]))).toBeNull();
+  it("returns run=null and no seen names when there are no runs at all (CI not queued yet)", async () => {
+    const got = await resolveCiRun("o/r", "sha", "CI", api([]));
+    expect(got.run).toBeNull();
+    expect(got.seenNames).toEqual([]);
   });
 
   it("filters by workflow name and picks the highest run_number (a re-run wins)", async () => {
@@ -68,12 +71,23 @@ describe("resolveCiRun", () => {
         run({ run_number: 2, name: "Lint", conclusion: "failure" }),
       ]),
     );
-    expect(got).toEqual({ id: 3, status: "completed", conclusion: "success" });
+    expect(got.run).toEqual({ id: 3, status: "completed", conclusion: "success" });
+    expect(got.seenNames).toEqual(["CI", "Lint"]);
   });
 
-  it("throws on a malformed runs payload", async () => {
+  it("matches a push-triggered run (event is not filtered)", async () => {
+    const got = await resolveCiRun(
+      "o/r",
+      "sha",
+      "CI",
+      api([run({ run_number: 7, status: "completed", conclusion: "success" })]),
+    );
+    expect(got.run).toEqual({ id: 7, status: "completed", conclusion: "success" });
+  });
+
+  it("throws with io-ts detail on a malformed runs payload", async () => {
     await expect(resolveCiRun("o/r", "sha", "CI", mkSeqGhApi(['{"nope":1}']))).rejects.toThrow(
-      /did not match/,
+      /did not match the expected shape:/,
     );
   });
 });
@@ -118,7 +132,7 @@ describe("awaitCiConclusion", () => {
     expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 2 });
   });
 
-  it("times out when the run never completes, reporting the last-seen run id", async () => {
+  it("times out when the run never completes, reporting the last-seen run id + names", async () => {
     const clock = mkClock();
     const inProgress = runsJson([run({ run_number: 9, status: "in_progress", conclusion: null })]);
     const got = await awaitCiConclusion(
@@ -127,18 +141,21 @@ describe("awaitCiConclusion", () => {
       { ...OPTS, timeoutMs: 3000 },
       { ghApi: mkSeqGhApi([inProgress, inProgress, inProgress, inProgress]), ...clock },
     );
-    expect(got).toEqual({ kind: "timed-out", runId: 9 });
+    expect(got).toEqual({ kind: "timed-out", runId: 9, seenNames: ["CI"] });
   });
 
-  it("times out with a null run id when CI never even appeared", async () => {
+  it("times out with a null run id + the mismatched names when the named CI never appeared", async () => {
     const clock = mkClock();
+    const others = runsJson([
+      run({ run_number: 1, name: "Lint", status: "in_progress", conclusion: null }),
+    ]);
     const got = await awaitCiConclusion(
       "o/r",
       "sha",
       { ...OPTS, timeoutMs: 2000 },
-      { ghApi: mkSeqGhApi([runsJson([]), runsJson([]), runsJson([])]), ...clock },
+      { ghApi: mkSeqGhApi([others, others, others]), ...clock },
     );
-    expect(got).toEqual({ kind: "timed-out", runId: null });
+    expect(got).toEqual({ kind: "timed-out", runId: null, seenNames: ["Lint"] });
   });
 
   it('maps a completed run with a null conclusion to "unknown"', async () => {
@@ -161,13 +178,13 @@ describe("renderCiOutputs", () => {
   });
 
   it("emits ci_settled=false + the last-seen run id when timed out", () => {
-    expect(renderCiOutputs({ kind: "timed-out", runId: 4 })).toBe(
+    expect(renderCiOutputs({ kind: "timed-out", runId: 4, seenNames: ["CI"] })).toBe(
       "ci_settled=false\nci_run_id=4\n",
     );
   });
 
   it("emits an empty ci_run_id when no run was ever seen", () => {
-    expect(renderCiOutputs({ kind: "timed-out", runId: null })).toBe(
+    expect(renderCiOutputs({ kind: "timed-out", runId: null, seenNames: [] })).toBe(
       "ci_settled=false\nci_run_id=\n",
     );
   });

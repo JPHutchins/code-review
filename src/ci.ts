@@ -5,6 +5,7 @@
 // safe in the query; the workflow name is trusted caller config.
 
 import * as t from "io-ts";
+import { PathReporter } from "io-ts/lib/PathReporter.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 
@@ -25,36 +26,56 @@ export interface CiRun {
   readonly conclusion: string | null;
 }
 
-// The latest run of the named CI workflow for this head SHA on a pull_request, or null if none exists
-// yet (the comment may fire before CI even queues). Latest = highest run_number, so a re-run wins.
+export interface CiLookup {
+  // The matched run, or null if the named workflow has no run for this head SHA yet.
+  readonly run: CiRun | null;
+  // Distinct workflow names that DID run for this head SHA — lets a caller tell a mistyped
+  // workflowName (which otherwise just times out) from "the named CI simply has not queued yet".
+  readonly seenNames: readonly string[];
+}
+
+// The latest run of the named CI workflow for this head SHA. NOT filtered by triggering event: CI may
+// run on `push` as well as `pull_request`, and the head SHA already pins the commit. Latest = highest
+// run_number, so a re-run supersedes. `run` is null when the named workflow has no run yet (the
+// comment may fire before CI even queues).
 export const resolveCiRun = async (
   repo: string,
   headSha: string,
   workflowName: string,
   ghApi: GhApi,
-): Promise<CiRun | null> => {
-  const stdout = await ghApi([
-    `repos/${repo}/actions/runs?head_sha=${headSha}&event=pull_request&per_page=100`,
-  ]);
+): Promise<CiLookup> => {
+  const stdout = await ghApi([`repos/${repo}/actions/runs?head_sha=${headSha}&per_page=100`]);
   const decoded = RunsCodec.decode(JSON.parse(stdout) as unknown);
   if (decoded._tag === "Left")
-    throw new Error(`workflow runs for ${headSha} did not match the expected shape`);
-  const latest = decoded.right.workflow_runs
+    throw new Error(
+      `workflow runs for ${headSha} did not match the expected shape: ${PathReporter.report(decoded).join("; ")}`,
+    );
+  const runs = decoded.right.workflow_runs;
+  const latest = runs
     .filter((r) => r.name === workflowName)
     .reduce<t.TypeOf<typeof RunCodec> | null>(
       (best, r) => (best === null || r.run_number > best.run_number ? r : best),
       null,
     );
-  return latest === null
-    ? null
-    : { id: latest.id, status: latest.status ?? "unknown", conclusion: latest.conclusion };
+  return {
+    run:
+      latest === null
+        ? null
+        : { id: latest.id, status: latest.status ?? "unknown", conclusion: latest.conclusion },
+    seenNames: [...new Set(runs.flatMap((r) => (r.name === null ? [] : [r.name])))],
+  };
 };
 
 export type CiOutcome =
   | { readonly kind: "concluded"; readonly conclusion: string; readonly runId: number }
   // No conclusive CI result within the timeout — the run never appeared or never completed. The
-  // caller declines to review rather than fabricate a conclusion.
-  | { readonly kind: "timed-out"; readonly runId: number | null };
+  // caller declines to review rather than fabricate a conclusion. seenNames carries the workflow
+  // names that DID run, so a mistyped ci_workflow can be diagnosed instead of silently timing out.
+  | {
+      readonly kind: "timed-out";
+      readonly runId: number | null;
+      readonly seenNames: readonly string[];
+    };
 
 export interface AwaitOptions {
   readonly workflowName: string;
@@ -75,11 +96,11 @@ export const awaitCiConclusion = async (
   deps: AwaitDeps = { ghApi: runGhApi, sleep: defaultSleep, elapsedMs: monotonicElapsed() },
 ): Promise<CiOutcome> => {
   const poll = async (): Promise<CiOutcome> => {
-    const run = await resolveCiRun(repo, headSha, options.workflowName, deps.ghApi);
+    const { run, seenNames } = await resolveCiRun(repo, headSha, options.workflowName, deps.ghApi);
     if (run !== null && run.status === "completed")
       return { kind: "concluded", conclusion: run.conclusion ?? "unknown", runId: run.id };
     if (deps.elapsedMs() >= options.timeoutMs)
-      return { kind: "timed-out", runId: run === null ? null : run.id };
+      return { kind: "timed-out", runId: run === null ? null : run.id, seenNames };
     await deps.sleep(options.pollIntervalMs);
     return poll();
   };

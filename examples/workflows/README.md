@@ -104,9 +104,16 @@ optional in-comment arguments — a bigger budget for a thorny PR, a one-off foc
 ```
 
 `/code-review` alone runs a normal full review. This is **additive** — the pipeline is the same
-trigger-agnostic reusable workflow; comment-triggering is just a consumer-side trigger recipe plus a
-trusted gate. Copy [`review-on-comment.yaml`](review-on-comment.yaml) into `.github/workflows/` (run
-it alongside `review.yaml`, or on its own).
+trigger-agnostic reusable workflow. Copy [`review-on-comment.yaml`](review-on-comment.yaml) into
+`.github/workflows/` (run it alongside `review.yaml`, or on its own).
+
+The copy-paste file is deliberately **thin** — it owns only the two things GitHub forces into your
+repo: the trigger (a `workflow_call` reusable can't declare `on: issue_comment`) and the
+**authorization gate** (the job-level `if:`, your security boundary, kept visible in your repo rather
+than hidden behind a pinned `@ref`). Everything mechanical — parsing the comment args, resolving the
+PR head, the 👀/🚀 acknowledgement, and running the review — lives in a reusable *front-end*
+(`review-on-comment-reusable.yaml`) it delegates to, which in turn nested-calls the same
+`review-reusable.yaml` the CI path uses.
 
 **Argument grammar** — an optional leading duration and/or dollar amount, in either order, then
 free-form instructions (a `/` slash command, like prow's `/lgtm` or `slash-command-dispatch`, not an
@@ -123,10 +130,10 @@ A duration/dollar token is only recognized when it **leads** — `spend 24m on i
 you set, resolves the PR head from the comment's **PR number via the API** (never a SHA in the
 comment), and emits the outputs the review job consumes.
 
-**Acknowledgement** — the trusted gate reacts 👀 to your comment on receipt; on completion the `ack`
-job swaps it for 🚀 (review posted — read the sticky summary) or 😕 (the run failed). The review job
-itself is read-only and runs untrusted PR code, so it can't post progress; the sticky comment is the
-result, exactly as with the CI trigger.
+**Acknowledgement** — the front-end's trusted gate reacts 👀 to your comment on receipt; on
+completion the `ack` job swaps it for 🚀 (review posted — read the sticky summary) or 😕 (the run
+failed). The review job itself is read-only and runs untrusted PR code, so it can't post progress;
+the sticky comment is the result, exactly as with the CI trigger.
 
 **Security model** — comment-triggering opens surfaces the CI trigger doesn't, so the recipe closes
 each in the *trusted* default-branch context (`issue_comment` runs there, never in PR-fork context):
@@ -146,8 +153,8 @@ each in the *trusted* default-branch context (`issue_comment` runs there, never 
 - **No self-triggering.** The gate ignores bot comments (`comment.user.type != 'Bot'`), and the bot's
   own sticky never begins with `/code-review`.
 
-The gate/ack jobs run only trusted code (your workflow + the CLI + the GitHub API), never PR code, so
-the egress lock stays where untrusted code executes — the reusable workflow's review job.
+The front-end's gate/ack jobs run only trusted code (the workflow + the CLI + the GitHub API), never
+PR code, so the egress lock stays where untrusted code executes — the reusable workflow's review job.
 
 ## Setup (both paths)
 

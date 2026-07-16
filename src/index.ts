@@ -42,6 +42,7 @@ import { post } from "./post.js";
 import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.js";
 import { react, isReaction, REACTIONS } from "./react.js";
 import type { Reaction } from "./react.js";
+import { awaitCiConclusion, renderCiOutputs } from "./ci.js";
 import { gather, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName, TranscriptTelemetry } from "./adapt.js";
@@ -1391,6 +1392,13 @@ const requirePositiveInt = (raw: string, flag: string): number => {
     : fail(`${flag} must be a positive integer; got "${raw}"`);
 };
 
+const requireWallMs = (raw: string | undefined, flag: string, fallback: string): number => {
+  const ms = parseWallMs(raw || fallback);
+  return ms === null
+    ? fail(`${flag} must be a duration like 30m, 15s, or 1h (got "${raw ?? ""}")`)
+    : ms;
+};
+
 const parseCommandCmd = defineCommand({
   meta: {
     name: "parse-command",
@@ -1488,6 +1496,47 @@ const reactCmd = defineCommand({
   },
 });
 
+const awaitCiCmd = defineCommand({
+  meta: {
+    name: "await-ci",
+    description:
+      "Wait for the PR head's CI workflow run to conclude, then emit its REAL conclusion + run id to $GITHUB_OUTPUT (ci_settled, ci_conclusion, ci_run_id). The on-demand comment trigger uses this so it routes on the same CI result the CI-completion trigger would — success → full review, failure → mechanic with that run's logs — instead of reviewing blind. Polls until the run completes or the timeout elapses; ci_settled=false ⇒ no conclusive result (caller should decline to review, not guess).",
+  },
+  args: {
+    repo: { type: "string", description: "Repository (owner/name)", required: true },
+    "head-sha": {
+      type: "string",
+      description: "PR head SHA to find the CI run for (resolved from the trusted PR number)",
+      required: true,
+    },
+    "ci-workflow": {
+      type: "string",
+      description: 'CI workflow name to wait for — the name: of your CI workflow (default: "CI")',
+    },
+    timeout: {
+      type: "string",
+      description: "Give up waiting after this wall (default: 30m)",
+    },
+    "poll-interval": {
+      type: "string",
+      description: "How often to re-check the run status (default: 15s)",
+    },
+  },
+  run: async ({ args }) => {
+    const outcome = await awaitCiConclusion(args.repo, args["head-sha"], {
+      workflowName: args["ci-workflow"] || "CI",
+      pollIntervalMs: requireWallMs(args["poll-interval"], "--poll-interval", "15s"),
+      timeoutMs: requireWallMs(args.timeout, "--timeout", "30m"),
+    });
+    process.stderr.write(
+      outcome.kind === "concluded"
+        ? `code-review await-ci: CI run ${String(outcome.runId)} concluded "${outcome.conclusion}"\n`
+        : `code-review await-ci: no conclusive CI result before the timeout — not reviewing\n`,
+    );
+    process.stdout.write(renderCiOutputs(outcome));
+  },
+});
+
 export const main = defineCommand({
   meta: {
     name: "code-review",
@@ -1498,6 +1547,7 @@ export const main = defineCommand({
     gather: gatherCmd,
     "parse-command": parseCommandCmd,
     react: reactCmd,
+    "await-ci": awaitCiCmd,
     render: renderCmd,
     inline: inlineCmd,
     post: postCmd,

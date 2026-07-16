@@ -43,7 +43,7 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
         github.event.workflow_run.event == 'pull_request' &&
         (github.event.workflow_run.conclusion == 'success' ||
          github.event.workflow_run.conclusion == 'failure')
-      uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.24
+      uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.25
       with:
         head_sha:      ${{ github.event.workflow_run.head_sha }}
         head_branch:   ${{ github.event.workflow_run.head_branch }}
@@ -130,10 +130,20 @@ A duration/dollar token is only recognized when it **leads** — `spend 24m on i
 you set, resolves the PR head from the comment's **PR number via the API** (never a SHA in the
 comment), and emits the outputs the review job consumes.
 
-**Acknowledgement** — the front-end's trusted gate reacts 👀 to your comment on receipt; on
-completion the `ack` job swaps it for 🚀 (review posted — read the sticky summary) or 😕 (the run
-failed). The review job itself is read-only and runs untrusted PR code, so it can't post progress;
-the sticky comment is the result, exactly as with the CI trigger.
+**CI-result aware** — the differentiator. Comment a `/code-review` *before* CI finishes and the
+front-end **waits** for the head's CI run to conclude, then routes on its **real** result — exactly
+as the CI-completion trigger does: `success` → full review, `failure` → the fast mechanic route with
+that CI run's failing-job logs. It never reviews blind to CI. The workflow to wait for is the
+`ci_workflow` input (default `CI` — the same `name:` you list in `review.yaml`'s `workflows: [...]`);
+`ci_wait_timeout` bounds the wait (default `30m`). If CI never concludes in time — or concludes as
+something other than success/failure (cancelled, skipped) — the review is **declined** (😕) rather
+than run on a guessed result. `code-review await-ci` does this in type-safe code (not workflow bash).
+
+**Acknowledgement** — the front-end's trusted gate reacts 👀 to your comment on receipt (before the
+CI wait, so you see receipt immediately); on completion the `ack` job swaps it for 🚀 (review posted
+— read the sticky summary) or 😕 (CI didn't conclude in time, or the run failed). The review job
+itself is read-only and runs untrusted PR code, so it can't post progress; the sticky comment is the
+result, exactly as with the CI trigger.
 
 **Security model** — comment-triggering opens surfaces the CI trigger doesn't, so the recipe closes
 each in the *trusted* default-branch context (`issue_comment` runs there, never in PR-fork context):

@@ -41,6 +41,7 @@ npx @jphutchins/code-review <subcommand>
 | `gather` | Resolve the PR from the CI head SHA and gather the review inputs (diff with git-diff fallback, PR context, prior bot review, failing-job logs) into the workspace for the agent |
 | `parse-command` | Resolve a PR's head from its number and parse a ChatOps trigger comment (`/code-review [24m] [$1.00] <instructions>`) into review overrides — the on-demand comment trigger |
 | `react` | Add/remove a GitHub comment reaction — the ChatOps acknowledgement (👀 on receipt, 🚀 on completion) |
+| `await-ci` | Wait for a PR head's CI run to conclude and emit its real conclusion + run id — so an on-demand comment review routes on the CI result (success → full, failure → mechanic) instead of reviewing blind |
 | `render` | Render the sticky-comment markdown from findings + usage + prices |
 | `inline` | Build the GitHub reviews `comments[]` payload from findings + diff (in-diff validation; strays demote to the summary) |
 | `adapt` | Map a native agent-CLI result envelope onto the abstract result envelope (`src/schema.ts`) |
@@ -74,7 +75,8 @@ in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the ad
 6. Optional — add on-demand reviews too: copy
    [examples/workflows/review-on-comment.yaml](examples/workflows/review-on-comment.yaml) so a
    write-access user can comment `/code-review [24m] [$1.00] <instructions>` on a PR to review it
-   now, with an optional per-run budget and focus. See the
+   now, with an optional per-run budget and focus. Comment before CI finishes and it waits for CI and
+   routes on the real result (success → full review, failure → mechanic), same as the CI trigger. See the
    [ChatOps section](examples/workflows/README.md#comment--chatops-trigger-on-demand-reviews) for the
    security model.
 

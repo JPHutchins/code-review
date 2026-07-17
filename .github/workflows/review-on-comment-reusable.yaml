@@ -1,0 +1,321 @@
+# ChatOps front-end (reusable) — the on-demand comment trigger's plumbing, so a consumer doesn't
+# hand-wire it. It parses the `/code-review [24m] [$1.00] <text>` comment, resolves the PR head from
+# the API, posts the 👀/🚀 acknowledgement, and delegates the review itself to the trigger-agnostic
+# review-reusable workflow. See: https://github.com/JPHutchins/code-review
+#
+# A workflow_call reusable CAN'T declare `on: issue_comment` (GitHub only lets it react to being
+# called), so the TRIGGER and the AUTHORIZATION gate must live in the caller. The caller stays thin:
+# `on: issue_comment`, a job-level `if:` that owns the auth boundary, and one `uses:` of this file.
+# That keeps the security gate visible and auditable in the consumer's repo (this project's whole
+# point) while the mechanical parse/react/dispatch lives here. See examples/workflows for the caller.
+
+name: code-review (on comment, reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # --- ChatOps front-end config -------------------------------------------------------------
+      trigger:
+        description: The comment token that starts a review (parse-command strips it as a whole word)
+        type: string
+        required: false
+        default: /code-review
+      max_duration:
+        description: Ceiling the comment's duration override is clamped to (e.g. 60m). Untrusted comment text can never exceed this.
+        type: string
+        required: false
+        default: 60m
+      max_usd:
+        description: Ceiling the comment's USD override is clamped to. Untrusted comment text can never exceed this.
+        type: string
+        required: false
+        default: "5"
+      max_instructions:
+        description: Max characters of free-form instruction taken from the comment (excess is dropped)
+        type: string
+        required: false
+        default: "4000"
+
+      # --- CI-result awareness ------------------------------------------------------------------
+      # The differentiator: the comment trigger waits for the head's CI run and routes on its REAL
+      # conclusion, exactly as the CI-completion trigger does — success → full review, failure →
+      # mechanic with that run's logs — rather than reviewing blind. A comment issued before CI
+      # finishes simply waits for it.
+      ci_workflow:
+        description: The display name of the CI workflow to wait for — the same value review.yaml lists under workflows. Must match exactly, or the wait times out.
+        type: string
+        required: false
+        default: CI
+      ci_wait_timeout:
+        description: Give up waiting for CI to conclude after this wall; on timeout the review is declined (😕) rather than run without a CI result.
+        type: string
+        required: false
+        default: 30m
+      ci_poll_interval:
+        description: How often to re-check the CI run's status while waiting
+        type: string
+        required: false
+        default: 15s
+
+      # --- Passed straight through to review-reusable (the caller tunes the review through this
+      #     front-end, so mirror the review inputs a consumer would set) --------------------------
+      api_base_url:
+        description: Anthropic-compatible endpoint (e.g. https://api.deepseek.com/anthropic). Required.
+        type: string
+        required: true
+      model_full:
+        description: Model for the comprehensive route and triage
+        type: string
+        required: true
+      model_mechanic:
+        description: Model for the fast fix (mechanic) route, used when the head's CI concluded 'failure'
+        type: string
+        required: true
+      subagent_model:
+        description: Override the fan-out subagent model (empty ⇒ inherit the route model)
+        type: string
+        required: false
+        default: ""
+      opus_model:
+        description: What the agent's internal 'opus' tier resolves to (empty ⇒ model_full)
+        type: string
+        required: false
+        default: ""
+      sonnet_model:
+        description: What the agent's internal 'sonnet' tier resolves to (empty ⇒ model_full)
+        type: string
+        required: false
+        default: ""
+      haiku_model:
+        description: What the agent's internal 'haiku' tier resolves to (empty ⇒ model_mechanic)
+        type: string
+        required: false
+        default: ""
+      use_setup_action:
+        description: Run the consumer's local composite at ./.github/actions/code-review-setup
+        type: boolean
+        required: false
+        default: false
+      install_command:
+        description: Shell command to install project deps so the agent can run the project's checks. Empty ⇒ no shell install.
+        type: string
+        required: false
+        default: ""
+      full_review_time_limit:
+        description: Default wall-clock budget for the review; a comment duration (clamped to max_duration) overrides it
+        type: string
+        required: false
+        default: 24m
+      full_review_grace_period:
+        description: Time past the wall before the hard SIGTERM, for the review to land its draft (keep ≥ ~2m)
+        type: string
+        required: false
+        default: 12m
+      full_review_usd_limit:
+        description: Default USD spend cap; a comment budget (clamped to max_usd) overrides it. Needs a committed .github/prices.json to price the run.
+        type: string
+        required: false
+        default: "1"
+      # The mechanic route is reachable now that the trigger honors a 'failure' CI conclusion, so its
+      # budgets are forwarded too (a comment's duration/usd overrides still apply on top, either route).
+      mechanic_time_limit:
+        description: Wall-clock budget for the fast fix (CI-failure) route
+        type: string
+        required: false
+        default: 6m
+      mechanic_grace_period:
+        description: Time past mechanic_time_limit before the hard SIGTERM (keep ≥ ~1m)
+        type: string
+        required: false
+        default: 3m
+      mechanic_usd_limit:
+        description: USD spend cap for the mechanic route (needs a committed .github/prices.json to price the run)
+        type: string
+        required: false
+        default: "0.10"
+      extra_endpoints:
+        description: Extra harden-runner allowed endpoints (single space-separated line). E.g. your package registries or the model host if not deepseek/anthropic.
+        type: string
+        required: false
+        default: ""
+      egress_policy:
+        description: harden-runner egress-policy — 'block' to enforce, 'audit' for first-run discovery
+        type: string
+        required: false
+        default: block
+      claude_code_version:
+        description: Claude Code CLI version to install; only the pinned default has been validated
+        type: string
+        required: false
+        default: 2.1.197
+    secrets:
+      MODEL_API_KEY:
+        description: Burner model API key with a hard spend cap (exposed to untrusted PR code during the contained review window)
+        required: true
+
+# code-review is pinned here, not exposed as an input — the CLI and this workflow are one system
+# released together. Kept in step with review-reusable's pin; both are bumped in the release commit.
+env:
+  CODE_REVIEW_VERSION: 0.1.0-alpha.25
+
+jobs:
+  # Trusted gate: parse the in-comment args, resolve the PR head from its NUMBER via the API, and ack.
+  # No auth `if:` here — the CALLER owns authorization (only its reviewed workflow can even reach this
+  # file), so the security boundary stays in the consumer's repo. This job runs only trusted code
+  # (this workflow + the code-review CLI + the GitHub API), never the PR's, so it needs no egress lock.
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read            # await-ci lists the head's CI workflow runs (Actions API ⇒ actions:read)
+      # write, not read: a reaction on a PR comment is scoped to Pull requests (issues:write does NOT
+      # cover it — GitHub 403s). The same write also covers resolving the PR head by number.
+      pull-requests: write
+    outputs:
+      should_run:    ${{ steps.parse.outputs.should_run }}
+      head_sha:      ${{ steps.parse.outputs.head_sha }}
+      head_branch:   ${{ steps.parse.outputs.head_branch }}
+      head_repo:     ${{ steps.parse.outputs.head_repo }}
+      duration:      ${{ steps.parse.outputs.duration }}
+      usd:           ${{ steps.parse.outputs.usd }}
+      instructions:  ${{ steps.parse.outputs.instructions }}
+      # CI-result awareness — the review runs only when we KNOW the head's CI result, and routes on it.
+      ci_settled:    ${{ steps.ci.outputs.ci_settled }}
+      ci_conclusion: ${{ steps.ci.outputs.ci_conclusion }}
+      ci_run_id:     ${{ steps.ci.outputs.ci_run_id }}
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install code-review
+        run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+
+      - name: Parse the command + resolve the PR head
+        id: parse
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          TRIGGER: ${{ inputs.trigger }}
+          MAX_DURATION: ${{ inputs.max_duration }}
+          MAX_USD: ${{ inputs.max_usd }}
+          MAX_INSTRUCTIONS: ${{ inputs.max_instructions }}
+          # The untrusted comment body travels as an ENV var, never shell-interpolated. The CLI parses
+          # it, clamps the duration/budget to the ceilings above, and emits a heredoc-delimited output
+          # the untrusted text cannot break out of to forge other outputs. The head SHA/branch are
+          # resolved from PR_NUMBER via the API — never from a SHA in the comment.
+          CODE_REVIEW_COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          code-review parse-command \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER" \
+            --trigger "$TRIGGER" \
+            --max-duration "$MAX_DURATION" \
+            --max-usd "$MAX_USD" \
+            --max-instructions "$MAX_INSTRUCTIONS" \
+            >> "$GITHUB_OUTPUT"
+
+      # Acknowledge only a real, runnable command (👀). Cosmetic — never fails the job. Fired BEFORE
+      # the CI wait so the commenter sees receipt immediately while CI (and this job) run.
+      - name: Acknowledge the request (👀)
+        if: ${{ steps.parse.outputs.should_run == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add eyes
+
+      # Wait for the head's CI run and emit its REAL conclusion + run id — the differentiator. The CLI
+      # bounds the wait (--timeout), so no job-level timeout is needed. ci_settled=false ⇒ CI never
+      # concluded in time; the review job below declines rather than reviewing without a CI result.
+      - name: Wait for CI to conclude
+        id: ci
+        if: ${{ steps.parse.outputs.should_run == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.parse.outputs.head_sha }}
+          CI_WORKFLOW: ${{ inputs.ci_workflow }}
+          CI_WAIT_TIMEOUT: ${{ inputs.ci_wait_timeout }}
+          CI_POLL_INTERVAL: ${{ inputs.ci_poll_interval }}
+        run: |
+          set -euo pipefail
+          code-review await-ci \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --ci-workflow "$CI_WORKFLOW" \
+            --timeout "$CI_WAIT_TIMEOUT" \
+            --poll-interval "$CI_POLL_INTERVAL" \
+            >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: gate
+    # Run only when the command is real, we KNOW the head's CI result, and that result is reviewable.
+    # ci_settled=false (CI never concluded in time) or a non-success/failure conclusion (cancelled,
+    # neutral, timed_out, …) declines rather than reviewing blind — the ack then shows 😕.
+    if: >-
+      ${{ needs.gate.outputs.should_run == 'true' &&
+          needs.gate.outputs.ci_settled == 'true' &&
+          (needs.gate.outputs.ci_conclusion == 'success' ||
+           needs.gate.outputs.ci_conclusion == 'failure') }}
+    uses: ./.github/workflows/review-reusable.yaml
+    with:
+      head_sha:      ${{ needs.gate.outputs.head_sha }}
+      head_branch:   ${{ needs.gate.outputs.head_branch }}
+      head_repo:     ${{ needs.gate.outputs.head_repo }}
+      run_id:        ${{ needs.gate.outputs.ci_run_id }}     # the CI run — its logs feed the mechanic route
+      conclusion:    ${{ needs.gate.outputs.ci_conclusion }} # the REAL CI result: success → full, failure → mechanic
+      trigger_event: pull_request
+      api_base_url:    ${{ inputs.api_base_url }}
+      model_full:      ${{ inputs.model_full }}
+      model_mechanic:  ${{ inputs.model_mechanic }}
+      subagent_model:  ${{ inputs.subagent_model }}
+      opus_model:      ${{ inputs.opus_model }}
+      sonnet_model:    ${{ inputs.sonnet_model }}
+      haiku_model:     ${{ inputs.haiku_model }}
+      use_setup_action: ${{ inputs.use_setup_action }}
+      install_command:  ${{ inputs.install_command }}
+      full_review_time_limit:   ${{ inputs.full_review_time_limit }}
+      full_review_grace_period: ${{ inputs.full_review_grace_period }}
+      full_review_usd_limit:    ${{ inputs.full_review_usd_limit }}
+      mechanic_time_limit:      ${{ inputs.mechanic_time_limit }}
+      mechanic_grace_period:    ${{ inputs.mechanic_grace_period }}
+      mechanic_usd_limit:       ${{ inputs.mechanic_usd_limit }}
+      extra_endpoints: ${{ inputs.extra_endpoints }}
+      egress_policy:   ${{ inputs.egress_policy }}
+      claude_code_version: ${{ inputs.claude_code_version }}
+      # Per-run overrides parsed from the comment (already clamped by the gate). Empty ⇒ review-reusable
+      # keeps its configured defaults, so a bare `/code-review` just runs a normal review.
+      duration_override:  ${{ needs.gate.outputs.duration }}
+      usd_override:       ${{ needs.gate.outputs.usd }}
+      extra_instructions: ${{ needs.gate.outputs.instructions }}
+    secrets:
+      MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+
+  # Swap the 👀 ack for 🚀 (review completed → read the sticky) or 😕 (the run failed). Best-effort.
+  ack:
+    needs: [gate, review]
+    if: ${{ always() && needs.gate.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write     # react to a PR comment ⇒ pull-requests:write (issues:write 403s)
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install code-review
+        run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+      - name: Update the acknowledgement (👀 → 🚀 / 😕)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        run: |
+          set -euo pipefail
+          if [ "$REVIEW_RESULT" = "success" ]; then
+            code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add rocket --remove eyes
+          else
+            code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add confused --remove eyes
+          fi

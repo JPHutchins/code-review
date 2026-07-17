@@ -161,7 +161,7 @@ on:
 # released together, so the @ref the consumer trusts carries its matching CLI. One definition both
 # jobs install from, so a release bump can't skew them. Bumped in the release commit with package.json.
 env:
-  CODE_REVIEW_VERSION: 0.1.0-alpha.24
+  CODE_REVIEW_VERSION: 0.1.0-alpha.25
 
 jobs:
   review:
@@ -399,6 +399,13 @@ jobs:
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.opus_model != '' && inputs.opus_model || inputs.model_full }} # tier aliases — what the agent's
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.sonnet_model != '' && inputs.sonnet_model || inputs.model_full }} # internal model picks resolve to
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model != '' && inputs.haiku_model || inputs.model_mechanic }}
+          # This review fans subagents into the BACKGROUND (the single-writer rule below). By default
+          # `claude -p` kills still-running background tasks 600s after the MAIN turn ends — far short
+          # of our wall+grace, silently cutting a mid-flight fan-out. 0 ⇒ wait indefinitely, so the
+          # `timeout` wrapper (wall+grace) is the sole bound. (Does not, by itself, fix a main agent
+          # that ends early and orphans a straggler — that's an agent-convergence concern, tracked
+          # separately — but it stops the harness from being the one that cuts the review short.)
+          CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: "0"
           CONCLUSION: ${{ steps.gather.outputs.conclusion }}
           HEAD_SHA: ${{ inputs.head_sha }}
           FULL_TIME_LIMIT: ${{ inputs.full_review_time_limit }}

@@ -3,10 +3,13 @@
 # replacement for) the CI-completion trigger in review.yaml; run both if you want automatic reviews
 # on green CI *and* on-demand ones.
 #
-# This file owns only the trigger, the AUTHORIZATION gate, the 👀/🚀 acknowledgement, and the
-# in-comment arg parsing. The pipeline itself is the trigger-agnostic reusable workflow — the same
-# one review.yaml delegates to — so nothing about the review changes; it just gets a resolved head
-# SHA and per-run overrides as inputs. See: https://github.com/JPHutchins/code-review
+# This file is deliberately THIN. It owns only the two things GitHub forces into your repo:
+#   1. the trigger — a workflow_call reusable can't declare `on: issue_comment`, so it lives here; and
+#   2. the AUTHORIZATION gate (the job-level `if:` below) — your security boundary, kept visible and
+#      reviewed in your own repo rather than hidden behind a pinned @ref.
+# Everything mechanical — parsing the comment args, resolving the PR head, the 👀/🚀 acknowledgement,
+# and running the review — lives in the reusable front-end it delegates to.
+# See: https://github.com/JPHutchins/code-review
 
 name: Code review (on comment)
 
@@ -14,9 +17,10 @@ on:
   issue_comment:
     types: [created]
 
-# issue_comment runs in the DEFAULT-branch (trusted) context — so this workflow, its gate, and the
-# args-parser are your reviewed code, never the PR's. The gate/ack jobs need write to react; the
-# reusable workflow narrows its own two jobs (read-only review, write-only comment) from this superset.
+# issue_comment runs in the DEFAULT-branch (trusted) context, so this file and its gate are your
+# reviewed code, never the PR's. This top-level block is the GITHUB_TOKEN ceiling — the union of what
+# the nested reusable jobs need (each narrows from it): the review job runs read-only, the comment
+# job writes the sticky/inline review, and the gate/ack react to the comment.
 permissions:
   contents: read
   actions: read
@@ -24,119 +28,28 @@ permissions:
   issues: write
 
 jobs:
-  # Trusted gate: resolve the PR head from its NUMBER via the API, parse the in-comment args, and ack.
-  gate:
-    # The AUTHORIZATION gate — comment-triggering opens surfaces the CI trigger doesn't:
+  chatops:
+    # The AUTHORIZATION gate. Comment-triggering opens surfaces the CI trigger doesn't:
     #  • github.event.issue.pull_request  → only comments on PRs (issue_comment fires for issues too).
-    #  • startsWith(... '/code-review')   → only our trigger token (parse-command re-checks it's whole).
-    #  • author_association ∈ {...}       → only users with write-ish access. WITHOUT this, any stranger
-    #    on a public PR could drain your model budget or feed the agent instructions. This is exactly
+    #  • startsWith(… '/code-review')     → only our trigger token (the CLI re-checks it's a whole word).
+    #  • author_association ∈ {…}         → only users with write-ish access. WITHOUT this, any stranger
+    #    on a public PR could drain your model budget or feed the agent instructions — which is exactly
     #    why anthropics/claude-code-action gates on write permission.
     #  • comment.user.type != 'Bot'       → never re-trigger on a bot's own comment.
+    # NOTE: this `startsWith` is a coarse pre-filter (the CLI re-checks the trigger as a WHOLE word);
+    # if you set a custom `trigger:` in the `with:` block below, change this token to match it.
     if: >-
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/code-review') &&
       github.event.comment.user.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # write, not read: a reaction on a PR comment is scoped to Pull requests (issues:write does
-      # NOT cover it — GitHub 403s). The same write also covers resolving the PR head by number.
-      pull-requests: write
-    outputs:
-      should_run:   ${{ steps.parse.outputs.should_run }}
-      head_sha:     ${{ steps.parse.outputs.head_sha }}
-      head_branch:  ${{ steps.parse.outputs.head_branch }}
-      head_repo:    ${{ steps.parse.outputs.head_repo }}
-      duration:     ${{ steps.parse.outputs.duration }}
-      usd:          ${{ steps.parse.outputs.usd }}
-      instructions: ${{ steps.parse.outputs.instructions }}
-    steps:
-      # This job runs only trusted code (your reviewed workflow + the code-review CLI + the GitHub
-      # API) — never the PR's code — so it needs no egress lock; that lives in the reusable workflow's
-      # review job, which is where untrusted PR code actually executes.
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-      - name: Install code-review
-        run: npm install -g "@jphutchins/code-review@0.1.0-alpha.24"   # keep in step with the @ref below
-
-      - name: Parse the command + resolve the PR head
-        id: parse
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          # The untrusted comment body travels as an ENV var, never shell-interpolated. The CLI parses
-          # it, clamps the duration/budget to the ceilings below, and emits a heredoc-delimited output
-          # that the untrusted text cannot break out of to forge other outputs. The head SHA/branch are
-          # resolved from PR_NUMBER via the API — never from a SHA in the comment.
-          CODE_REVIEW_COMMENT_BODY: ${{ github.event.comment.body }}
-        run: |
-          set -euo pipefail
-          code-review parse-command \
-            --repo "$REPO" \
-            --pr "$PR_NUMBER" \
-            --trigger "/code-review" \
-            --max-duration 60m \
-            --max-usd 5 \
-            >> "$GITHUB_OUTPUT"
-
-      # Acknowledge only a real, runnable command (👀). Cosmetic — never fails the job.
-      - name: Acknowledge the request (👀)
-        if: ${{ steps.parse.outputs.should_run == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          COMMENT_ID: ${{ github.event.comment.id }}
-        run: code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add eyes
-
-  review:
-    needs: gate
-    if: ${{ needs.gate.outputs.should_run == 'true' }}
-    uses: JPHutchins/code-review/.github/workflows/review-reusable.yaml@v0.1.0-alpha.24
+    uses: JPHutchins/code-review/.github/workflows/review-on-comment-reusable.yaml@v0.1.0-alpha.25
     with:
-      head_sha:      ${{ needs.gate.outputs.head_sha }}
-      head_branch:   ${{ needs.gate.outputs.head_branch }}
-      head_repo:     ${{ needs.gate.outputs.head_repo }}     # fork-safe concurrency
-      run_id:        ${{ github.run_id }}                    # no CI run to attach; unused on the full route
-      conclusion:    success                                 # a comment trigger always routes the full review
-      trigger_event: pull_request
-      api_base_url:  ${{ vars.API_BASE_URL }}
-      model_full:    deepseek-v4-pro
-      model_mechanic: deepseek-v4-flash
-      # Per-run overrides parsed from the comment (already clamped by the gate). Empty ⇒ the reusable
-      # workflow keeps its configured defaults, so a bare `/code-review` just runs a normal review.
-      duration_override:  ${{ needs.gate.outputs.duration }}
-      usd_override:       ${{ needs.gate.outputs.usd }}
-      extra_instructions: ${{ needs.gate.outputs.instructions }}
+      api_base_url:    ${{ vars.API_BASE_URL }}
+      model_full:      deepseek-v4-pro
+      model_mechanic:  deepseek-v4-flash
+      # Optional per-repo tuning, same knobs as review.yaml — e.g. install_command, egress_policy,
+      # the ceilings the comment overrides are clamped to (max_duration / max_usd), tier aliases.
+      install_command: npm ci
     secrets:
       MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
-
-  # Swap the 👀 ack for 🚀 (review completed → read the sticky) or 😕 (the run failed). Best-effort.
-  ack:
-    needs: [gate, review]
-    if: ${{ always() && needs.gate.outputs.should_run == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write     # react to a PR comment ⇒ pull-requests:write (issues:write 403s)
-    steps:
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-      - name: Install code-review
-        run: npm install -g "@jphutchins/code-review@0.1.0-alpha.24"
-      - name: Update the acknowledgement (👀 → 🚀 / 😕)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          COMMENT_ID: ${{ github.event.comment.id }}
-          REVIEW_RESULT: ${{ needs.review.result }}
-        run: |
-          set -euo pipefail
-          if [ "$REVIEW_RESULT" = "success" ]; then
-            code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add rocket --remove eyes
-          else
-            code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add confused --remove eyes
-          fi

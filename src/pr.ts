@@ -2,6 +2,7 @@
 // pure logic, so they never disagree on which PR (no split-brain).
 
 import type { GhApi } from "./gh.js";
+import { parseJsonl } from "./transcript.js";
 
 interface PrCandidate {
   readonly number: number;
@@ -14,11 +15,7 @@ const CANDIDATE_JQ =
   ".[] | {number: .number, state: .state, headRef: .head.ref, headSha: .head.sha}";
 
 const parseCandidates = (stdout: string): readonly PrCandidate[] =>
-  stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as PrCandidate);
+  parseJsonl(stdout) as readonly PrCandidate[];
 
 // A fork PR's head commit lives on the fork, unreachable from the base repo, so
 // `commits/{sha}/pulls` returns nothing for it. Fall back to matching head.sha across open PRs,
@@ -58,7 +55,7 @@ export const resolvePr = (
     candidates.length > 1 && headBranch
       ? candidates.filter((c) => c.headRef === headBranch)
       : candidates;
-  const chosen = scoped[0] ?? candidates[0];
+  const chosen = scoped.find((c) => c.state === "open") ?? scoped[0] ?? candidates[0];
   if (chosen === undefined) return { kind: "none" };
   return chosen.state === "open"
     ? { kind: "open", prNumber: chosen.number }

@@ -45,6 +45,14 @@ describe("resolvePr", () => {
     const candidates = [{ number: 42, state: "open", headRef: "other-branch", headSha: sha(1) }];
     expect(resolvePr(candidates, "feature-branch")).toEqual({ kind: "open", prNumber: 42 });
   });
+
+  it("prefers an open candidate over a closed one that shares the head SHA and branch", () => {
+    const candidates = [
+      { number: 42, state: "closed", headRef: "feature-branch", headSha: sha(1) },
+      { number: 99, state: "open", headRef: "feature-branch", headSha: sha(1) },
+    ];
+    expect(resolvePr(candidates, "feature-branch")).toEqual({ kind: "open", prNumber: 99 });
+  });
 });
 
 const ndjson = (

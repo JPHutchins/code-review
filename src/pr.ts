@@ -7,23 +7,28 @@ interface PrCandidate {
   readonly number: number;
   readonly state: string;
   readonly headRef: string;
+  readonly headSha: string;
 }
 
+// Match head.sha against open PRs, not `commits/{sha}/pulls`: a fork PR's head commit lives on
+// the fork, unreachable from the base repo, so that endpoint returns nothing.
 export const fetchPrCandidates = async (
   repo: string,
   headSha: string,
   ghApi: GhApi,
 ): Promise<readonly PrCandidate[]> => {
   const stdout = await ghApi([
-    `repos/${repo}/commits/${headSha}/pulls`,
+    `repos/${repo}/pulls?state=open&per_page=100`,
+    "--paginate",
     "--jq",
-    ".[] | {number: .number, state: .state, headRef: .head.ref}",
+    ".[] | {number: .number, state: .state, headRef: .head.ref, headSha: .head.sha}",
   ]);
   return stdout
     .trim()
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as PrCandidate);
+    .map((line) => JSON.parse(line) as PrCandidate)
+    .filter((c) => c.headSha === headSha);
 };
 
 export type PrResolution =

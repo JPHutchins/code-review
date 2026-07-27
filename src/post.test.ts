@@ -169,8 +169,9 @@ describe("post — upsert sticky comment", () => {
   it("PATCHes existing bot comment found by marker + author", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -207,8 +208,9 @@ describe("post — upsert sticky comment", () => {
   it("POSTs new comment when no existing bot comment found", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -241,8 +243,9 @@ describe("post — upsert sticky comment", () => {
   it("does NOT trust a non-bot comment with the marker (author identity, not marker)", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -280,8 +283,9 @@ describe("post — inline review", () => {
   it("posts inline review as COMMENT with commit_id = head SHA", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -328,8 +332,9 @@ describe("post — inline review", () => {
 
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -379,8 +384,9 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
 
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -427,8 +433,9 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
 
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -475,8 +482,9 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
 
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -524,7 +532,7 @@ describe("post — PR resolution", () => {
   it("exits 0 when no open PR for the head SHA", async () => {
     const { api } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
         response: "\n",
       },
     ]);
@@ -542,9 +550,9 @@ describe("post — PR resolution", () => {
   it("disambiguates by head_branch when multiple PRs share a commit", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
         response:
-          '{"number":42,"state":"open","headRef":"other-branch"}\n{"number":99,"state":"open","headRef":"feature-branch"}\n',
+          '{"number":42,"state":"open","headRef":"other-branch","headSha":"abc123def456"}\n{"number":99,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/99" && a.includes("-H"),
@@ -587,8 +595,9 @@ describe("post — PR resolution", () => {
   it("exits 0 without posting when the resolved PR is not open", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"closed","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"closed","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
     ]);
 
@@ -611,8 +620,9 @@ describe("post — injection discipline", () => {
   it("builds all API bodies with JSON.stringify (never shell-interpolated)", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -644,8 +654,9 @@ describe("post — injection discipline", () => {
   it("passes bot login and marker to jq via env, never interpolated into the filter text (jq hardening)", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -685,8 +696,10 @@ describe("post — injection discipline", () => {
 describe("post — §5.5 error semantics", () => {
   const mkBaseMocks = (overrides: { readonly diff?: string } = {}) => [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -940,8 +953,9 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
   it("fix #5: posts the inline review when the sticky's marker matches the head SHA but no completed bot review exists at it", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -992,8 +1006,9 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
   it("dismisses a prior bot review on the SAME head SHA and posts a fresh review (issue #53)", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1059,8 +1074,9 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
   it("dismisses prior bot reviews and posts a fresh inline review when the head SHA differs", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1122,8 +1138,9 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
   it("logs a dismissal failure and continues posting rather than failing the job", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1176,8 +1193,10 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
 describe("post — CO-R3: never-partially-post ordering", () => {
   const normalMocks = [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1217,8 +1236,9 @@ describe("post — CO-R3: never-partially-post ordering", () => {
   it("propagates a posting failure (never partially posts) and never attempts the inline review", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1252,8 +1272,9 @@ describe("post — REQ-CO-9 test-report threading", () => {
 
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1288,8 +1309,9 @@ describe("post — REQ-CO-9 test-report threading", () => {
 
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1328,8 +1350,10 @@ describe("post — REQ-CO-9 test-report threading", () => {
 describe("post — --inline-template", () => {
   const inlineMocks = [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1395,8 +1419,9 @@ describe("post — --effort threading", () => {
   it("renders the passed effort in the sticky's route line", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1433,8 +1458,9 @@ describe("post — --effort threading", () => {
     );
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1468,8 +1494,10 @@ describe("post — --effort threading", () => {
 describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
   const okMocks = [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1591,8 +1619,9 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
   it("links the review body to a newly-posted sticky, then re-patches the sticky with a link to the review", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1641,8 +1670,9 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
   it("re-patches an EXISTING sticky (not just a freshly-posted one) with the review link", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1691,8 +1721,9 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
   it("degrades to a plain (non-linked) pointer and skips the re-patch when responses don't carry html_url", async () => {
     const { api, calls } = mkMockGhApi([
       {
-        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response:
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
       },
       {
         match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1734,8 +1765,10 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
     let stickyPatchCount = 0;
     const api: GhApi = (args, stdin, env) => {
       calls.push({ args: [...args], stdin, env });
-      if (args[0]?.startsWith("repos/owner/repo/commits/")) {
-        return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
+      if (args[0]?.startsWith("repos/owner/repo/pulls?state=open")) {
+        return Promise.resolve(
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
+        );
       }
       if (args[0] === "repos/owner/repo/pulls/42" && args.includes("-H")) {
         return Promise.resolve(inlineDiff);
@@ -1780,8 +1813,10 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
 describe("post — issue #14: markdown formatting pass before posting", () => {
   const okMocks = [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1843,8 +1878,10 @@ describe("post — issue #14: markdown formatting pass before posting", () => {
 describe("post — --run-url / --json-url threading", () => {
   const okMocks = [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -1956,8 +1993,10 @@ describe("post — --run-url / --json-url threading", () => {
 describe("post — postedAt threading (issue #28)", () => {
   const okMocks = [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -2007,8 +2046,10 @@ describe("post — postedAt threading (issue #28)", () => {
 describe("post — absent price map renders cost as N/A with a footnote (SPEC §6.2)", () => {
   const okMocks = [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -2094,8 +2135,10 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
 
   const baseMocks = [
     {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      match: (a: readonly string[]) =>
+        a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+      response:
+        '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
     },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -2171,8 +2214,10 @@ describe("post — inline review 422 salvage (issue #57)", () => {
     const api: GhApi = (args, stdin, env) => {
       calls.push({ args: [...args], stdin, env });
       const a = [...args];
-      if (a[0]?.startsWith("repos/owner/repo/commits/"))
-        return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
+      if (a[0]?.startsWith("repos/owner/repo/pulls?state=open"))
+        return Promise.resolve(
+          '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
+        );
       if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
         return Promise.resolve(inlineDiff);
       if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))

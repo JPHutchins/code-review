@@ -521,10 +521,14 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
 });
 
 describe("post — PR resolution", () => {
-  it("exits 0 when no open PR for the head SHA", async () => {
+  it("exits 0 when neither the commit endpoint nor any open PR matches the head SHA", async () => {
     const { api } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: "\n",
+      },
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
         response: "\n",
       },
     ]);

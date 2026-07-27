@@ -107,6 +107,8 @@ const hasOutFile = (name: string): boolean => existsSync(join(tmpDir, name));
 
 const candidatesMatch = (a: readonly string[]): boolean =>
   a[0]?.startsWith("repos/owner/repo/commits/") ?? false;
+const openPrsMatch = (a: readonly string[]): boolean =>
+  a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false;
 const metaMatch =
   (pr: number) =>
   (a: readonly string[]): boolean =>
@@ -161,6 +163,26 @@ describe("gather — PR resolution", () => {
     ).toBe(true);
   });
 
+  it("resolves a fork PR via the open-PR fallback when the commit endpoint is empty", async () => {
+    const { api } = mkMockGhApi([
+      { match: candidatesMatch, response: "\n" },
+      {
+        match: openPrsMatch,
+        response:
+          '{"number":7,"state":"open","headRef":"fork-branch","headSha":"abc123"}\n{"number":8,"state":"open","headRef":"other","headSha":"zzz999"}\n',
+      },
+      { match: metaMatch(7), response: mkMeta({ changed_files: 1 }) },
+      { match: diffMatch(7), response: sampleDiff },
+      { match: commentsMatch(7), response: "[]" },
+    ]);
+
+    const result = await gather(mkInput({}), api, mkMockGit([]).git);
+
+    expect(result.kind).toBe("gathered");
+    if (result.kind === "gathered") expect(result.pr).toBe(7);
+    expect(outFile("pr.diff")).toBe(sampleDiff);
+  });
+
   it("disambiguates by head branch when multiple PRs share a commit", async () => {
     const { api, calls } = mkMockGhApi([
       {
@@ -180,13 +202,16 @@ describe("gather — PR resolution", () => {
     expect(calls().some((c) => c.args[0] === "repos/owner/repo/pulls/42")).toBe(false);
   });
 
-  it("skips when no PR is found for the head SHA", async () => {
-    const { api, calls } = mkMockGhApi([{ match: candidatesMatch, response: "\n" }]);
+  it("skips when neither the commit endpoint nor any open PR matches the head SHA", async () => {
+    const { api, calls } = mkMockGhApi([
+      { match: candidatesMatch, response: "\n" },
+      { match: openPrsMatch, response: "\n" },
+    ]);
 
     const result = await gather(mkInput({}), api, mkMockGit([]).git);
 
     expect(result).toEqual({ kind: "skip" });
-    expect(calls()).toHaveLength(1);
+    expect(calls()).toHaveLength(2);
     expect(hasOutFile("pr.diff")).toBe(false);
   });
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { GhApi } from "./gh.js";
 import { fetchPrCandidates, resolvePr } from "./pr.js";
 
-const sha = (n: number): string => `${"0".repeat(39)}${String(n)}`;
+const sha = (n: number): string => String(n).padStart(40, "0");
 
 describe("resolvePr", () => {
   it("returns none for zero candidates", () => {

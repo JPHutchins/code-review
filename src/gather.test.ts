@@ -106,6 +106,8 @@ const outFile = (name: string): string => readFileSync(join(tmpDir, name), "utf-
 const hasOutFile = (name: string): boolean => existsSync(join(tmpDir, name));
 
 const candidatesMatch = (a: readonly string[]): boolean =>
+  a[0]?.startsWith("repos/owner/repo/commits/") ?? false;
+const openPrsMatch = (a: readonly string[]): boolean =>
   a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false;
 const metaMatch =
   (pr: number) =>
@@ -138,7 +140,7 @@ describe("gather — PR resolution", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: sampleDiff },
@@ -166,7 +168,7 @@ describe("gather — PR resolution", () => {
       {
         match: candidatesMatch,
         response:
-          '{"number":42,"state":"open","headRef":"other","headSha":"abc123"}\n{"number":99,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+          '{"number":42,"state":"open","headRef":"other"}\n{"number":99,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(99), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(99), response: sampleDiff },
@@ -180,13 +182,16 @@ describe("gather — PR resolution", () => {
     expect(calls().some((c) => c.args[0] === "repos/owner/repo/pulls/42")).toBe(false);
   });
 
-  it("skips when no PR is found for the head SHA", async () => {
-    const { api, calls } = mkMockGhApi([{ match: candidatesMatch, response: "\n" }]);
+  it("skips when neither the commit endpoint nor any open PR matches the head SHA", async () => {
+    const { api, calls } = mkMockGhApi([
+      { match: candidatesMatch, response: "\n" },
+      { match: openPrsMatch, response: "\n" },
+    ]);
 
     const result = await gather(mkInput({}), api, mkMockGit([]).git);
 
     expect(result).toEqual({ kind: "skip" });
-    expect(calls()).toHaveLength(1);
+    expect(calls()).toHaveLength(2);
     expect(hasOutFile("pr.diff")).toBe(false);
   });
 
@@ -194,7 +199,7 @@ describe("gather — PR resolution", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"closed","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"closed","headRef":"feature-branch"}\n',
       },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -214,7 +219,7 @@ describe("gather — diff resolution", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: sampleDiff },
@@ -232,7 +237,7 @@ describe("gather — diff resolution", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: "" },
@@ -266,7 +271,7 @@ describe("gather — diff resolution", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: new Error("boom") },
@@ -286,7 +291,7 @@ describe("gather — diff resolution", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 0 }) },
       { match: diffMatch(42), response: "" },
@@ -306,7 +311,7 @@ describe("gather — diff resolution", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: "" },
@@ -325,7 +330,7 @@ describe("gather — prior review", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
@@ -350,7 +355,7 @@ describe("gather — prior review", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
@@ -369,7 +374,7 @@ describe("gather — prior review", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
@@ -386,7 +391,7 @@ describe("gather — prior review", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
@@ -410,7 +415,7 @@ describe("gather — failing-job logs", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
@@ -440,7 +445,7 @@ describe("gather — failing-job logs", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
@@ -480,7 +485,7 @@ describe("gather — failing-job logs", () => {
     const { api, calls } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
@@ -499,7 +504,7 @@ describe("gather — pr_context.json", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       {
         match: metaMatch(42),
@@ -540,7 +545,7 @@ describe("gather — diff_size byte accuracy", () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123"}\n',
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: multibyteDiff },

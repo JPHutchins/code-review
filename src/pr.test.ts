@@ -51,30 +51,60 @@ const ndjson = (
   rows: ReadonlyArray<{ number: number; state: string; headRef: string; headSha: string }>,
 ): string => rows.map((r) => JSON.stringify(r)).join("\n");
 
+const isCommitPulls = (a: readonly string[]): boolean =>
+  a[0]?.startsWith("repos/owner/repo/commits/") ?? false;
+const isOpenPulls = (a: readonly string[]): boolean =>
+  a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false;
+
+const mkRoutedGhApi = (
+  commitPulls: string,
+  openPulls: string,
+): { readonly api: GhApi; readonly calls: () => readonly (readonly string[])[] } => {
+  const calls: (readonly string[])[] = [];
+  const api: GhApi = (args) => {
+    calls.push([...args]);
+    if (isCommitPulls(args)) return Promise.resolve(commitPulls);
+    if (isOpenPulls(args)) return Promise.resolve(openPulls);
+    return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
+  };
+  return { api, calls: () => calls };
+};
+
 describe("fetchPrCandidates", () => {
-  it("resolves a fork PR by head.sha from the open-PR list (commits/{sha}/pulls misses forks)", async () => {
-    const calls: string[][] = [];
-    const ghApi: GhApi = (args) => {
-      calls.push([...args]);
-      return Promise.resolve(
-        ndjson([
-          { number: 42, state: "open", headRef: "main", headSha: sha(2) },
-          { number: 274, state: "open", headRef: "fix/fork-branch", headSha: sha(7) },
-        ]),
-      );
-    };
-    const candidates = await fetchPrCandidates("owner/repo", sha(7), ghApi);
+  it("resolves a same-repo PR directly from commits/{sha}/pulls without listing open PRs", async () => {
+    const { api, calls } = mkRoutedGhApi(
+      ndjson([{ number: 42, state: "open", headRef: "feature", headSha: sha(1) }]),
+      "",
+    );
+    const candidates = await fetchPrCandidates("owner/repo", sha(1), api);
+    expect(candidates).toEqual([
+      { number: 42, state: "open", headRef: "feature", headSha: sha(1) },
+    ]);
+    expect(calls().some(isOpenPulls)).toBe(false);
+  });
+
+  it("falls back to matching head.sha across open PRs when the commit endpoint is empty (fork PRs)", async () => {
+    const { api, calls } = mkRoutedGhApi(
+      "",
+      ndjson([
+        { number: 42, state: "open", headRef: "main", headSha: sha(2) },
+        { number: 274, state: "open", headRef: "fix/fork-branch", headSha: sha(7) },
+      ]),
+    );
+    const candidates = await fetchPrCandidates("owner/repo", sha(7), api);
     expect(candidates).toEqual([
       { number: 274, state: "open", headRef: "fix/fork-branch", headSha: sha(7) },
     ]);
-    expect(calls[0]?.[0]).toBe("repos/owner/repo/pulls?state=open&per_page=100");
-    expect(calls[0]).toContain("--paginate");
-    expect(calls[0]).toContain("--jq");
+    const openCall = calls().find(isOpenPulls);
+    expect(openCall).toContain("--paginate");
+    expect(openCall).toContain("--jq");
   });
 
-  it("returns no candidates when no open PR has the head SHA", async () => {
-    const ghApi: GhApi = () =>
-      Promise.resolve(ndjson([{ number: 42, state: "open", headRef: "main", headSha: sha(2) }]));
-    expect(await fetchPrCandidates("owner/repo", sha(9), ghApi)).toEqual([]);
+  it("returns none when neither the commit endpoint nor any open PR head.sha matches", async () => {
+    const { api } = mkRoutedGhApi(
+      "",
+      ndjson([{ number: 42, state: "open", headRef: "main", headSha: sha(2) }]),
+    );
+    expect(await fetchPrCandidates("owner/repo", sha(9), api)).toEqual([]);
   });
 });

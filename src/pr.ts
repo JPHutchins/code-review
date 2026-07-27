@@ -10,25 +10,38 @@ interface PrCandidate {
   readonly headSha: string;
 }
 
-// Match head.sha against open PRs, not `commits/{sha}/pulls`: a fork PR's head commit lives on
-// the fork, unreachable from the base repo, so that endpoint returns nothing.
+const CANDIDATE_JQ =
+  ".[] | {number: .number, state: .state, headRef: .head.ref, headSha: .head.sha}";
+
+const parseCandidates = (stdout: string): readonly PrCandidate[] =>
+  stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as PrCandidate);
+
+// A fork PR's head commit lives on the fork, unreachable from the base repo, so
+// `commits/{sha}/pulls` returns nothing for it. Fall back to matching head.sha across open PRs,
+// which does reach forks. The commit endpoint stays the primary path: it is a targeted O(1)
+// lookup and resolves same-repo PRs even when head.sha has since advanced past the CI commit.
 export const fetchPrCandidates = async (
   repo: string,
   headSha: string,
   ghApi: GhApi,
 ): Promise<readonly PrCandidate[]> => {
-  const stdout = await ghApi([
-    `repos/${repo}/pulls?state=open&per_page=100`,
-    "--paginate",
-    "--jq",
-    ".[] | {number: .number, state: .state, headRef: .head.ref, headSha: .head.sha}",
-  ]);
-  return stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as PrCandidate)
-    .filter((c) => c.headSha === headSha);
+  const direct = parseCandidates(
+    await ghApi([`repos/${repo}/commits/${headSha}/pulls`, "--jq", CANDIDATE_JQ]),
+  );
+  if (direct.length > 0) return direct;
+  const open = parseCandidates(
+    await ghApi([
+      `repos/${repo}/pulls?state=open&per_page=100`,
+      "--paginate",
+      "--jq",
+      CANDIDATE_JQ,
+    ]),
+  );
+  return open.filter((c) => c.headSha === headSha);
 };
 
 export type PrResolution =

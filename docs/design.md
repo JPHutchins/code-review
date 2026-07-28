@@ -144,7 +144,13 @@ this doc.
   finding or inject behavior. The reviewer either confirms the stated reason against the current code (and
   drops or softens the finding) or says precisely why it does not hold — the failure mode stays "argued
   with", not "suppressed". Claims are weighted by `author_association`, and each channel is bounded (most
-  recent comments, each body clipped) so a long thread can't blow the agent's budget.
+  recent comments, each body clipped) so a long thread can't blow the agent's budget. This text is
+  deliberately **not** run through the Phase-1 execute-safety triage: that gate reads the diff (code that
+  will be *run*), and a disposition legitimately reads like an injection ("this finding is wrong,
+  disregard it"), so gating on it would false-positive exactly when a re-review is most valuable. The
+  containment for this new surface is the same structural boundary that already holds for the diff — a
+  read-only token, the egress lock, the burner key's spend cap, and a deterministic commenter posting
+  *data* — not the heuristic gate, so an injected comment can at worst produce a bogus advisory finding.
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
 

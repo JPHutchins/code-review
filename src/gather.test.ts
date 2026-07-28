@@ -121,6 +121,14 @@ const commentsMatch =
   (pr: number) =>
   (a: readonly string[]): boolean =>
     a[0] === `repos/owner/repo/issues/${String(pr)}/comments` && a.includes("--paginate");
+const reviewCommentsMatch =
+  (pr: number) =>
+  (a: readonly string[]): boolean =>
+    a[0] === `repos/owner/repo/pulls/${String(pr)}/comments` && a.includes("--paginate");
+const reviewsMatch =
+  (pr: number) =>
+  (a: readonly string[]): boolean =>
+    a[0] === `repos/owner/repo/pulls/${String(pr)}/reviews` && a.includes("--paginate");
 const jobsMatch = (a: readonly string[]): boolean =>
   a[0] === "repos/owner/repo/actions/runs/RUN1/jobs";
 const logsMatch = (a: readonly string[]): boolean =>
@@ -434,8 +442,27 @@ describe("gather — prior review", () => {
   });
 });
 
+interface Conversation {
+  readonly issue_comments: readonly { readonly author: string; readonly body: string }[];
+  readonly review_comments: readonly {
+    readonly author: string;
+    readonly path: string | null;
+    readonly line: number | null;
+    readonly body: string;
+  }[];
+  readonly reviews: readonly {
+    readonly author: string;
+    readonly state: string | null;
+    readonly body: string;
+  }[];
+}
+
 describe("gather — PR conversation", () => {
-  const withComments = (comments: string) =>
+  const withDiscussion = (opts: {
+    issue?: string | Error;
+    reviewComments?: string | Error;
+    reviews?: string | Error;
+  }) =>
     mkMockGhApi([
       {
         match: candidatesMatch,
@@ -443,12 +470,17 @@ describe("gather — PR conversation", () => {
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: comments },
+      { match: commentsMatch(42), response: opts.issue ?? "" },
+      { match: reviewCommentsMatch(42), response: opts.reviewComments ?? "" },
+      { match: reviewsMatch(42), response: opts.reviews ?? "" },
     ]);
 
-  it("stages every non-bot comment with author, association, timestamp, and body — excluding the bot", async () => {
-    const { api } = withComments(
-      ndjson([
+  const conversation = (): Conversation =>
+    JSON.parse(outFile("pr_conversation.json")) as Conversation;
+
+  it("stages issue comments, inline review comments, and reviews — excluding the review bot", async () => {
+    const { api } = withDiscussion({
+      issue: ndjson([
         {
           id: 1,
           body: "That's a false positive; here's the file list.",
@@ -458,77 +490,131 @@ describe("gather — PR conversation", () => {
         },
         {
           id: 2,
-          body: "prior review",
+          body: "prior review sticky",
           user: { login: "github-actions[bot]" },
           created_at: "2026-07-01T00:05:00Z",
           author_association: "NONE",
         },
+      ]),
+      reviewComments: ndjson([
         {
-          id: 3,
-          body: "Fixed in abc1234.",
-          user: { login: "bob" },
+          body: "Intentional — see the docstring I added.",
+          user: { login: "alice" },
           created_at: "2026-07-02T00:00:00Z",
-          author_association: "CONTRIBUTOR",
+          author_association: "OWNER",
+          path: "src/foo.ts",
+          line: 42,
+        },
+        {
+          body: "🔴 major finding",
+          user: { login: "github-actions[bot]" },
+          created_at: "2026-07-01T23:00:00Z",
+          author_association: "NONE",
+          path: "src/foo.ts",
+          line: 42,
         },
       ]),
-    );
+      reviews: ndjson([
+        {
+          body: "Looks good once the null check lands.",
+          user: { login: "carol" },
+          submitted_at: "2026-07-02T01:00:00Z",
+          author_association: "MEMBER",
+          state: "COMMENTED",
+        },
+        {
+          body: "🤖 see summary comment",
+          user: { login: "github-actions[bot]" },
+          submitted_at: "2026-07-01T23:30:00Z",
+          author_association: "NONE",
+          state: "COMMENTED",
+        },
+      ]),
+    });
 
     await gather(mkInput({}), api, mkMockGit([]).git);
 
-    expect(JSON.parse(outFile("pr_conversation.json")) as unknown).toEqual([
-      {
-        author: "alice",
-        author_association: "OWNER",
-        created_at: "2026-07-01T00:00:00Z",
-        body: "That's a false positive; here's the file list.",
-      },
-      {
-        author: "bob",
-        author_association: "CONTRIBUTOR",
-        created_at: "2026-07-02T00:00:00Z",
-        body: "Fixed in abc1234.",
-      },
-    ]);
+    expect(conversation()).toEqual({
+      issue_comments: [
+        {
+          author: "alice",
+          author_association: "OWNER",
+          created_at: "2026-07-01T00:00:00Z",
+          body: "That's a false positive; here's the file list.",
+        },
+      ],
+      review_comments: [
+        {
+          author: "alice",
+          author_association: "OWNER",
+          created_at: "2026-07-02T00:00:00Z",
+          path: "src/foo.ts",
+          line: 42,
+          body: "Intentional — see the docstring I added.",
+        },
+      ],
+      reviews: [
+        {
+          author: "carol",
+          author_association: "MEMBER",
+          submitted_at: "2026-07-02T01:00:00Z",
+          state: "COMMENTED",
+          body: "Looks good once the null check lands.",
+        },
+      ],
+    });
   });
 
-  it("defaults association and timestamp to null and skips empty/whitespace bodies", async () => {
-    const { api } = withComments(
-      ndjson([
+  it("defaults optional fields to null and skips empty/whitespace bodies", async () => {
+    const { api } = withDiscussion({
+      issue: ndjson([
         { id: 1, body: "   ", user: { login: "alice" } },
         { id: 2, body: null, user: { login: "alice" } },
         { id: 3, body: "real disposition", user: { login: "alice" } },
       ]),
-    );
+      reviewComments: ndjson([{ body: "anchored reply", user: { login: "bob" } }]),
+    });
 
     await gather(mkInput({}), api, mkMockGit([]).git);
 
-    expect(JSON.parse(outFile("pr_conversation.json")) as unknown).toEqual([
+    const c = conversation();
+    expect(c.issue_comments).toEqual([
       { author: "alice", author_association: null, created_at: null, body: "real disposition" },
     ]);
+    expect(c.review_comments).toEqual([
+      {
+        author: "bob",
+        author_association: null,
+        created_at: null,
+        path: null,
+        line: null,
+        body: "anchored reply",
+      },
+    ]);
+    expect(c.reviews).toEqual([]);
   });
 
-  it("writes an empty array when there are no comments", async () => {
-    const { api } = withComments("");
+  it("writes empty arrays for every channel when there is no discussion", async () => {
+    const { api } = withDiscussion({});
 
     await gather(mkInput({}), api, mkMockGit([]).git);
 
-    expect(outFile("pr_conversation.json")).toBe("[]");
+    expect(conversation()).toEqual({ issue_comments: [], review_comments: [], reviews: [] });
   });
 
-  it("degrades to an empty array (and null prior review) when the comments fetch fails", async () => {
-    const { api } = mkMockGhApi([
-      {
-        match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-      },
-      { match: metaMatch(42), response: mkMeta() },
-      { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: new Error("500") },
-    ]);
+  it("degrades each channel independently (and prior review to null) when its fetch fails", async () => {
+    const { api } = withDiscussion({
+      issue: new Error("500"),
+      reviewComments: ndjson([{ body: "still here", user: { login: "alice" } }]),
+      reviews: new Error("500"),
+    });
 
     const result = await gather(mkInput({}), api, mkMockGit([]).git);
 
-    expect(outFile("pr_conversation.json")).toBe("[]");
+    const c = conversation();
+    expect(c.issue_comments).toEqual([]);
+    expect(c.reviews).toEqual([]);
+    expect(c.review_comments.map((r) => r.body)).toEqual(["still here"]);
     expect(outFile("prior_review.json")).toBe("null");
     expect(result.kind).toBe("gathered");
   });
@@ -539,18 +625,30 @@ describe("gather — PR conversation", () => {
       body: `comment ${String(i + 1)}`,
       user: { login: "alice" },
     }));
-    const { api } = withComments(ndjson(many));
+    const { api } = withDiscussion({ issue: ndjson(many) });
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     await gather(mkInput({}), api, mkMockGit([]).git);
 
-    const staged = JSON.parse(outFile("pr_conversation.json")) as readonly { body: string }[];
+    const staged = conversation().issue_comments;
     expect(staged).toHaveLength(50);
     expect(staged[0]?.body).toBe("comment 11");
     expect(staged[49]?.body).toBe("comment 60");
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("most recent 50"));
 
     stderrSpy.mockRestore();
+  });
+
+  it("clips a very long comment body", async () => {
+    const { api } = withDiscussion({
+      issue: ndjson([{ id: 1, body: "x".repeat(5000), user: { login: "alice" } }]),
+    });
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    const body = conversation().issue_comments[0]?.body ?? "";
+    expect(body.length).toBeLessThan(5000);
+    expect(body).toContain("[truncated]");
   });
 });
 

@@ -78,7 +78,6 @@ const IssueCommentCodec = t.intersection([
   }),
 ]);
 type IssueComment = t.TypeOf<typeof IssueCommentCodec>;
-const IssueCommentsCodec = t.array(IssueCommentCodec);
 
 const JobCodec = t.type({ id: t.number, conclusion: t.union([t.string, t.null]) });
 const JobsResponseCodec = t.type({ jobs: t.array(JobCodec) });
@@ -108,30 +107,59 @@ const fetchApiDiff = async (
   }
 };
 
-// One object per comment across all pages: `--paginate` WITHOUT `--jq` concatenates each page's JSON
+// One object per row across all pages: `--paginate` WITHOUT `--jq` concatenates each page's JSON
 // array into an invalid `[..][..]` stream JSON.parse rejects, silently losing the prior review (and
-// the conversation) on any PR past the first page of comments; the `--jq` projection streams NDJSON
-// parseJsonl reads line by line — the shape post.ts's findBotComment already uses.
+// the conversation) on any PR past the first page; the `--jq` projection streams NDJSON parseJsonl
+// reads line by line — the shape post.ts's findBotComment already uses.
 const COMMENT_JQ =
   ".[] | {id: .id, body: .body, user: {login: .user.login}, created_at: .created_at, author_association: .author_association}";
+const REVIEW_COMMENT_JQ =
+  ".[] | {body: .body, user: {login: .user.login}, created_at: .created_at, author_association: .author_association, path: .path, line: .line}";
+const REVIEW_JQ =
+  ".[] | {body: .body, user: {login: .user.login}, submitted_at: .submitted_at, author_association: .author_association, state: .state}";
 
-const fetchIssueComments = async (
-  repo: string,
-  prNumber: number,
+const ReviewCommentCodec = t.intersection([
+  t.type({ body: t.union([t.string, t.null]), user: t.type({ login: t.string }) }),
+  t.partial({
+    created_at: t.union([t.string, t.null]),
+    author_association: t.union([t.string, t.null]),
+    path: t.union([t.string, t.null]),
+    line: t.union([t.number, t.null]),
+  }),
+]);
+type ReviewComment = t.TypeOf<typeof ReviewCommentCodec>;
+
+const ReviewCodec = t.intersection([
+  t.type({ body: t.union([t.string, t.null]), user: t.type({ login: t.string }) }),
+  t.partial({
+    submitted_at: t.union([t.string, t.null]),
+    author_association: t.union([t.string, t.null]),
+    state: t.union([t.string, t.null]),
+  }),
+]);
+type Review = t.TypeOf<typeof ReviewCodec>;
+
+// Fetch + stream-parse a paginated endpoint; null on any transport error, so a degraded fetch never
+// aborts the review — the conversation is best-effort context.
+const fetchJsonlRows = async (
   ghApi: GhApi,
-): Promise<readonly IssueComment[] | null> => {
+  endpoint: string,
+  jq: string,
+): Promise<readonly unknown[] | null> => {
   try {
-    const stdout = await ghApi([
-      `repos/${repo}/issues/${String(prNumber)}/comments`,
-      "--paginate",
-      "--jq",
-      COMMENT_JQ,
-    ]);
-    const decoded = IssueCommentsCodec.decode(parseJsonl(stdout));
-    return decoded._tag === "Left" ? null : decoded.right;
+    return parseJsonl(await ghApi([endpoint, "--paginate", "--jq", jq]));
   } catch {
     return null;
   }
+};
+
+const decodeArrayOrNull = <A>(
+  codec: t.Type<A>,
+  rows: readonly unknown[] | null,
+): readonly A[] | null => {
+  if (rows === null) return null;
+  const decoded = t.array(codec).decode(rows);
+  return decoded._tag === "Left" ? null : decoded.right;
 };
 
 // The bot's own last comment — its embedded findings marker seeds the re-review draft (seed-draft).
@@ -144,17 +172,11 @@ const priorReviewFrom = (
   return last ? { id: last.id, body: last.body } : null;
 };
 
-// Untrusted PR discussion (everyone but the review bot) staged for the review agent to TRIAGE as
-// claims — so a re-review can recognize a finding the author already answered without obeying the
-// comment. Bounded to the most recent comments, each body clipped, so a long thread can't blow the
-// agent's context; the workflow frames the file as claims-to-verify, never as instructions.
-interface ConversationComment {
-  readonly author: string;
-  readonly author_association: string | null;
-  readonly created_at: string | null;
-  readonly body: string;
-}
-
+// The untrusted PR discussion staged for the review agent to TRIAGE as claims — so a re-review can
+// recognize a finding the author already answered without OBEYING the comment. Everyone but the
+// review bot (its own output is seeded back via prior_review), bounded to the most recent items per
+// channel with each body clipped so a long thread can't blow the agent's context; the workflow frames
+// these files as claims-to-verify, never as instructions.
 const MAX_CONVERSATION_COMMENTS = 50;
 const MAX_CONVERSATION_BODY_CHARS = 4000;
 
@@ -163,27 +185,55 @@ const clip = (body: string): string =>
     ? `${body.slice(0, MAX_CONVERSATION_BODY_CHARS)}\n… [truncated]`
     : body;
 
-const conversationFrom = (
-  comments: readonly IssueComment[],
+// Drop the review bot and empty bodies, keep the most recent MAX (logging when it caps), then project.
+const boundedHuman = <
+  A extends { readonly user: { readonly login: string }; readonly body: string | null },
+  B,
+>(
+  items: readonly A[],
   botLogin: string,
-): readonly ConversationComment[] => {
-  const human = comments.filter(
-    (c): c is IssueComment & { readonly body: string } =>
-      c.user.login !== botLogin && typeof c.body === "string" && c.body.trim() !== "",
+  label: string,
+  project: (item: A & { readonly body: string }) => B,
+): readonly B[] => {
+  const human = items.filter(
+    (a): a is A & { readonly body: string } =>
+      a.user.login !== botLogin && typeof a.body === "string" && a.body.trim() !== "",
   );
   const kept = human.slice(-MAX_CONVERSATION_COMMENTS);
   if (kept.length < human.length) {
     process.stderr.write(
-      `Note: PR has ${String(human.length)} discussion comments — feeding the review the most recent ${String(MAX_CONVERSATION_COMMENTS)}\n`,
+      `Note: PR has ${String(human.length)} ${label} — feeding the review the most recent ${String(MAX_CONVERSATION_COMMENTS)}\n`,
     );
   }
-  return kept.map((c) => ({
+  return kept.map(project);
+};
+
+const issueCommentsFrom = (comments: readonly IssueComment[], botLogin: string) =>
+  boundedHuman(comments, botLogin, "discussion comments", (c) => ({
     author: c.user.login,
     author_association: c.author_association ?? null,
     created_at: c.created_at ?? null,
     body: clip(c.body),
   }));
-};
+
+const reviewCommentsFrom = (comments: readonly ReviewComment[], botLogin: string) =>
+  boundedHuman(comments, botLogin, "inline review comments", (c) => ({
+    author: c.user.login,
+    author_association: c.author_association ?? null,
+    created_at: c.created_at ?? null,
+    path: c.path ?? null,
+    line: c.line ?? null,
+    body: clip(c.body),
+  }));
+
+const reviewsFrom = (reviews: readonly Review[], botLogin: string) =>
+  boundedHuman(reviews, botLogin, "review submissions", (r) => ({
+    author: r.user.login,
+    author_association: r.author_association ?? null,
+    submitted_at: r.submitted_at ?? null,
+    state: r.state ?? null,
+    body: clip(r.body),
+  }));
 
 // Jobs-list failure is fatal; a per-log download failure degrades — logs are advisory, and partial
 // logs plus the diff beat a dead review.
@@ -249,15 +299,41 @@ export const gather = async (
     JSON.stringify({ title: meta.title, body: meta.body }),
   );
 
-  const comments = await fetchIssueComments(input.repo, prNumber, ghApi);
-  const prior = comments === null ? null : priorReviewFrom(comments, input.botLogin);
+  const issueComments = decodeArrayOrNull(
+    IssueCommentCodec,
+    await fetchJsonlRows(
+      ghApi,
+      `repos/${input.repo}/issues/${String(prNumber)}/comments`,
+      COMMENT_JQ,
+    ),
+  );
+  const prior = issueComments === null ? null : priorReviewFrom(issueComments, input.botLogin);
   writeFileSync(
     join(input.outDir, "prior_review.json"),
     prior === null ? "null" : JSON.stringify(prior),
   );
+
+  const reviewComments = decodeArrayOrNull(
+    ReviewCommentCodec,
+    await fetchJsonlRows(
+      ghApi,
+      `repos/${input.repo}/pulls/${String(prNumber)}/comments`,
+      REVIEW_COMMENT_JQ,
+    ),
+  );
+  const reviews = decodeArrayOrNull(
+    ReviewCodec,
+    await fetchJsonlRows(ghApi, `repos/${input.repo}/pulls/${String(prNumber)}/reviews`, REVIEW_JQ),
+  );
   writeFileSync(
     join(input.outDir, "pr_conversation.json"),
-    JSON.stringify(comments === null ? [] : conversationFrom(comments, input.botLogin)),
+    JSON.stringify({
+      issue_comments:
+        issueComments === null ? [] : issueCommentsFrom(issueComments, input.botLogin),
+      review_comments:
+        reviewComments === null ? [] : reviewCommentsFrom(reviewComments, input.botLogin),
+      reviews: reviews === null ? [] : reviewsFrom(reviews, input.botLogin),
+    }),
   );
 
   if (input.conclusion === "failure") {

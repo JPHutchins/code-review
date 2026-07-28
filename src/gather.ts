@@ -7,6 +7,7 @@ import * as t from "io-ts";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
+import { parseJsonl } from "./transcript.js";
 import { errMsg } from "./util.js";
 
 export interface GatherInput {
@@ -65,11 +66,18 @@ const PrMetaCodec = t.type({
 });
 type PrMeta = t.TypeOf<typeof PrMetaCodec>;
 
-const IssueCommentCodec = t.type({
-  id: t.number,
-  body: t.union([t.string, t.null]),
-  user: t.type({ login: t.string }),
-});
+const IssueCommentCodec = t.intersection([
+  t.type({
+    id: t.number,
+    body: t.union([t.string, t.null]),
+    user: t.type({ login: t.string }),
+  }),
+  t.partial({
+    created_at: t.union([t.string, t.null]),
+    author_association: t.union([t.string, t.null]),
+  }),
+]);
+type IssueComment = t.TypeOf<typeof IssueCommentCodec>;
 const IssueCommentsCodec = t.array(IssueCommentCodec);
 
 const JobCodec = t.type({ id: t.number, conclusion: t.union([t.string, t.null]) });
@@ -100,22 +108,81 @@ const fetchApiDiff = async (
   }
 };
 
-const fetchPriorReview = async (
+// One object per comment across all pages: `--paginate` WITHOUT `--jq` concatenates each page's JSON
+// array into an invalid `[..][..]` stream JSON.parse rejects, silently losing the prior review (and
+// the conversation) on any PR past the first page of comments; the `--jq` projection streams NDJSON
+// parseJsonl reads line by line — the shape post.ts's findBotComment already uses.
+const COMMENT_JQ =
+  ".[] | {id: .id, body: .body, user: {login: .user.login}, created_at: .created_at, author_association: .author_association}";
+
+const fetchIssueComments = async (
   repo: string,
   prNumber: number,
-  botLogin: string,
   ghApi: GhApi,
-): Promise<{ readonly id: number; readonly body: string | null } | null> => {
+): Promise<readonly IssueComment[] | null> => {
   try {
-    const stdout = await ghApi([`repos/${repo}/issues/${String(prNumber)}/comments`, "--paginate"]);
-    const decoded = IssueCommentsCodec.decode(JSON.parse(stdout || "[]") as unknown);
-    if (decoded._tag === "Left") return null;
-    const byBot = decoded.right.filter((c) => c.user.login === botLogin);
-    const last = byBot[byBot.length - 1];
-    return last ? { id: last.id, body: last.body } : null;
+    const stdout = await ghApi([
+      `repos/${repo}/issues/${String(prNumber)}/comments`,
+      "--paginate",
+      "--jq",
+      COMMENT_JQ,
+    ]);
+    const decoded = IssueCommentsCodec.decode(parseJsonl(stdout));
+    return decoded._tag === "Left" ? null : decoded.right;
   } catch {
     return null;
   }
+};
+
+// The bot's own last comment — its embedded findings marker seeds the re-review draft (seed-draft).
+const priorReviewFrom = (
+  comments: readonly IssueComment[],
+  botLogin: string,
+): { readonly id: number; readonly body: string | null } | null => {
+  const byBot = comments.filter((c) => c.user.login === botLogin);
+  const last = byBot[byBot.length - 1];
+  return last ? { id: last.id, body: last.body } : null;
+};
+
+// Untrusted PR discussion (everyone but the review bot) staged for the review agent to TRIAGE as
+// claims — so a re-review can recognize a finding the author already answered without obeying the
+// comment. Bounded to the most recent comments, each body clipped, so a long thread can't blow the
+// agent's context; the workflow frames the file as claims-to-verify, never as instructions.
+interface ConversationComment {
+  readonly author: string;
+  readonly author_association: string | null;
+  readonly created_at: string | null;
+  readonly body: string;
+}
+
+const MAX_CONVERSATION_COMMENTS = 50;
+const MAX_CONVERSATION_BODY_CHARS = 4000;
+
+const clip = (body: string): string =>
+  body.length > MAX_CONVERSATION_BODY_CHARS
+    ? `${body.slice(0, MAX_CONVERSATION_BODY_CHARS)}\n… [truncated]`
+    : body;
+
+const conversationFrom = (
+  comments: readonly IssueComment[],
+  botLogin: string,
+): readonly ConversationComment[] => {
+  const human = comments.filter(
+    (c): c is IssueComment & { readonly body: string } =>
+      c.user.login !== botLogin && typeof c.body === "string" && c.body.trim() !== "",
+  );
+  const kept = human.slice(-MAX_CONVERSATION_COMMENTS);
+  if (kept.length < human.length) {
+    process.stderr.write(
+      `Note: PR has ${String(human.length)} discussion comments — feeding the review the most recent ${String(MAX_CONVERSATION_COMMENTS)}\n`,
+    );
+  }
+  return kept.map((c) => ({
+    author: c.user.login,
+    author_association: c.author_association ?? null,
+    created_at: c.created_at ?? null,
+    body: clip(c.body),
+  }));
 };
 
 // Jobs-list failure is fatal; a per-log download failure degrades — logs are advisory, and partial
@@ -182,10 +249,15 @@ export const gather = async (
     JSON.stringify({ title: meta.title, body: meta.body }),
   );
 
-  const prior = await fetchPriorReview(input.repo, prNumber, input.botLogin, ghApi);
+  const comments = await fetchIssueComments(input.repo, prNumber, ghApi);
+  const prior = comments === null ? null : priorReviewFrom(comments, input.botLogin);
   writeFileSync(
     join(input.outDir, "prior_review.json"),
     prior === null ? "null" : JSON.stringify(prior),
+  );
+  writeFileSync(
+    join(input.outDir, "pr_conversation.json"),
+    JSON.stringify(comments === null ? [] : conversationFrom(comments, input.botLogin)),
   );
 
   if (input.conclusion === "failure") {

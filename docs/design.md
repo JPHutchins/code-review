@@ -135,6 +135,14 @@ this doc.
   what the new commits addressed and review the newly-changed code when it moved. The sticky *summary*
   comment is editable (find-and-PATCH) while a fresh *review* is posted per head SHA with the prior bot
   review dismissed.
+- **Author dispositions as untrusted context.** Alongside the seeded prior review, a re-review sees the
+  PR discussion (`pr_conversation.json` — every comment but the review bot's), so it can recognize a
+  finding the author already answered instead of re-raising it round after round. It is fed as *claims to
+  verify*, never as instructions: comments are attacker-reachable on a public PR, so this must not let a
+  comment suppress a real finding or inject behavior. The reviewer either confirms the stated reason
+  against the current code (and drops or softens the finding) or says precisely why it does not hold —
+  the failure mode stays "argued with", not "suppressed". Claims are weighted by `author_association`,
+  and the thread is bounded (most recent comments, each body clipped) so it can't blow the agent's budget.
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
 

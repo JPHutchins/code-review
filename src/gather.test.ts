@@ -135,6 +135,10 @@ const mkMeta = (overrides: { changed_files?: number } = {}) =>
     body: "B",
   });
 
+// gather fetches issue comments with `--paginate --jq`, which streams NDJSON (one object per line),
+// not a JSON array — mirror that here.
+const ndjson = (rows: readonly unknown[]): string => rows.map((r) => JSON.stringify(r)).join("\n");
+
 describe("gather — PR resolution", () => {
   it("resolves a single open PR and gathers its inputs", async () => {
     const { api, calls } = mkMockGhApi([
@@ -144,7 +148,7 @@ describe("gather — PR resolution", () => {
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
     const { git, calls: gitCalls } = mkMockGit([]);
 
@@ -173,7 +177,7 @@ describe("gather — PR resolution", () => {
       },
       { match: metaMatch(7), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(7), response: sampleDiff },
-      { match: commentsMatch(7), response: "[]" },
+      { match: commentsMatch(7), response: "" },
     ]);
 
     const result = await gather(mkInput({}), api, mkMockGit([]).git);
@@ -192,7 +196,7 @@ describe("gather — PR resolution", () => {
       },
       { match: metaMatch(99), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(99), response: sampleDiff },
-      { match: commentsMatch(99), response: "[]" },
+      { match: commentsMatch(99), response: "" },
     ]);
 
     const result = await gather(mkInput({}), api, mkMockGit([]).git);
@@ -243,7 +247,7 @@ describe("gather — diff resolution", () => {
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
     const { git, calls: gitCalls } = mkMockGit([]);
 
@@ -261,7 +265,7 @@ describe("gather — diff resolution", () => {
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: "" },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
     const { git, calls: gitCalls } = mkMockGit([
       { match: (a) => a[0] === "fetch" && a[1] === "origin" && a[2] === "abc123", response: "" },
@@ -295,7 +299,7 @@ describe("gather — diff resolution", () => {
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: new Error("boom") },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
     const { git } = mkMockGit([
       { match: (a) => a[0] === "fetch", response: "" },
@@ -315,7 +319,7 @@ describe("gather — diff resolution", () => {
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 0 }) },
       { match: diffMatch(42), response: "" },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
     const { git, calls: gitCalls } = mkMockGit([]);
 
@@ -335,7 +339,7 @@ describe("gather — diff resolution", () => {
       },
       { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
       { match: diffMatch(42), response: "" },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
     const { git } = mkMockGit([
       { match: (a) => a[0] === "fetch", response: new Error("no network") },
@@ -356,7 +360,7 @@ describe("gather — prior review", () => {
       { match: diffMatch(42), response: sampleDiff },
       {
         match: commentsMatch(42),
-        response: JSON.stringify([
+        response: ndjson([
           { id: 1, body: "first", user: { login: "someone" } },
           { id: 7, body: "latest bot", user: { login: "github-actions[bot]" } },
         ]),
@@ -381,7 +385,7 @@ describe("gather — prior review", () => {
       { match: diffMatch(42), response: sampleDiff },
       {
         match: commentsMatch(42),
-        response: JSON.stringify([{ id: 1, body: "x", user: { login: "human" } }]),
+        response: ndjson([{ id: 1, body: "x", user: { login: "human" } }]),
       },
     ]);
 
@@ -417,7 +421,7 @@ describe("gather — prior review", () => {
       { match: diffMatch(42), response: sampleDiff },
       {
         match: commentsMatch(42),
-        response: JSON.stringify([
+        response: ndjson([
           { id: 5, body: "mine", user: { login: "my-bot[bot]" } },
           { id: 6, body: "default", user: { login: "github-actions[bot]" } },
         ]),
@@ -430,6 +434,126 @@ describe("gather — prior review", () => {
   });
 });
 
+describe("gather — PR conversation", () => {
+  const withComments = (comments: string) =>
+    mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: comments },
+    ]);
+
+  it("stages every non-bot comment with author, association, timestamp, and body — excluding the bot", async () => {
+    const { api } = withComments(
+      ndjson([
+        {
+          id: 1,
+          body: "That's a false positive; here's the file list.",
+          user: { login: "alice" },
+          created_at: "2026-07-01T00:00:00Z",
+          author_association: "OWNER",
+        },
+        {
+          id: 2,
+          body: "prior review",
+          user: { login: "github-actions[bot]" },
+          created_at: "2026-07-01T00:05:00Z",
+          author_association: "NONE",
+        },
+        {
+          id: 3,
+          body: "Fixed in abc1234.",
+          user: { login: "bob" },
+          created_at: "2026-07-02T00:00:00Z",
+          author_association: "CONTRIBUTOR",
+        },
+      ]),
+    );
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    expect(JSON.parse(outFile("pr_conversation.json")) as unknown).toEqual([
+      {
+        author: "alice",
+        author_association: "OWNER",
+        created_at: "2026-07-01T00:00:00Z",
+        body: "That's a false positive; here's the file list.",
+      },
+      {
+        author: "bob",
+        author_association: "CONTRIBUTOR",
+        created_at: "2026-07-02T00:00:00Z",
+        body: "Fixed in abc1234.",
+      },
+    ]);
+  });
+
+  it("defaults association and timestamp to null and skips empty/whitespace bodies", async () => {
+    const { api } = withComments(
+      ndjson([
+        { id: 1, body: "   ", user: { login: "alice" } },
+        { id: 2, body: null, user: { login: "alice" } },
+        { id: 3, body: "real disposition", user: { login: "alice" } },
+      ]),
+    );
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    expect(JSON.parse(outFile("pr_conversation.json")) as unknown).toEqual([
+      { author: "alice", author_association: null, created_at: null, body: "real disposition" },
+    ]);
+  });
+
+  it("writes an empty array when there are no comments", async () => {
+    const { api } = withComments("");
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    expect(outFile("pr_conversation.json")).toBe("[]");
+  });
+
+  it("degrades to an empty array (and null prior review) when the comments fetch fails", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: new Error("500") },
+    ]);
+
+    const result = await gather(mkInput({}), api, mkMockGit([]).git);
+
+    expect(outFile("pr_conversation.json")).toBe("[]");
+    expect(outFile("prior_review.json")).toBe("null");
+    expect(result.kind).toBe("gathered");
+  });
+
+  it("caps a long thread at the most recent 50 comments", async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      id: i + 1,
+      body: `comment ${String(i + 1)}`,
+      user: { login: "alice" },
+    }));
+    const { api } = withComments(ndjson(many));
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    const staged = JSON.parse(outFile("pr_conversation.json")) as readonly { body: string }[];
+    expect(staged).toHaveLength(50);
+    expect(staged[0]?.body).toBe("comment 11");
+    expect(staged[49]?.body).toBe("comment 60");
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("most recent 50"));
+
+    stderrSpy.mockRestore();
+  });
+});
+
 describe("gather — failing-job logs", () => {
   it("downloads only the failing jobs' logs when conclusion is failure", async () => {
     const { api } = mkMockGhApi([
@@ -439,7 +563,7 @@ describe("gather — failing-job logs", () => {
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
       {
         match: jobsMatch,
         response: JSON.stringify({
@@ -469,7 +593,7 @@ describe("gather — failing-job logs", () => {
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
       {
         match: jobsMatch,
         response: JSON.stringify({
@@ -509,7 +633,7 @@ describe("gather — failing-job logs", () => {
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
 
     await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
@@ -536,7 +660,7 @@ describe("gather — pr_context.json", () => {
         }),
       },
       { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
 
     await gather(mkInput({}), api, mkMockGit([]).git);
@@ -569,7 +693,7 @@ describe("gather — diff_size byte accuracy", () => {
       },
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: multibyteDiff },
-      { match: commentsMatch(42), response: "[]" },
+      { match: commentsMatch(42), response: "" },
     ]);
 
     const result = await gather(mkInput({}), api, mkMockGit([]).git);

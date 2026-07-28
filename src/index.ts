@@ -38,7 +38,7 @@ import {
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import { parseFindingsMarker, parseReviewedSha } from "./surface.js";
-import { post } from "./post.js";
+import { announce, post } from "./post.js";
 import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.js";
 import { react, isReaction, REACTIONS } from "./react.js";
 import type { Reaction } from "./react.js";
@@ -1362,6 +1362,49 @@ const postCmd = defineCommand({
   },
 });
 
+const announceCmd = defineCommand({
+  meta: {
+    name: "announce",
+    description:
+      "Post (or update) the sticky the moment a review starts — an in-progress placeholder linking the run — so a workflow_run review, which runs from the default branch and is otherwise invisible on the PR, is visibly under way. Preserves a prior sticky's embedded findings + reviewed-sha markers so the re-review seed survives the swap.",
+  },
+  args: {
+    "head-sha": {
+      type: "string",
+      description: "Trusted head SHA to resolve the PR (from workflow_run.head_sha)",
+      required: true,
+    },
+    repo: {
+      type: "string",
+      description: "Repository (owner/name)",
+      required: true,
+    },
+    "run-url": {
+      type: "string",
+      description: "Workflow run URL the placeholder links to",
+      required: true,
+    },
+    "bot-login": {
+      type: "string",
+      description:
+        "Bot login to trust for the sticky comment upsert (default: github-actions[bot])",
+    },
+    "head-branch": {
+      type: "string",
+      description: "Head branch to disambiguate the PR when multiple share a commit",
+    },
+  },
+  run: async ({ args }) => {
+    await announce({
+      repo: args.repo,
+      headSha: args["head-sha"],
+      botLogin: args["bot-login"] || "github-actions[bot]",
+      runUrl: args["run-url"],
+      headBranch: args["head-branch"],
+    });
+  },
+});
+
 /** Parse a `--max-duration`/ceiling flag to whole seconds; a bad value is trusted-config error, so
  *  fail loudly rather than silently disabling the clamp. undefined ⇒ no ceiling. */
 const requireCeilingSec = (raw: string | undefined): number | null => {
@@ -1556,6 +1599,7 @@ export const main = defineCommand({
     render: renderCmd,
     inline: inlineCmd,
     post: postCmd,
+    announce: announceCmd,
     cost: costCmd,
     "check-cost": checkCostCmd,
     validate: validateCmd,

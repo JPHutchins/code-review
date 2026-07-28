@@ -2,7 +2,7 @@
 
 [`review.yaml`](review.yaml) is the copy-paste reference workflow for the spec's
 [GitHub Actions binding](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative):
-a single file, two jobs, triggered by your existing CI workflow completing. Its routing follows
+a single file, three jobs, triggered by your existing CI workflow completing. Its routing follows
 [SPEC §3.1](../../SPEC.md#31-trigger--routing) — CI success gets the comprehensive reviewer, CI failure
 gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
@@ -12,6 +12,10 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   then it runs the two-phase gate: (1) a data-only security triage of the diff → `{safe, reasons}`,
   fail-closed; (2) if safe, the agentic review runs and its output is mapped onto the spec envelope
   with `code-review adapt`.
+- **`announce` job** — holds the write token, runs **no agent and no PR code**; `code-review announce`
+  posts an in-progress placeholder sticky the moment the review starts (a `workflow_run` review runs
+  from the default branch and is otherwise invisible on the PR), preserving any prior sticky's embedded
+  re-review markers so the swap never clobbers the seed the `review` job reads back.
 - **`comment` job** — holds the write token, runs **no agent and no PR code**; `code-review post`
   validates findings against the diff and posts the inline review + sticky summary.
 
@@ -22,7 +26,7 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 - **Reusable workflow (`@ref`)** — a thin ~20–35 line caller that delegates to
   [`.github/workflows/review-reusable.yaml`](../../.github/workflows/review-reusable.yaml) via
   `workflow_call`, so an upgrade is an `@ref` bump instead of re-copying the file. The full pipeline
-  (both jobs, the permission boundary, harden-runner, the CLI pins) lives in the pinned ref; you own
+  (all jobs, the permission boundary, harden-runner, the CLI pins) lives in the pinned ref; you own
   the trigger, secrets, egress policy, prices, version pin — and any check-running setup. Minimal
   caller (STATIC review — no PR-code execution):
 

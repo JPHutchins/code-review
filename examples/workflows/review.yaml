@@ -1,4 +1,4 @@
-# Reference workflow (single file, two jobs) — copy into .github/workflows/; your CI (name: "CI") is
+# Reference workflow (single file, three jobs) — copy into .github/workflows/; your CI (name: "CI") is
 # unchanged. Quickstart: set the API_BASE_URL variable + MODEL_API_KEY secret, merge to the default
 # branch, open a test PR. See: https://github.com/JPHutchins/code-review
 
@@ -17,6 +17,65 @@ env:                         # one definition both jobs install from, so the two
   CODE_REVIEW_VERSION: 0.1.0-alpha.26
 
 jobs:
+  # ANNOUNCE — post an in-progress placeholder sticky the moment the review starts, so this
+  # workflow_run review (which runs from the default branch, invisible on the PR) is visibly under
+  # way. Holds issues:write — the write token the review job must never hold — so it is its own job.
+  # The workflow-level concurrency above supersedes it along with the rest of the run.
+  announce:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      (github.event.workflow_run.conclusion == 'success' ||
+       github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write          # post/patch the sticky comment
+      pull-requests: read    # resolve the PR from the head SHA
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+
+      # Holds the write token, so lock egress (fixed host set: npm registry + the GitHub API).
+      - name: Lock network egress
+        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            registry.npmjs.org:443
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            *.blob.core.windows.net:443
+
+      - name: Egress canary — verify the lock engaged
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
+            echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
+            exit 1
+          fi
+          echo "Egress canary could not connect — block policy verified"
+
+      - name: Post the in-progress sticky
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          code-review announce \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --head-branch "$HEAD_BRANCH" \
+            --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
   # REVIEW — holds the model key + read-only token + locked egress
   review:
     if: >-

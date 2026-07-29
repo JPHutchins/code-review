@@ -5,9 +5,9 @@
 // safe in the query; the workflow name is trusted caller config.
 
 import * as t from "io-ts";
-import { PathReporter } from "io-ts/lib/PathReporter.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
+import { parseJsonl } from "./transcript.js";
 
 const RunCodec = t.type({
   id: t.number,
@@ -16,7 +16,6 @@ const RunCodec = t.type({
   conclusion: t.union([t.string, t.null]),
   run_number: t.number,
 });
-const RunsCodec = t.type({ workflow_runs: t.array(RunCodec) });
 
 export interface CiRun {
   readonly id: number;
@@ -34,23 +33,37 @@ export interface CiLookup {
   readonly seenNames: readonly string[];
 }
 
+// One projected run object per row across ALL pages: `--paginate` WITHOUT `--jq` concatenates each
+// page's `{workflow_runs: […]}` object into a stream JSON.parse rejects, so only the first page (≤100
+// runs) was ever read — a head SHA with many workflows or re-runs could push the awaited run out of
+// view and the comment path would decline with no diagnostic. `--jq` unwraps `.workflow_runs[]` and
+// streams NDJSON parseJsonl reads line by line, the shape gather/post already use.
+const RUN_JQ =
+  ".workflow_runs[] | {id: .id, name: .name, status: .status, conclusion: .conclusion, run_number: .run_number}";
+
 // The latest run of the named CI workflow for this head SHA. NOT filtered by triggering event: CI may
 // run on `push` as well as `pull_request`, and the head SHA already pins the commit. Latest = highest
 // run_number, so a re-run supersedes. `run` is null when the named workflow has no run yet (the
-// comment may fire before CI even queues).
+// comment may fire before CI even queues). A row that doesn't match the run shape is dropped rather
+// than aborting the lookup — an empty result then reads as "not queued yet" and the caller declines.
 export const resolveCiRun = async (
   repo: string,
   headSha: string,
   workflowName: string,
   ghApi: GhApi,
 ): Promise<CiLookup> => {
-  const stdout = await ghApi([`repos/${repo}/actions/runs?head_sha=${headSha}&per_page=100`]);
-  const decoded = RunsCodec.decode(JSON.parse(stdout) as unknown);
-  if (decoded._tag === "Left")
-    throw new Error(
-      `workflow runs for ${headSha} did not match the expected shape: ${PathReporter.report(decoded).join("; ")}`,
-    );
-  const runs = decoded.right.workflow_runs;
+  const rows = parseJsonl(
+    await ghApi([
+      `repos/${repo}/actions/runs?head_sha=${headSha}&per_page=100`,
+      "--paginate",
+      "--jq",
+      RUN_JQ,
+    ]),
+  );
+  const runs = rows.flatMap((row) => {
+    const decoded = RunCodec.decode(row);
+    return decoded._tag === "Right" ? [decoded.right] : [];
+  });
   const latest = runs
     .filter((r) => r.name === workflowName)
     .reduce<t.TypeOf<typeof RunCodec> | null>(
@@ -97,8 +110,11 @@ export const awaitCiConclusion = async (
 ): Promise<CiOutcome> => {
   const poll = async (): Promise<CiOutcome> => {
     const { run, seenNames } = await resolveCiRun(repo, headSha, options.workflowName, deps.ghApi);
-    if (run !== null && run.status === "completed")
-      return { kind: "concluded", conclusion: run.conclusion ?? "unknown", runId: run.id };
+    // A run momentarily reports `completed` with a null conclusion before GitHub settles it; treating
+    // that as concluded would fabricate a routing decision, so keep polling until the conclusion lands
+    // (or the timeout declines) rather than collapsing it to a made-up "unknown" the caller can act on.
+    if (run !== null && run.status === "completed" && run.conclusion !== null)
+      return { kind: "concluded", conclusion: run.conclusion, runId: run.id };
     if (deps.elapsedMs() >= options.timeoutMs)
       return { kind: "timed-out", runId: run === null ? null : run.id, seenNames };
     await deps.sleep(options.pollIntervalMs);

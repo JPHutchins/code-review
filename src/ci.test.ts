@@ -10,7 +10,10 @@ interface RunJson {
   readonly run_number: number;
 }
 
-const runsJson = (runs: readonly RunJson[]): string => JSON.stringify({ workflow_runs: runs });
+// resolveCiRun now fetches with `--jq RUN_JQ`, so gh's stdout is one projected run per line (NDJSON),
+// the shape parseJsonl reads — the mock stands in for that already-projected, page-concatenated stream.
+const runsJson = (runs: readonly RunJson[]): string =>
+  runs.map((r) => JSON.stringify(r)).join("\n");
 
 // A GhApi that returns a queued sequence of responses, one per call, in order.
 const mkSeqGhApi = (responses: readonly (string | Error)[]): GhApi => {
@@ -85,10 +88,23 @@ describe("resolveCiRun", () => {
     expect(got.run).toEqual({ id: 7, status: "completed", conclusion: "success" });
   });
 
-  it("throws with io-ts detail on a malformed runs payload", async () => {
-    await expect(resolveCiRun("o/r", "sha", "CI", mkSeqGhApi(['{"nope":1}']))).rejects.toThrow(
-      /did not match the expected shape:/,
+  it("drops a row that does not match the run shape rather than aborting the lookup", async () => {
+    const got = await resolveCiRun("o/r", "sha", "CI", mkSeqGhApi(['{"nope":1}']));
+    expect(got.run).toBeNull();
+    expect(got.seenNames).toEqual([]);
+  });
+
+  it("finds a matching run that only appears on a later page (paginated NDJSON)", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      run({ run_number: i + 1, name: "Lint", conclusion: "success" }),
     );
+    const got = await resolveCiRun(
+      "o/r",
+      "sha",
+      "CI",
+      api([...page1, run({ run_number: 101, name: "CI", conclusion: "failure" })]),
+    );
+    expect(got.run).toEqual({ id: 101, status: "completed", conclusion: "failure" });
   });
 });
 
@@ -158,15 +174,29 @@ describe("awaitCiConclusion", () => {
     expect(got).toEqual({ kind: "timed-out", runId: null, seenNames: ["Lint"] });
   });
 
-  it('maps a completed run with a null conclusion to "unknown"', async () => {
+  it("does not treat a completed run with a null conclusion as concluded — keeps polling until it settles", async () => {
     const clock = mkClock();
     const got = await awaitCiConclusion("o/r", "sha", OPTS, {
       ghApi: mkSeqGhApi([
         runsJson([run({ run_number: 1, status: "completed", conclusion: null })]),
+        runsJson([run({ run_number: 1, status: "completed", conclusion: "success" })]),
       ]),
       ...clock,
     });
-    expect(got).toEqual({ kind: "concluded", conclusion: "unknown", runId: 1 });
+    expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 1 });
+    expect(clock.elapsedMs()).toBe(1000);
+  });
+
+  it("times out (declines) when a run stays completed with a null conclusion", async () => {
+    const clock = mkClock();
+    const nullConcl = runsJson([run({ run_number: 3, status: "completed", conclusion: null })]);
+    const got = await awaitCiConclusion(
+      "o/r",
+      "sha",
+      { ...OPTS, timeoutMs: 2000 },
+      { ghApi: mkSeqGhApi([nullConcl, nullConcl, nullConcl]), ...clock },
+    );
+    expect(got).toEqual({ kind: "timed-out", runId: 3, seenNames: ["CI"] });
   });
 });
 

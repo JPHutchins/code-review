@@ -135,6 +135,22 @@ this doc.
   what the new commits addressed and review the newly-changed code when it moved. The sticky *summary*
   comment is editable (find-and-PATCH) while a fresh *review* is posted per head SHA with the prior bot
   review dismissed.
+- **Author dispositions as untrusted context.** Alongside the seeded prior review, a re-review sees the
+  PR's own description (`pr_context.json`) and the full human discussion (`pr_conversation.json` — issue
+  comments, inline review-thread replies with their `path`/`line`, and review submissions; *every author
+  but the review bot*, whose own output is already seeded back), so it can recognize a finding the author
+  already answered instead of re-raising it round after round. It is fed as *claims to verify*, never as
+  instructions: this is attacker-reachable on a public PR, so it must not let a comment suppress a real
+  finding or inject behavior. The reviewer either confirms the stated reason against the current code (and
+  drops or softens the finding) or says precisely why it does not hold — the failure mode stays "argued
+  with", not "suppressed". Claims are weighted by `author_association`, and each channel is bounded (most
+  recent comments, each body clipped) so a long thread can't blow the agent's budget. This text is
+  deliberately **not** run through the Phase-1 execute-safety triage: that gate reads the diff (code that
+  will be *run*), and a disposition legitimately reads like an injection ("this finding is wrong,
+  disregard it"), so gating on it would false-positive exactly when a re-review is most valuable. The
+  containment for this new surface is the same structural boundary that already holds for the diff — a
+  read-only token, the egress lock, the burner key's spend cap, and a deterministic commenter posting
+  *data* — not the heuristic gate, so an injected comment can at worst produce a bogus advisory finding.
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
 

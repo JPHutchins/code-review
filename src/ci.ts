@@ -8,6 +8,7 @@ import * as t from "io-ts";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { parseJsonl } from "./transcript.js";
+import { errMsg } from "./util.js";
 
 const RunCodec = t.type({
   id: t.number,
@@ -52,18 +53,19 @@ export const resolveCiRun = async (
   workflowName: string,
   ghApi: GhApi,
 ): Promise<CiLookup> => {
-  const rows = parseJsonl(
-    await ghApi([
-      `repos/${repo}/actions/runs?head_sha=${headSha}&per_page=100`,
-      "--paginate",
-      "--jq",
-      RUN_JQ,
-    ]),
-  );
+  const endpoint = `repos/${repo}/actions/runs?head_sha=${headSha}&per_page=100`;
+  const rows = parseJsonl(await ghApi([endpoint, "--paginate", "--jq", RUN_JQ]));
   const runs = rows.flatMap((row) => {
     const decoded = RunCodec.decode(row);
     return decoded._tag === "Right" ? [decoded.right] : [];
   });
+  // A non-empty fetch that decodes to nothing means every row failed the codec — a GitHub/gh format
+  // drift, not "no run yet". Left silent it reads as an empty result and the caller declines only
+  // after a full timeout with no explanation, so name it once here.
+  if (rows.length > 0 && runs.length === 0)
+    process.stderr.write(
+      `Warning: every workflow-run row from ${endpoint} failed to decode — treating as no matching run found\n`,
+    );
   const latest = runs
     .filter((r) => r.name === workflowName)
     .reduce<t.TypeOf<typeof RunCodec> | null>(
@@ -108,8 +110,22 @@ export const awaitCiConclusion = async (
   options: AwaitOptions,
   deps: AwaitDeps = { ghApi: runGhApi, sleep: defaultSleep, elapsedMs: monotonicElapsed() },
 ): Promise<CiOutcome> => {
+  // `--paginate` fetches one page per HTTP request, so a transient blip on any page rejects the whole
+  // lookup. Contain it to a diagnostic + empty result rather than let it unwind and abort the wait:
+  // the loop is meant to be resilient, so a failed poll should retry until the run settles or the
+  // timeout declines, never crash mid-wait.
+  const safeResolve = async (): Promise<CiLookup> => {
+    try {
+      return await resolveCiRun(repo, headSha, options.workflowName, deps.ghApi);
+    } catch (err) {
+      process.stderr.write(
+        `Warning: CI-run lookup for ${headSha} failed (${errMsg(err)}) — retrying until the timeout\n`,
+      );
+      return { run: null, seenNames: [] };
+    }
+  };
   const poll = async (): Promise<CiOutcome> => {
-    const { run, seenNames } = await resolveCiRun(repo, headSha, options.workflowName, deps.ghApi);
+    const { run, seenNames } = await safeResolve();
     // A run momentarily reports `completed` with a null conclusion before GitHub settles it; treating
     // that as concluded would fabricate a routing decision, so keep polling until the conclusion lands
     // (or the timeout declines) rather than collapsing it to a made-up "unknown" the caller can act on.

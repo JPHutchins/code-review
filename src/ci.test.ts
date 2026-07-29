@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { GhApi } from "./gh.js";
 import { resolveCiRun, awaitCiConclusion, renderCiOutputs } from "./ci.js";
 
@@ -88,10 +88,34 @@ describe("resolveCiRun", () => {
     expect(got.run).toEqual({ id: 7, status: "completed", conclusion: "success" });
   });
 
-  it("drops a row that does not match the run shape rather than aborting the lookup", async () => {
-    const got = await resolveCiRun("o/r", "sha", "CI", mkSeqGhApi(['{"nope":1}']));
-    expect(got.run).toBeNull();
-    expect(got.seenNames).toEqual([]);
+  it("drops an invalid row but keeps the valid ones, with no false format-drift warning", async () => {
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const got = await resolveCiRun(
+        "o/r",
+        "sha",
+        "CI",
+        mkSeqGhApi([
+          `{"nope":1}\n${JSON.stringify(run({ run_number: 4, conclusion: "success" }))}`,
+        ]),
+      );
+      expect(got.run).toEqual({ id: 4, status: "completed", conclusion: "success" });
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("warns and returns empty when every fetched row fails to decode (format drift)", async () => {
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const got = await resolveCiRun("o/r", "sha", "CI", mkSeqGhApi(['{"nope":1}\n{"also":2}']));
+      expect(got.run).toBeNull();
+      expect(got.seenNames).toEqual([]);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("failed to decode"));
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("finds a matching run that only appears on a later page (paginated NDJSON)", async () => {
@@ -197,6 +221,26 @@ describe("awaitCiConclusion", () => {
       { ghApi: mkSeqGhApi([nullConcl, nullConcl, nullConcl]), ...clock },
     );
     expect(got).toEqual({ kind: "timed-out", runId: 3, seenNames: ["CI"] });
+  });
+
+  it("retries past a transient lookup failure rather than crashing the poll loop", async () => {
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const clock = mkClock();
+    try {
+      const got = await awaitCiConclusion("o/r", "sha", OPTS, {
+        ghApi: mkSeqGhApi([
+          runsJson([run({ run_number: 1, status: "in_progress", conclusion: null })]),
+          new Error("gh: transient 502 on page 2"),
+          runsJson([run({ run_number: 1, status: "completed", conclusion: "success" })]),
+        ]),
+        ...clock,
+      });
+      expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 1 });
+      expect(clock.elapsedMs()).toBe(2000);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("retrying until the timeout"));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

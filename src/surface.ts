@@ -77,14 +77,15 @@ export const parseFindingsMarker = (body: string): unknown => {
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must
 // survive — the "review in progress" placeholder swaps the visible summary yet must not clobber the
 // re-review seed the review job reads back from the sticky (the embedded findings + reviewed-sha).
-// Extracted verbatim so both the base64 and the jsonUrl-link forms of the findings marker survive;
-// returns "" when the body carries neither. Base64 (A–Z a–z 0–9 + / =) and URLs never contain '>',
-// so `[^>]*` stops exactly at each marker's closing `-->`.
+// The findings marker is extracted verbatim so both its base64 and jsonUrl-link forms survive; base64
+// (A–Z a–z 0–9 + / =) and URLs never contain '>', so `[^>]*` stops at its closing `-->`. The STOP
+// directive that always precedes it is re-emitted from AGENTS_STOP_DIRECTIVE (its SSOT above) rather
+// than re-matched, so a future edit to that constant can't silently desync a parallel regex. Returns
+// "" when the body carries neither marker.
 export const carryForwardMarkers = (body: string): string => {
-  const directive = /<!-- AGENTS: STOP[^>]*-->/.exec(body)?.[0];
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
-  const findingsBlock = findings ? (directive ? `${directive}\n${findings}` : findings) : undefined;
+  const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
   return [findingsBlock, reviewedSha].filter((m): m is string => m !== undefined).join("\n\n");
 };
 

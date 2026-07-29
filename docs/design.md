@@ -142,6 +142,8 @@ this doc.
   read-only review job, so it carries the prior sticky's `findings-json` + `reviewed-sha` markers
   forward *verbatim* — replacing only the prose — so it never clobbers the re-review seed the review
   job reads back from that same comment. The commenter overwrites it with the real summary at the end.
+  It also leaves the sticky untouched when it already reviewed the *current* head (a CI re-run, or the
+  pipeline racing ahead), so a finished review is never hidden behind a stale "in progress".
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
 

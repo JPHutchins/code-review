@@ -7,7 +7,12 @@ import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts } from "./render.js";
 import { formatMarkdown } from "./format.js";
-import { carryForwardMarkers, findingsPointer, reviewBodyPointer } from "./surface.js";
+import {
+  carryForwardMarkers,
+  findingsPointer,
+  parseReviewedSha,
+  reviewBodyPointer,
+} from "./surface.js";
 import { ResultEnvelopeCodec, PriceMapCodec, TestSummaryCodec, noticeFindings } from "./schema.js";
 import type { Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
@@ -756,6 +761,15 @@ export const announce = async (input: AnnounceInput, ghApi: GhApi = runGhApi): P
     DEFAULT_MARKER,
     ghApi,
   );
+  // If the sticky already reflects a completed review OF THIS HEAD, leave it — overwriting it with the
+  // in-progress placeholder would hide a finished review (a CI re-run of an already-reviewed commit,
+  // or the review+comment pipeline racing ahead of this job). A prior head's sha still gets replaced.
+  if (existing !== null && parseReviewedSha(existing.body) === input.headSha.toLowerCase()) {
+    process.stderr.write(
+      `Sticky already reflects a completed review of ${input.headSha} — leaving it in place\n`,
+    );
+    return;
+  }
   await upsertSticky(
     input.repo,
     resolution.prNumber,

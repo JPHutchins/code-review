@@ -2330,4 +2330,27 @@ describe("announce — in-progress sticky", () => {
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("nothing to announce"));
     stderrSpy.mockRestore();
   });
+
+  it("leaves the sticky untouched when it already reviewed the current head (CI re-run / race)", async () => {
+    const headSha = "abc123def4560000000000000000000000000000";
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "### 💬 comment — a completed review of this exact head",
+      "",
+      `<!-- reviewed-sha: ${headSha} -->`,
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await announce(mkAnnounceInput({ headSha }), api);
+
+    // Neither a patch nor a post — the finished review stays visible.
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("already reflects a completed"));
+    stderrSpy.mockRestore();
+  });
 });

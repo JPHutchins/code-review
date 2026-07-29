@@ -1395,13 +1395,19 @@ const announceCmd = defineCommand({
     },
   },
   run: async ({ args }) => {
+    // Best-effort, like `react`: the in-progress sticky is cosmetic, so a transient API error must
+    // warn and exit 0 rather than fail its job (the review + real comment proceed regardless).
     await announce({
       repo: args.repo,
       headSha: args["head-sha"],
       botLogin: args["bot-login"] || "github-actions[bot]",
       runUrl: args["run-url"],
       headBranch: args["head-branch"],
-    });
+    }).catch((err: unknown) =>
+      process.stderr.write(
+        `code-review announce: could not post the in-progress sticky (${errMsg(err)}) — continuing (cosmetic)\n`,
+      ),
+    );
   },
 });
 

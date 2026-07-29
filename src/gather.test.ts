@@ -650,6 +650,24 @@ describe("gather — PR conversation", () => {
     expect(body.length).toBeLessThan(5000);
     expect(body).toContain("[truncated]");
   });
+
+  it("drops only the malformed rows (e.g. a deleted account's null login) without losing the valid ones", async () => {
+    const { api } = withDiscussion({
+      issue: ndjson([
+        { id: 1, body: "before the ghost", user: { login: "alice" } },
+        { id: 2, body: "from a deleted account", user: { login: null } },
+        { body: "no id and no user at all" },
+        { id: 3, body: "after the ghost", user: { login: "bob" } },
+      ]),
+    });
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    expect(conversation().issue_comments.map((c) => c.body)).toEqual([
+      "before the ghost",
+      "after the ghost",
+    ]);
+  });
 });
 
 describe("gather — failing-job logs", () => {

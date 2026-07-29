@@ -139,8 +139,9 @@ const ReviewCodec = t.intersection([
 ]);
 type Review = t.TypeOf<typeof ReviewCodec>;
 
-// Fetch + stream-parse a paginated endpoint; null on any transport error, so a degraded fetch never
-// aborts the review — the conversation is best-effort context.
+// Fetch + stream-parse a paginated endpoint; null on any transport error (named on stderr so a
+// degraded channel is diagnosable), so a failed fetch never aborts the review — the conversation is
+// best-effort context.
 const fetchJsonlRows = async (
   ghApi: GhApi,
   endpoint: string,
@@ -148,18 +149,26 @@ const fetchJsonlRows = async (
 ): Promise<readonly unknown[] | null> => {
   try {
     return parseJsonl(await ghApi([endpoint, "--paginate", "--jq", jq]));
-  } catch {
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not fetch ${endpoint} (${errMsg(err)}) — omitting it from the review context\n`,
+    );
     return null;
   }
 };
 
+// Decode row by row, dropping only the rows that don't validate (e.g. a deleted account's null login)
+// rather than letting one malformed row fail the whole channel the way an atomic `t.array` decode
+// would. null still propagates a failed fetch (rows === null); a bad row is silently skipped.
 const decodeArrayOrNull = <A>(
   codec: t.Type<A>,
   rows: readonly unknown[] | null,
 ): readonly A[] | null => {
   if (rows === null) return null;
-  const decoded = t.array(codec).decode(rows);
-  return decoded._tag === "Left" ? null : decoded.right;
+  return rows.flatMap((row) => {
+    const decoded = codec.decode(row);
+    return decoded._tag === "Right" ? [decoded.right] : [];
+  });
 };
 
 // The bot's own last comment — its embedded findings marker seeds the re-review draft (seed-draft).
@@ -299,31 +308,24 @@ export const gather = async (
     JSON.stringify({ title: meta.title, body: meta.body }),
   );
 
-  const issueComments = decodeArrayOrNull(
-    IssueCommentCodec,
-    await fetchJsonlRows(
-      ghApi,
-      `repos/${input.repo}/issues/${String(prNumber)}/comments`,
-      COMMENT_JQ,
-    ),
-  );
-  const prior = issueComments === null ? null : priorReviewFrom(issueComments, input.botLogin);
-  writeFileSync(
-    join(input.outDir, "prior_review.json"),
-    prior === null ? "null" : JSON.stringify(prior),
-  );
-
-  const reviewComments = decodeArrayOrNull(
-    ReviewCommentCodec,
-    await fetchJsonlRows(
+  // The three conversation fetches are independent — run them together rather than one after another.
+  const [issueRows, reviewCommentRows, reviewRows] = await Promise.all([
+    fetchJsonlRows(ghApi, `repos/${input.repo}/issues/${String(prNumber)}/comments`, COMMENT_JQ),
+    fetchJsonlRows(
       ghApi,
       `repos/${input.repo}/pulls/${String(prNumber)}/comments`,
       REVIEW_COMMENT_JQ,
     ),
-  );
-  const reviews = decodeArrayOrNull(
-    ReviewCodec,
-    await fetchJsonlRows(ghApi, `repos/${input.repo}/pulls/${String(prNumber)}/reviews`, REVIEW_JQ),
+    fetchJsonlRows(ghApi, `repos/${input.repo}/pulls/${String(prNumber)}/reviews`, REVIEW_JQ),
+  ]);
+  const issueComments = decodeArrayOrNull(IssueCommentCodec, issueRows);
+  const reviewComments = decodeArrayOrNull(ReviewCommentCodec, reviewCommentRows);
+  const reviews = decodeArrayOrNull(ReviewCodec, reviewRows);
+
+  const prior = issueComments === null ? null : priorReviewFrom(issueComments, input.botLogin);
+  writeFileSync(
+    join(input.outDir, "prior_review.json"),
+    prior === null ? "null" : JSON.stringify(prior),
   );
   writeFileSync(
     join(input.outDir, "pr_conversation.json"),

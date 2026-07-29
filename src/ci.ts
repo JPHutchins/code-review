@@ -4,6 +4,7 @@
 // the differentiator. The head SHA is trusted (resolved from the PR number via the API), so it is
 // safe in the query; the workflow name is trusted caller config.
 
+import { performance } from "node:perf_hooks";
 import * as t from "io-ts";
 import { PathReporter } from "io-ts/lib/PathReporter.js";
 import type { GhApi } from "./gh.js";
@@ -56,20 +57,19 @@ export const resolveCiRun = async (
 ): Promise<CiLookup> => {
   const endpoint = `repos/${repo}/actions/runs?head_sha=${headSha}&per_page=100`;
   const rows = parseJsonl(await ghApi([endpoint, "--paginate", "--jq", RUN_JQ]));
-  const runs = rows.flatMap((row) => {
-    const decoded = RunCodec.decode(row);
-    return decoded._tag === "Right" ? [decoded.right] : [];
-  });
-  // A non-empty fetch that decodes to nothing means every row failed the codec — a GitHub/gh format
-  // drift, not "no run yet". Left silent it reads as an empty result and the caller declines only
-  // after a full timeout with no explanation, so name it once here, with the first row's field-level
-  // decode error so the drifted field is diagnosable without reproducing the API call.
-  if (rows.length > 0 && runs.length === 0) {
-    const firstDrift = rows.map((row) => RunCodec.decode(row)).find((d) => d._tag === "Left");
+  const decoded = rows.map((row) => RunCodec.decode(row));
+  const runs = decoded.flatMap((d) => (d._tag === "Right" ? [d.right] : []));
+  // A row that fails the codec is dropped rather than aborting the lookup, but a drop is never normal:
+  // a partial drift can silently drop the newest run and route on a stale one, and a total drift reads
+  // as an empty result that declines only after a full timeout. So name every drop, with the first
+  // failure's field-level detail, so the drifted field is diagnosable without reproducing the call.
+  const dropped = decoded.length - runs.length;
+  if (dropped > 0) {
+    const firstDrift = decoded.find((d) => d._tag === "Left");
     const detail =
       firstDrift === undefined ? "" : ` (${PathReporter.report(firstDrift).join("; ")})`;
     process.stderr.write(
-      `Warning: every workflow-run row from ${endpoint} failed to decode${detail} — treating as no matching run found\n`,
+      `Warning: ${String(dropped)} of ${String(rows.length)} workflow-run row(s) from ${endpoint} failed to decode${detail} — excluded from the lookup\n`,
     );
   }
   const latest = runs
@@ -157,9 +157,11 @@ export const awaitCiConclusion = async (
 export const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 
+// performance.now() is monotonic — unlike Date.now(), an NTP/VM wall-clock step back mid-poll can't
+// make elapsedMs() decrease and stall the timeout check the loop depends on.
 export const monotonicElapsed = (): (() => number) => {
-  const start = Date.now();
-  return () => Date.now() - start;
+  const start = performance.now();
+  return () => performance.now() - start;
 };
 
 // ci_settled distinguishes "we know the CI result" from "we gave up waiting" so the gate can decline

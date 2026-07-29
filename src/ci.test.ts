@@ -88,7 +88,7 @@ describe("resolveCiRun", () => {
     expect(got.run).toEqual({ id: 7, status: "completed", conclusion: "success" });
   });
 
-  it("drops an invalid row but keeps the valid ones, with no false format-drift warning", async () => {
+  it("keeps the valid rows but warns about a partial drop (a dropped row is never normal)", async () => {
     const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       const got = await resolveCiRun(
@@ -100,7 +100,7 @@ describe("resolveCiRun", () => {
         ]),
       );
       expect(got.run).toEqual({ id: 4, status: "completed", conclusion: "success" });
-      expect(spy).not.toHaveBeenCalled();
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("1 of 2 workflow-run row(s)"));
     } finally {
       spy.mockRestore();
     }
@@ -112,7 +112,7 @@ describe("resolveCiRun", () => {
       const got = await resolveCiRun("o/r", "sha", "CI", mkSeqGhApi(['{"nope":1}\n{"also":2}']));
       expect(got.run).toBeNull();
       expect(got.seenNames).toEqual([]);
-      expect(spy).toHaveBeenCalledWith(expect.stringContaining("failed to decode"));
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("2 of 2 workflow-run row(s)"));
     } finally {
       spy.mockRestore();
     }

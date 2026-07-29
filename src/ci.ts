@@ -5,6 +5,7 @@
 // safe in the query; the workflow name is trusted caller config.
 
 import * as t from "io-ts";
+import { PathReporter } from "io-ts/lib/PathReporter.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { parseJsonl } from "./transcript.js";
@@ -61,11 +62,16 @@ export const resolveCiRun = async (
   });
   // A non-empty fetch that decodes to nothing means every row failed the codec — a GitHub/gh format
   // drift, not "no run yet". Left silent it reads as an empty result and the caller declines only
-  // after a full timeout with no explanation, so name it once here.
-  if (rows.length > 0 && runs.length === 0)
+  // after a full timeout with no explanation, so name it once here, with the first row's field-level
+  // decode error so the drifted field is diagnosable without reproducing the API call.
+  if (rows.length > 0 && runs.length === 0) {
+    const firstDrift = rows.map((row) => RunCodec.decode(row)).find((d) => d._tag === "Left");
+    const detail =
+      firstDrift === undefined ? "" : ` (${PathReporter.report(firstDrift).join("; ")})`;
     process.stderr.write(
-      `Warning: every workflow-run row from ${endpoint} failed to decode — treating as no matching run found\n`,
+      `Warning: every workflow-run row from ${endpoint} failed to decode${detail} — treating as no matching run found\n`,
     );
+  }
   const latest = runs
     .filter((r) => r.name === workflowName)
     .reduce<t.TypeOf<typeof RunCodec> | null>(
@@ -124,19 +130,28 @@ export const awaitCiConclusion = async (
       return { run: null, seenNames: [] };
     }
   };
-  const poll = async (): Promise<CiOutcome> => {
+  const poll = async (
+    lastSeenNames: readonly string[],
+    lastRunId: number | null,
+  ): Promise<CiOutcome> => {
     const { run, seenNames } = await safeResolve();
     // A run momentarily reports `completed` with a null conclusion before GitHub settles it; treating
     // that as concluded would fabricate a routing decision, so keep polling until the conclusion lands
     // (or the timeout declines) rather than collapsing it to a made-up "unknown" the caller can act on.
     if (run !== null && run.status === "completed" && run.conclusion !== null)
       return { kind: "concluded", conclusion: run.conclusion, runId: run.id };
+    // A caught error zeroes this poll's view, so carry the last non-empty observation forward — else a
+    // transient failure on the very iteration that times out would erase the run id and workflow names
+    // earlier polls saw, misleading the mistyped-workflow-vs-not-queued-yet diagnostic renderCiOutputs
+    // depends on.
+    const runId = run === null ? lastRunId : run.id;
+    const names = seenNames.length > 0 ? seenNames : lastSeenNames;
     if (deps.elapsedMs() >= options.timeoutMs)
-      return { kind: "timed-out", runId: run === null ? null : run.id, seenNames };
+      return { kind: "timed-out", runId, seenNames: names };
     await deps.sleep(options.pollIntervalMs);
-    return poll();
+    return poll(names, runId);
   };
-  return poll();
+  return poll([], null);
 };
 
 export const defaultSleep = (ms: number): Promise<void> =>

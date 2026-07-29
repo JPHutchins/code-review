@@ -242,6 +242,23 @@ describe("awaitCiConclusion", () => {
       spy.mockRestore();
     }
   });
+
+  it("preserves the last-seen run id + names when a transient error hits the timeout iteration", async () => {
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const clock = mkClock();
+    try {
+      const seen = runsJson([run({ run_number: 9, status: "in_progress", conclusion: null })]);
+      const got = await awaitCiConclusion(
+        "o/r",
+        "sha",
+        { ...OPTS, timeoutMs: 2000 },
+        { ghApi: mkSeqGhApi([seen, seen, new Error("gh: transient at timeout")]), ...clock },
+      );
+      expect(got).toEqual({ kind: "timed-out", runId: 9, seenNames: ["CI"] });
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("renderCiOutputs", () => {

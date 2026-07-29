@@ -651,6 +651,23 @@ describe("gather — PR conversation", () => {
     expect(body).toContain("[truncated]");
   });
 
+  it("clips without splitting a surrogate pair at the boundary", async () => {
+    // A 😀 (U+1F600, a surrogate pair) straddles the 4000-char cut: the high surrogate is the last
+    // kept unit. The clip must drop it, not leave a lone half.
+    const { api } = withDiscussion({
+      issue: ndjson([
+        { id: 1, body: `${"x".repeat(3999)}😀${"y".repeat(50)}`, user: { login: "a" } },
+      ]),
+    });
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    const body = conversation().issue_comments[0]?.body ?? "";
+    expect(body).toContain("[truncated]");
+    expect(/[\uD800-\uDBFF]/.test(body)).toBe(false);
+    expect(body.startsWith("x".repeat(3999))).toBe(true);
+  });
+
   it("drops only the malformed rows (e.g. a deleted account's null login) without losing the valid ones", async () => {
     const { api } = withDiscussion({
       issue: ndjson([

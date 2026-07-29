@@ -176,6 +176,7 @@ jobs:
       (inputs.conclusion == 'success' ||
        inputs.conclusion == 'failure')
     runs-on: ubuntu-latest
+    timeout-minutes: 10       # a quick job (resolve PR + upsert one comment); bound a hung install/API
     concurrency:
       group: announce-${{ inputs.head_repo != '' && inputs.head_repo || github.repository }}-${{ inputs.head_branch }}
       cancel-in-progress: true

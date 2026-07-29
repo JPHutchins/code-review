@@ -27,6 +27,7 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' ||
        github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
+    timeout-minutes: 10       # a quick job (resolve PR + upsert one comment); bound a hung install/API
     permissions:
       issues: write          # post/patch the sticky comment
       pull-requests: read    # resolve the PR from the head SHA
@@ -272,6 +273,11 @@ jobs:
           ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro # tier aliases — what the agent's
           ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro # internal model picks resolve to
           ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
+          # This review fans subagents into the BACKGROUND (the single-writer rule below). By default
+          # `claude -p` kills still-running background tasks 600s after the MAIN turn ends — far short
+          # of our wall+grace, silently cutting a mid-flight fan-out. 0 ⇒ wait indefinitely, so the
+          # `timeout` wrapper (wall+grace) is the sole bound.
+          CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: "0"
           CONCLUSION: ${{ steps.gather.outputs.conclusion }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |

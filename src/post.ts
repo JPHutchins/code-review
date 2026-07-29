@@ -7,7 +7,12 @@ import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts } from "./render.js";
 import { formatMarkdown } from "./format.js";
-import { findingsPointer, reviewBodyPointer } from "./surface.js";
+import {
+  carryForwardMarkers,
+  findingsPointer,
+  parseReviewedSha,
+  reviewBodyPointer,
+} from "./surface.js";
 import { ResultEnvelopeCodec, PriceMapCodec, TestSummaryCodec, noticeFindings } from "./schema.js";
 import type { Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
@@ -713,4 +718,63 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       );
     }
   }
+};
+
+export interface AnnounceInput {
+  readonly repo: string;
+  readonly headSha: string;
+  readonly botLogin: string;
+  readonly runUrl: string;
+  readonly headBranch?: string;
+}
+
+// The placeholder body: the sticky marker, a "review in progress" line linking the run, and — when a
+// prior sticky exists — its machine-readable markers carried forward verbatim, so replacing the
+// summary prose never strips the re-review seed the review job reads back (embedded findings +
+// reviewed-sha). The commenter job overwrites this with the real summary when the review completes.
+const announceBody = (
+  headSha: string,
+  runUrl: string,
+  existingBody: string | undefined,
+): string => {
+  const notice = `${DEFAULT_MARKER}\n\n🔄 **Code review in progress** for \`${headSha.slice(0, 7)}\` — see the [workflow run](${runUrl}) for progress; this comment is updated with the review when it completes.`;
+  const carried = existingBody ? carryForwardMarkers(existingBody) : "";
+  return carried ? `${notice}\n\n${carried}` : notice;
+};
+
+// Post (or update) the sticky the moment a review starts, so a workflow_run review — which runs from
+// the default branch and is otherwise invisible on the PR — is visibly under way. Shares post's PR
+// resolution and sticky upsert; the review job holds no write token, so it can't do this itself.
+export const announce = async (input: AnnounceInput, ghApi: GhApi = runGhApi): Promise<void> => {
+  const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
+  const resolution = resolvePr(candidates, input.headBranch);
+  if (resolution.kind !== "open") {
+    process.stderr.write(
+      `No open PR for ${input.headSha} — nothing to announce (${resolution.kind})\n`,
+    );
+    return;
+  }
+  const existing = await findBotComment(
+    input.repo,
+    resolution.prNumber,
+    input.botLogin,
+    DEFAULT_MARKER,
+    ghApi,
+  );
+  // If the sticky already reflects a completed review OF THIS HEAD, leave it — overwriting it with the
+  // in-progress placeholder would hide a finished review (a CI re-run of an already-reviewed commit,
+  // or the review+comment pipeline racing ahead of this job). A prior head's sha still gets replaced.
+  if (existing !== null && parseReviewedSha(existing.body) === input.headSha.toLowerCase()) {
+    process.stderr.write(
+      `Sticky already reflects a completed review of ${input.headSha} — leaving it in place\n`,
+    );
+    return;
+  }
+  await upsertSticky(
+    input.repo,
+    resolution.prNumber,
+    existing,
+    announceBody(input.headSha, input.runUrl, existing?.body),
+    ghApi,
+  );
 };

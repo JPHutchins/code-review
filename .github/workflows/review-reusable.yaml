@@ -1,5 +1,6 @@
-# Two jobs with DISTINCT permissions — the security boundary: review = model key + read-only token +
-# locked egress, runs untrusted PR code; comment = pull-requests/issues:write, no agent, no PR code.
+# Jobs with DISTINCT permissions — the security boundary: review = model key + read-only token +
+# locked egress, runs untrusted PR code; announce + comment = pull-requests/issues:write, no agent,
+# no PR code (announce posts the in-progress sticky at start, comment posts the review at the end).
 # A composite/JS/Docker action can't express that (one job, one permission set), so this is a
 # reusable workflow. Consumers call it from a thin ~20-line workflow; see the README.
 
@@ -164,6 +165,76 @@ env:
   CODE_REVIEW_VERSION: 0.1.0-alpha.26
 
 jobs:
+  # Announce the review the moment it starts: a workflow_run review runs from the default branch and
+  # is invisible on the PR, so post an in-progress placeholder sticky linking the run. Separate job
+  # because it needs the write token the review job must never hold (that job runs untrusted PR code).
+  # Its OWN concurrency group — not the review group — so a superseding run cancels a stale announce
+  # without the parallel review/comment jobs cancelling it, or it cancelling them.
+  announce:
+    if: >-
+      inputs.trigger_event == 'pull_request' &&
+      (inputs.conclusion == 'success' ||
+       inputs.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10       # a quick job (resolve PR + upsert one comment); bound a hung install/API
+    concurrency:
+      group: announce-${{ inputs.head_repo != '' && inputs.head_repo || github.repository }}-${{ inputs.head_branch }}
+      cancel-in-progress: true
+    permissions:
+      issues: write          # post/patch the sticky comment
+      pull-requests: read    # resolve the PR from the head SHA
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install code-review
+        run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+
+      # Holds the write token, so lock egress like the comment job (it runs no untrusted PR code, but
+      # a write-token job must never run unenforced). Fixed host set: npm registry + the GitHub API.
+      - name: Lock network egress
+        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            registry.npmjs.org:443
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            *.blob.core.windows.net:443
+
+      # Same fail-closed backstop as the commenter (harden-runner can silently downgrade block to
+      # audit — step-security/harden-runner#675); this job holds the write token and always blocks.
+      - name: Egress canary — verify the lock engaged
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
+            echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
+            exit 1
+          fi
+          echo "Egress canary could not connect — block policy verified"
+
+      # Deterministic (no shell interpolation of untrusted data); resolves the PR from the trusted
+      # head SHA and upserts the placeholder, preserving any prior sticky's re-review markers.
+      - name: Post the in-progress sticky
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          code-review announce \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --head-branch "$HEAD_BRANCH" \
+            --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
   review:
     if: >-
       inputs.trigger_event == 'pull_request' &&

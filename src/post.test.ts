@@ -3,8 +3,8 @@ import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { GhApi, PostInput } from "./post.js";
-import { post } from "./post.js";
+import type { GhApi, PostInput, AnnounceInput } from "./post.js";
+import { post, announce } from "./post.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -2226,5 +2226,131 @@ describe("post — inline review 422 salvage (issue #57)", () => {
     expect(finalBody).toContain("couldn't be posted as inline");
     expect(finalBody).toContain("Finding B");
     expect(finalBody).not.toContain("Finding A");
+  });
+});
+
+const mkAnnounceInput = (overrides: Partial<AnnounceInput> = {}): AnnounceInput => ({
+  repo: "owner/repo",
+  headSha: "abc123def456",
+  botLogin: "github-actions[bot]",
+  runUrl: "https://github.com/owner/repo/actions/runs/12345",
+  ...overrides,
+});
+
+const AGENTS_DIRECTIVE =
+  "<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->";
+const FINDINGS_MARKER = "<!-- code-review:findings-json;base64 eyJhIjoxfQ== -->";
+const REVIEWED_SHA_MARKER = `<!-- reviewed-sha: ${"a".repeat(40)} -->`;
+
+describe("announce — in-progress sticky", () => {
+  const openPr = {
+    match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+    response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+  };
+  const commentsMatch = (a: readonly string[]): boolean =>
+    a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate");
+
+  it("POSTs a fresh placeholder linking the run when no sticky exists", async () => {
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: "" },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: '{"id": 555, "html_url": "https://example.com/c/555"}',
+      },
+    ]);
+
+    await announce(mkAnnounceInput(), api);
+
+    const postCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+    );
+    expect(postCall).toBeDefined();
+    const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("<!-- code-review -->");
+    expect(body).toContain("Code review in progress");
+    expect(body).toContain("abc123d");
+    expect(body).toContain("https://github.com/owner/repo/actions/runs/12345");
+    // No prior sticky ⇒ no findings/reviewed-sha markers to carry forward.
+    expect(body).not.toContain("findings-json");
+    expect(calls().some((c) => c.args[0]?.startsWith("repos/owner/repo/issues/comments/"))).toBe(
+      false,
+    );
+  });
+
+  it("PATCHes the existing sticky and carries its findings + reviewed-sha markers forward", async () => {
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "### 🟠 1 finding — prior round prose that will be replaced",
+      "",
+      AGENTS_DIRECTIVE,
+      FINDINGS_MARKER,
+      REVIEWED_SHA_MARKER,
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+    ]);
+
+    await announce(mkAnnounceInput(), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("Code review in progress");
+    // The re-review seed survives the prose swap.
+    expect(body).toContain(FINDINGS_MARKER);
+    expect(body).toContain(REVIEWED_SHA_MARKER);
+    expect(body).toContain(AGENTS_DIRECTIVE);
+    // The stale prose is gone.
+    expect(body).not.toContain("prior round prose");
+    // No NEW comment posted.
+    expect(
+      calls().some(
+        (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does nothing when there is no open PR", async () => {
+    const { api, calls } = mkMockGhApi([
+      { match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false, response: "\n" },
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/pulls?state=open") ?? false,
+        response: "\n",
+      },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await announce(mkAnnounceInput(), api);
+
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("nothing to announce"));
+    stderrSpy.mockRestore();
+  });
+
+  it("leaves the sticky untouched when it already reviewed the current head (CI re-run / race)", async () => {
+    const headSha = "abc123def4560000000000000000000000000000";
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "### 💬 comment — a completed review of this exact head",
+      "",
+      `<!-- reviewed-sha: ${headSha} -->`,
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await announce(mkAnnounceInput({ headSha }), api);
+
+    // Neither a patch nor a post — the finished review stays visible.
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("already reflects a completed"));
+    stderrSpy.mockRestore();
   });
 });

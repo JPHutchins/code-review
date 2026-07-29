@@ -58,8 +58,9 @@ read-only GitHub token on the agent job, an egress lock on the runner, and a **b
 hard spend cap**. The residual exfiltration channel is the public comment/log itself, which is exactly
 why the spend cap — not the gate — is the real backstop.
 
-That reasoning is what forces the **two-job split**: the job that holds the write token (the commenter)
-runs no model and no PR code, and the job that runs the model holds only a read-only token. The split
+That reasoning is what forces the **write-token / model split**: the jobs that hold the write token
+(the commenter that posts the review, and the announcer that posts the in-progress sticky at the start)
+run no model and no PR code, and the job that runs the model holds only a read-only token. The split
 *is* the boundary. The normative threat model and required controls are
 [`SPEC.md` §4](../SPEC.md#4-threat-model--required-controls); the conformance requirements are
 [`SPEC.md` §5](../SPEC.md#5-conformance).
@@ -151,6 +152,14 @@ this doc.
   containment for this new surface is the same structural boundary that already holds for the diff — a
   read-only token, the egress lock, the burner key's spend cap, and a deterministic commenter posting
   *data* — not the heuristic gate, so an injected comment can at worst produce a bogus advisory finding.
+- **In-progress sticky at start.** A `workflow_run` review runs from the default branch and leaves no
+  trace on the PR until it finishes, so a separate write-token `announce` job upserts a placeholder
+  sticky ("review in progress", linking the run) the moment it starts. It runs in parallel with the
+  read-only review job, so it carries the prior sticky's `findings-json` + `reviewed-sha` markers
+  forward *verbatim* — replacing only the prose — so it never clobbers the re-review seed the review
+  job reads back from that same comment. The commenter overwrites it with the real summary at the end.
+  It also leaves the sticky untouched when it already reviewed the *current* head (a CI re-run, or the
+  pipeline racing ahead), so a finished review is never hidden behind a stale "in progress".
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
 

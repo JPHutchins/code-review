@@ -14,8 +14,8 @@ on:
     workflows: ["CI"]       # our CI workflow name — unmodified
     types: [completed]
 
-# Superset the reusable workflow's two jobs narrow from: review → contents:read (runs untrusted PR
-# code), comment → pull-requests/issues:write (no agent). Each internal job's own permissions
+# Superset the reusable workflow's jobs narrow from: review → contents:read (runs untrusted PR code),
+# announce + comment → pull-requests/issues:write (no agent). Each internal job's own permissions
 # intersect with these, so the boundary is preserved inside the reusable workflow.
 permissions:
   contents: read

@@ -192,6 +192,7 @@ const buildEnvelope = (
       return {
         schema_version: DEFAULT_SCHEMA_VERSION,
         findings: noticeFindings(`### ⚠️ Review did not complete\n\n${outcome.reason}`),
+        incomplete: true,
         ...telemetry,
       };
   }

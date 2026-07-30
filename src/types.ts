@@ -62,4 +62,8 @@ export interface RenderInput {
   // reuses it across surfaces. Omitted ⇒ computed here.
   readonly findingsPointer?: string;
   readonly reviewUrl?: string;
+  // The run produced a notice, not a completed review. Overrides the envelope's own flag (set for the
+  // null-envelope notice paths, where there is no envelope to read it from). Omitted ⇒ read from the
+  // envelope, defaulting to a completed review.
+  readonly incomplete?: boolean;
 }

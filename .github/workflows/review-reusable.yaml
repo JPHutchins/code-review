@@ -546,12 +546,8 @@ jobs:
           if ! git apply --3way pr.diff 2>>"$APPLY_ERR" && ! git apply pr.diff 2>>"$APPLY_ERR"; then
             echo "::warning::Could not apply pr.diff to the checked-out base — skipping the review rather than running it against an unmodified tree. git apply: $(tr '\n' ' ' <"$APPLY_ERR")"
             mkdir -p findings
-            jq -n \
-              '{schema_version: "0.4.0", summary: "### ⚠️ Could not apply the diff\n\nThe PR diff could not be applied to the checked-out base commit, so the review was skipped rather than run against an unmodified tree. See workflow logs.", verdict: "comment", findings: []}' \
-              >findings/findings.json
-            jq -n --slurpfile findings findings/findings.json \
-              '{schema_version: "0.4.0", findings: $findings[0], models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null}' \
-              >findings/envelope.json
+            code-review notice diff-apply-failed >findings/envelope.json
+            jq -c '.findings' findings/envelope.json >findings/findings.json
             echo "::endgroup::"
             exit 0
           fi
@@ -701,47 +697,26 @@ jobs:
           set -euo pipefail
           mkdir -p findings
 
-          # `code-review adapt` (Phase 2, above) now always returns real telemetry alongside
-          # findings — even a findings-recovery miss carries the run's actual models/turns/
-          # duration — so it always writes both findings/findings.json and
-          # findings/envelope.json when it runs at all. The zeros below are therefore only ever
-          # synthesized when adapt never ran (security gate skip) or never got the chance to write
-          # anything (the agent invocation itself failed outright) — genuine no-telemetry cases,
-          # not a discarded recovery.
-          wrap_envelope() {
-            jq -n --slurpfile findings findings/findings.json \
-              '{schema_version: "0.4.0", findings: $findings[0], models: [], turns: 0, duration_ms: 0, vendor_cost_usd: null}' \
-              >findings/envelope.json
-          }
-
+          # `code-review adapt` (Phase 2, above) always writes BOTH findings/findings.json and
+          # findings/envelope.json when it runs at all — even a findings-recovery miss carries the
+          # run's real telemetry. So a synthesized notice is only needed when adapt never ran (security
+          # gate skip) or never got the chance to write (the agent invocation failed outright). Each
+          # notice's message + its incomplete envelope shape live in `code-review notice` (one typed
+          # SSOT), not as jq literals here; extract its findings the same way Phase 2 does.
           if [ -s findings/findings.json ]; then
             echo "Review produced findings"
-          elif [ "$SAFE_RAW" = "false" ] && [ -n "$REASONS" ]; then
-            # Triage ran and returned a real fail-closed / unsafe verdict (non-empty reason).
-            jq -n --arg reasons "$REASONS" \
-              '{schema_version: "0.4.0", summary: ("### 🛑 Code review skipped by the security gate\n\nThe diff was flagged as unsafe to apply and execute:\n\n> " + $reasons), verdict: "comment", findings: []}' \
-              >findings/findings.json
-            wrap_envelope
-          elif [ "$SAFE_RAW" = "false" ]; then
-            # Triage returned unsafe but with no reason string (valid per the triage schema) — still
-            # a gate block, so don't fall through to the "passed triage" text below; omit the reason.
-            jq -n \
-              '{schema_version: "0.4.0", summary: "### 🛑 Code review skipped by the security gate\n\nThe security triage returned an unsafe verdict without a reason. See workflow logs.", verdict: "comment", findings: []}' \
-              >findings/findings.json
-            wrap_envelope
-          elif [ -z "$SAFE_RAW" ]; then
-            # Triage never emitted a verdict — the job errored before the gate ran (dependency
-            # install or setup), not a security decision. Never render the gate message here.
-            jq -n \
-              '{schema_version: "0.4.0", summary: "### 🛠️ Review did not run\n\nThe review job failed before the security triage could run (e.g. dependency install or environment setup). See the workflow logs — this is an infrastructure failure, not a security verdict.", verdict: "comment", findings: []}' \
-              >findings/findings.json
-            wrap_envelope
           else
-            # Triage passed (safe=true) but the review produced no findings.
-            jq -n \
-              '{schema_version: "0.4.0", summary: "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs.", verdict: "comment", findings: []}' \
-              >findings/findings.json
-            wrap_envelope
+            if [ "$SAFE_RAW" = "false" ]; then
+              # Triage returned unsafe — a gate block (with the reason when it gave one).
+              code-review notice security-blocked --reasons "$REASONS" >findings/envelope.json
+            elif [ -z "$SAFE_RAW" ]; then
+              # Triage never emitted a verdict — the job errored before the gate ran (install/setup).
+              code-review notice setup-failed >findings/envelope.json
+            else
+              # Triage passed (safe=true) but the review produced no findings.
+              code-review notice no-output >findings/envelope.json
+            fi
+            jq -c '.findings' findings/envelope.json >findings/findings.json
           fi
 
           # Ship the pre-apply price map (if the repo committed one) in the artifact — the comment

@@ -106,6 +106,11 @@ export const ResultEnvelopeCodec = t.intersection([
     vendor_cost_usd: t.union([t.number, t.null]),
     route: t.string,
     effort: t.string,
+    // The run produced a notice rather than a completed review (security-gate block, agent kill, no
+    // recoverable findings). An empty `findings` array alone can't say this — a genuine clean review
+    // is also empty — so the render suppresses "clean review" and the sticky precedence guard refuses
+    // to bury a completed review under it. Absent ⇒ a completed review.
+    incomplete: t.boolean,
   }),
 ]);
 

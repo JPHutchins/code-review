@@ -61,6 +61,14 @@ export const parseReviewedSha = (body: string): string | null => {
   return sha && sha !== ZERO_SHA ? sha : null;
 };
 
+// A POSITIVE marker: present only in a sticky the commenter wrote for a COMPLETED review. It is
+// absent from an incomplete notice AND from an in-progress placeholder (which carries forward a prior
+// review's reviewed-sha yet is not itself a completed review) — so a precedence check can tell those
+// apart, which reviewed-sha alone (stamped on notices too) cannot. Re-emitted by the template each
+// write from the render's `incomplete` flag, never carried forward.
+export const REVIEW_COMPLETE_MARKER = "<!-- review-complete -->";
+export const parseReviewComplete = (body: string): boolean => body.includes(REVIEW_COMPLETE_MARKER);
+
 // null when the body carries no base64 marker (e.g. the jsonUrl-link fallback for oversized findings)
 // or the payload isn't valid JSON. Callers validate the result — a prior run may predate the shape.
 export const parseFindingsMarker = (body: string): unknown => {

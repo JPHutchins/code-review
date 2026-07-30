@@ -573,6 +573,52 @@ describe("render", () => {
       });
       expect(result).toContain("No findings — clean review");
     });
+
+    it("marks a completed review with the review-complete marker", () => {
+      const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+      expect(result).toContain("<!-- review-complete -->");
+    });
+  });
+
+  describe("incomplete result (#107)", () => {
+    const notice = mkFindings([], {
+      summary: "### ⚠️ Review did not complete\n\nThe run produced no output.",
+    });
+
+    it("never claims 'clean review' and omits the review-complete marker when incomplete", () => {
+      const result = render({
+        findings: notice,
+        envelope: { ...baseEnvelope, models: [], incomplete: true },
+        prices,
+        template,
+      });
+      expect(result).not.toContain("No findings — clean review");
+      expect(result).not.toContain("<!-- review-complete -->");
+      expect(result).toContain("Review did not complete");
+    });
+
+    it("renders usage as unavailable — never a false $0.00 — for a zeroed notice envelope", () => {
+      const result = render({
+        findings: notice,
+        envelope: { ...baseEnvelope, models: [], incomplete: true },
+        prices,
+        template,
+      });
+      expect(result).not.toContain("$0.00");
+      expect(result).toContain("_usage unavailable_");
+    });
+
+    it("honors an explicit incomplete flag even with a null envelope (the notice-render path)", () => {
+      const result = render({
+        findings: notice,
+        envelope: null,
+        incomplete: true,
+        prices,
+        template,
+      });
+      expect(result).not.toContain("No findings — clean review");
+      expect(result).not.toContain("<!-- review-complete -->");
+    });
   });
 
   describe("verdict badges", () => {

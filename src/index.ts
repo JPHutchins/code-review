@@ -38,6 +38,7 @@ import {
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import { parseFindingsMarker, parseReviewedSha } from "./surface.js";
+import { buildNoticeEnvelope, isNoticeKind } from "./notice.js";
 import { announce, post } from "./post.js";
 import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.js";
 import { react, isReaction, REACTIONS } from "./react.js";
@@ -913,6 +914,34 @@ const adaptCmd = defineCommand({
   },
 });
 
+const noticeCmd = defineCommand({
+  meta: {
+    name: "notice",
+    description:
+      "Emit an abstract envelope for a run that produced no completed review (security block, setup failure, unapplied diff, or empty run) — flagged incomplete so the commenter renders it honestly and won't bury a real review",
+  },
+  args: {
+    kind: {
+      type: "positional",
+      description: "One of: security-blocked, setup-failed, diff-apply-failed, no-output",
+      required: true,
+    },
+    reasons: {
+      type: "string",
+      description:
+        "security-blocked only: the triage's fail-closed reason string (empty/omitted ⇒ the no-reason wording)",
+    },
+  },
+  run: ({ args }) => {
+    const kind = isNoticeKind(args.kind)
+      ? args.kind
+      : fail(
+          `Unknown notice kind "${args.kind}" — expected one of: security-blocked, setup-failed, diff-apply-failed, no-output`,
+        );
+    process.stdout.write(`${JSON.stringify(buildNoticeEnvelope(kind, args.reasons), null, 2)}\n`);
+  },
+});
+
 const isExtractSchemaKind = (s: string): s is ExtractKind => s === "findings" || s === "triage";
 
 // no "prices" — unlike print-schema's kinds.
@@ -1611,6 +1640,7 @@ export const main = defineCommand({
     validate: validateCmd,
     "seed-draft": seedDraftCmd,
     adapt: adaptCmd,
+    notice: noticeCmd,
     extract: extractCmd,
     "validate-patches": validatePatchesCmd,
     "print-schema": printSchemaCmd,

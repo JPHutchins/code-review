@@ -10,6 +10,7 @@ import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
   findingsPointer,
+  parseReviewComplete,
   parseReviewedSha,
   reviewBodyPointer,
 } from "./surface.js";
@@ -503,6 +504,19 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ghApi,
   );
 
+  // An incomplete result (a notice, not a completed review) must never overwrite a sticky that
+  // already shows a completed review — else a superseded/killed/late run buries a real review under a
+  // "did not complete" that reads as a clean pass. A completed result always writes; an in-progress
+  // placeholder is not "complete" (it lacks the marker), so its own commenter may still write.
+  const existingComplete = existingSticky !== null && parseReviewComplete(existingSticky.body);
+  const wouldBuryCompleted = (incomplete: boolean): boolean => incomplete && existingComplete;
+  const leaveInPlace = (): void => {
+    process.stderr.write(
+      `Review did not complete and the sticky already reflects a completed review — leaving it in place\n`,
+    );
+    process.exit(0);
+  };
+
   const prices = JSON.parse(readFileSync(input.pricesPath, "utf-8")) as unknown;
   const decodedPrices = PriceMapCodec.decode(prices);
   if (decodedPrices._tag === "Left") {
@@ -516,6 +530,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       render({
         findings: noticeFindings(`### ⚠️ ${message}`),
         envelope: null,
+        incomplete: true,
         prices: decodedPrices.right,
         pricesProvided: input.pricesProvided,
         template,
@@ -529,6 +544,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     );
 
   if (isEmptyDiff(diff)) {
+    if (wouldBuryCompleted(true)) leaveInPlace();
     await upsertSticky(
       input.repo,
       prNumber,
@@ -541,6 +557,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   const findingsResult = loadFindings(input.findingsPath);
   if (findingsResult.kind !== "ok") {
+    if (wouldBuryCompleted(true)) leaveInPlace();
     await upsertSticky(
       input.repo,
       prNumber,
@@ -580,6 +597,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     process.exit(0);
   }
 
+  // A completed review carries real telemetry; adapt (and the workflow's notice wrap) flag a run that
+  // produced only a notice. Don't let such a notice bury an existing completed review or post a stray
+  // empty inline review over it — leave the real review in place.
+  const thisIncomplete = envelope.incomplete === true;
+  if (wouldBuryCompleted(thisIncomplete)) leaveInPlace();
+
   // Base64-encode the whole-document marker once, reused across sticky + review body; each inline
   // comment embeds only its own finding instead.
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
@@ -612,6 +635,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
     envelope,
+    incomplete: thisIncomplete,
     prices: decodedPrices.right,
     pricesProvided: input.pricesProvided,
     template,
@@ -761,10 +785,17 @@ export const announce = async (input: AnnounceInput, ghApi: GhApi = runGhApi): P
     DEFAULT_MARKER,
     ghApi,
   );
-  // If the sticky already reflects a completed review OF THIS HEAD, leave it — overwriting it with the
+  // If the sticky already reflects a COMPLETED review OF THIS HEAD, leave it — overwriting it with the
   // in-progress placeholder would hide a finished review (a CI re-run of an already-reviewed commit,
-  // or the review+comment pipeline racing ahead of this job). A prior head's sha still gets replaced.
-  if (existing !== null && parseReviewedSha(existing.body) === input.headSha.toLowerCase()) {
+  // or the review+comment pipeline racing ahead of this job). Both conditions matter: a same-head
+  // INCOMPLETE notice (which also stamps reviewed-sha) must be replaced by the placeholder on a re-run,
+  // and a prior head's sha still gets replaced regardless. `review-complete` is the discriminator the
+  // commenter guard uses too, so both write paths agree on what "completed" means.
+  if (
+    existing !== null &&
+    parseReviewComplete(existing.body) &&
+    parseReviewedSha(existing.body) === input.headSha.toLowerCase()
+  ) {
     process.stderr.write(
       `Sticky already reflects a completed review of ${input.headSha} — leaving it in place\n`,
     );

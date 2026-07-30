@@ -2331,10 +2331,11 @@ describe("announce — in-progress sticky", () => {
     stderrSpy.mockRestore();
   });
 
-  it("leaves the sticky untouched when it already reviewed the current head (CI re-run / race)", async () => {
+  it("leaves the sticky untouched when it already reflects a COMPLETED review of the current head (CI re-run / race)", async () => {
     const headSha = "abc123def4560000000000000000000000000000";
     const existing = [
       "<!-- code-review -->",
+      "<!-- review-complete -->",
       "",
       "### 💬 comment — a completed review of this exact head",
       "",
@@ -2352,5 +2353,123 @@ describe("announce — in-progress sticky", () => {
     expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("already reflects a completed"));
     stderrSpy.mockRestore();
+  });
+
+  it("replaces a same-head INCOMPLETE notice with the in-progress placeholder on a re-run (#107)", async () => {
+    const headSha = "abc123def4560000000000000000000000000000";
+    // A prior run's "did not complete" notice: it stamps reviewed-sha but carries NO review-complete
+    // marker, so it must not masquerade as a finished review that blocks the placeholder.
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "### ⚠️ Review did not complete",
+      "",
+      `<!-- reviewed-sha: ${headSha} -->`,
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+    ]);
+
+    await announce(mkAnnounceInput({ headSha }), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+    expect((JSON.parse(patchCall!.stdin!) as CommentBody).body).toContain(
+      "Code review in progress",
+    );
+  });
+});
+
+describe("post — incomplete result never buries a completed review (#107)", () => {
+  const completeSticky = [
+    "<!-- code-review -->",
+    `<!-- reviewed-sha: ${"a".repeat(40)} -->`,
+    "<!-- review-complete -->",
+    "",
+    "### 💬 comment — a real, completed review",
+  ].join("\n");
+  const inProgressSticky = [
+    "<!-- code-review -->",
+    `<!-- reviewed-sha: ${"a".repeat(40)} -->`,
+    "",
+    "🔄 Code review in progress",
+  ].join("\n");
+
+  const mkMocks = (stickyBody: string) => [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: `${JSON.stringify({ id: 999, body: stickyBody })}\n`,
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+      response: "",
+    },
+    { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
+  ];
+
+  const writeIncomplete = (): void => {
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, models: [], incomplete: true }),
+    );
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([])));
+  };
+
+  it("leaves a completed review in place — no patch, no review — when this run is incomplete", async () => {
+    writeIncomplete();
+    const { api, calls } = mkMockGhApi(mkMocks(completeSticky));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(
+      calls().some(
+        (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+      ),
+    ).toBe(false);
+    expect(
+      calls().some(
+        (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+      ),
+    ).toBe(false);
+
+    stderrSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it("overwrites a completed review when THIS run is also complete", async () => {
+    // beforeEach wrote a 1-finding findings.json + a real (models-carrying) envelope.
+    const { api, calls } = mkMockGhApi(mkMocks(completeSticky));
+    await post(mkInput({}), api);
+    expect(
+      calls().some(
+        (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it("writes an incomplete notice over an in-progress placeholder (not a completed review)", async () => {
+    writeIncomplete();
+    const { api, calls } = mkMockGhApi(mkMocks(inProgressSticky));
+    await post(mkInput({}), api);
+    expect(
+      calls().some(
+        (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+      ),
+    ).toBe(true);
   });
 });

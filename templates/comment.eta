@@ -1,12 +1,15 @@
 <!-- code-review -->
 <!-- reviewed-sha: <%= it.reviewedSha %> -->
+<% if (!it.incomplete) { -%>
+<!-- review-complete -->
+<% } -%>
 <% if (it.findingsPointer) { -%>
 <%~ it.findingsPointer %>
 <% } -%>
 
 ### <%= it.verdictBadge(it.findings.verdict) %>
 
-<% const meta = [] %><% if (it.postedAt) { meta.push('**Reviewed** `' + it.reviewedSha.slice(0, 7) + '` at ' + it.postedAt) } %><% if (it.route) { meta.push('**route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.usageAvailable) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><sub><%~ meta.join(' · ') %></sub>
+<% const meta = [] %><% if (it.postedAt) { meta.push('**Reviewed** `' + it.reviewedSha.slice(0, 7) + '` at ' + it.postedAt) } %><% if (it.route) { meta.push('**route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.hasUsage) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><sub><%~ meta.join(' · ') %></sub>
 
 <%~ it.findings.summary %>
 
@@ -16,7 +19,7 @@
 <% if (findingsTotal > 0) { %>
 <% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
 **Findings:** <%~ parts.join(' · ') %>
-<% } else { %>
+<% } else if (!it.incomplete) { %>
 _No findings — clean review._
 <% } %>
 

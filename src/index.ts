@@ -1258,6 +1258,12 @@ const gatherCmd = defineCommand({
       type: "string",
       description: "Head branch to disambiguate the PR when multiple share a commit",
     },
+    "default-branch": {
+      type: "string",
+      description:
+        "The repo's default branch — the trusted base the review checks out, and the reference for the full (triage) diff; a PR based on any other branch is treated as stacked",
+      required: true,
+    },
     "run-id": {
       type: "string",
       description:
@@ -1285,6 +1291,7 @@ const gatherCmd = defineCommand({
       repo: args.repo,
       headSha: args["head-sha"],
       headBranch: args["head-branch"],
+      defaultBranch: args["default-branch"],
       runId: args["run-id"],
       conclusion: args.conclusion,
       botLogin: args["bot-login"] || "github-actions[bot]",

@@ -14,6 +14,9 @@ export interface GatherInput {
   readonly repo: string;
   readonly headSha: string;
   readonly headBranch?: string;
+  // The repo's default branch — the trusted base the review checks out and the reference point for
+  // the full (triage) diff. A PR whose base is a different branch is "stacked".
+  readonly defaultBranch: string;
   readonly runId: string;
   readonly conclusion: string;
   readonly botLogin: string;
@@ -27,6 +30,10 @@ export type GatherResult =
       readonly pr: number;
       readonly conclusion: string;
       readonly diffSize: number;
+      // The PR's base is not the default branch (a stacked PR): the review scope (base...head) is a
+      // strict subset of what gets checked out + triaged (default...head), so the review prompt frames
+      // the extra changes as already-reviewed context.
+      readonly stacked: boolean;
     };
 
 export const renderOutputs = (result: GatherResult): string => {
@@ -34,7 +41,7 @@ export const renderOutputs = (result: GatherResult): string => {
     case "skip":
       return "skip=true\n";
     case "gathered":
-      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\n`;
+      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\n`;
   }
 };
 
@@ -61,6 +68,7 @@ export const runGit: GitRun = (args) =>
 const PrMetaCodec = t.type({
   changed_files: t.number,
   base_sha: t.string,
+  base_ref: t.string,
   title: t.string,
   body: t.union([t.string, t.null]),
 });
@@ -86,7 +94,7 @@ const fetchPrMeta = async (repo: string, prNumber: number, ghApi: GhApi): Promis
   const stdout = await ghApi([
     `repos/${repo}/pulls/${String(prNumber)}`,
     "--jq",
-    "{changed_files: .changed_files, base_sha: .base.sha, title: .title, body: .body}",
+    "{changed_files: .changed_files, base_sha: .base.sha, base_ref: .base.ref, title: .title, body: .body}",
   ]);
   const decoded = PrMetaCodec.decode(JSON.parse(stdout) as unknown);
   if (decoded._tag === "Left") {
@@ -105,6 +113,65 @@ const fetchApiDiff = async (
   } catch {
     return null;
   }
+};
+
+// The review checks out the PR head; the untrusted surface a checkout exposes over the trusted
+// default branch is exactly `default...head`. So triage scans THIS diff (not the PR's base...head),
+// and it is the same diff for a normal PR (base === default). Compare API with a git-diff fallback
+// (fetch the head, diff from the checked-out default-branch tip) mirroring the pr.diff path.
+const fetchFullDiff = async (
+  repo: string,
+  defaultBranch: string,
+  headSha: string,
+  ghApi: GhApi,
+  gitRun: GitRun,
+): Promise<string> => {
+  try {
+    const diff = await ghApi([
+      `repos/${repo}/compare/${defaultBranch}...${headSha}`,
+      "-H",
+      "Accept: application/vnd.github.v3.diff",
+    ]);
+    if (diff.length > 0) return diff;
+  } catch (err) {
+    process.stderr.write(`compare diff fetch failed (${errMsg(err)}) — falling back to git diff\n`);
+  }
+  await gitRun(["fetch", "origin", headSha]);
+  const base = (await gitRun(["rev-parse", "HEAD"])).trim();
+  return gitRun(["diff", base, headSha]);
+};
+
+const CommitCodec = t.type({
+  sha: t.string,
+  message: t.string,
+  author: t.union([t.string, t.null]),
+  email: t.union([t.string, t.null]),
+});
+const COMMIT_JQ =
+  ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email}";
+
+// Commit messages + author identities of every commit in `default...head`. Once the head is checked
+// out, `git log` exposes these to the reviewing agent, so they are an untrusted surface triage must
+// scan for injection. FAIL CLOSED: a fetch failure propagates (never a silent empty scan) — the
+// caller must not expose commit messages it could not vet.
+const fetchCompareCommits = async (
+  repo: string,
+  defaultBranch: string,
+  headSha: string,
+  ghApi: GhApi,
+): Promise<readonly t.TypeOf<typeof CommitCodec>[]> => {
+  const rows = parseJsonl(
+    await ghApi([
+      `repos/${repo}/compare/${defaultBranch}...${headSha}`,
+      "--paginate",
+      "--jq",
+      COMMIT_JQ,
+    ]),
+  );
+  return rows.flatMap((row) => {
+    const decoded = CommitCodec.decode(row);
+    return decoded._tag === "Right" ? [decoded.right] : [];
+  });
 };
 
 // One object per row across all pages: `--paginate` WITHOUT `--jq` concatenates each page's JSON
@@ -294,19 +361,32 @@ export const gather = async (
 
   const meta = await fetchPrMeta(input.repo, prNumber, ghApi);
 
-  const apiDiff = await fetchApiDiff(input.repo, prNumber, ghApi);
-  const diff =
-    apiDiff !== null && !(apiDiff.length === 0 && meta.changed_files > 0)
-      ? apiDiff
-      : await (async () => {
-          process.stderr.write(
-            `PR diff fetch failed or was empty for ${String(meta.changed_files)} changed files — falling back to git diff\n`,
-          );
-          await gitRun(["fetch", "origin", input.headSha]);
-          return gitRun(["diff", meta.base_sha, input.headSha]);
-        })();
+  const stacked = meta.base_ref !== input.defaultBranch;
 
-  writeFileSync(join(input.outDir, "pr.diff"), diff);
+  // pr.diff (base...head) is the review SCOPE — the PR's own change; its endpoint + git-diff fallback
+  // are unchanged.
+  const prDiff = await (async () => {
+    const apiDiff = await fetchApiDiff(input.repo, prNumber, ghApi);
+    if (apiDiff !== null && !(apiDiff.length === 0 && meta.changed_files > 0)) return apiDiff;
+    process.stderr.write(
+      `PR diff fetch failed or was empty for ${String(meta.changed_files)} changed files — falling back to git diff\n`,
+    );
+    await gitRun(["fetch", "origin", input.headSha]);
+    return gitRun(["diff", meta.base_sha, input.headSha]);
+  })();
+
+  // full.diff (default...head) is the surface a head checkout exposes over the trusted base — what
+  // triage scans and what the checkout produces. Same as pr.diff for a normal PR (base === default);
+  // a superset for a stacked one, so only then is a separate fetch needed. commits.json carries the
+  // messages/authors a checked-out `git log` exposes, scanned by triage alongside the diff.
+  const fullDiff = stacked
+    ? await fetchFullDiff(input.repo, input.defaultBranch, input.headSha, ghApi, gitRun)
+    : prDiff;
+  const commits = await fetchCompareCommits(input.repo, input.defaultBranch, input.headSha, ghApi);
+
+  writeFileSync(join(input.outDir, "full.diff"), fullDiff);
+  writeFileSync(join(input.outDir, "pr.diff"), prDiff);
+  writeFileSync(join(input.outDir, "commits.json"), JSON.stringify(commits));
   writeFileSync(
     join(input.outDir, "pr_context.json"),
     JSON.stringify({ title: meta.title, body: meta.body }),
@@ -350,6 +430,7 @@ export const gather = async (
     kind: "gathered",
     pr: prNumber,
     conclusion: input.conclusion,
-    diffSize: Buffer.byteLength(diff, "utf8"),
+    diffSize: Buffer.byteLength(prDiff, "utf8"),
+    stacked,
   };
 };

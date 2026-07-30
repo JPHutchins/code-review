@@ -43,7 +43,7 @@ jobs:
       startsWith(github.event.comment.body, '/code-review') &&
       github.event.comment.user.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
-    uses: JPHutchins/code-review/.github/workflows/review-on-comment-reusable.yaml@v0.1.0-alpha.28
+    uses: JPHutchins/code-review/.github/workflows/review-on-comment-reusable.yaml@v0.1.0-alpha.29
     with:
       api_base_url:    ${{ vars.API_BASE_URL }}
       model_full:      deepseek-v4-pro

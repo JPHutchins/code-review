@@ -31,6 +31,11 @@ describe("buildNoticeEnvelope", () => {
     expect(env.findings.summary).toContain("curl | bash spotted in the diff");
   });
 
+  it("blockquotes every line of a multi-line reason, not just the first", () => {
+    const env = buildNoticeEnvelope("security-blocked", "line one\nline two");
+    expect(env.findings.summary).toContain("> line one\n> line two");
+  });
+
   it("uses the no-reason wording when the security-block reason is empty or absent", () => {
     expect(buildNoticeEnvelope("security-blocked").findings.summary).toContain("without a reason");
     expect(buildNoticeEnvelope("security-blocked", "   ").findings.summary).toContain(

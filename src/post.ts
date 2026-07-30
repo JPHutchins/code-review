@@ -785,10 +785,17 @@ export const announce = async (input: AnnounceInput, ghApi: GhApi = runGhApi): P
     DEFAULT_MARKER,
     ghApi,
   );
-  // If the sticky already reflects a completed review OF THIS HEAD, leave it — overwriting it with the
+  // If the sticky already reflects a COMPLETED review OF THIS HEAD, leave it — overwriting it with the
   // in-progress placeholder would hide a finished review (a CI re-run of an already-reviewed commit,
-  // or the review+comment pipeline racing ahead of this job). A prior head's sha still gets replaced.
-  if (existing !== null && parseReviewedSha(existing.body) === input.headSha.toLowerCase()) {
+  // or the review+comment pipeline racing ahead of this job). Both conditions matter: a same-head
+  // INCOMPLETE notice (which also stamps reviewed-sha) must be replaced by the placeholder on a re-run,
+  // and a prior head's sha still gets replaced regardless. `review-complete` is the discriminator the
+  // commenter guard uses too, so both write paths agree on what "completed" means.
+  if (
+    existing !== null &&
+    parseReviewComplete(existing.body) &&
+    parseReviewedSha(existing.body) === input.headSha.toLowerCase()
+  ) {
     process.stderr.write(
       `Sticky already reflects a completed review of ${input.headSha} — leaving it in place\n`,
     );

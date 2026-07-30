@@ -16,11 +16,14 @@ export const isNoticeKind = (s: string): s is NoticeKind =>
   s === "diff-apply-failed" ||
   s === "no-output";
 
+// Blockquote every line so a multi-line reason stays quoted, not just its first line.
+const blockquote = (text: string): string => text.replaceAll("\n", "\n> ");
+
 const noticeSummary = (kind: NoticeKind, reasons: string | undefined): string => {
   switch (kind) {
     case "security-blocked":
       return reasons !== undefined && reasons.trim() !== ""
-        ? `### 🛑 Code review skipped by the security gate\n\nThe diff was flagged as unsafe to apply and execute:\n\n> ${reasons}`
+        ? `### 🛑 Code review skipped by the security gate\n\nThe diff was flagged as unsafe to apply and execute:\n\n> ${blockquote(reasons)}`
         : "### 🛑 Code review skipped by the security gate\n\nThe security triage returned an unsafe verdict without a reason. See workflow logs.";
     case "setup-failed":
       return "### 🛠️ Review did not run\n\nThe review job failed before the security triage could run (e.g. dependency install or environment setup). See the workflow logs — this is an infrastructure failure, not a security verdict.";

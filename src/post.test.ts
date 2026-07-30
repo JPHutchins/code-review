@@ -2331,10 +2331,11 @@ describe("announce — in-progress sticky", () => {
     stderrSpy.mockRestore();
   });
 
-  it("leaves the sticky untouched when it already reviewed the current head (CI re-run / race)", async () => {
+  it("leaves the sticky untouched when it already reflects a COMPLETED review of the current head (CI re-run / race)", async () => {
     const headSha = "abc123def4560000000000000000000000000000";
     const existing = [
       "<!-- code-review -->",
+      "<!-- review-complete -->",
       "",
       "### 💬 comment — a completed review of this exact head",
       "",
@@ -2352,6 +2353,32 @@ describe("announce — in-progress sticky", () => {
     expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("already reflects a completed"));
     stderrSpy.mockRestore();
+  });
+
+  it("replaces a same-head INCOMPLETE notice with the in-progress placeholder on a re-run (#107)", async () => {
+    const headSha = "abc123def4560000000000000000000000000000";
+    // A prior run's "did not complete" notice: it stamps reviewed-sha but carries NO review-complete
+    // marker, so it must not masquerade as a finished review that blocks the placeholder.
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "### ⚠️ Review did not complete",
+      "",
+      `<!-- reviewed-sha: ${headSha} -->`,
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+    ]);
+
+    await announce(mkAnnounceInput({ headSha }), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    expect(patchCall).toBeDefined();
+    expect((JSON.parse(patchCall!.stdin!) as CommentBody).body).toContain(
+      "Code review in progress",
+    );
   });
 });
 

@@ -241,6 +241,8 @@ describe("adapt — claude-code — absent native envelope (issue #39)", () => {
     expect(result.right.findings.findings).toEqual([]);
     expect(result.right.findings.verdict).toBe("comment");
     expect(result.right.findings.summary).toContain("did not complete");
+    // Flagged incomplete so the commenter renders it honestly and won't bury a real review.
+    expect(result.right.incomplete).toBe(true);
     // The whole envelope still round-trips through the abstract codec.
     expect(ResultEnvelopeCodec.decode(result.right)._tag).toBe("Right");
   });
@@ -259,6 +261,8 @@ describe("adapt — claude-code — absent native envelope (issue #39)", () => {
     if (result._tag !== "Right") return;
     // The agent-file rung needs no native envelope, so the review is saved even with none.
     expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
+    // A recovered review is complete — the incomplete flag is only for a findings miss.
+    expect(result.right.incomplete).toBeUndefined();
     // Telemetry is still degenerate — cost/turns are unknown without a native envelope (#36 refills).
     expect(result.right.models).toEqual([]);
     expect(result.right.turns).toBe(0);

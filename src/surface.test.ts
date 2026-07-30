@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { parseFindingsMarker, parseReviewedSha, findingsPointer } from "./surface.js";
+import {
+  parseFindingsMarker,
+  parseReviewedSha,
+  parseReviewComplete,
+  findingsPointer,
+} from "./surface.js";
 import type { Findings } from "./schema.js";
 
 const findings = {
@@ -73,5 +78,18 @@ describe("parseReviewedSha", () => {
 
   it("returns null for the all-zeros placeholder (no head SHA was stamped)", () => {
     expect(parseReviewedSha(`<!-- reviewed-sha: ${"0".repeat(40)} -->`)).toBeNull();
+  });
+});
+
+describe("parseReviewComplete", () => {
+  it("true only when the completed-review marker is present", () => {
+    expect(parseReviewComplete("<!-- code-review -->\n<!-- review-complete -->\nreal review")).toBe(
+      true,
+    );
+  });
+
+  it("false for an incomplete notice or an in-progress placeholder (no marker)", () => {
+    expect(parseReviewComplete("<!-- code-review -->\n🔄 Code review in progress")).toBe(false);
+    expect(parseReviewComplete("<!-- code-review -->\n### ⚠️ Review did not complete")).toBe(false);
   });
 });

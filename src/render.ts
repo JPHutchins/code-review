@@ -38,6 +38,10 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
   const usageAvailable = input.envelope !== null;
+  // The meta line prints turns/cost only when there is real usage to print — a present-but-zeroed
+  // envelope (the synthesized notice wrap: no models) would otherwise show a false "$0.00 · turns 0".
+  const hasUsage = input.envelope !== null && input.envelope.models.length > 0;
+  const incomplete = input.incomplete ?? input.envelope?.incomplete ?? false;
   const costReport = input.envelope ? computeCost(input.envelope.models, input.prices) : null;
   const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;
@@ -48,6 +52,8 @@ export const render = (input: RenderInput): string => {
     findings: input.findings,
     envelope: input.envelope,
     usageAvailable,
+    hasUsage,
+    incomplete,
     costReport,
     pricesProvided,
     route,

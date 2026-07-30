@@ -879,6 +879,12 @@ index 111..222 100644
       { match: metaMatch(42), response: mkMeta({ base_ref: "feature-base" }) },
       { match: diffMatch(42), response: sampleDiff },
       { match: compareDiffMatch, response: stackFullDiff },
+      {
+        match: compareCommitsMatch,
+        response: ndjson([
+          { sha: "c1", message: "base PR commit", author: "Dev", email: "dev@example.com" },
+        ]),
+      },
       { match: commentsMatch(42), response: "" },
     ]);
 
@@ -886,9 +892,13 @@ index 111..222 100644
 
     expect(result.kind).toBe("gathered");
     if (result.kind === "gathered") expect(result.stacked).toBe(true);
-    // The review scope is the PR's own diff; triage/checkout see the whole default...head surface.
+    // The review scope is the PR's own diff; triage/checkout see the whole default...head surface,
+    // and its commit messages are scanned too.
     expect(outFile("pr.diff")).toBe(sampleDiff);
     expect(outFile("full.diff")).toBe(stackFullDiff);
+    const commits = JSON.parse(outFile("commits.json")) as { message: string }[];
+    expect(commits).toHaveLength(1);
+    expect(commits[0]!.message).toBe("base PR commit");
   });
 });
 

@@ -482,7 +482,6 @@ jobs:
           CONCLUSION: ${{ steps.gather.outputs.conclusion }}
           HEAD_SHA: ${{ inputs.head_sha }}
           PR: ${{ steps.gather.outputs.pr }}
-          STACKED: ${{ steps.gather.outputs.stacked }}
           FULL_TIME_LIMIT: ${{ inputs.full_review_time_limit }}
           FULL_GRACE: ${{ inputs.full_review_grace_period }}
           FULL_USD: ${{ inputs.full_review_usd_limit }}

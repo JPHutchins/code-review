@@ -923,7 +923,7 @@ const noticeCmd = defineCommand({
   args: {
     kind: {
       type: "positional",
-      description: "One of: security-blocked, setup-failed, diff-apply-failed, no-output",
+      description: "One of: security-blocked, setup-failed, checkout-failed, no-output",
       required: true,
     },
     reasons: {
@@ -936,7 +936,7 @@ const noticeCmd = defineCommand({
     const kind = isNoticeKind(args.kind)
       ? args.kind
       : fail(
-          `Unknown notice kind "${args.kind}" — expected one of: security-blocked, setup-failed, diff-apply-failed, no-output`,
+          `Unknown notice kind "${args.kind}" — expected one of: security-blocked, setup-failed, checkout-failed, no-output`,
         );
     process.stdout.write(`${JSON.stringify(buildNoticeEnvelope(kind, args.reasons), null, 2)}\n`);
   },

@@ -133,12 +133,17 @@ const fetchFullDiff = async (
       "Accept: application/vnd.github.v3.diff",
     ]);
     if (diff.length > 0) return diff;
+    process.stderr.write(
+      `compare diff for ${defaultBranch}...${headSha} was empty — falling back to git diff\n`,
+    );
   } catch (err) {
     process.stderr.write(`compare diff fetch failed (${errMsg(err)}) — falling back to git diff\n`);
   }
   await gitRun(["fetch", "origin", headSha]);
+  // Three-dot, matching the compare API's semantics (merge-base...head): the checked-out default
+  // branch is HEAD, so this is the same untrusted surface the compare primary computes.
   const base = (await gitRun(["rev-parse", "HEAD"])).trim();
-  return gitRun(["diff", base, headSha]);
+  return gitRun(["diff", `${base}...${headSha}`]);
 };
 
 const CommitCodec = t.type({
@@ -168,10 +173,17 @@ const fetchCompareCommits = async (
       COMMIT_JQ,
     ]),
   );
-  return rows.flatMap((row) => {
-    const decoded = CommitCodec.decode(row);
-    return decoded._tag === "Right" ? [decoded.right] : [];
-  });
+  const decoded = rows.map((row) => CommitCodec.decode(row));
+  const commits = decoded.flatMap((d) => (d._tag === "Right" ? [d.right] : []));
+  // A dropped row is a scan gap, not a no-op: a checkout's `git log` still exposes that commit's
+  // message to the agent, so name any drop rather than let an unscanned message pass silently.
+  const dropped = decoded.length - commits.length;
+  if (dropped > 0) {
+    process.stderr.write(
+      `Warning: ${String(dropped)} of ${String(rows.length)} commit row(s) failed to decode — their messages are NOT in the triage scan though a checkout's git log still exposes them\n`,
+    );
+  }
+  return commits;
 };
 
 // One object per row across all pages: `--paginate` WITHOUT `--jq` concatenates each page's JSON

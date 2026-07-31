@@ -943,7 +943,7 @@ const noticeCmd = defineCommand({
   run: ({ args }) => {
     if (!isNoticeKind(args.kind)) {
       process.stderr.write(
-        `::warning::code-review notice: unrecognized kind "${args.kind}" — the pinned CLI is older than the workflow calling it; rendering a generic incomplete notice\n`,
+        `::warning::code-review notice: unrecognized kind "${annotationSafe(args.kind)}" — the pinned CLI is older than the workflow calling it; rendering a generic incomplete notice\n`,
       );
       process.stdout.write(`${JSON.stringify(buildUnknownNoticeEnvelope(args.kind), null, 2)}\n`);
       return;

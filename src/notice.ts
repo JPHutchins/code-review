@@ -8,13 +8,10 @@
 import { DEFAULT_SCHEMA_VERSION, noticeFindings } from "./schema.js";
 import type { ResultEnvelope } from "./schema.js";
 
-export type NoticeKind = "security-blocked" | "setup-failed" | "diff-apply-failed" | "no-output";
+export type NoticeKind = "security-blocked" | "setup-failed" | "checkout-failed" | "no-output";
 
 export const isNoticeKind = (s: string): s is NoticeKind =>
-  s === "security-blocked" ||
-  s === "setup-failed" ||
-  s === "diff-apply-failed" ||
-  s === "no-output";
+  s === "security-blocked" || s === "setup-failed" || s === "checkout-failed" || s === "no-output";
 
 // Blockquote every line so a multi-line reason stays quoted, not just its first line.
 const blockquote = (text: string): string => text.replaceAll("\n", "\n> ");
@@ -27,8 +24,8 @@ const noticeSummary = (kind: NoticeKind, reasons: string | undefined): string =>
         : "### 🛑 Code review skipped by the security gate\n\nThe security triage returned an unsafe verdict without a reason. See workflow logs.";
     case "setup-failed":
       return "### 🛠️ Review did not run\n\nThe review job failed before the security triage could run (e.g. dependency install or environment setup). See the workflow logs — this is an infrastructure failure, not a security verdict.";
-    case "diff-apply-failed":
-      return "### ⚠️ Could not apply the diff\n\nThe PR diff could not be applied to the checked-out base commit, so the review was skipped rather than run against an unmodified tree. See workflow logs.";
+    case "checkout-failed":
+      return "### ⚠️ Could not check out the PR head\n\nThe PR head commit could not be fetched or checked out (it may have been force-pushed away, or is otherwise unavailable), so the review was skipped rather than run against the wrong tree. See workflow logs.";
     case "no-output":
       return "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs.";
   }

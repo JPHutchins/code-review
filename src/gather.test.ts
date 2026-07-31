@@ -65,6 +65,11 @@ const mkMockGhApi = (
           : Promise.resolve(r.response);
       }
     }
+    // The compare-commits fetch (default...head) runs for every PR now; default it to an empty
+    // NDJSON stream (no commits) unless a test mocks it explicitly above.
+    if ((args[0]?.startsWith("repos/owner/repo/compare/") ?? false) && args.includes("--jq")) {
+      return Promise.resolve("");
+    }
     return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
   };
   return { api, calls: () => calls };
@@ -95,6 +100,7 @@ const mkInput = (overrides: Partial<GatherInput> = {}): GatherInput => ({
   repo: "owner/repo",
   headSha: "abc123",
   headBranch: "feature-branch",
+  defaultBranch: "main",
   runId: "RUN1",
   conclusion: "success",
   botLogin: "github-actions[bot]",
@@ -129,16 +135,21 @@ const reviewsMatch =
   (pr: number) =>
   (a: readonly string[]): boolean =>
     a[0] === `repos/owner/repo/pulls/${String(pr)}/reviews` && a.includes("--paginate");
+const compareDiffMatch = (a: readonly string[]): boolean =>
+  (a[0]?.startsWith("repos/owner/repo/compare/main...") ?? false) && a.includes("-H");
+const compareCommitsMatch = (a: readonly string[]): boolean =>
+  (a[0]?.startsWith("repos/owner/repo/compare/main...") ?? false) && a.includes("--jq");
 const jobsMatch = (a: readonly string[]): boolean =>
   a[0] === "repos/owner/repo/actions/runs/RUN1/jobs";
 const logsMatch = (a: readonly string[]): boolean =>
   (a[0]?.startsWith("repos/owner/repo/actions/jobs/") ?? false) &&
   (a[0]?.endsWith("/logs") ?? false);
 
-const mkMeta = (overrides: { changed_files?: number } = {}) =>
+const mkMeta = (overrides: { changed_files?: number; base_ref?: string } = {}) =>
   JSON.stringify({
     changed_files: overrides.changed_files ?? 1,
     base_sha: "base",
+    base_ref: overrides.base_ref ?? "main",
     title: "T",
     body: "B",
   });
@@ -167,8 +178,11 @@ describe("gather — PR resolution", () => {
       pr: 42,
       conclusion: "success",
       diffSize: Buffer.byteLength(sampleDiff, "utf8"),
+      stacked: false,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
+    // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
+    expect(outFile("full.diff")).toBe(sampleDiff);
     expect(gitCalls()).toHaveLength(0);
     expect(
       calls().some((c) => c.args[0] === "repos/owner/repo/pulls/42" && c.args.includes("-H")),
@@ -788,6 +802,7 @@ describe("gather — pr_context.json", () => {
         response: JSON.stringify({
           changed_files: 1,
           base_sha: "base",
+          base_ref: "main",
           title: "My PR",
           body: null,
         }),
@@ -810,10 +825,16 @@ describe("renderOutputs", () => {
     expect(renderOutputs({ kind: "skip" })).toBe("skip=true\n");
   });
 
-  it("renders pr, conclusion, diff_size for the gathered case", () => {
-    expect(renderOutputs({ kind: "gathered", pr: 42, conclusion: "success", diffSize: 1234 })).toBe(
-      "pr=42\nconclusion=success\ndiff_size=1234\n",
-    );
+  it("renders pr, conclusion, diff_size, stacked for the gathered case", () => {
+    expect(
+      renderOutputs({
+        kind: "gathered",
+        pr: 42,
+        conclusion: "success",
+        diffSize: 1234,
+        stacked: false,
+      }),
+    ).toBe("pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\n");
   });
 });
 
@@ -836,5 +857,90 @@ describe("gather — diff_size byte accuracy", () => {
       expect(result.diffSize).toBe(Buffer.byteLength(multibyteDiff, "utf8"));
       expect(result.diffSize).not.toBe(multibyteDiff.length);
     }
+  });
+});
+
+describe("gather — stacked PR (base is not the default branch)", () => {
+  const stackFullDiff = `diff --git a/base.ts b/base.ts
+index 111..222 100644
+--- a/base.ts
++++ b/base.ts
+@@ -1 +1,2 @@
+ base
++from the base PR
+`;
+
+  it("keeps pr.diff as the review scope and fetches default...head as the full triage/checkout diff", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta({ base_ref: "feature-base" }) },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: compareDiffMatch, response: stackFullDiff },
+      {
+        match: compareCommitsMatch,
+        response: ndjson([
+          { sha: "c1", message: "base PR commit", author: "Dev", email: "dev@example.com" },
+        ]),
+      },
+      { match: commentsMatch(42), response: "" },
+    ]);
+
+    const result = await gather(mkInput({}), api, mkMockGit([]).git);
+
+    expect(result.kind).toBe("gathered");
+    if (result.kind === "gathered") expect(result.stacked).toBe(true);
+    // The review scope is the PR's own diff; triage/checkout see the whole default...head surface,
+    // and its commit messages are scanned too.
+    expect(outFile("pr.diff")).toBe(sampleDiff);
+    expect(outFile("full.diff")).toBe(stackFullDiff);
+    const commits = JSON.parse(outFile("commits.json")) as { message: string }[];
+    expect(commits).toHaveLength(1);
+    expect(commits[0]!.message).toBe("base PR commit");
+  });
+});
+
+describe("gather — commit-message triage surface", () => {
+  it("writes commits.json from the default...head compare commits (the git-log surface a checkout exposes)", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: compareCommitsMatch,
+        response: ndjson([
+          { sha: "c1", message: "feat: the thing", author: "Dev", email: "dev@example.com" },
+          { sha: "c2", message: "fix: the bug", author: "Dev", email: "dev@example.com" },
+        ]),
+      },
+      { match: commentsMatch(42), response: "" },
+    ]);
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    const commits = JSON.parse(outFile("commits.json")) as { message: string }[];
+    expect(commits).toHaveLength(2);
+    expect(commits[0]!.message).toBe("feat: the thing");
+    expect(commits[1]!.message).toBe("fix: the bug");
+  });
+
+  it("fails closed when the commit fetch errors — never a silent empty scan", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: compareCommitsMatch, response: new Error("gh: compare commits 502") },
+      { match: commentsMatch(42), response: "" },
+    ]);
+
+    await expect(gather(mkInput({}), api, mkMockGit([]).git)).rejects.toThrow(/502/);
   });
 });

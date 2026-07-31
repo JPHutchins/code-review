@@ -6,7 +6,7 @@ import { ResultEnvelopeCodec } from "./schema.js";
 const KINDS: readonly NoticeKind[] = [
   "security-blocked",
   "setup-failed",
-  "diff-apply-failed",
+  "checkout-failed",
   "no-output",
 ];
 
@@ -43,11 +43,11 @@ describe("buildNoticeEnvelope", () => {
     );
   });
 
-  it("keeps setup-failed, no-output, and diff-apply-failed as distinct messages", () => {
+  it("keeps setup-failed, no-output, and checkout-failed as distinct messages", () => {
     expect(buildNoticeEnvelope("setup-failed").findings.summary).toContain("did not run");
     expect(buildNoticeEnvelope("no-output").findings.summary).toContain("did not complete");
-    expect(buildNoticeEnvelope("diff-apply-failed").findings.summary).toContain(
-      "Could not apply the diff",
+    expect(buildNoticeEnvelope("checkout-failed").findings.summary).toContain(
+      "Could not check out the PR head",
     );
   });
 });

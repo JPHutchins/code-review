@@ -923,7 +923,7 @@ const noticeCmd = defineCommand({
   args: {
     kind: {
       type: "positional",
-      description: "One of: security-blocked, setup-failed, diff-apply-failed, no-output",
+      description: "One of: security-blocked, setup-failed, checkout-failed, no-output",
       required: true,
     },
     reasons: {
@@ -936,7 +936,7 @@ const noticeCmd = defineCommand({
     const kind = isNoticeKind(args.kind)
       ? args.kind
       : fail(
-          `Unknown notice kind "${args.kind}" — expected one of: security-blocked, setup-failed, diff-apply-failed, no-output`,
+          `Unknown notice kind "${args.kind}" — expected one of: security-blocked, setup-failed, checkout-failed, no-output`,
         );
     process.stdout.write(`${JSON.stringify(buildNoticeEnvelope(kind, args.reasons), null, 2)}\n`);
   },
@@ -1258,6 +1258,12 @@ const gatherCmd = defineCommand({
       type: "string",
       description: "Head branch to disambiguate the PR when multiple share a commit",
     },
+    "default-branch": {
+      type: "string",
+      description:
+        "The repo's default branch — the trusted base the review checks out, and the reference for the full (triage) diff; a PR based on any other branch is treated as stacked",
+      required: true,
+    },
     "run-id": {
       type: "string",
       description:
@@ -1285,6 +1291,7 @@ const gatherCmd = defineCommand({
       repo: args.repo,
       headSha: args["head-sha"],
       headBranch: args["head-branch"],
+      defaultBranch: args["default-branch"],
       runId: args["run-id"],
       conclusion: args.conclusion,
       botLogin: args["bot-login"] || "github-actions[bot]",

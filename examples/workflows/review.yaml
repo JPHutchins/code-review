@@ -9,9 +9,10 @@ on:
     workflows: ["CI"]       # your existing CI workflow name — unmodified
     types: [completed]
 
-concurrency:                 # a newer CI run for the same PR branch cancels an in-flight review — bounds spend
-  group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
-  cancel-in-progress: true
+# Concurrency is PER JOB, not workflow-level: `review` + `comment` share the `review-…` group so a
+# superseding CI run cancels that pair as a unit (bounds spend), while `announce` and `finalize` each
+# hold their OWN group so they survive that cancellation — otherwise a failed review's attribution
+# (finalize) or its in-progress sticky (announce) would be cancelled with the review it describes.
 
 env:                         # one definition both jobs install from, so the two never skew
   CODE_REVIEW_VERSION: 0.1.0-alpha.32
@@ -20,7 +21,6 @@ jobs:
   # ANNOUNCE — post an in-progress placeholder sticky the moment the review starts, so this
   # workflow_run review (which runs from the default branch, invisible on the PR) is visibly under
   # way. Holds issues:write — the write token the review job must never hold — so it is its own job.
-  # The workflow-level concurrency above supersedes it along with the rest of the run.
   announce:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
@@ -28,6 +28,10 @@ jobs:
        github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 10       # a quick job (resolve PR + upsert one comment); bound a hung install/API
+    # Its OWN group — survives a superseding run's cancel so the in-progress surfaces still appear.
+    concurrency:
+      group: announce-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     permissions:
       contents: read         # the primary `commits/{sha}/pulls` PR lookup reads a commit — 403s without this (the review job resolves fine because it holds contents:read; a no-agent job, so read here is safe)
       issues: write          # post/patch the sticky comment
@@ -104,6 +108,10 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' ||
        github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
+    # A newer CI run for the same PR branch cancels an in-flight review + its comment — bounds spend.
+    concurrency:
+      group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     # No job-level cap by design: the agent is bounded per route by a `timeout` wrapper
     # on each `claude -p` below, so a review is never hard-killed mid-flight — a hard kill loses both
     # the review AND its cost record (the agent dies before flushing its result envelope). Set a
@@ -584,6 +592,10 @@ jobs:
     if: ${{ always() && needs.review.outputs.has_findings == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # SAME group as review — a superseding run cancels this run's comment with its review, as a unit.
+    concurrency:
+      group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     permissions:
       issues: write            # sticky comment via issues-comments endpoint
       pull-requests: write     # inline review via pulls/reviews endpoint
@@ -692,8 +704,8 @@ jobs:
   # silent. result == 'failure' (the review DIED) → a "did not complete, re-request" sticky + `failure`
   # check; result == 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`. A
   # `cancelled` review is NOT handled — it is a superseding run taking over (which posts its own
-  # review), and this workflow's top-level concurrency cancels this job with it anyway. The
-  # has_findings guard excludes a review that DID post but failed a later step (comment finalized it).
+  # review). The has_findings guard excludes a review that DID post but failed a later step (comment
+  # finalized it).
   finalize:
     needs: review
     if: >-
@@ -703,6 +715,11 @@ jobs:
            github.event.workflow_run.conclusion == 'failure') &&
           (needs.review.result == 'failure' || needs.review.result == 'success') &&
           needs.review.outputs.has_findings != 'true' }}
+    # Its OWN group — NOT the review group — so a superseding run cancels the stale review but never
+    # this finalization (a failed review's attribution must survive that cancellation).
+    concurrency:
+      group: finalize-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

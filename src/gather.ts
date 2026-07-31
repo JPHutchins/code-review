@@ -1,9 +1,9 @@
 // Shares post's PR resolution so the review and comment jobs never split-brain on which PR.
 
-import { execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
+import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
@@ -48,21 +48,11 @@ export const renderOutputs = (result: GatherResult): string => {
 export type GitRun = (args: readonly string[]) => Promise<string>;
 
 export const runGit: GitRun = (args) =>
-  new Promise<string>((resolve, reject) => {
-    execFile(
-      "git",
-      [...args],
-      { encoding: "utf-8", maxBuffer: 100 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          const stderrStr = typeof stderr === "string" && stderr.trim() ? stderr.trim() : "";
-          const errStr = err instanceof Error ? err.message : "unknown error";
-          reject(new Error(`git ${args.join(" ")} failed: ${stderrStr || errStr}`));
-        } else {
-          resolve(stdout);
-        }
-      },
-    );
+  execFileWithTimeout({
+    command: "git",
+    args,
+    label: `git ${args.join(" ")}`,
+    timeoutMs: subprocessTimeoutMs(),
   });
 
 const PrMetaCodec = t.type({

@@ -22,6 +22,13 @@ describe("parseTimeoutMs", () => {
     expect(parseTimeoutMs("2147483648", 120_000)).toBe(120_000);
     expect(parseTimeoutMs("3000000000", 120_000)).toBe(120_000);
   });
+
+  it("rejects the surprising forms Number() would coerce", () => {
+    expect(parseTimeoutMs("0.5", 120_000)).toBe(120_000);
+    expect(parseTimeoutMs("0x10", 120_000)).toBe(120_000);
+    expect(parseTimeoutMs("3e5", 120_000)).toBe(120_000);
+    expect(parseTimeoutMs(" 5000", 120_000)).toBe(120_000);
+  });
 });
 
 describe("subprocessTimeoutMs", () => {
@@ -50,6 +57,12 @@ describe("classifyExecError", () => {
   it("names a timeout kill", () => {
     expect(classifyExecError({ killed: true }, "", 120_000)).toBe(
       "no response within 120000ms (killed a hung child)",
+    );
+  });
+
+  it("keeps a killed child's stderr when it left some (external signal, not a timeout)", () => {
+    expect(classifyExecError({ killed: true }, "fatal: killed by OOM\n", 120_000)).toBe(
+      "no response within 120000ms (killed a hung child): fatal: killed by OOM",
     );
   });
 

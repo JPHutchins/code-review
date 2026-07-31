@@ -16,18 +16,41 @@ export const describeEndpoint = (args: readonly string[]): string =>
   args[0] ??
   "(no endpoint)";
 
+// A `gh` child with no timeout can hang the whole job: a wedged network read, or an interactive
+// prompt (auth, pager) that never returns, blocks until the workflow's own wall clock fires. Bound
+// each call and SIGKILL a child that outlives it. The default is generous so a legitimately slow
+// `--paginate` sweep across many pages is never mistaken for a hang; override it for a pathological
+// PR (thousands of comments) via the env var.
+const GH_TIMEOUT_ENV = "CODE_REVIEW_GH_TIMEOUT_MS";
+const DEFAULT_GH_TIMEOUT_MS = 120_000;
+
+export const parseGhTimeoutMs = (raw: string | undefined): number => {
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_GH_TIMEOUT_MS;
+};
+
 // Untrusted values (bot login, marker) reach jq via `env.NAME`, never interpolated into the filter.
 export const runGhApi: GhApi = (args, stdin, env) =>
   new Promise<string>((resolve, reject) => {
+    const timeoutMs = parseGhTimeoutMs(process.env[GH_TIMEOUT_ENV]);
     const child = execFile(
       "gh",
       ["api", ...args],
-      { env: { ...process.env, ...env }, encoding: "utf-8", maxBuffer: 100 * 1024 * 1024 },
+      {
+        env: { ...process.env, ...env },
+        encoding: "utf-8",
+        maxBuffer: 100 * 1024 * 1024,
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+      },
       (err, stdout, stderr) => {
         if (err) {
           const stderrStr = typeof stderr === "string" && stderr.trim() ? stderr.trim() : "";
-          const errStr = err instanceof Error ? err.message : "unknown error";
-          reject(new Error(`gh api ${describeEndpoint(args)} failed: ${stderrStr || errStr}`));
+          const detail =
+            (err as { killed?: boolean }).killed === true
+              ? `no response within ${String(timeoutMs)}ms (killed a hung child)`
+              : stderrStr || (err instanceof Error ? err.message : "unknown error");
+          reject(new Error(`gh api ${describeEndpoint(args)} failed: ${detail}`));
         } else {
           resolve(stdout);
         }

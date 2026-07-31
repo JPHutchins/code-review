@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeEndpoint } from "./gh.js";
+import { describeEndpoint, parseGhTimeoutMs } from "./gh.js";
 
 describe("describeEndpoint", () => {
   it("names a path-first REST call", () => {
@@ -32,5 +32,22 @@ describe("describeEndpoint", () => {
   it("falls back to args[0] when no path-shaped arg is present", () => {
     expect(describeEndpoint(["user"])).toBe("user");
     expect(describeEndpoint([])).toBe("(no endpoint)");
+  });
+});
+
+describe("parseGhTimeoutMs", () => {
+  it("uses the generous default when the env var is unset", () => {
+    expect(parseGhTimeoutMs(undefined)).toBe(120_000);
+  });
+
+  it("honors a positive numeric override", () => {
+    expect(parseGhTimeoutMs("300000")).toBe(300_000);
+  });
+
+  it("falls back to the default for non-numeric, zero, or negative values", () => {
+    expect(parseGhTimeoutMs("")).toBe(120_000);
+    expect(parseGhTimeoutMs("soon")).toBe(120_000);
+    expect(parseGhTimeoutMs("0")).toBe(120_000);
+    expect(parseGhTimeoutMs("-5")).toBe(120_000);
   });
 });

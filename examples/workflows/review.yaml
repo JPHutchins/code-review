@@ -213,12 +213,18 @@ jobs:
           # emits them to $GITHUB_OUTPUT — even if `claude`, `code-review extract`, or `jq` below
           # fail operationally under `set -e` — using a per-run random heredoc delimiter so
           # untrusted `reasons` text can never forge a `safe=true` output by embedding a fixed one.
+          # OUTCOME defaults to `error` so any operational crash renders as an infrastructure failure,
+          # not a security verdict about the diff; only a parsed unsafe verdict sets it to `unsafe`.
+          # It is set from controlled literals only (never from model output), so it needs no delimiter
+          # guard — it is emitted before the untrusted `reasons` heredoc, exactly like `safe`.
           SAFE=false
+          OUTCOME=error
           REASONS="Security triage did not complete successfully (operational error) — failing closed."
 
           emit_triage_output() {
             {
               echo "safe=$SAFE"
+              echo "outcome=$OUTCOME"
               echo "reasons<<$delim"
               echo "$REASONS"
               echo "$delim"
@@ -256,10 +262,13 @@ jobs:
           REASONS=$(jq -r '.reasons' triage.parsed.json)
           if [ "$PARSED_SAFE" = "true" ]; then
             SAFE=true
+            OUTCOME=safe
           elif [ "$PARSED_SAFE" = "false" ]; then
             SAFE=false
+            OUTCOME=unsafe
           else
             SAFE=false
+            OUTCOME=error
             REASONS="Triage produced a non-boolean safe value (\"$PARSED_SAFE\") — failing closed."
           fi
 
@@ -473,7 +482,7 @@ jobs:
         id: assemble
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         env:
-          SAFE_RAW: ${{ steps.triage.outputs.safe }}
+          OUTCOME: ${{ steps.triage.outputs.outcome }}
           REASONS: ${{ steps.triage.outputs.reasons }}
         run: |
           set -euo pipefail
@@ -484,20 +493,32 @@ jobs:
           # run's real telemetry. So a synthesized notice is only needed when adapt never ran (security
           # gate skip) or never got the chance to write (the agent invocation failed outright). Each
           # notice's message + its incomplete envelope shape live in `code-review notice` (one typed
-          # SSOT), not as jq literals here; extract its findings the same way Phase 2 does.
+          # SSOT), not as jq literals here; extract its findings the same way Phase 2 does. The triage
+          # OUTCOME picks the honest notice: an operational failure ("error") must NOT render as a
+          # security verdict on the diff ("unsafe"). An empty OUTCOME means triage never emitted — the
+          # job died before the gate ran.
           if [ -s findings/findings.json ]; then
             echo "Review produced findings"
           else
-            if [ "$SAFE_RAW" = "false" ]; then
-              # Triage returned unsafe — a gate block (with the reason when it gave one).
-              code-review notice security-blocked --reasons "$REASONS" >findings/envelope.json
-            elif [ -z "$SAFE_RAW" ]; then
-              # Triage never emitted a verdict — the job errored before the gate ran (install/setup).
-              code-review notice setup-failed >findings/envelope.json
-            else
-              # Triage passed (safe=true) but the review produced no findings.
-              code-review notice no-output >findings/envelope.json
-            fi
+            case "$OUTCOME" in
+              unsafe)
+                # Triage returned a genuine unsafe verdict — a gate block (with the reason when given).
+                code-review notice security-blocked --reasons "$REASONS" >findings/envelope.json
+                ;;
+              error)
+                # Triage ran but produced no valid verdict (operational failure) — failed closed, not
+                # a finding about the diff.
+                code-review notice triage-error --reasons "$REASONS" >findings/envelope.json
+                ;;
+              safe)
+                # Triage passed (safe=true) but the review produced no findings.
+                code-review notice no-output >findings/envelope.json
+                ;;
+              *)
+                # Triage never emitted a verdict — the job errored before the gate ran (install/setup).
+                code-review notice setup-failed >findings/envelope.json
+                ;;
+            esac
             jq -c '.findings' findings/envelope.json >findings/findings.json
           fi
 

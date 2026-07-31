@@ -5,6 +5,7 @@ import { ResultEnvelopeCodec } from "./schema.js";
 
 const KINDS: readonly NoticeKind[] = [
   "security-blocked",
+  "triage-error",
   "setup-failed",
   "checkout-failed",
   "no-output",
@@ -50,10 +51,27 @@ describe("buildNoticeEnvelope", () => {
       "Could not check out the PR head",
     );
   });
+
+  it("renders an operational triage failure as an infra error, not a security verdict on the diff", () => {
+    const summary = buildNoticeEnvelope(
+      "triage-error",
+      "Security triage did not complete successfully (operational error) — failing closed.",
+    ).findings.summary;
+    expect(summary).toContain("could not produce a verdict");
+    expect(summary).toContain("not a finding about this diff");
+    expect(summary).not.toContain("flagged as unsafe");
+    expect(summary).toContain("> Security triage did not complete successfully");
+  });
+
+  it("keeps the triage-error wording even when no reason is supplied", () => {
+    const summary = buildNoticeEnvelope("triage-error").findings.summary;
+    expect(summary).toContain("could not produce a verdict");
+    expect(summary).not.toContain("flagged as unsafe");
+  });
 });
 
 describe("isNoticeKind", () => {
-  it("accepts the four kinds and rejects anything else", () => {
+  it("accepts the known kinds and rejects anything else", () => {
     for (const k of KINDS) expect(isNoticeKind(k)).toBe(true);
     expect(isNoticeKind("clean")).toBe(false);
     expect(isNoticeKind("")).toBe(false);

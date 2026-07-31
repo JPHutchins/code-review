@@ -1,14 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { buildNoticeEnvelope, isNoticeKind } from "./notice.js";
-import type { NoticeKind } from "./notice.js";
+import {
+  buildNoticeEnvelope,
+  buildUnknownNoticeEnvelope,
+  isNoticeKind,
+  NOTICE_KINDS,
+} from "./notice.js";
 import { ResultEnvelopeCodec } from "./schema.js";
 
-const KINDS: readonly NoticeKind[] = [
-  "security-blocked",
-  "setup-failed",
-  "checkout-failed",
-  "no-output",
-];
+const KINDS = NOTICE_KINDS;
 
 describe("buildNoticeEnvelope", () => {
   it("flags every kind incomplete, with zeroed telemetry that round-trips the envelope codec", () => {
@@ -50,10 +49,36 @@ describe("buildNoticeEnvelope", () => {
       "Could not check out the PR head",
     );
   });
+
+  it("renders an operational triage failure as an infra error, not a security verdict on the diff", () => {
+    const summary = buildNoticeEnvelope(
+      "triage-error",
+      "Security triage did not complete successfully (operational error) — failing closed.",
+    ).findings.summary;
+    expect(summary).toContain("could not produce a verdict");
+    expect(summary).toContain("not a finding about this diff");
+    expect(summary).not.toContain("flagged as unsafe");
+    expect(summary).toContain("> Security triage did not complete successfully");
+  });
+
+  it("keeps the triage-error wording even when no reason is supplied", () => {
+    const summary = buildNoticeEnvelope("triage-error").findings.summary;
+    expect(summary).toContain("could not produce a verdict");
+    expect(summary).not.toContain("flagged as unsafe");
+  });
+
+  it("degrades an unrecognized kind to an honest incomplete envelope naming the version skew", () => {
+    const env = buildUnknownNoticeEnvelope("some-future-kind");
+    expect(env.incomplete).toBe(true);
+    expect(env.findings.verdict).toBe("comment");
+    expect(env.findings.summary).toContain("some-future-kind");
+    expect(env.findings.summary).toContain("older than the workflow");
+    expect(ResultEnvelopeCodec.decode(env)._tag).toBe("Right");
+  });
 });
 
 describe("isNoticeKind", () => {
-  it("accepts the four kinds and rejects anything else", () => {
+  it("accepts the known kinds and rejects anything else", () => {
     for (const k of KINDS) expect(isNoticeKind(k)).toBe(true);
     expect(isNoticeKind("clean")).toBe(false);
     expect(isNoticeKind("")).toBe(false);

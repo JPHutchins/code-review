@@ -38,7 +38,12 @@ import {
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import { parseFindingsMarker, parseReviewedSha } from "./surface.js";
-import { buildNoticeEnvelope, isNoticeKind } from "./notice.js";
+import {
+  buildNoticeEnvelope,
+  buildUnknownNoticeEnvelope,
+  isNoticeKind,
+  NOTICE_KINDS,
+} from "./notice.js";
 import { announce, post } from "./post.js";
 import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.js";
 import { react, isReaction, REACTIONS } from "./react.js";
@@ -918,27 +923,34 @@ const noticeCmd = defineCommand({
   meta: {
     name: "notice",
     description:
-      "Emit an abstract envelope for a run that produced no completed review (security block, setup failure, unapplied diff, or empty run) — flagged incomplete so the commenter renders it honestly and won't bury a real review",
+      "Emit an abstract envelope for a run that produced no completed review (security block, triage error, setup failure, checkout failure, or empty run) — flagged incomplete so the commenter renders it honestly and won't bury a real review",
   },
   args: {
     kind: {
       type: "positional",
-      description: "One of: security-blocked, setup-failed, checkout-failed, no-output",
+      description: `One of: ${NOTICE_KINDS.join(", ")} (an unrecognized kind renders a generic incomplete notice rather than failing — the pinned CLI is older than the workflow)`,
       required: true,
     },
     reasons: {
       type: "string",
       description:
-        "security-blocked only: the triage's fail-closed reason string (empty/omitted ⇒ the no-reason wording)",
+        "security-blocked / triage-error only: the triage's fail-closed reason string (empty/omitted ⇒ the no-reason wording)",
     },
   },
+  // An unrecognized kind degrades to a generic incomplete notice instead of exiting non-zero: a
+  // `notice <kind>` call under the workflow's `set -euo pipefail` must never crash the assemble
+  // step into posting nothing, and an unknown kind almost always means version skew, not a typo.
   run: ({ args }) => {
-    const kind = isNoticeKind(args.kind)
-      ? args.kind
-      : fail(
-          `Unknown notice kind "${args.kind}" — expected one of: security-blocked, setup-failed, checkout-failed, no-output`,
-        );
-    process.stdout.write(`${JSON.stringify(buildNoticeEnvelope(kind, args.reasons), null, 2)}\n`);
+    if (!isNoticeKind(args.kind)) {
+      process.stderr.write(
+        `::warning::code-review notice: unrecognized kind "${args.kind}" — the pinned CLI is older than the workflow calling it; rendering a generic incomplete notice\n`,
+      );
+      process.stdout.write(`${JSON.stringify(buildUnknownNoticeEnvelope(args.kind), null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(
+      `${JSON.stringify(buildNoticeEnvelope(args.kind, args.reasons), null, 2)}\n`,
+    );
   },
 });
 

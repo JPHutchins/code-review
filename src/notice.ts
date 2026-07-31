@@ -10,24 +10,31 @@
 import { DEFAULT_SCHEMA_VERSION, noticeFindings } from "./schema.js";
 import type { ResultEnvelope } from "./schema.js";
 
-export type NoticeKind =
-  "security-blocked" | "triage-error" | "setup-failed" | "checkout-failed" | "no-output";
+// One list is the source of truth for the kind union, its runtime guard, and the CLI's kind listing,
+// so adding a kind is a single edit rather than five that can drift out of sync.
+export const NOTICE_KINDS = [
+  "security-blocked",
+  "triage-error",
+  "setup-failed",
+  "checkout-failed",
+  "no-output",
+] as const;
 
-export const isNoticeKind = (s: string): s is NoticeKind =>
-  s === "security-blocked" ||
-  s === "triage-error" ||
-  s === "setup-failed" ||
-  s === "checkout-failed" ||
-  s === "no-output";
+export type NoticeKind = (typeof NOTICE_KINDS)[number];
+
+export const isNoticeKind = (s: string): s is NoticeKind => NOTICE_KINDS.some((k) => k === s);
 
 // Blockquote every line so a multi-line reason stays quoted, not just its first line.
 const blockquote = (text: string): string => text.replaceAll("\n", "\n> ");
 
 // A reason-bearing notice: when the triage supplied a detail string — a genuine unsafe verdict, or
 // the operational failure it hit — quote it under the lead; otherwise fall back to the no-reason
-// wording.
+// wording. The `typeof` guard fails closed on a null reason too (a JSON round-trip can yield null
+// where the type says undefined), never crashing this render path on `.trim()`.
 const reasoned = (lead: string, noReason: string, reasons: string | undefined): string =>
-  reasons !== undefined && reasons.trim() !== "" ? `${lead}\n\n> ${blockquote(reasons)}` : noReason;
+  typeof reasons === "string" && reasons.trim() !== ""
+    ? `${lead}\n\n> ${blockquote(reasons)}`
+    : noReason;
 
 const noticeSummary = (kind: NoticeKind, reasons: string | undefined): string => {
   switch (kind) {
@@ -39,8 +46,8 @@ const noticeSummary = (kind: NoticeKind, reasons: string | undefined): string =>
       );
     case "triage-error":
       return reasoned(
-        "### 🛠️ Security gate could not evaluate\n\nThe security triage could not produce a verdict (operational error), so the review failed closed. This is an infrastructure failure, not a finding about this diff — re-running the review will retry. The triage step reported:",
-        "### 🛠️ Security gate could not evaluate\n\nThe security triage could not produce a verdict (operational error), so the review failed closed. This is an infrastructure failure, not a finding about this diff — re-running the review will retry. See the workflow logs.",
+        "### 🛠️ Security gate could not evaluate\n\nThe security triage could not produce a verdict (operational error), so the review failed closed — this is an infrastructure failure, not a finding about this diff. Re-run to retry a transient fault; a persistent one is a configuration issue (see the workflow logs). The triage step reported:",
+        "### 🛠️ Security gate could not evaluate\n\nThe security triage could not produce a verdict (operational error), so the review failed closed — this is an infrastructure failure, not a finding about this diff. Re-run to retry a transient fault; a persistent one is a configuration issue (see the workflow logs).",
         reasons,
       );
     case "setup-failed":
@@ -52,12 +59,23 @@ const noticeSummary = (kind: NoticeKind, reasons: string | undefined): string =>
   }
 };
 
-export const buildNoticeEnvelope = (kind: NoticeKind, reasons?: string): ResultEnvelope => ({
+const noticeEnvelope = (summary: string): ResultEnvelope => ({
   schema_version: DEFAULT_SCHEMA_VERSION,
-  findings: noticeFindings(noticeSummary(kind, reasons)),
+  findings: noticeFindings(summary),
   models: [],
   turns: 0,
   duration_ms: 0,
   vendor_cost_usd: null,
   incomplete: true,
 });
+
+export const buildNoticeEnvelope = (kind: NoticeKind, reasons?: string): ResultEnvelope =>
+  noticeEnvelope(noticeSummary(kind, reasons));
+
+// A workflow that asks for a kind this CLI does not know is almost always version skew — the pinned
+// CLI is older than the workflow calling it. Degrade to an honest incomplete envelope that names the
+// cause rather than exiting non-zero and crashing the assemble step into posting nothing at all.
+export const buildUnknownNoticeEnvelope = (kind: string): ResultEnvelope =>
+  noticeEnvelope(
+    `### ⚠️ Review could not be rendered\n\nThe workflow asked for an unrecognized notice kind (\`${kind}\`) — the pinned code-review CLI is older than the workflow calling it (check that its version matches). Failing closed. See the workflow logs.`,
+  );

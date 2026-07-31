@@ -1,15 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { buildNoticeEnvelope, isNoticeKind } from "./notice.js";
-import type { NoticeKind } from "./notice.js";
+import {
+  buildNoticeEnvelope,
+  buildUnknownNoticeEnvelope,
+  isNoticeKind,
+  NOTICE_KINDS,
+} from "./notice.js";
 import { ResultEnvelopeCodec } from "./schema.js";
 
-const KINDS: readonly NoticeKind[] = [
-  "security-blocked",
-  "triage-error",
-  "setup-failed",
-  "checkout-failed",
-  "no-output",
-];
+const KINDS = NOTICE_KINDS;
 
 describe("buildNoticeEnvelope", () => {
   it("flags every kind incomplete, with zeroed telemetry that round-trips the envelope codec", () => {
@@ -67,6 +65,15 @@ describe("buildNoticeEnvelope", () => {
     const summary = buildNoticeEnvelope("triage-error").findings.summary;
     expect(summary).toContain("could not produce a verdict");
     expect(summary).not.toContain("flagged as unsafe");
+  });
+
+  it("degrades an unrecognized kind to an honest incomplete envelope naming the version skew", () => {
+    const env = buildUnknownNoticeEnvelope("some-future-kind");
+    expect(env.incomplete).toBe(true);
+    expect(env.findings.verdict).toBe("comment");
+    expect(env.findings.summary).toContain("some-future-kind");
+    expect(env.findings.summary).toContain("older than the workflow");
+    expect(ResultEnvelopeCodec.decode(env)._tag).toBe("Right");
   });
 });
 

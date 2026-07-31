@@ -2,8 +2,10 @@
 // PR's own checks list, correlates by construction (it IS on the SHA), and — because the review runs
 // from the base repo's default branch with a write token — works for fork PRs too, whose head commit
 // is reachable in the base repo via the PR ref. The in-progress check is created at review start (the
-// announce job, in its own concurrency group) so it survives a superseding run's cancellation; a
-// completed review finalizes it `neutral` (non-gating), a failed/cancelled one finalizes it `failure`.
+// announce job, in its own concurrency group) so it survives a superseding run's cancellation. A
+// completed review finalizes it `neutral` (non-gating); a hard-failed review finalizes it `failure`;
+// a cancelled review leaves its in-progress check intact, so the superseding run that took over keeps
+// the SHA attributed rather than a false failure being stamped on it.
 
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -79,7 +81,8 @@ const fetchChecks = async (
 ): Promise<readonly ExistingCheck[]> =>
   parseJsonl(
     await ghApi([
-      `repos/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_RUN_NAME)}`,
+      `repos/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_RUN_NAME)}&per_page=100`,
+      "--paginate",
       "--jq",
       CHECK_JQ,
     ]),
@@ -100,7 +103,7 @@ const output = (intent: CheckIntent, runUrl: string): { title: string; summary: 
     case "failure":
       return {
         title: "Code review did not complete",
-        summary: `The review job failed or was cancelled — [see the run](${runUrl}). Re-request the review; do not treat this round as spent.`,
+        summary: `The review job failed — [see the run](${runUrl}). Re-request the review; do not treat this round as spent.`,
       };
   }
 };

@@ -815,7 +815,7 @@ const incompleteBody = (
   runUrl: string,
   existingBody: string | undefined,
 ): string => {
-  const notice = `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — the review job failed or was cancelled ([run](${runUrl})). Re-request the review; do not treat this round as spent.`;
+  const notice = `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — the review job failed ([run](${runUrl})). Re-request the review; do not treat this round as spent.`;
   const carried = existingBody ? carryForwardMarkers(existingBody) : "";
   return carried ? `${notice}\n\n${carried}` : notice;
 };
@@ -845,6 +845,15 @@ export const reportIncomplete = async (
   );
   if (existing !== null && parseReviewComplete(existing.body)) {
     process.stderr.write(`Sticky already reflects a completed review — leaving it in place\n`);
+    return;
+  }
+  // The sticky exists but is NOT this run's own placeholder — it belongs to a superseding run whose
+  // announce already posted a live "in progress" for a newer head. Overwriting it with "did not
+  // complete" would be a false alarm for a review that is actively running. This run's own placeholder
+  // (or a prior failure notice this run posted) embeds this run's URL, so its presence is the signal
+  // that overwriting is safe.
+  if (existing !== null && !existing.body.includes(input.runUrl)) {
+    process.stderr.write(`Sticky belongs to another run — leaving it in place\n`);
     return;
   }
   await upsertSticky(

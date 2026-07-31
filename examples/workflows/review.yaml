@@ -670,8 +670,10 @@ jobs:
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}"
 
-      # The review completed and its comment landed — finalize the check-run `neutral` (non-gating).
+      # The review completed — finalize the check-run `neutral` (non-gating). always() so a failed
+      # `post` step (comment infra, not the review) still resolves the check instead of hanging it.
       - name: Finalize the check-run
+        if: ${{ always() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -685,20 +687,21 @@ jobs:
             --head-sha "$HEAD_SHA" \
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
-  # A review that hard-FAILED posts no comment (`comment` only runs on has_findings == 'true'), so its
-  # silence is the #115 mistake. This job attributes the death — a "did not complete, re-request"
-  # sticky and a `failure` check-run. It keys on `result == 'failure'`, NOT `!= 'success'`: a
-  # `cancelled` review is a superseding run taking over (which posts its own review), and this
-  # workflow's top-level concurrency cancels this job with it anyway. The has_findings guard excludes a
-  # review that DID post (including an honest triage-error notice) but failed a later step.
-  attribute_failure:
+  # Reaches a terminal state for the check-run whenever `comment` won't (comment only runs on
+  # has_findings == 'true'), so the announce check never lingers in_progress and a dead review is never
+  # silent. result == 'failure' (the review DIED) → a "did not complete, re-request" sticky + `failure`
+  # check; result == 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`. A
+  # `cancelled` review is NOT handled — it is a superseding run taking over (which posts its own
+  # review), and this workflow's top-level concurrency cancels this job with it anyway. The
+  # has_findings guard excludes a review that DID post but failed a later step (comment finalized it).
+  finalize:
     needs: review
     if: >-
       ${{ always() &&
           github.event.workflow_run.event == 'pull_request' &&
           (github.event.workflow_run.conclusion == 'success' ||
            github.event.workflow_run.conclusion == 'failure') &&
-          needs.review.result == 'failure' &&
+          (needs.review.result == 'failure' || needs.review.result == 'success') &&
           needs.review.outputs.has_findings != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -706,7 +709,7 @@ jobs:
       contents: read         # resolve the PR from the head SHA (commits/{sha}/pulls)
       issues: write          # post/patch the failure sticky
       pull-requests: read    # resolve the PR
-      checks: write          # finalize the check-run to `failure`
+      checks: write          # finalize the check-run (failure or neutral)
     steps:
       - uses: actions/setup-node@v6
         with:
@@ -737,23 +740,32 @@ jobs:
           fi
           echo "Egress canary could not connect — block policy verified"
 
-      - name: Attribute the incomplete review
+      - name: Finalize the check-run and attribute a failure
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          REVIEW_RESULT: ${{ needs.review.result }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          code-review report-incomplete \
-            --repo "$REPO" \
-            --head-sha "$HEAD_SHA" \
-            --head-branch "$HEAD_BRANCH" \
-            --run-url "$RUN_URL"
-          code-review check-run failure \
-            --repo "$REPO" \
-            --head-sha "$HEAD_SHA" \
-            --run-url "$RUN_URL"
+          if [ "$REVIEW_RESULT" = "failure" ]; then
+            code-review report-incomplete \
+              --repo "$REPO" \
+              --head-sha "$HEAD_SHA" \
+              --head-branch "$HEAD_BRANCH" \
+              --run-url "$RUN_URL"
+            code-review check-run failure \
+              --repo "$REPO" \
+              --head-sha "$HEAD_SHA" \
+              --run-url "$RUN_URL"
+          else
+            # gather-skip: nothing to review, so the announce check must not hang in_progress.
+            code-review check-run neutral \
+              --repo "$REPO" \
+              --head-sha "$HEAD_SHA" \
+              --run-url "$RUN_URL"
+          fi

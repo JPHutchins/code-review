@@ -2412,11 +2412,12 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     expect(body).toContain("abc123d");
   });
 
-  it("overwrites an in-progress placeholder and carries its re-review markers forward", async () => {
+  it("overwrites its OWN in-progress placeholder and carries its re-review markers forward", async () => {
+    const runUrl = "https://github.com/owner/repo/actions/runs/12345";
     const existing = [
       "<!-- code-review -->",
       "",
-      "🔄 **Code review in progress** for `abc123d`",
+      `🔄 **Code review in progress** for \`abc123d\` — see the [workflow run](${runUrl})`,
       "",
       AGENTS_DIRECTIVE,
       FINDINGS_MARKER,
@@ -2428,7 +2429,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
-    await reportIncomplete(mkAnnounceInput(), api);
+    await reportIncomplete(mkAnnounceInput({ runUrl }), api);
 
     const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
     const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
@@ -2436,6 +2437,29 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     expect(body).toContain(FINDINGS_MARKER);
     expect(body).toContain(REVIEWED_SHA_MARKER);
     expect(body).not.toContain("in progress");
+  });
+
+  it("leaves a SUPERSEDING run's live in-progress placeholder in place (no false 'did not complete')", async () => {
+    // The sticky links a DIFFERENT run — a newer run announced it and is actively reviewing.
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "🔄 **Code review in progress** for `def4567` — see the [workflow run](https://github.com/owner/repo/actions/runs/99999)",
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await reportIncomplete(
+      mkAnnounceInput({ runUrl: "https://github.com/owner/repo/actions/runs/12345" }),
+      api,
+    );
+
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("belongs to another run"));
+    stderrSpy.mockRestore();
   });
 
   it("never buries a completed review — leaves a review-complete sticky in place", async () => {

@@ -21,9 +21,10 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 - **`comment` job** — holds the write token, runs **no agent and no PR code**; `code-review post`
   validates findings against the diff and posts the inline review + sticky summary, then finalizes the
   check-run `neutral` (non-gating — the review is informational).
-- **`attribute_failure` job** — runs only when the `review` job hard-failed and posted nothing;
-  `code-review report-incomplete` posts an attributed "did not complete — re-request" sticky and marks
-  the check-run `failure`, so a dead review is never a silent gap on the PR.
+- **`finalize` job** — reaches a terminal state for the check-run whenever `comment` won't. A
+  hard-**failed** review gets an attributed "did not complete — re-request" sticky (`code-review
+  report-incomplete`) and a `failure` check; a legitimate **skip** just finalizes the check `neutral`
+  so it never hangs `in_progress`. A *cancelled* review is left to the superseding run.
 
 ## Two ways to consume it
 

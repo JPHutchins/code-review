@@ -29,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10       # a quick job (resolve PR + upsert one comment); bound a hung install/API
     permissions:
+      contents: read         # the primary `commits/{sha}/pulls` PR lookup reads a commit — 403s without this (the review job resolves fine because it holds contents:read; a no-agent job, so read here is safe)
       issues: write          # post/patch the sticky comment
       pull-requests: read    # resolve the PR from the head SHA
     steps:

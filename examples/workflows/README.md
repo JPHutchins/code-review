@@ -15,9 +15,16 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 - **`announce` job** — holds the write token, runs **no agent and no PR code**; `code-review announce`
   posts an in-progress placeholder sticky the moment the review starts (a `workflow_run` review runs
   from the default branch and is otherwise invisible on the PR), preserving any prior sticky's embedded
-  re-review markers so the swap never clobbers the seed the `review` job reads back.
+  re-review markers so the swap never clobbers the seed the `review` job reads back. It also opens a
+  **check-run on the head SHA** — the native attribution surface: it shows in the PR's own checks list,
+  correlates by construction, and (written to the base repo) works for fork PRs too.
 - **`comment` job** — holds the write token, runs **no agent and no PR code**; `code-review post`
-  validates findings against the diff and posts the inline review + sticky summary.
+  validates findings against the diff and posts the inline review + sticky summary, then finalizes the
+  check-run `neutral` (non-gating — the review is informational).
+- **`finalize` job** — reaches a terminal state for the check-run whenever `comment` won't. A
+  hard-**failed** review gets an attributed "did not complete — re-request" sticky (`code-review
+  report-incomplete`) and a `failure` check; a legitimate **skip** just finalizes the check `neutral`
+  so it never hangs `in_progress`. A *cancelled* review is left to the superseding run.
 
 ## Two ways to consume it
 
@@ -32,15 +39,22 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
   ```yaml
   name: Code review
+  # Names the run in the Actions list after the PR it reviews — otherwise every workflow_run row
+  # reads `main`, indistinguishable when several PRs are open. `gh run list --json displayTitle`
+  # then answers "which run is which PR" directly.
+  run-name: >-
+    Review ${{ github.event.workflow_run.head_branch }}
+    @ ${{ github.event.workflow_run.head_sha }}
   on:
     workflow_run:
       workflows: ["CI"]            # your CI workflow's name
       types: [completed]
-  permissions:                     # superset; the two internal jobs narrow from this
+  permissions:                     # superset; the internal jobs narrow from this
     contents: read
     actions: read
     pull-requests: write
     issues: write
+    checks: write                  # the review posts a check-run on the PR head SHA (its attribution surface)
   jobs:
     review:
       if: >-

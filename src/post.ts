@@ -809,3 +809,58 @@ export const announce = async (input: AnnounceInput, ghApi: GhApi = runGhApi): P
     ghApi,
   );
 };
+
+const incompleteBody = (
+  headSha: string,
+  runUrl: string,
+  existingBody: string | undefined,
+): string => {
+  const notice = `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — the review job failed ([run](${runUrl})). Re-request the review; do not treat this round as spent.`;
+  const carried = existingBody ? carryForwardMarkers(existingBody) : "";
+  return carried ? `${notice}\n\n${carried}` : notice;
+};
+
+// The human-readable half of failure attribution (the check-run is the machine half): a review that
+// died leaves NO comment, so a separate always()-job posts this. Shares announce's PR resolution and
+// sticky upsert; the guard is stronger — it never buries a completed review OF ANY head, so a failed
+// run reporting late (after a superseding run already finished) can't clobber the real review.
+export const reportIncomplete = async (
+  input: AnnounceInput,
+  ghApi: GhApi = runGhApi,
+): Promise<void> => {
+  const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
+  const resolution = resolvePr(candidates, input.headBranch);
+  if (resolution.kind !== "open") {
+    process.stderr.write(
+      `No open PR for ${input.headSha} — nothing to report (${resolution.kind})\n`,
+    );
+    return;
+  }
+  const existing = await findBotComment(
+    input.repo,
+    resolution.prNumber,
+    input.botLogin,
+    DEFAULT_MARKER,
+    ghApi,
+  );
+  if (existing !== null && parseReviewComplete(existing.body)) {
+    process.stderr.write(`Sticky already reflects a completed review — leaving it in place\n`);
+    return;
+  }
+  // The sticky exists but is NOT this run's own placeholder — it belongs to a superseding run whose
+  // announce already posted a live "in progress" for a newer head. Overwriting it with "did not
+  // complete" would be a false alarm for a review that is actively running. This run's own placeholder
+  // (or a prior failure notice this run posted) embeds this run's URL, so its presence is the signal
+  // that overwriting is safe.
+  if (existing !== null && !existing.body.includes(input.runUrl)) {
+    process.stderr.write(`Sticky belongs to another run — leaving it in place\n`);
+    return;
+  }
+  await upsertSticky(
+    input.repo,
+    resolution.prNumber,
+    existing,
+    incompleteBody(input.headSha, input.runUrl, existing?.body),
+    ghApi,
+  );
+};

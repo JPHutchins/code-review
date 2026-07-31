@@ -9,9 +9,10 @@ on:
     workflows: ["CI"]       # your existing CI workflow name — unmodified
     types: [completed]
 
-concurrency:                 # a newer CI run for the same PR branch cancels an in-flight review — bounds spend
-  group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
-  cancel-in-progress: true
+# Concurrency is PER JOB, not workflow-level: `review` + `comment` share the `review-…` group so a
+# superseding CI run cancels that pair as a unit (bounds spend), while `announce` and `finalize` each
+# hold their OWN group so they survive that cancellation — otherwise a failed review's attribution
+# (finalize) or its in-progress sticky (announce) would be cancelled with the review it describes.
 
 env:                         # one definition both jobs install from, so the two never skew
   CODE_REVIEW_VERSION: 0.1.0-alpha.32
@@ -20,7 +21,6 @@ jobs:
   # ANNOUNCE — post an in-progress placeholder sticky the moment the review starts, so this
   # workflow_run review (which runs from the default branch, invisible on the PR) is visibly under
   # way. Holds issues:write — the write token the review job must never hold — so it is its own job.
-  # The workflow-level concurrency above supersedes it along with the rest of the run.
   announce:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
@@ -28,10 +28,15 @@ jobs:
        github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 10       # a quick job (resolve PR + upsert one comment); bound a hung install/API
+    # Its OWN group — survives a superseding run's cancel so the in-progress surfaces still appear.
+    concurrency:
+      group: announce-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     permissions:
       contents: read         # the primary `commits/{sha}/pulls` PR lookup reads a commit — 403s without this (the review job resolves fine because it holds contents:read; a no-agent job, so read here is safe)
       issues: write          # post/patch the sticky comment
       pull-requests: read    # resolve the PR from the head SHA
+      checks: write          # create the in-progress check-run on the head SHA (attribution surface)
     steps:
       - uses: actions/setup-node@v6
         with:
@@ -78,6 +83,24 @@ jobs:
             --head-branch "$HEAD_BRANCH" \
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
+      # The native attribution surface: a check-run on the head SHA, visible in the PR's own checks
+      # list and working for fork PRs (written to the base repo). always() so a failed sticky post
+      # still records the check.
+      - name: Open the check-run
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          code-review check-run in_progress \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
   # REVIEW — holds the model key + read-only token + locked egress
   review:
     if: >-
@@ -85,6 +108,10 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' ||
        github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
+    # A newer CI run for the same PR branch cancels an in-flight review + its comment — bounds spend.
+    concurrency:
+      group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     # No job-level cap by design: the agent is bounded per route by a `timeout` wrapper
     # on each `claude -p` below, so a review is never hard-killed mid-flight — a hard kill loses both
     # the review AND its cost record (the agent dies before flushing its result envelope). Set a
@@ -565,10 +592,15 @@ jobs:
     if: ${{ always() && needs.review.outputs.has_findings == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # SAME group as review — a superseding run cancels this run's comment with its review, as a unit.
+    concurrency:
+      group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
     permissions:
       issues: write            # sticky comment via issues-comments endpoint
       pull-requests: write     # inline review via pulls/reviews endpoint
       actions: read            # download the findings artifact
+      checks: write            # finalize the check-run to `neutral` (the review completed)
 
     steps:
       - uses: actions/download-artifact@v8
@@ -649,3 +681,108 @@ jobs:
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}" \
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}"
+
+      # The review completed — finalize the check-run `neutral` (non-gating). always() so a failed
+      # `post` step (comment infra, not the review) still resolves the check instead of hanging it.
+      - name: Finalize the check-run
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          code-review check-run neutral \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+  # Reaches a terminal state for the check-run whenever `comment` won't (comment only runs on
+  # has_findings == 'true'), so the announce check never lingers in_progress and a dead review is never
+  # silent. result == 'failure' (the review DIED) → a "did not complete, re-request" sticky + `failure`
+  # check; result == 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`. A
+  # `cancelled` review is NOT handled — it is a superseding run taking over (which posts its own
+  # review). The has_findings guard excludes a review that DID post but failed a later step (comment
+  # finalized it).
+  finalize:
+    needs: review
+    if: >-
+      ${{ always() &&
+          github.event.workflow_run.event == 'pull_request' &&
+          (github.event.workflow_run.conclusion == 'success' ||
+           github.event.workflow_run.conclusion == 'failure') &&
+          (needs.review.result == 'failure' || needs.review.result == 'success') &&
+          needs.review.outputs.has_findings != 'true' }}
+    # Its OWN group — NOT the review group — so a superseding run cancels the stale review but never
+    # this finalization (a failed review's attribution must survive that cancellation).
+    concurrency:
+      group: finalize-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read         # resolve the PR from the head SHA (commits/{sha}/pulls)
+      issues: write          # post/patch the failure sticky
+      pull-requests: read    # resolve the PR
+      checks: write          # finalize the check-run (failure or neutral)
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+
+      # Holds the write token, so lock egress (fixed host set: npm registry + the GitHub API).
+      - name: Lock network egress
+        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            registry.npmjs.org:443
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            *.blob.core.windows.net:443
+
+      - name: Egress canary — verify the lock engaged
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
+            echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
+            exit 1
+          fi
+          echo "Egress canary could not connect — block policy verified"
+
+      - name: Finalize the check-run and attribute a failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "$REVIEW_RESULT" = "failure" ]; then
+            code-review report-incomplete \
+              --repo "$REPO" \
+              --head-sha "$HEAD_SHA" \
+              --head-branch "$HEAD_BRANCH" \
+              --run-url "$RUN_URL"
+            code-review check-run failure \
+              --repo "$REPO" \
+              --head-sha "$HEAD_SHA" \
+              --run-url "$RUN_URL"
+          else
+            # gather-skip: nothing to review, so the announce check must not hang in_progress.
+            code-review check-run neutral \
+              --repo "$REPO" \
+              --head-sha "$HEAD_SHA" \
+              --run-url "$RUN_URL"
+          fi

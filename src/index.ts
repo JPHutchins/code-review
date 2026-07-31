@@ -44,7 +44,8 @@ import {
   isNoticeKind,
   NOTICE_KINDS,
 } from "./notice.js";
-import { announce, post } from "./post.js";
+import { announce, post, reportIncomplete } from "./post.js";
+import { type CheckIntent, checkRun } from "./checkrun.js";
 import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.js";
 import { react, isReaction, REACTIONS } from "./react.js";
 import type { Reaction } from "./react.js";
@@ -1461,6 +1462,98 @@ const announceCmd = defineCommand({
   },
 });
 
+const isCheckIntent = (s: string): s is CheckIntent =>
+  s === "in_progress" || s === "neutral" || s === "failure";
+
+const checkRunCmd = defineCommand({
+  meta: {
+    name: "check-run",
+    description:
+      "Upsert the native 'Code review' check-run on the head SHA — the attribution surface that appears in the PR's own checks list and (writing to the base repo) works for fork PRs too. `in_progress` at review start, `neutral` when the review completes, `failure` when it didn't. Forward-only: `failure` never overwrites a completed review.",
+  },
+  args: {
+    repo: { type: "string", description: "Repository (owner/name)", required: true },
+    "head-sha": {
+      type: "string",
+      description: "Head SHA the check-run is anchored to",
+      required: true,
+    },
+    status: {
+      type: "positional",
+      description: "One of: in_progress, neutral, failure",
+      required: true,
+    },
+    "run-url": {
+      type: "string",
+      description: "Workflow run URL the check-run's details link to",
+      required: true,
+    },
+  },
+  run: async ({ args }) => {
+    if (!isCheckIntent(args.status)) {
+      // Best-effort like `announce`: the check-run is an attribution aid, so an unknown status (version
+      // skew) warns and exits 0 rather than failing the job the review otherwise proceeds through.
+      process.stderr.write(
+        `::warning::code-review check-run: unrecognized status "${annotationSafe(args.status)}" — expected in_progress, neutral, or failure; skipping\n`,
+      );
+      return;
+    }
+    await checkRun({
+      repo: args.repo,
+      headSha: args["head-sha"],
+      intent: args.status,
+      runUrl: args["run-url"],
+    }).catch((err: unknown) =>
+      process.stderr.write(
+        `::warning::code-review check-run: could not upsert the check-run (${annotationSafe(errMsg(err))}) — continuing (attribution aid)\n`,
+      ),
+    );
+  },
+});
+
+const reportIncompleteCmd = defineCommand({
+  meta: {
+    name: "report-incomplete",
+    description:
+      "Post (or update) the sticky when a review job failed or was cancelled and posted nothing — an attributed 'did not complete' notice linking the run, telling the reader to re-request. Never buries a completed review. Run from an always() job so a cancelled review is still visible on the PR.",
+  },
+  args: {
+    repo: { type: "string", description: "Repository (owner/name)", required: true },
+    "head-sha": {
+      type: "string",
+      description: "Trusted head SHA to resolve the PR (from workflow_run.head_sha)",
+      required: true,
+    },
+    "run-url": {
+      type: "string",
+      description: "Workflow run URL the notice links to",
+      required: true,
+    },
+    "bot-login": {
+      type: "string",
+      description:
+        "Bot login to trust for the sticky comment upsert (default: github-actions[bot])",
+    },
+    "head-branch": {
+      type: "string",
+      description: "Head branch to disambiguate the PR when multiple share a commit",
+    },
+  },
+  run: async ({ args }) => {
+    await reportIncomplete({
+      repo: args.repo,
+      headSha: args["head-sha"],
+      botLogin: args["bot-login"] || "github-actions[bot]",
+      runUrl: args["run-url"],
+      headBranch: args["head-branch"],
+    }).catch((err: unknown) =>
+      process.stderr.write(
+        `::warning::code-review report-incomplete: could not post the failure notice (${annotationSafe(errMsg(err))}) — continuing\n`,
+      ),
+    );
+  },
+});
+
 /** Parse a `--max-duration`/ceiling flag to whole seconds; a bad value is trusted-config error, so
  *  fail loudly rather than silently disabling the clamp. undefined ⇒ no ceiling. */
 const requireCeilingSec = (raw: string | undefined): number | null => {
@@ -1656,6 +1749,8 @@ export const main = defineCommand({
     inline: inlineCmd,
     post: postCmd,
     announce: announceCmd,
+    "check-run": checkRunCmd,
+    "report-incomplete": reportIncompleteCmd,
     cost: costCmd,
     "check-cost": checkCostCmd,
     validate: validateCmd,

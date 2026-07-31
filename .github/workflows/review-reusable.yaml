@@ -184,6 +184,7 @@ jobs:
       contents: read         # the primary `commits/{sha}/pulls` PR lookup reads a commit — 403s without this (the review job resolves fine because it holds contents:read; a no-agent job, so read here is safe)
       issues: write          # post/patch the sticky comment
       pull-requests: read    # resolve the PR from the head SHA
+      checks: write          # create the in-progress check-run on the head SHA (attribution, survives cancellation)
     steps:
       - uses: actions/setup-node@v6
         with:
@@ -234,6 +235,24 @@ jobs:
             --repo "$REPO" \
             --head-sha "$HEAD_SHA" \
             --head-branch "$HEAD_BRANCH" \
+            --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+      # The native attribution surface: a check-run on the head SHA, visible in the PR's own checks
+      # list and (created here, in the announce group) surviving a superseding run's cancellation.
+      # always() so a failed sticky post still records the check.
+      - name: Open the check-run
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          code-review check-run in_progress \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
   review:
@@ -800,6 +819,7 @@ jobs:
       issues: write            # sticky comment via issues-comments endpoint
       pull-requests: write     # inline review via pulls/reviews endpoint
       actions: read            # download the findings artifact
+      checks: write            # finalize the check-run to `neutral` (the review completed)
 
     steps:
       - uses: actions/download-artifact@v8
@@ -884,3 +904,100 @@ jobs:
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}" \
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}"
+
+      # The review completed and its comment landed — finalize the check-run `neutral` (non-gating:
+      # the review is informational, it must not fail a required-checks branch protection).
+      - name: Finalize the check-run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          code-review check-run neutral \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+  # A review that hard-FAILED posts no comment (`comment` only runs on has_findings == 'true'), so the
+  # #115 mistake is its silence: failed, never-triggered, and dead all look identical on the PR. This
+  # job attributes the death — a "did not complete, re-request" sticky and a `failure` check-run.
+  # It keys on `result == 'failure'`, NOT `!= 'success'`: a `cancelled` review is almost always a
+  # superseding run taking over, which will post its own review — flagging THAT "re-request" would be
+  # a false alarm, and the announce-created in-progress check-run already keeps it attributed. A
+  # legitimate gather-skip succeeds, so it never reaches here; the has_findings guard excludes a review
+  # that DID post (including an honest triage-error notice) but failed a later step.
+  attribute_failure:
+    needs: review
+    if: >-
+      ${{ always() &&
+          inputs.trigger_event == 'pull_request' &&
+          (inputs.conclusion == 'success' || inputs.conclusion == 'failure') &&
+          needs.review.result == 'failure' &&
+          needs.review.outputs.has_findings != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Its OWN concurrency group — NOT the review group — so a superseding run cancels the stale review
+    # but never this attribution (the whole point is to survive that cancellation).
+    concurrency:
+      group: attribute-${{ inputs.head_repo != '' && inputs.head_repo || github.repository }}-${{ inputs.head_branch }}
+      cancel-in-progress: true
+    permissions:
+      contents: read         # resolve the PR from the head SHA (commits/{sha}/pulls)
+      issues: write          # post/patch the failure sticky
+      pull-requests: read    # resolve the PR
+      checks: write          # finalize the check-run to `failure`
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install code-review
+        run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+
+      # Holds the write token, so lock egress like announce/comment (it runs no untrusted PR code, but
+      # a write-token job must never run unenforced). Fixed host set: npm registry + the GitHub API.
+      - name: Lock network egress
+        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            registry.npmjs.org:443
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            *.blob.core.windows.net:443
+
+      - name: Egress canary — verify the lock engaged
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
+            echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
+            exit 1
+          fi
+          echo "Egress canary could not connect — block policy verified"
+
+      - name: Attribute the incomplete review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          code-review report-incomplete \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --head-branch "$HEAD_BRANCH" \
+            --run-url "$RUN_URL"
+          code-review check-run failure \
+            --repo "$REPO" \
+            --head-sha "$HEAD_SHA" \
+            --run-url "$RUN_URL"

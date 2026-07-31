@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
-import { post, announce } from "./post.js";
+import { post, announce, reportIncomplete } from "./post.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -2379,6 +2379,83 @@ describe("announce — in-progress sticky", () => {
     expect((JSON.parse(patchCall!.stdin!) as CommentBody).body).toContain(
       "Code review in progress",
     );
+  });
+});
+
+describe("reportIncomplete — failed/cancelled review sticky", () => {
+  const openPr = {
+    match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+    response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+  };
+  const commentsMatch = (a: readonly string[]): boolean =>
+    a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate");
+
+  it("POSTs an attributed 'did not complete' notice when no sticky exists", async () => {
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: "" },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: '{"id": 555, "html_url": "https://example.com/c/555"}',
+      },
+    ]);
+
+    await reportIncomplete(mkAnnounceInput(), api);
+
+    const postCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+    );
+    const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("<!-- code-review -->");
+    expect(body).toContain("Code review did not complete");
+    expect(body).toContain("Re-request");
+    expect(body).toContain("abc123d");
+  });
+
+  it("overwrites an in-progress placeholder and carries its re-review markers forward", async () => {
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "🔄 **Code review in progress** for `abc123d`",
+      "",
+      AGENTS_DIRECTIVE,
+      FINDINGS_MARKER,
+      REVIEWED_SHA_MARKER,
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+    ]);
+
+    await reportIncomplete(mkAnnounceInput(), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("Code review did not complete");
+    expect(body).toContain(FINDINGS_MARKER);
+    expect(body).toContain(REVIEWED_SHA_MARKER);
+    expect(body).not.toContain("in progress");
+  });
+
+  it("never buries a completed review — leaves a review-complete sticky in place", async () => {
+    const existing = [
+      "<!-- code-review -->",
+      "<!-- review-complete -->",
+      "",
+      "### 💬 comment — a completed review",
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await reportIncomplete(mkAnnounceInput(), api);
+
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("already reflects a completed"));
+    stderrSpy.mockRestore();
   });
 });
 

@@ -1440,8 +1440,10 @@ const announceCmd = defineCommand({
       runUrl: args["run-url"],
       headBranch: args["head-branch"],
     }).catch((err: unknown) =>
+      // `::warning::` so a persistently broken announce shows up in the run's annotations, not only
+      // buried in the step log — `announce` otherwise reports success while having posted nothing.
       process.stderr.write(
-        `code-review announce: could not post the in-progress sticky (${errMsg(err)}) — continuing (cosmetic)\n`,
+        `::warning::code-review announce: could not post the in-progress sticky (${errMsg(err)}) — continuing (cosmetic)\n`,
       ),
     );
   },

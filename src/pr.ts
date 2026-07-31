@@ -21,14 +21,31 @@ const parseCandidates = (stdout: string): readonly PrCandidate[] =>
 // `commits/{sha}/pulls` returns nothing for it. Fall back to matching head.sha across open PRs,
 // which does reach forks. The commit endpoint stays the primary path: it is a targeted O(1)
 // lookup and resolves same-repo PRs even when head.sha has since advanced past the CI commit.
+//
+// The primary is treated as advisory: a fork head SHA absent from the base repo can 403 (not just
+// return empty) on a read-scoped token, which is exactly when the fork listing is needed — so a
+// throwing primary falls through the same way an empty one does. A genuine permission gap then
+// surfaces on the listing call (named by ghApi), never swallowed silently here.
+const fetchDirectCandidates = async (
+  repo: string,
+  headSha: string,
+  ghApi: GhApi,
+): Promise<readonly PrCandidate[]> => {
+  try {
+    return parseCandidates(
+      await ghApi([`repos/${repo}/commits/${headSha}/pulls`, "--jq", CANDIDATE_JQ]),
+    );
+  } catch {
+    return [];
+  }
+};
+
 export const fetchPrCandidates = async (
   repo: string,
   headSha: string,
   ghApi: GhApi,
 ): Promise<readonly PrCandidate[]> => {
-  const direct = parseCandidates(
-    await ghApi([`repos/${repo}/commits/${headSha}/pulls`, "--jq", CANDIDATE_JQ]),
-  );
+  const direct = await fetchDirectCandidates(repo, headSha, ghApi);
   if (direct.length > 0) return direct;
   const open = parseCandidates(
     await ghApi([

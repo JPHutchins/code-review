@@ -19,7 +19,10 @@ export const runGhApi: GhApi = (args, stdin, env) =>
         if (err) {
           const stderrStr = typeof stderr === "string" && stderr.trim() ? stderr.trim() : "";
           const errStr = err instanceof Error ? err.message : "unknown error";
-          reject(new Error(`gh api failed: ${stderrStr || errStr}`));
+          // Name the endpoint (args[0] is always the API path) so a swallowed 403 says WHICH call
+          // failed, not just that one did — the difference between diagnosable and a mystery.
+          const endpoint = args[0] ?? "(no endpoint)";
+          reject(new Error(`gh api ${endpoint} failed: ${stderrStr || errStr}`));
         } else {
           resolve(stdout);
         }

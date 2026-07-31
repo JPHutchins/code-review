@@ -61,7 +61,7 @@ import {
   stopHookSettings,
 } from "./stop-gate.js";
 import { composeReviewSettings } from "./settings.js";
-import { asRecord, errMsg, tryParseJson } from "./util.js";
+import { annotationSafe, asRecord, errMsg, tryParseJson } from "./util.js";
 
 const readJSON = (path: string): unknown => {
   try {
@@ -1443,7 +1443,7 @@ const announceCmd = defineCommand({
       // `::warning::` so a persistently broken announce shows up in the run's annotations, not only
       // buried in the step log — `announce` otherwise reports success while having posted nothing.
       process.stderr.write(
-        `::warning::code-review announce: could not post the in-progress sticky (${errMsg(err)}) — continuing (cosmetic)\n`,
+        `::warning::code-review announce: could not post the in-progress sticky (${annotationSafe(errMsg(err))}) — continuing (cosmetic)\n`,
       ),
     );
   },

@@ -115,4 +115,37 @@ describe("fetchPrCandidates", () => {
     );
     expect(await fetchPrCandidates("owner/repo", sha(9), api)).toEqual([]);
   });
+
+  it("falls through to the open-PR listing when the commit endpoint 403s (fork PR, read-scoped token)", async () => {
+    const calls: (readonly string[])[] = [];
+    const api: GhApi = (args) => {
+      calls.push([...args]);
+      if (isCommitPulls(args)) {
+        return Promise.reject(
+          new Error(
+            `gh api ${args[0] ?? ""} failed: gh: Resource not accessible by integration (HTTP 403)`,
+          ),
+        );
+      }
+      if (isOpenPulls(args)) {
+        return Promise.resolve(
+          ndjson([{ number: 27, state: "open", headRef: "fork:fix", headSha: sha(7) }]),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
+    };
+    const candidates = await fetchPrCandidates("owner/repo", sha(7), api);
+    expect(candidates).toEqual([
+      { number: 27, state: "open", headRef: "fork:fix", headSha: sha(7) },
+    ]);
+    expect(calls.some(isOpenPulls)).toBe(true);
+  });
+
+  it("propagates when the fork listing itself fails — a genuine permission gap is never swallowed", async () => {
+    const api: GhApi = (args) => {
+      if (isCommitPulls(args)) return Promise.reject(new Error("commit endpoint 403"));
+      return Promise.reject(new Error("gh api repos/owner/repo/pulls?state=open failed: HTTP 403"));
+    };
+    await expect(fetchPrCandidates("owner/repo", sha(7), api)).rejects.toThrow("pulls?state=open");
+  });
 });

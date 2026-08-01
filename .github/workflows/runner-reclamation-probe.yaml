@@ -1,21 +1,22 @@
 # #107 evidence probe — GitHub hosted-runner reclamation ("received a shutdown signal").
-# Runs every 2h. Three arms × 3 reps, each occupying a runner for 20 min:
-#   silent — pure `sleep 1200`, ZERO console output for 20 min (the true control; reproduces the
-#            one-off matrix that reclaimed ~44%). Tests: does GitHub cull a runner that goes quiet?
-#   idle   — `sleep 1200` + a background sampler that echoes memory every 20s. Same non-work as
-#            silent, but the stream of console output means it is NOT silent.
-#   busy   — idle's sampler PLUS every core pegged with `yes`, so it exercises CPU-not-idle too.
-# A reclaimed job dies red with "received a shutdown signal"; the run history is the evidence.
-# The decisive contrast is silent-vs-idle IN THE SAME RUN (time-controlled): if silent reclaims
-# while idle survives, then console output is a heartbeat that prevents reclamation — which would
-# explain why real reviews reclaim (the agent goes silent for minutes while blocked on the API) and
-# make a periodic-echo keepalive during those quiet stretches the fix. busy separates CPU from output.
-# harden-runner is deliberately ABSENT here: this isolates the silence axis, nothing else.
+# Runs every 15 min; each 20-min job overlaps the next, so coverage is ~gapless (unlike the old
+# 2-hourly probe, which sampled only ~17% of wall-clock and so could NOT be compared to the near-
+# continuous real-review stream — a sparse probe sails through reclamation bursts a dense stream
+# catches). Four arms, one job each per run:
+#   silent      — pure `sleep 1200`, ZERO console output. Tests: does going quiet invite reclamation?
+#   idle        — `sleep 1200` + a background mem sampler echoing every 20s (i.e. NOT silent). No hr.
+#   hardenaudit — idle plus harden-runner egress-policy: audit (harden-runner PRESENT, not enforcing).
+#   hardenblock — idle plus harden-runner egress-policy: block (the same lock the review job uses).
+# The decisive comparison runs IN THE SAME RUNS, at the same times: idle vs hardenaudit vs hardenblock.
+# If only hardenblock reclaims -> egress ENFORCEMENT severs the control plane. If hardenaudit reclaims
+# too -> harden-runner's mere presence. If none do -> harden-runner is cleared and the reviews' ~43%
+# is something else. Apples-to-apples, unlike comparing a no-hr probe to harden-runner'd real reviews.
+# A reclaimed job dies red ("received a shutdown signal") and GitHub auto-retries (run_attempt++).
 name: runner-reclamation-probe
 
 on:
   schedule:
-    - cron: "13 */2 * * *"
+    - cron: "6,21,36,51 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -26,27 +27,36 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [silent, idle, busy]
-        rep: [1, 2, 3]
+        mode: [silent, idle, hardenaudit, hardenblock]
     runs-on: ubuntu-latest
     steps:
+      - name: harden-runner (hardenaudit / hardenblock arms only)
+        if: ${{ startsWith(matrix.mode, 'harden') }}
+        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # same pin the review job uses
+        with:
+          egress-policy: ${{ matrix.mode == 'hardenblock' && 'block' || 'audit' }}
+          allowed-endpoints: >
+            registry.npmjs.org:443
+            api.deepseek.com:443
+            api.anthropic.com:443
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            *.blob.core.windows.net:443
+            *.actions.githubusercontent.com:443
+
       - name: Occupy a runner for 20 minutes (${{ matrix.mode }})
         env:
           MODE: ${{ matrix.mode }}
-          REP: ${{ matrix.rep }}
         run: |
           set -euo pipefail
-          echo "mode=${MODE}-${REP} start ($(nproc) cpus)"
-          # silent emits nothing after this line; idle/busy stream a mem sample every 20s (= not silent).
+          echo "mode=${MODE} start ($(nproc) cpus)"
+          # silent emits nothing after this line; the others stream a mem sample every 20s (= not silent).
           if [ "$MODE" != "silent" ]; then
             ( while true; do
                 echo "mem $(date -u +%T) $(free -m | awk '/^Mem:/{printf "used=%sMi avail=%sMi",$3,$7}')"
                 sleep 20
               done ) &
           fi
-          # busy pegs every core with self-terminating `yes` loops on top of the sampler output.
-          if [ "$MODE" = "busy" ]; then
-            for _ in $(seq 1 "$(nproc)"); do timeout 1200 yes >/dev/null & done
-          fi
           sleep 1200
-          echo "mode=${MODE}-${REP} survived 20m"
+          echo "mode=${MODE} survived 20m"

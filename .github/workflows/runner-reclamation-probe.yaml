@@ -1,12 +1,16 @@
 # #107 evidence probe — GitHub hosted-runner reclamation ("received a shutdown signal").
-# Runs every 2h. Two arms × 3 reps, each occupying a runner for 20 min:
-#   idle — just sleeps (the control; ~44% of these were reclaimed in the one-off matrix)
-#   busy — pegs every core with `yes` the whole time (never looks idle to GitHub)
+# Runs every 2h. Three arms × 3 reps, each occupying a runner for 20 min:
+#   silent — pure `sleep 1200`, ZERO console output for 20 min (the true control; reproduces the
+#            one-off matrix that reclaimed ~44%). Tests: does GitHub cull a runner that goes quiet?
+#   idle   — `sleep 1200` + a background sampler that echoes memory every 20s. Same non-work as
+#            silent, but the stream of console output means it is NOT silent.
+#   busy   — idle's sampler PLUS every core pegged with `yes`, so it exercises CPU-not-idle too.
 # A reclaimed job dies red with "received a shutdown signal"; the run history is the evidence.
-# Comparing idle-vs-busy reclamation over time answers two questions: (1) is the reclamation
-# transient (rate falls) or persistent, and (2) does keeping the runner BUSY avoid it — i.e. would
-# a CPU keepalive during a review's quiet stretches (agent waiting on the API) prevent the kill.
-# harden-runner is deliberately ABSENT here: the matrix already showed the kill is independent of it.
+# The decisive contrast is silent-vs-idle IN THE SAME RUN (time-controlled): if silent reclaims
+# while idle survives, then console output is a heartbeat that prevents reclamation — which would
+# explain why real reviews reclaim (the agent goes silent for minutes while blocked on the API) and
+# make a periodic-echo keepalive during those quiet stretches the fix. busy separates CPU from output.
+# harden-runner is deliberately ABSENT here: this isolates the silence axis, nothing else.
 name: runner-reclamation-probe
 
 on:
@@ -22,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [idle, busy]
+        mode: [silent, idle, busy]
         rep: [1, 2, 3]
     runs-on: ubuntu-latest
     steps:
@@ -33,12 +37,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "mode=${MODE}-${REP} start ($(nproc) cpus)"
-          # Memory sampler (orphaned; the runner reaps it when the step ends) — confirms it is never OOM.
-          ( while true; do
-              echo "mem $(date -u +%T) $(free -m | awk '/^Mem:/{printf "used=%sMi avail=%sMi",$3,$7}')"
-              sleep 20
-            done ) &
-          # The busy arm pegs every core with self-terminating `yes` loops so the runner never idles.
+          # silent emits nothing after this line; idle/busy stream a mem sample every 20s (= not silent).
+          if [ "$MODE" != "silent" ]; then
+            ( while true; do
+                echo "mem $(date -u +%T) $(free -m | awk '/^Mem:/{printf "used=%sMi avail=%sMi",$3,$7}')"
+                sleep 20
+              done ) &
+          fi
+          # busy pegs every core with self-terminating `yes` loops on top of the sampler output.
           if [ "$MODE" = "busy" ]; then
             for _ in $(seq 1 "$(nproc)"); do timeout 1200 yes >/dev/null & done
           fi

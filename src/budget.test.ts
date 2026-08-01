@@ -1,11 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   decideBudget,
+  memoryCritical,
+  parseByteSize,
   blockedDuringConvergence,
   budgetMessage,
   writesToDraft,
   singleWriterMessage,
   spawnFloorMessage,
+  memoryPressureMessage,
   forceBackgroundSpawn,
   mainHasWrittenDraft,
   seedMarkerPath,
@@ -30,7 +33,7 @@ const inputs = (o: Partial<BudgetInputs>): BudgetInputs => ({
   budgetUsd: null,
   elapsedMs: null,
   wallMs: null,
-  reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0 },
+  reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0, flatMem: 0 },
   ...o,
 });
 
@@ -76,7 +79,7 @@ describe("decideBudget", () => {
 
   it("lets the flat floor force convergence when a tiny budget can't cover the wind-down reserve", () => {
     // 60s wall, but a 2-minute flat floor means less than the reserve remains from the start.
-    const r = { frac: 0.15, growth: 0, flatUsd: 0.02, flatMs: 120_000 };
+    const r = { frac: 0.15, growth: 0, flatUsd: 0.02, flatMs: 120_000, flatMem: 0 };
     expect(decideBudget(inputs({ elapsedMs: 5_000, wallMs: 60_000, reserve: r })).kind).toBe(
       "hard",
     );
@@ -91,6 +94,7 @@ describe("decideBudget", () => {
       growth,
       flatUsd: 0,
       flatMs: 0,
+      flatMem: 0,
     });
     const at = (elapsedMs: number, growth: number) =>
       decideBudget(inputs({ elapsedMs, wallMs: 1000, reserve: g(0.15, growth) })).kind;
@@ -252,6 +256,40 @@ describe("budgetMessage", () => {
   });
 });
 
+describe("memoryCritical — spawn backpressure, not a convergence axis", () => {
+  const GiB = 1024 * 1024 * 1024;
+  it("is false when either reading is unavailable (gate off; never guesses at bytes)", () => {
+    expect(memoryCritical(null, 16 * GiB, 2 * GiB)).toBe(false);
+    expect(memoryCritical(1 * GiB, null, 2 * GiB)).toBe(false);
+  });
+  it("is false with headroom above the floor, true at or below it", () => {
+    expect(memoryCritical(3 * GiB, 16 * GiB, 2 * GiB)).toBe(false);
+    expect(memoryCritical(2 * GiB, 16 * GiB, 2 * GiB)).toBe(true);
+    expect(memoryCritical(1 * GiB, 16 * GiB, 2 * GiB)).toBe(true);
+  });
+  it("is false when total is zero (no meaningful reading)", () => {
+    expect(memoryCritical(0, 0, 2 * GiB)).toBe(false);
+  });
+});
+
+describe("parseByteSize", () => {
+  const GiB = 1024 * 1024 * 1024;
+  it("parses binary-unit suffixes (case-insensitive, optional i/b)", () => {
+    expect(parseByteSize("2g")).toBe(2 * GiB);
+    expect(parseByteSize("2GiB")).toBe(2 * GiB);
+    expect(parseByteSize("1536m")).toBe(1536 * 1024 * 1024);
+    expect(parseByteSize("1.5g")).toBe(1.5 * GiB);
+  });
+  it("treats a bare number as bytes", () => {
+    expect(parseByteSize("1048576")).toBe(1048576);
+  });
+  it("returns null on junk", () => {
+    expect(parseByteSize("")).toBeNull();
+    expect(parseByteSize("lots")).toBeNull();
+    expect(parseByteSize("2gb2")).toBeNull();
+  });
+});
+
 describe("evaluateBudgetHook", () => {
   const draft = "/work/findings.json";
   const params = (o: Partial<BudgetParams>): BudgetParams => ({
@@ -259,7 +297,9 @@ describe("evaluateBudgetHook", () => {
     budgetUsd: null,
     elapsedMs: null,
     wallMs: null,
-    reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0 },
+    availMemBytes: null,
+    totalMemBytes: null,
+    reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0, flatMem: 0 },
     draftPath: draft,
     mainDraftWritten: true,
     ...o,
@@ -443,6 +483,50 @@ describe("evaluateBudgetHook", () => {
       evaluateBudgetHook(
         { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/x" } },
         params({ ...ok, mainDraftWritten: false }),
+      ),
+    ).toEqual({});
+  });
+
+  // Memory backpressure: a critically-low free-RAM reading denies NEW spawns (main or subagent),
+  // independent of budget phase and of the draft floor, and clears the moment RAM recovers. It never
+  // steers convergence — memory pressure is transient, so the agent is only stopped from making it worse.
+  const GiB = 1024 * 1024 * 1024;
+  const memFloor = { reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0, flatMem: 2 * GiB } };
+  const lowMem = { availMemBytes: 1 * GiB, totalMemBytes: 16 * GiB };
+  it("PreToolUse: denies the MAIN agent's spawn when free RAM is under the floor", () => {
+    const out = spawn(params({ ...ok, ...lowMem, ...memFloor }));
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toBe(memoryPressureMessage(draft));
+  });
+  it("PreToolUse: denies a SUBAGENT's spawn under memory pressure too (caps nested fan-out)", () => {
+    const out = spawn(params({ ...ok, ...lowMem, ...memFloor }), { agent_id: "a1b2c3" });
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toBe(memoryPressureMessage(draft));
+  });
+  it("PreToolUse: the memory deny wins over the draft floor, with its own reason", () => {
+    const out = spawn(params({ ...ok, ...lowMem, ...memFloor, mainDraftWritten: false }));
+    expect(out.hookSpecificOutput.permissionDecisionReason).toBe(memoryPressureMessage(draft));
+  });
+  it("PreToolUse: with RAM recovered above the floor the spawn is allowed again (gate self-clears)", () => {
+    const out = spawn(
+      params({ ...ok, ...memFloor, availMemBytes: 8 * GiB, totalMemBytes: 16 * GiB }),
+    );
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(out.hookSpecificOutput.updatedInput?.["run_in_background"]).toBe(true);
+  });
+  it("PostToolBatch: low memory alone never steers convergence (transient, not a budget axis)", () => {
+    expect(
+      evaluateBudgetHook(
+        { hook_event_name: "PostToolBatch" },
+        params({ ...ok, ...lowMem, ...memFloor }),
+      ),
+    ).toEqual({});
+  });
+  it("PreToolUse: memory pressure does not block non-spawn tools — only fan-out is gated", () => {
+    expect(
+      evaluateBudgetHook(
+        { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/x" } },
+        params({ ...ok, ...lowMem, ...memFloor }),
       ),
     ).toEqual({});
   });

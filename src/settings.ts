@@ -38,6 +38,7 @@ export interface ComposeSettingsOptions {
     readonly reserveGrowth?: string;
     readonly reserveUsd?: string;
     readonly reserveWall?: string;
+    readonly reserveMem?: string;
   };
 }
 

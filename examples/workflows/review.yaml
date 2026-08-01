@@ -194,6 +194,23 @@ jobs:
           fi
           echo "Egress canary could not connect — block policy verified"
 
+      # ubuntu-latest has ~7 GiB RAM. The agentic Phase-2 review can exceed it on a large repo and
+      # OOM the runner — GitHub reports "the runner has received a shutdown signal" and kills the whole
+      # box, so every always()-guarded salvage step is skipped and the round dies invisibly. A swapfile
+      # on the ephemeral /mnt disk lets the agent spill to disk instead of being killed: an OOM overrun
+      # becomes a slowdown bounded by the review's own hard-kill timeout. Free and additive — it sits
+      # unused when the review fits in RAM. Needs no network, so it is safe after the egress lock.
+      - name: Add swap headroom (avoid OOM runner-kill on the agentic review)
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 14G /mnt/code-review-swap \
+            || sudo dd if=/dev/zero of=/mnt/code-review-swap bs=1M count=14336
+          sudo chmod 600 /mnt/code-review-swap
+          sudo mkswap /mnt/code-review-swap
+          sudo swapon /mnt/code-review-swap
+          swapon --show
+          free -h
+
       # Untrusted data written to fixed paths, never shell-interpolated.
       - name: Gather review inputs
         id: gather
@@ -447,6 +464,18 @@ jobs:
           # `adapt` preserves its usage/cost even when the deliverable is incomplete (it keeps a
           # truncated envelope from crashing that path).
           echo "Review mode: $ROUTE (time limit $AGENT_WALL, grace $GRACE, hard kill ${HARD_KILL}s)"
+
+          # Memory-headroom sampler: emit one line every 15s to the STREAMED step log, which GitHub
+          # captures server-side continuously. When Phase 2 OOMs the runner the box dies and this
+          # sampler with it, but the already-streamed samples survive — so the last line before a
+          # "received a shutdown signal" kill quantifies how close the review drove RAM to the ceiling
+          # (confirming OOM) and, with swap in play, whether it spilled to swap instead of being killed.
+          ( while true; do
+              echo "mem $(date -u +%T) $(free -m | awk '/^Mem:/{printf "used=%sMi avail=%sMi",$3,$7} /^Swap:/{printf " swap=%s/%sMi",$3,$2}')"
+              sleep 15
+            done ) &
+          MEM_SAMPLER_PID=$!
+
           set +e
           timeout --kill-after=60s "$HARD_KILL" \
           claude -p "$PROMPT" \
@@ -461,6 +490,7 @@ jobs:
             >envelope.json
           AGENT_RC=$?
           set -e
+          kill "$MEM_SAMPLER_PID" 2>/dev/null || true
           if [ "$AGENT_RC" = "124" ] || [ "$AGENT_RC" = "137" ]; then
             echo "::warning::review agent hit its $HARD_KILL hard limit — proceeding with whatever draft it emitted"
           elif [ "$AGENT_RC" != "0" ]; then

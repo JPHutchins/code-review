@@ -21,6 +21,10 @@ export interface ReserveParams {
   readonly growth: number;
   readonly flatUsd: number;
   readonly flatMs: number;
+  // Absolute free-RAM floor (bytes) below which no new subagent may spawn. NOT a budget axis: memory
+  // pressure is transient (a fan-out spike recedes as subagents finish), so it never forces convergence
+  // the way an exhausted spend/wall budget does — it only backpressures new fan-out until RAM recovers.
+  readonly flatMem: number;
 }
 
 export const DEFAULT_RESERVE: ReserveParams = {
@@ -28,6 +32,7 @@ export const DEFAULT_RESERVE: ReserveParams = {
   growth: 0.25,
   flatUsd: 0.02,
   flatMs: 120_000,
+  flatMem: 2 * 1024 * 1024 * 1024,
 };
 
 const SOFT_MULTIPLE = 2;
@@ -35,38 +40,66 @@ const SOFT_MULTIPLE = 2;
 export type BudgetPhase =
   { readonly kind: "ok" } | { readonly kind: "soft" } | { readonly kind: "hard" };
 
+// Each axis carries its own absolute hardReserve, grown with usage so convergence lands earlier the
+// longer the run has gone. axisSeverity then only compares remaining headroom to that reserve.
 interface Axis {
   readonly used: number;
   readonly limit: number;
-  readonly flat: number;
+  readonly hardReserve: number;
 }
+
+const growingReserve = (used: number, limit: number, flat: number, r: ReserveParams): number => {
+  const usedFrac = Math.min(1, Math.max(0, used / limit));
+  return Math.max(flat, (r.frac + r.growth * usedFrac) * limit);
+};
 
 const costAxis = (i: BudgetInputs): Axis | null =>
   i.spentUsd !== null && i.budgetUsd !== null && i.budgetUsd > 0
-    ? { used: i.spentUsd, limit: i.budgetUsd, flat: i.reserve.flatUsd }
+    ? {
+        used: i.spentUsd,
+        limit: i.budgetUsd,
+        hardReserve: growingReserve(i.spentUsd, i.budgetUsd, i.reserve.flatUsd, i.reserve),
+      }
     : null;
 
 const timeAxis = (i: BudgetInputs): Axis | null =>
   i.elapsedMs !== null && i.wallMs !== null && i.wallMs > 0
-    ? { used: i.elapsedMs, limit: i.wallMs, flat: i.reserve.flatMs }
+    ? {
+        used: i.elapsedMs,
+        limit: i.wallMs,
+        hardReserve: growingReserve(i.elapsedMs, i.wallMs, i.reserve.flatMs, i.reserve),
+      }
     : null;
 
-const axisSeverity = (a: Axis, reserve: ReserveParams): 0 | 1 | 2 => {
-  const usedFrac = Math.min(1, Math.max(0, a.used / a.limit));
-  const effFrac = reserve.frac + reserve.growth * usedFrac;
-  const hardReserve = Math.max(a.flat, effFrac * a.limit);
+const axisSeverity = (a: Axis): 0 | 1 | 2 => {
   const remaining = a.limit - a.used;
-  if (remaining <= hardReserve) return 2;
-  if (remaining <= SOFT_MULTIPLE * hardReserve) return 1;
+  if (remaining <= a.hardReserve) return 2;
+  if (remaining <= SOFT_MULTIPLE * a.hardReserve) return 1;
   return 0;
 };
 
 export const decideBudget = (i: BudgetInputs): BudgetPhase => {
   const worst = [costAxis(i), timeAxis(i)]
     .filter((a): a is Axis => a !== null)
-    .reduce<0 | 1 | 2>((max, a) => Math.max(max, axisSeverity(a, i.reserve)) as 0 | 1 | 2, 0);
+    .reduce<0 | 1 | 2>((max, a) => Math.max(max, axisSeverity(a)) as 0 | 1 | 2, 0);
   return worst === 2 ? { kind: "hard" } : worst === 1 ? { kind: "soft" } : { kind: "ok" };
 };
+
+// Memory backpressure — deliberately NOT folded into decideBudget. Spend/wall exhaustion is terminal,
+// so it forces the agent to converge and land the draft; memory pressure is transient (it recedes as
+// running subagents finish and free their heaps), so we never tell the agent to wind down — it can ride
+// the spike out. We only refuse to make it WORSE: while free RAM sits under the floor, no new subagent
+// may spawn (each fresh process is the fastest way to tip a loaded runner into an OOM kill). The gate
+// clears itself the moment RAM recovers.
+export const memoryCritical = (
+  availMemBytes: number | null,
+  totalMemBytes: number | null,
+  floorBytes: number,
+): boolean =>
+  availMemBytes !== null &&
+  totalMemBytes !== null &&
+  totalMemBytes > 0 &&
+  availMemBytes <= floorBytes;
 
 const pct = (n: number): string => `${String(Math.round(n * 100))}%`;
 const money = (n: number): string => `$${n.toFixed(2)}`;
@@ -177,6 +210,11 @@ export const mainHasWrittenDraft = (
 export const spawnFloorMessage = (draftPath: string): string =>
   `Write your own first-pass findings to ${draftPath} before spawning subagents — a review must never depend on subagents alone, and a pre-seeded draft does not count until you have revised it yourself this run. Write ${draftPath} from what you have read so far (preliminary findings are fine), run \`code-review validate ${draftPath} --explain\` until it passes, then fan out; your subagents run in the background, so keep refining the draft as their reports arrive.`;
 
+// Agent-facing: no internal refs. Memory pressure is transient, so this only holds back NEW fan-out —
+// it never tells the agent to wind down (reads, the draft, and in-flight subagents all keep going).
+export const memoryPressureMessage = (draftPath: string): string =>
+  `System memory is critically low right now, so another subagent can't be spawned — a fresh process is the fastest way to tip the runner into an out-of-memory kill that would lose the whole review. Don't wind down: keep reading code directly and keep folding the reports from subagents already running into ${draftPath}, then try spawning again in a moment — this clears as soon as running subagents finish and free their memory.`;
+
 // Background so the spawner never blocks on a batch join, where no hook can reach it to steer.
 export const forceBackgroundSpawn = (toolInput: unknown): Record<string, unknown> => ({
   hookSpecificOutput: {
@@ -191,6 +229,9 @@ export interface BudgetParams {
   readonly budgetUsd: number | null;
   readonly elapsedMs: number | null;
   readonly wallMs: number | null;
+  // Free/total system RAM in bytes; either null ⇒ the spawn memory-gate is off (unreadable meminfo).
+  readonly availMemBytes: number | null;
+  readonly totalMemBytes: number | null;
   readonly reserve: ReserveParams;
   readonly draftPath: string;
   readonly mainDraftWritten: boolean;
@@ -246,6 +287,10 @@ export const evaluateBudgetHook = (
         return denyPreTool(budgetMessage(inputs, phase, params.draftPath, isSubagent));
       // Gate the main agent's first fan-out on its own draft existing; then background every spawn.
       if (SPAWN_TOOLS.has(toolName)) {
+        // Memory backpressure gates fan-out for BOTH main and subagents, independent of budget phase
+        // and of the draft floor — a new process is what tips a loaded runner into an OOM kill.
+        if (memoryCritical(params.availMemBytes, params.totalMemBytes, params.reserve.flatMem))
+          return denyPreTool(memoryPressureMessage(params.draftPath));
         if (!isSubagent && !params.mainDraftWritten)
           return denyPreTool(spawnFloorMessage(params.draftPath));
         return forceBackgroundSpawn(rec["tool_input"]);
@@ -308,6 +353,23 @@ export const parseFraction = (raw: string | undefined, fallback: number): number
   return Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
 };
 
+// Bytes from a size like "2g", "1536m", "2GiB", or a bare byte count. Binary units (1024). null on junk.
+const BYTE_UNIT: Readonly<Record<string, number>> = {
+  "": 1,
+  k: 1024,
+  m: 1024 * 1024,
+  g: 1024 * 1024 * 1024,
+  t: 1024 * 1024 * 1024 * 1024,
+};
+export const parseByteSize = (raw: string): number | null => {
+  const m = /^(\d+(?:\.\d+)?)\s*([kmgt])?(?:i?b)?$/i.exec(raw.trim());
+  if (m === null) return null;
+  const [, num = "", unit = ""] = m;
+  const n = Number.parseFloat(num);
+  const mult = BYTE_UNIT[unit.toLowerCase()];
+  return Number.isFinite(n) && mult !== undefined ? n * mult : null;
+};
+
 // One string wired to both hooks; it self-dispatches on the event it reads from stdin.
 export const budgetHookCommand = (
   draftPath: string,
@@ -319,6 +381,7 @@ export const budgetHookCommand = (
     readonly reserveGrowth?: string;
     readonly reserveUsd?: string;
     readonly reserveWall?: string;
+    readonly reserveMem?: string;
   },
 ): string =>
   [
@@ -331,4 +394,5 @@ export const budgetHookCommand = (
     ...(opts.reserveGrowth ? ["--reserve-growth", shellQuote(opts.reserveGrowth)] : []),
     ...(opts.reserveUsd ? ["--reserve-usd", shellQuote(opts.reserveUsd)] : []),
     ...(opts.reserveWall ? ["--reserve-wall", shellQuote(opts.reserveWall)] : []),
+    ...(opts.reserveMem ? ["--reserve-mem", shellQuote(opts.reserveMem)] : []),
   ].join(" ");

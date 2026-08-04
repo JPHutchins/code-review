@@ -74,5 +74,13 @@ jobs:
       # configured yet:
       #   env:
       #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Prereleases (…-rc.N) publish under the `rc` dist-tag so they never move `@alpha` — which pinned
+      # consumers ignore (they pin exact versions) but `npm i @…@alpha` resolves. Only a real release
+      # (no -rc. suffix) moves `@alpha`.
       - name: Publish to npm
-        run: npm publish --provenance --access public --tag alpha
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-rc.*) DIST_TAG=rc ;;
+            *) DIST_TAG=alpha ;;
+          esac
+          npm publish --provenance --access public --tag "$DIST_TAG"

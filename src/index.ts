@@ -17,7 +17,6 @@ import {
   evaluateBudgetHook,
   parseWallMs,
   parseFraction,
-  parseByteSize,
   parseEpochSecMs,
   anchoredElapsedMs,
   deadlineEpochSec,
@@ -68,6 +67,7 @@ import {
   stopHookSettings,
 } from "./stop-gate.js";
 import { composeReviewSettings } from "./settings.js";
+import { buildSandboxConfig } from "./sandbox.js";
 import { annotationSafe, asRecord, errMsg, tryParseJson } from "./util.js";
 
 const readJSON = (path: string): unknown => {
@@ -425,24 +425,6 @@ export const snapshotIfValid = (draftPath: string): void => {
   }
 };
 
-/** Best-effort free/total system RAM from /proc/meminfo (the Linux CI runner). Any failure or a
- *  non-Linux host ⇒ both null, which turns the spawn memory-gate off rather than guessing at bytes. */
-const readMemInfo = (): {
-  readonly availBytes: number | null;
-  readonly totalBytes: number | null;
-} => {
-  try {
-    const text = readFileSync("/proc/meminfo", "utf8");
-    const kb = (key: string): number | null => {
-      const m = new RegExp(`^${key}:\\s+(\\d+)\\s+kB`, "m").exec(text);
-      return m?.[1] !== undefined ? Number(m[1]) * 1024 : null;
-    };
-    return { availBytes: kb("MemAvailable"), totalBytes: kb("MemTotal") };
-  } catch {
-    return { availBytes: null, totalBytes: null };
-  }
-};
-
 const budgetHookCmd = defineCommand({
   meta: {
     name: "budget-hook",
@@ -490,17 +472,11 @@ const budgetHookCmd = defineCommand({
       description:
         "Flat wall-clock wind-down floor (e.g. 2m, 120s), whichever is larger with --reserve-frac (default: 2m)",
     },
-    "reserve-mem": {
-      type: "string",
-      description:
-        "Free-RAM floor (e.g. 2g, 1536m) below which new subagent spawns are denied until memory recovers; not a convergence axis (default: 2g)",
-    },
   },
   run: async ({ args }) => {
     try {
       const draftPath = resolve(args.draft);
       const input = readStdinJSON();
-      const mem = readMemInfo();
       const transcriptPath = transcriptPathOf(input);
       const tree = transcriptPath ? readTranscriptTree(resolve(transcriptPath)) : undefined;
       const usage = tree ? sumTranscriptUsage(tree.entries) : undefined;
@@ -521,8 +497,6 @@ const budgetHookCmd = defineCommand({
           nowMs: Date.now(),
         }),
         wallMs,
-        availMemBytes: mem.availBytes,
-        totalMemBytes: mem.totalBytes,
         reserve: {
           frac: parseFraction(args["reserve-frac"], DEFAULT_RESERVE.frac),
           growth: parseFraction(args["reserve-growth"], DEFAULT_RESERVE.growth),
@@ -530,9 +504,6 @@ const budgetHookCmd = defineCommand({
           flatMs: args["reserve-wall"]
             ? (parseWallMs(args["reserve-wall"]) ?? DEFAULT_RESERVE.flatMs)
             : DEFAULT_RESERVE.flatMs,
-          flatMem: args["reserve-mem"]
-            ? (parseByteSize(args["reserve-mem"]) ?? DEFAULT_RESERVE.flatMem)
-            : DEFAULT_RESERVE.flatMem,
         },
         draftPath,
         mainDraftWritten: mainHasWrittenDraft(
@@ -617,11 +588,6 @@ const printSettingsCmd = defineCommand({
       description:
         "Flat wall-clock wind-down floor (e.g. 2m), whichever is larger with --reserve-frac (default: 2m)",
     },
-    "reserve-mem": {
-      type: "string",
-      description:
-        "Free-RAM floor (e.g. 2g) below which new subagent spawns are denied until memory recovers (default: 2g)",
-    },
   },
   run: async ({ args }) => {
     if (args.kind && !["findings", "triage", "prices"].includes(args.kind))
@@ -643,7 +609,6 @@ const printSettingsCmd = defineCommand({
         reserveGrowth: args["reserve-growth"],
         reserveUsd: args["reserve-usd"],
         reserveWall: args["reserve-wall"],
-        reserveMem: args["reserve-mem"],
       },
     });
     process.stdout.write(`${JSON.stringify(settings)}\n`);
@@ -1770,6 +1735,40 @@ const awaitCiCmd = defineCommand({
   },
 });
 
+const sandboxConfigCmd = defineCommand({
+  meta: {
+    name: "sandbox-config",
+    description:
+      "Emit the sandbox-runtime (srt) settings that jail the untrusted review agent's egress: allow the model host (derived from api_base_url), the GitHub API/host, and the consumer's extra_endpoints; deny all else; filesystem isolation off",
+  },
+  args: {
+    "api-base-url": {
+      type: "string",
+      description:
+        "The model endpoint the CLI dials (ANTHROPIC_BASE_URL) — its host is allowlisted",
+      required: true,
+    },
+    extra: {
+      type: "string",
+      description:
+        "Whitespace-separated host[:port] list of extra domains to allow (the extra_endpoints input)",
+    },
+    out: {
+      type: "string",
+      description: "Write the settings JSON here instead of stdout",
+    },
+  },
+  run: ({ args }) => {
+    const config = buildSandboxConfig({ apiBaseUrl: args["api-base-url"], extra: args.extra });
+    const json = `${JSON.stringify(config, null, 2)}\n`;
+    if (args.out) {
+      writeFileSync(resolve(args.out), json);
+    } else {
+      process.stdout.write(json);
+    }
+  },
+});
+
 export const main = defineCommand({
   meta: {
     name: "code-review",
@@ -1800,6 +1799,7 @@ export const main = defineCommand({
     "budget-hook": budgetHookCmd,
     "print-settings": printSettingsCmd,
     deadline: deadlineCmd,
+    "sandbox-config": sandboxConfigCmd,
   },
 });
 

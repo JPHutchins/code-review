@@ -1,0 +1,123 @@
+name: srt jail spike (TEMPORARY — #107 item 2 de-risk)
+
+# Throwaway de-risk for confining the untrusted `claude -p` step in a network
+# namespace (Anthropic sandbox-runtime `srt`: bubblewrap --unshare-net + a
+# host-side hostname-allowlisting proxy) instead of job-level harden-runner.
+# Proves on a real ubuntu-latest hosted runner: bwrap unprivileged userns works
+# (Ubuntu 24.04 AppArmor), srt allows the model host and blocks everything else,
+# filesystem isolation can be disabled, and a real `claude -p` completes through
+# the jail while its own shell-outs to a forbidden host are blocked.
+# Delete after reading one run.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_BASE_URL: ${{ vars.API_BASE_URL }}
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
+      ANTHROPIC_MODEL: deepseek-v4-flash
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_TELEMETRY: "1"
+      DISABLE_ERROR_REPORTING: "1"
+    steps:
+      - name: Environment facts
+        run: |
+          set -x
+          uname -a; head -2 /etc/os-release; id
+          sudo -n true && echo "passwordless-sudo=yes" || echo "passwordless-sudo=no"
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "apparmor-userns-key=absent"
+          cat /proc/sys/user/max_user_namespaces 2>/dev/null || true
+
+      - name: Install bubblewrap + socat
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+
+      - name: bwrap unprivileged-userns smoke (install AppArmor profile if restricted)
+        run: |
+          set -x
+          try() { bwrap --unshare-net --ro-bind / / --dev /dev true; }
+          if try 2>bwrap.err; then
+            echo "RESULT bwrap-userns=ok-out-of-the-box"; exit 0
+          fi
+          echo "bwrap first attempt failed:"; cat bwrap.err
+          restrict=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)
+          echo "apparmor_restrict_unprivileged_userns=$restrict"
+          if [ "$restrict" = "1" ]; then
+            printf '%s\n' \
+              'abi <abi/4.0>,' \
+              'include <tunables/global>' \
+              'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
+              '  userns,' \
+              '  include if exists <local/bwrap>' \
+              '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
+            sudo systemctl reload apparmor || sudo service apparmor reload || true
+            if try 2>bwrap2.err; then
+              echo "RESULT bwrap-userns=ok-after-apparmor-profile"; exit 0
+            fi
+            echo "still failing after profile:"; cat bwrap2.err; exit 1
+          fi
+          echo "RESULT bwrap-userns=FAILED (not an apparmor restriction)"; exit 1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install srt + claude
+        run: npm install -g @anthropic-ai/sandbox-runtime "@anthropic-ai/claude-code@2.1.197"
+
+      - name: srt facts (binary, version, usage)
+        run: |
+          set -x
+          which srt || true
+          srt --version 2>&1 | head -3 || true
+          srt --help 2>&1 | head -60 || true
+
+      - name: Write sandbox settings (network-only: allow the model host, deny all else)
+        run: |
+          cat > allow.json <<'JSON'
+          {"network":{"allowedDomains":["api.deepseek.com"]},"filesystem":{"disabled":true}}
+          JSON
+          cat allow.json
+
+      - name: Egress ALLOW/DENY via curl (three invocation forms + debug on a leak)
+        run: |
+          set -x
+          probe() { curl -sS -o /dev/null -w "HTTP %{http_code}\n" --max-time 20 "$1"; }
+          export -f probe
+          echo "== allowed host (api.deepseek.com) — expect a reached HTTP status =="
+          set +e
+          echo "form A (--):"; srt --settings allow.json -- curl -sS -o /dev/null -w "HTTP %{http_code}\n" --max-time 20 https://api.deepseek.com/; echo "rcA=$?"
+          echo "form B (no --):"; srt --settings allow.json curl -sS -o /dev/null -w "HTTP %{http_code}\n" --max-time 20 https://api.deepseek.com/; echo "rcB=$?"
+          echo "form C (string):"; srt --settings allow.json bash -c 'probe https://api.deepseek.com/'; echo "rcC=$?"
+          echo "== denied host (example.com) — expect BLOCK (nonzero) =="
+          srt --settings allow.json -- curl -sS -o /dev/null -w "LEAK HTTP %{http_code}\n" --max-time 20 https://example.com/; echo "rc-deny=$? (nonzero=blocked)"
+          echo "== debug on the denied call =="
+          srt --debug --settings allow.json -- curl -sS --max-time 20 https://example.com/ 2>&1 | tail -25 || true
+
+      - name: filesystem-disabled proof (write outside CWD succeeds)
+        run: |
+          set -x
+          set +e
+          srt --settings allow.json -- bash -c 'echo hi >/tmp/srt-fs && cat /tmp/srt-fs && touch "$HOME/.srt-home-write"'; echo "fs-rc=$?"
+
+      - name: claude -p under srt (real completion through the jail)
+        run: |
+          set -x
+          set +e
+          timeout 150 srt --settings allow.json -- claude -p 'Reply with exactly: OK' \
+            --output-format text --permission-mode bypassPermissions >claude.out 2>claude.err
+          echo "RESULT claude-under-srt-rc=$?"
+          echo "--- stdout ---"; cat claude.out
+          echo "--- stderr (tail 25) ---"; tail -25 claude.err
+
+      - name: claude's own shell-out to a forbidden host is blocked (defense proof)
+        run: |
+          set +e
+          timeout 150 srt --settings allow.json -- claude -p 'Run exactly this shell command and tell me its exit code and any error: curl -sS --max-time 15 -o /dev/null -w "%{http_code}" https://example.com/' \
+            --output-format text --permission-mode bypassPermissions 2>&1 | tail -30
+          echo "(expect the curl inside the jail to fail — no route to example.com)"

@@ -34,8 +34,8 @@ jobs:
           sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "apparmor-userns-key=absent"
           cat /proc/sys/user/max_user_namespaces 2>/dev/null || true
 
-      - name: Install bubblewrap + socat
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+      - name: Install bubblewrap + socat + ripgrep (srt runtime deps)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
 
       - name: bwrap unprivileged-userns smoke (install AppArmor profile if restricted)
         run: |

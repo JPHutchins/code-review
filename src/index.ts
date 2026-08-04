@@ -68,6 +68,7 @@ import {
   stopHookSettings,
 } from "./stop-gate.js";
 import { composeReviewSettings } from "./settings.js";
+import { buildSandboxConfig } from "./sandbox.js";
 import { annotationSafe, asRecord, errMsg, tryParseJson } from "./util.js";
 
 const readJSON = (path: string): unknown => {
@@ -1770,6 +1771,40 @@ const awaitCiCmd = defineCommand({
   },
 });
 
+const sandboxConfigCmd = defineCommand({
+  meta: {
+    name: "sandbox-config",
+    description:
+      "Emit the sandbox-runtime (srt) settings that jail the untrusted review agent's egress: allow the model host (derived from api_base_url), the GitHub API/host, and the consumer's extra_endpoints; deny all else; filesystem isolation off",
+  },
+  args: {
+    "api-base-url": {
+      type: "string",
+      description:
+        "The model endpoint the CLI dials (ANTHROPIC_BASE_URL) — its host is allowlisted",
+      required: true,
+    },
+    extra: {
+      type: "string",
+      description:
+        "Whitespace-separated host[:port] list of extra domains to allow (the extra_endpoints input)",
+    },
+    out: {
+      type: "string",
+      description: "Write the settings JSON here instead of stdout",
+    },
+  },
+  run: ({ args }) => {
+    const config = buildSandboxConfig({ apiBaseUrl: args["api-base-url"], extra: args.extra });
+    const json = `${JSON.stringify(config, null, 2)}\n`;
+    if (args.out) {
+      writeFileSync(resolve(args.out), json);
+    } else {
+      process.stdout.write(json);
+    }
+  },
+});
+
 export const main = defineCommand({
   meta: {
     name: "code-review",
@@ -1800,6 +1835,7 @@ export const main = defineCommand({
     "budget-hook": budgetHookCmd,
     "print-settings": printSettingsCmd,
     deadline: deadlineCmd,
+    "sandbox-config": sandboxConfigCmd,
   },
 });
 

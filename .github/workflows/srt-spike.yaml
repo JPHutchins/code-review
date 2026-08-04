@@ -80,7 +80,7 @@ jobs:
       - name: Write sandbox settings (network-only — allow model host, deny all else)
         run: |
           cat > allow.json <<'JSON'
-          {"network":{"allowedDomains":["api.deepseek.com"]},"filesystem":{"disabled":true}}
+          {"network":{"allowedDomains":["api.deepseek.com"],"deniedDomains":[]},"filesystem":{"allowRead":[],"denyRead":[],"allowWrite":["/"],"denyWrite":[]}}
           JSON
           cat allow.json
 

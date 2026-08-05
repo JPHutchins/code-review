@@ -63,11 +63,14 @@ export const render = (input: RenderInput): string => {
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
   const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
   const rounds = input.rounds ?? [];
-  // The convergence badge is a view of the trajectory's LATEST round, never this run's raw counts, so
-  // it can't contradict the chips beside it: on a full review the latest round IS this run's counts;
-  // on a CI-fix mechanic pass (which appends no round) it reflects the last full review, exactly as
-  // the carried-forward trajectory does. No round history ⇒ nothing fully reviewed yet ⇒ no badge.
-  const latestRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
+  // The convergence badge is a property of a completed FULL-REVIEW round: render it only then, from
+  // THIS run's counts. A CI-fix mechanic pass, a lost-envelope pass, and a notice each append no round
+  // and declare no convergence verdict — a badge from the current findings would sit "✅ converged"
+  // above a mechanic's fresh critical, and one from a carried-forward prior round would contradict the
+  // findings beside it. Neither is a truthful stop signal, so no badge shows; the carried-forward
+  // trajectory alone gives context. On a full review the badge, the trajectory's new chip, and the
+  // findings line are all this same round's counts, so they cannot disagree.
+  const isFullReviewRound = route === "full review" && !incomplete;
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -84,8 +87,8 @@ export const render = (input: RenderInput): string => {
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
     postedAt: input.postedAt ?? "",
     severityCounts,
-    convergenceSummary: latestRound
-      ? convergenceSummary(latestRound, input.convergenceThreshold)
+    convergenceSummary: isFullReviewRound
+      ? convergenceSummary(severityCounts, input.convergenceThreshold)
       : "",
     strays: (input.strays ?? []).map(sanitizeFinding),
     unanchoredCount: input.unanchoredCount ?? 0,

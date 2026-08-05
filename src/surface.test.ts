@@ -4,8 +4,13 @@ import {
   parseReviewedSha,
   parseReviewComplete,
   findingsPointer,
+  parseRounds,
+  roundsMarker,
+  roundsSummary,
+  carryForwardMarkers,
 } from "./surface.js";
 import type { Findings } from "./schema.js";
+import type { SeverityCounts } from "./types.js";
 
 const findings = {
   schema_version: "0.4.0",
@@ -91,5 +96,49 @@ describe("parseReviewComplete", () => {
   it("false for an incomplete notice or an in-progress placeholder (no marker)", () => {
     expect(parseReviewComplete("<!-- code-review -->\n🔄 Code review in progress")).toBe(false);
     expect(parseReviewComplete("<!-- code-review -->\n### ⚠️ Review did not complete")).toBe(false);
+  });
+});
+
+describe("rounds trajectory — issue #125", () => {
+  const counts = (critical: number, major: number, minor: number, nit: number): SeverityCounts => ({
+    critical,
+    major,
+    minor,
+    nit,
+  });
+
+  it("round-trips through roundsMarker → parseRounds", () => {
+    const rounds = [counts(1, 2, 0, 0), counts(0, 1, 3, 0), counts(0, 0, 0, 0)];
+    expect(parseRounds(`prose\n${roundsMarker(rounds)}\nmore`)).toEqual(rounds);
+  });
+
+  it("yields no rounds for an empty history and never emits an empty marker", () => {
+    expect(roundsMarker([])).toBe("");
+    expect(parseRounds("no marker here")).toEqual([]);
+  });
+
+  it("decodes to no history for a malformed or wrong-shaped marker rather than throwing", () => {
+    expect(parseRounds("<!-- code-review:rounds;base64 not$$base64 -->")).toEqual([]);
+    const notArray = Buffer.from(JSON.stringify({ critical: 1 }), "utf-8").toString("base64");
+    expect(parseRounds(`<!-- code-review:rounds;base64 ${notArray} -->`)).toEqual([]);
+    const missingKey = Buffer.from(JSON.stringify([{ critical: 1 }]), "utf-8").toString("base64");
+    expect(parseRounds(`<!-- code-review:rounds;base64 ${missingKey} -->`)).toEqual([]);
+  });
+
+  it("renders the trajectory: emoji chips per round, 'clean' for a round with no findings", () => {
+    expect(roundsSummary([counts(1, 2, 0, 0), counts(0, 1, 0, 0), counts(0, 0, 0, 0)])).toBe(
+      "**Round 3** · 🔴1 🟠2 → 🟠1 → clean",
+    );
+  });
+
+  it("shows the round number even for the first round, and nothing when there is no history", () => {
+    expect(roundsSummary([counts(0, 0, 5, 0)])).toBe("**Round 1** · 🔵5");
+    expect(roundsSummary([])).toBe("");
+  });
+
+  it("carryForwardMarkers preserves the rounds marker alongside findings + reviewed-sha", () => {
+    const body = `x\n${roundsMarker([counts(0, 0, 1, 0)])}\n<!-- reviewed-sha: ${"a".repeat(40)} -->`;
+    expect(carryForwardMarkers(body)).toContain("code-review:rounds;base64");
+    expect(carryForwardMarkers(body)).toContain("reviewed-sha:");
   });
 });

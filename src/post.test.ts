@@ -1977,7 +1977,8 @@ describe("post — --run-url / --json-url threading", () => {
     expect(stickyBody).toContain(
       "<!-- code-review:findings-json https://artifacts.example.com/findings.json -->",
     );
-    expect(stickyBody).not.toContain(";base64");
+    // The FINDINGS marker fell back to the URL form; the rounds marker's own base64 is unrelated.
+    expect(stickyBody).not.toContain("findings-json;base64");
   });
 
   it("omits the run link when it isn't given; the sticky still embeds the findings-json marker unconditionally (regression, PR #17 review)", async () => {
@@ -2642,5 +2643,54 @@ describe("post — incomplete result never buries a completed review (#107)", ()
 
     stderrSpy.mockRestore();
     exitSpy.mockRestore();
+  });
+});
+
+describe("post — convergence rounds (issue #125)", () => {
+  const priorRoundsMarker = `<!-- code-review:rounds;base64 ${Buffer.from(
+    JSON.stringify([{ critical: 0, major: 1, minor: 0, nit: 0 }]),
+    "utf-8",
+  ).toString("base64")} -->`;
+
+  const mocksWithPriorSticky = () => [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: `{"id": 999, "body": "<!-- code-review -->\\n${priorRoundsMarker}\\nold"}\n`,
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+      response: "",
+    },
+    { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
+  ];
+
+  const patchedBody = (calls: readonly RecordedCall[]): string =>
+    (
+      JSON.parse(
+        calls.find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+      ) as CommentBody
+    ).body;
+
+  it("a full review APPENDS a round — the trajectory grows", async () => {
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky());
+    await post(mkInput({ route: "full review" }), api);
+    expect(patchedBody(calls())).toContain("**Round 2**");
+  });
+
+  it("a mechanic pass CARRIES the trajectory forward unchanged — not a review round", async () => {
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky());
+    await post(mkInput({ route: "mechanic" }), api);
+    const body = patchedBody(calls());
+    expect(body).toContain("**Round 1**");
+    expect(body).not.toContain("**Round 2**");
   });
 });

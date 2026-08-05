@@ -50,6 +50,10 @@ export interface RenderInput {
   readonly effort?: string;
   readonly testReport?: TestSummary;
   readonly severityCounts?: SeverityCounts;
+  // Per-full-review-round severity counts (oldest first, this run's counts last when it is a full
+  // review), rendered as the convergence trajectory and re-embedded as the carried-forward marker.
+  // Omitted/empty ⇒ no convergence line.
+  readonly rounds?: readonly SeverityCounts[];
   readonly strays?: readonly Finding[];
   // How many of `strays` are in-diff findings GitHub rejected inline, rather than out-of-diff; > 0
   // titles the section "Findings" and notes they couldn't be posted inline. Omitted/0 ⇒ all out-of-diff.

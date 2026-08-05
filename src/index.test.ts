@@ -1444,3 +1444,62 @@ describe("cli — render --test-report (REQ-CO-9)", () => {
     expect(stderr).toContain("test report");
   });
 });
+
+describe("cli — notice --sandbox-config (issue #97)", () => {
+  const parseSummary = (stdout: string): string =>
+    (JSON.parse(stdout) as { findings: { summary: string } }).findings.summary;
+
+  const writeSandbox = (hosts: readonly string[]): string => {
+    const p = join(tmpDir, "sandbox.json");
+    writeFileSync(p, JSON.stringify({ network: { allowedDomains: hosts, deniedDomains: [] } }));
+    return p;
+  };
+
+  it("names the agent allowlist on no-output when the sandbox config is present", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "notice",
+      "no-output",
+      "--sandbox-config",
+      writeSandbox(["api.deepseek.com", "github.com"]),
+    ]);
+    expect(exitCode).toBeNull();
+    expect(parseSummary(stdout)).toContain("`api.deepseek.com`");
+    expect(stderr).toBe("");
+  });
+
+  it("stays silent and omits the allowlist when the config file is missing (normal early failure)", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "notice",
+      "no-output",
+      "--sandbox-config",
+      join(tmpDir, "does-not-exist.json"),
+    ]);
+    expect(exitCode).toBeNull();
+    expect(parseSummary(stdout)).not.toContain("egress is jailed");
+    expect(stderr).toBe("");
+  });
+
+  it("warns (but does not crash) when the config is present but malformed — the diagnostic case", async () => {
+    const bad = join(tmpDir, "sandbox.json");
+    writeFileSync(bad, "{ not json");
+    const { stdout, stderr, exitCode } = await runCli([
+      "notice",
+      "no-output",
+      "--sandbox-config",
+      bad,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(parseSummary(stdout)).not.toContain("egress is jailed");
+    expect(stderr).toContain("not valid JSON");
+  });
+
+  it("does not even read --sandbox-config for kinds that never name the allowlist", async () => {
+    // A malformed file would warn IF the handler read it — a valid file could not tell a read-then-drop
+    // regression from a correct skip, so use a malformed one and assert the read never happened.
+    const bad = join(tmpDir, "sandbox.json");
+    writeFileSync(bad, "{ not json");
+    const { stdout, stderr } = await runCli(["notice", "setup-failed", "--sandbox-config", bad]);
+    expect(parseSummary(stdout)).not.toContain("egress is jailed");
+    expect(stderr).toBe("");
+  });
+});

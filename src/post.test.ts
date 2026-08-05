@@ -2611,4 +2611,36 @@ describe("post — incomplete result never buries a completed review (#107)", ()
       ),
     ).toBe(true);
   });
+
+  it("the envelope-null branch runs its bury guard too — an error-verdict run whose envelope was lost never overwrites a completed review (#117)", async () => {
+    // Envelope missing, findings doc carries verdict "error": the envelope===null branch derives
+    // incompleteness from the verdict and must leave the completed review in place.
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        schema_version: "0.5.0",
+        summary: "### 🛠️ notice",
+        verdict: "error",
+        findings: [],
+      }),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks(completeSticky));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(
+      post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(
+      calls().some(
+        (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+      ),
+    ).toBe(false);
+
+    stderrSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
 });

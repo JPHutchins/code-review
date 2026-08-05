@@ -1,11 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { runCommand } from "citty";
-import { writeFileSync, mkdirSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
+import {
+  writeFileSync,
+  mkdirSync,
+  rmSync,
+  readFileSync,
+  statSync,
+  existsSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main, snapshotIfValid } from "./index.js";
-import { lastValidPath } from "./budget.js";
+import { lastValidPath, seedMarkerPath } from "./budget.js";
 import { ResultEnvelopeCodec } from "./schema.js";
 import { findingsPointer } from "./surface.js";
 import type { Findings } from "./schema.js";
@@ -232,6 +240,53 @@ describe("cli — $DRAFT last-valid snapshot (issue #61)", () => {
     expect(exitCode).toBeNull();
     expect((JSON.parse(stdout) as { findings: { summary: string } }).findings.summary).toBe(
       "the live draft",
+    );
+  });
+
+  it("adapt emits a 'did not complete' notice when --agent-file is the untouched seed (marker no older than the draft) — issue #117", async () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    // A VALID findings doc — but it is the untouched pre-seed (a re-review's prior verdict), so it
+    // must NOT post as a review of the current head.
+    writeFileSync(draft, validFindings("prior review — must not post as the current head"));
+    writeFileSync(seedMarkerPath(draft), "seed marker\n");
+    // Marker no older than the draft ⇒ unrevised. Pin explicit mtimes so the comparison is
+    // deterministic regardless of the filesystem's timestamp resolution.
+    utimesSync(draft, new Date(1000), new Date(1000));
+    utimesSync(seedMarkerPath(draft), new Date(2000), new Date(2000));
+    const { stdout } = await runCli([
+      "adapt",
+      nativeFixturePath,
+      "--adapter",
+      "claude-code",
+      "--agent-file",
+      draft,
+    ]);
+    const env = JSON.parse(stdout) as {
+      incomplete?: boolean;
+      findings: { verdict: string; summary: string; findings: unknown[] };
+    };
+    expect(env.incomplete).toBe(true);
+    expect(env.findings.verdict).toBe("error");
+    expect(env.findings.findings).toEqual([]);
+    expect(env.findings.summary).toContain("did not write a review");
+  });
+
+  it("adapt recovers --agent-file when the agent overwrote the seed (draft newer than the marker)", async () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    writeFileSync(draft, validFindings("the agent's real review"));
+    writeFileSync(seedMarkerPath(draft), "seed marker\n");
+    utimesSync(seedMarkerPath(draft), new Date(1000), new Date(1000));
+    utimesSync(draft, new Date(2000), new Date(2000));
+    const { stdout } = await runCli([
+      "adapt",
+      nativeFixturePath,
+      "--adapter",
+      "claude-code",
+      "--agent-file",
+      draft,
+    ]);
+    expect((JSON.parse(stdout) as { findings: { summary: string } }).findings.summary).toBe(
+      "the agent's real review",
     );
   });
 });
@@ -1123,10 +1178,10 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
       readonly findings: readonly unknown[];
     };
     expect(seeded.findings).toEqual([]);
-    // The scaffold carries verdict "error" so that if the agent dies before overwriting it, its
-    // recovery by `adapt` reads as incomplete, never as a false clean pass (issue #117).
-    expect(seeded.verdict).toBe("error");
-    expect(seeded.summary).toContain("Review did not complete");
+    // A neutral "comment" template the agent fills in; a dead-agent recovery of this untouched
+    // scaffold is caught by adapt's seed-marker check, not its verdict (issue #117).
+    expect(seeded.verdict).toBe("comment");
+    expect(seeded.summary).toBe("");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
     // Every seeding path — prior or scaffold — must drop the marker, or the fan-out floor would

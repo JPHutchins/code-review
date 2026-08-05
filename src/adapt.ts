@@ -73,6 +73,12 @@ export interface RunMeta {
   // Last valid draft snapshot, recovered when the live agent-file no longer validates (e.g. a
   // wall-kill truncated it).
   readonly agentFileFallbackPath?: string;
+  // The agent-file is the UNREVISED seed the pipeline pre-wrote (the agent died before touching it),
+  // decided by the caller from the seed-marker mtime. Recovering it would post the seed — a
+  // first-review scaffold OR a re-review's PRIOR verdict — as a completed review of the current head:
+  // the false-clean-pass class (issue #117). So skip recovery entirely and emit a "did not complete"
+  // notice, keeping whatever telemetry the run produced.
+  readonly seedUnrevised?: boolean;
 }
 
 // Every ladder outcome maps onto a findings result, never a fatal one — a findings miss must not
@@ -183,7 +189,19 @@ const buildEnvelope = (
   native: unknown,
   agentFilePath: string | undefined,
   agentFileFallbackPath: string | undefined,
+  seedUnrevised: boolean,
 ): ResultEnvelope => {
+  // The agent never wrote the draft — recovering the untouched seed would post it as a completed
+  // review of the current head (issue #117). Emit the notice instead, keeping the run's telemetry.
+  if (seedUnrevised)
+    return {
+      schema_version: DEFAULT_SCHEMA_VERSION,
+      findings: incompleteFindings(
+        "### ⚠️ Review did not complete\n\nThe review agent did not write a review (its draft is the untouched pre-seed). See the workflow logs.",
+      ),
+      incomplete: true,
+      ...telemetry,
+    };
   const outcome = findingsOutcome(native, agentFilePath, agentFileFallbackPath);
   switch (outcome.kind) {
     case "ok":
@@ -217,6 +235,7 @@ export const adapt = (
             undefined,
             agentFilePath,
             meta.agentFileFallbackPath,
+            meta.seedUnrevised === true,
           ),
         );
       const decoded = ClaudeCodeEnvelopeCodec.decode(native);
@@ -228,6 +247,7 @@ export const adapt = (
           native,
           agentFilePath,
           meta.agentFileFallbackPath,
+          meta.seedUnrevised === true,
         ),
       );
     }

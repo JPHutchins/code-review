@@ -1357,6 +1357,48 @@ describe("cli — render defaults (bundled template + prices)", () => {
   });
 });
 
+describe("cli — render --convergence-threshold (issue #133)", () => {
+  const renderArgs = (threshold?: string): string[] => [
+    "render",
+    sampleFindingsPath,
+    "--usage",
+    sampleEnvelopePath,
+    "--route",
+    "full review",
+    ...(threshold === undefined ? [] : ["--convergence-threshold", threshold]),
+  ];
+
+  it("renders the badge at the default threshold (sample scores 4) when the flag is omitted", async () => {
+    const { stdout, exitCode } = await runCli(renderArgs());
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("**Convergence** 🔄 4 > 1 — iterating");
+  });
+
+  it("treats an empty value (an unset optional workflow input) as the default, not a hard failure", async () => {
+    const { stdout, exitCode } = await runCli(renderArgs(""));
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("**Convergence** 🔄 4 > 1 — iterating");
+  });
+
+  it("applies a valid raised threshold", async () => {
+    const { stdout, exitCode } = await runCli(renderArgs("5"));
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("**Convergence** 🏁 4 ≤ 5 — converged");
+  });
+
+  it("fails loudly on a malformed value rather than silently coercing a numeric prefix", async () => {
+    const { stderr, exitCode } = await runCli(renderArgs("1,5"));
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("must be a non-negative number");
+  });
+
+  it("fails loudly on an astronomically large value that would parse to Infinity (a false 'converged')", async () => {
+    const { stderr, exitCode } = await runCli(renderArgs("9".repeat(320)));
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("too large to be a meaningful tolerance");
+  });
+});
+
 describe("cli — render posted-at line (issue #28)", () => {
   it("renders '**Reviewed** `<short-sha>` at <UTC timestamp>' computed at the IO boundary", async () => {
     const { stdout, exitCode } = await runCli([

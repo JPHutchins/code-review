@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import { render, computeSeverityCounts } from "./render.js";
+import { render, computeSeverityCounts, isConvergenceRound } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
@@ -553,6 +553,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         effort: input.effort,
         rounds: priorRounds,
         convergenceThreshold: input.convergenceThreshold,
+        convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
         postedAt: input.postedAt,
@@ -607,6 +608,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         effort: input.effort,
         rounds: priorRounds,
         convergenceThreshold: input.convergenceThreshold,
+        convergenceRound: false,
         testReport,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
@@ -666,10 +668,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // identical chip reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe
   // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
   const effectiveRoute = input.route ?? envelope.route;
-  const rounds =
-    effectiveRoute === "full review" && !thisIncomplete
-      ? [...priorRounds, currentCounts]
-      : priorRounds;
+  const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
+  const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
@@ -685,6 +685,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     severityCounts: currentCounts,
     rounds,
     convergenceThreshold: input.convergenceThreshold,
+    convergenceRound: isRound,
     strays,
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,

@@ -942,9 +942,10 @@ describe("render", () => {
         route: "full review",
       });
       const subLines = result.split("\n").filter((l) => l.includes("<sub>"));
-      // The meta line and the convergence line are both <sub>; the regression guard is that the cost
-      // table's pipe rows live in NONE of them.
-      expect(subLines.length).toBeGreaterThanOrEqual(1);
+      // The meta line and the convergence line are both <sub>; the regression guard is that the meta
+      // line is present and the cost table's pipe rows live in NONE of the <sub> lines.
+      const metaLine = subLines.find((l) => l.includes("**models:**"));
+      expect(metaLine).toBeDefined();
       expect(subLines.every((l) => !l.includes("|"))).toBe(true);
       expect(result).toContain("| **Total** |");
     });
@@ -1512,7 +1513,7 @@ describe("convergence score — issue #133", () => {
       template,
       route: "full review",
     });
-    expect(result).toContain("**Convergence** ✅ 0 ≤ 1 — converged");
+    expect(result).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
   });
 
   it("renders the iterating badge when a full-review round's score exceeds the threshold", () => {
@@ -1535,7 +1536,7 @@ describe("convergence score — issue #133", () => {
       route: "full review",
       convergenceThreshold: 3,
     });
-    expect(result).toContain("**Convergence** ✅ 2 ≤ 3 — converged");
+    expect(result).toContain("**Convergence** 🏁 2 ≤ 3 — converged");
   });
 
   it("shows NO badge on a mechanic pass — even one that finds a critical — so it can't post a false stop signal (#135 review r2)", () => {
@@ -1567,6 +1568,50 @@ describe("convergence score — issue #133", () => {
       template,
       route: "full review",
       incomplete: true,
+    });
+    expect(result).not.toContain("**Convergence**");
+  });
+
+  it("derives the badge gate from the ENVELOPE route in production (post never passes --route) (#135 review r3)", () => {
+    const full = render({
+      findings: mkFindings([]),
+      envelope: { ...baseEnvelope, route: "full review" },
+      prices,
+      template,
+    });
+    expect(full).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
+    const mechanic = render({
+      findings: mkFindings([mkFinding({ severity: "critical" })]),
+      envelope: { ...baseEnvelope, route: "mechanic" },
+      prices,
+      template,
+    });
+    expect(mechanic).not.toContain("**Convergence**");
+  });
+
+  it("suppresses the badge when post signals convergenceRound=false, even on a full-review route (#135 review r3)", () => {
+    // post passes this on the lost-envelope / notice branches, which append no round; the explicit
+    // signal must win over the route fallback so the badge can't decouple from the round history.
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+      convergenceRound: false,
+    });
+    expect(result).not.toContain("**Convergence**");
+  });
+
+  it("shows no badge for an error-verdict findings doc on a full-review route (isIncompleteFindings guard) (#135 review r3)", () => {
+    // No explicit incomplete flag and no envelope flag — incompleteness comes solely from the error
+    // verdict via isIncompleteFindings, which must still suppress the badge (no false "converged").
+    const result = render({
+      findings: mkFindings([], { verdict: "error" }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
     });
     expect(result).not.toContain("**Convergence**");
   });

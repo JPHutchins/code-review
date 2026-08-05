@@ -29,10 +29,6 @@ export interface InlineResult {
 
 export type SeverityCounts = Readonly<Record<Severity, number>>;
 
-// Per-severity points for the advisory convergence score; structurally a SeverityCounts but named
-// apart so a weight map is never confused for a tally of findings.
-export type SeverityWeights = Readonly<Record<Severity, number>>;
-
 export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
@@ -55,12 +51,17 @@ export interface RenderInput {
   readonly testReport?: TestSummary;
   readonly severityCounts?: SeverityCounts;
   // Per-full-review-round severity counts (oldest first, this run's counts last when it is a full
-  // review), rendered as the convergence trajectory and re-embedded as the carried-forward marker.
-  // Omitted/empty ⇒ no convergence line.
+  // review), rendered as the convergence TRAJECTORY and re-embedded as the carried-forward marker.
+  // Omitted/empty ⇒ no trajectory line. The convergence BADGE is independent of this (it reads the
+  // current run's counts under `convergenceRound`), so an empty history no longer implies no badge.
   readonly rounds?: readonly SeverityCounts[];
   // The advisory convergence tolerance — the weighted-severity score at or below which the round
   // reads as "converged" (default 1: unlimited nits plus at most one minor). Omitted ⇒ the default.
   readonly convergenceThreshold?: number;
+  // Whether THIS run is a convergence-defining full-review round (post computes it once and passes it
+  // here, using it for BOTH the round append and the badge so the two can't drift). Omitted ⇒ derived
+  // from route + incompleteness, the fallback the standalone `render` command relies on.
+  readonly convergenceRound?: boolean;
   readonly strays?: readonly Finding[];
   // How many of `strays` are in-diff findings GitHub rejected inline, rather than out-of-diff; > 0
   // titles the section "Findings" and notes they couldn't be posted inline. Omitted/0 ⇒ all out-of-diff.

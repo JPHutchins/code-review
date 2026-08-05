@@ -416,16 +416,24 @@ const parseBudgetUsd = (raw: string | undefined): number | null => {
   return Number.isFinite(n) && n >= 0 ? n : null;
 };
 
-/** Parse `--convergence-threshold`: a non-negative decimal, or undefined when absent (the render layer
- *  then applies DEFAULT_CONVERGENCE_THRESHOLD as the SSOT default). Matches the whole string before
- *  parsing — `Number.parseFloat` alone silently accepts a leading numeric prefix (`"1,5"`→1,
- *  `"0x10"`→0), which would move the tolerance the flag controls; a malformed value must fail loudly. */
+/** Parse `--convergence-threshold`: a non-negative decimal, or undefined when absent/blank (the render
+ *  layer then applies DEFAULT_CONVERGENCE_THRESHOLD as the SSOT default). An unset optional workflow
+ *  input expands to "" — treat empty/whitespace as absent so the step falls back to the default rather
+ *  than hard-failing under `set -euo pipefail`. Match the whole string before parsing — `parseFloat`
+ *  alone silently accepts a numeric prefix (`"1,5"`→1, `"0x10"`→0) — and reject a non-finite result
+ *  (a 309+-digit string parses to Infinity, which would make `score <= threshold` always true, a false
+ *  "converged"); a malformed value must fail loudly, the same class the prefix guard covers. */
 const parseConvergenceThreshold = (raw: string | undefined): number | undefined => {
-  if (raw === undefined) return undefined;
-  if (!/^\d+(\.\d+)?$/.test(raw)) {
-    fail(`--convergence-threshold must be a non-negative number; got "${raw}"`);
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === "") return undefined;
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    fail(`--convergence-threshold must be a non-negative number; got "${trimmed}"`);
   }
-  return Number.parseFloat(raw);
+  const n = Number.parseFloat(trimmed);
+  if (!Number.isFinite(n)) {
+    fail(`--convergence-threshold is too large to be a meaningful tolerance; got "${trimmed}"`);
+  }
+  return n;
 };
 
 const mtimeMsOf = (path: string): number | null => {

@@ -192,11 +192,11 @@ describe("convergence score — issue #133", () => {
   });
 
   it("treats the nit floor as free — unlimited nits stay converged", () => {
-    expect(convergenceSummary(counts(0, 0, 0, 50))).toBe("**Convergence** ✅ 0 ≤ 1 — converged");
+    expect(convergenceSummary(counts(0, 0, 0, 50))).toBe("**Convergence** 🏁 0 ≤ 1 — converged");
   });
 
   it("tolerates exactly one minor at the default threshold, but not two", () => {
-    expect(convergenceSummary(counts(0, 0, 1, 3))).toBe("**Convergence** ✅ 1 ≤ 1 — converged");
+    expect(convergenceSummary(counts(0, 0, 1, 3))).toBe("**Convergence** 🏁 1 ≤ 1 — converged");
     expect(convergenceSummary(counts(0, 0, 2, 0))).toBe("**Convergence** 🔄 2 > 1 — iterating");
   });
 
@@ -206,18 +206,18 @@ describe("convergence score — issue #133", () => {
   });
 
   it("a clean review reads as converged (score 0)", () => {
-    expect(convergenceSummary(counts(0, 0, 0, 0))).toBe("**Convergence** ✅ 0 ≤ 1 — converged");
+    expect(convergenceSummary(counts(0, 0, 0, 0))).toBe("**Convergence** 🏁 0 ≤ 1 — converged");
   });
 
   it("respects a raised threshold as the single tolerance knob", () => {
-    expect(convergenceSummary(counts(0, 0, 2, 0), 3)).toBe("**Convergence** ✅ 2 ≤ 3 — converged");
-    expect(convergenceSummary(counts(0, 1, 0, 0), 3)).toBe("**Convergence** ✅ 2 ≤ 3 — converged");
+    expect(convergenceSummary(counts(0, 0, 2, 0), 3)).toBe("**Convergence** 🏁 2 ≤ 3 — converged");
+    expect(convergenceSummary(counts(0, 1, 0, 0), 3)).toBe("**Convergence** 🏁 2 ≤ 3 — converged");
     expect(convergenceSummary(counts(1, 0, 0, 0), 3)).toBe("**Convergence** 🔄 4 > 3 — iterating");
   });
 
   it("renders score and threshold exactly so the printed inequality matches the comparison (#135 review)", () => {
     expect(convergenceSummary(counts(0, 0, 1, 0), 1.5)).toBe(
-      "**Convergence** ✅ 1 ≤ 1.5 — converged",
+      "**Convergence** 🏁 1 ≤ 1.5 — converged",
     );
     expect(convergenceSummary(counts(0, 0, 2, 0), 1.5)).toBe(
       "**Convergence** 🔄 2 > 1.5 — iterating",
@@ -228,7 +228,7 @@ describe("convergence score — issue #133", () => {
       "**Convergence** 🔄 1 > 0.95 — iterating",
     );
     expect(convergenceSummary(counts(0, 0, 1, 0), 1.04)).toBe(
-      "**Convergence** ✅ 1 ≤ 1.04 — converged",
+      "**Convergence** 🏁 1 ≤ 1.04 — converged",
     );
   });
 });

@@ -3,7 +3,7 @@
 // projection. Pure.
 
 import type { Finding, Findings } from "./schema.js";
-import type { SeverityCounts, SeverityWeights } from "./types.js";
+import type { SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
 
 export const severityEmoji = (s: string): string => {
@@ -94,13 +94,17 @@ export const parseFindingsMarker = (body: string): unknown => {
 // non-conforming shape decodes to no history rather than throwing on this render path.
 const ROUNDS_RE = /<!-- code-review:rounds;base64 ([A-Za-z0-9+/=]+) -->/;
 
+// The severity keys in descending weight/emphasis order, so every surface (counts validation, chips,
+// the convergence score) iterates them the same way from one source.
+const SEVERITIES = ["critical", "major", "minor", "nit"] as const;
+
 // Non-negative integers only: a crafted/corrupted marker with a negative count would render as a
 // false "clean" chip (filtered by `> 0`), and a fractional/huge one as a garbage chip. Rejecting them
 // here drops the bad round instead of carrying it forward on every re-serialize.
 const isSeverityCounts = (u: unknown): u is SeverityCounts =>
   typeof u === "object" &&
   u !== null &&
-  (["critical", "major", "minor", "nit"] as const).every((k) => {
+  SEVERITIES.every((k) => {
     const v = (u as Record<string, unknown>)[k];
     // isSafeInteger (not isInteger): a huge integer-valued float like 1e308 is an integer per
     // Number.isInteger, and would render a garbage `🔴1e+308` chip and re-serialize forward.
@@ -123,9 +127,7 @@ export const roundsMarker = (rounds: readonly SeverityCounts[]): string =>
 
 // One round's chip: "🔴4 🟠3" for findings, "clean" for none.
 const roundChip = (c: SeverityCounts): string => {
-  const parts = (["critical", "major", "minor", "nit"] as const)
-    .filter((k) => c[k] > 0)
-    .map((k) => `${severityEmoji(k)}${String(c[k])}`);
+  const parts = SEVERITIES.filter((k) => c[k] > 0).map((k) => `${severityEmoji(k)}${String(c[k])}`);
   return parts.length === 0 ? "clean" : parts.join(" ");
 };
 
@@ -144,36 +146,26 @@ export const roundsSummary = (rounds: readonly SeverityCounts[]): string => {
 // The severity-weighted convergence score and its advisory badge. The score is a pure function of one
 // round's severities; the badge is score ≤ threshold. Nits weigh 0 so the reviewer's self-replenishing
 // nit floor never blocks convergence; the threshold is the single tolerance knob (default 1: unlimited
-// nits plus at most one minor). ADVISORY ONLY — this derives from the reviewer's own severities and
-// never alters the verdict; it exists so an iterating author-agent has a deterministic stop signal.
-export const DEFAULT_CONVERGENCE_WEIGHTS: SeverityWeights = {
-  critical: 4,
-  major: 2,
-  minor: 1,
-  nit: 0,
-};
+// nits plus at most one minor). The weights are the fixed naive scheme (design chose a fixed scheme,
+// only the threshold is user-facing). ADVISORY ONLY — this derives from the reviewer's own severities
+// and never alters the verdict; it exists so an iterating author-agent has a deterministic stop signal.
+const CONVERGENCE_WEIGHTS: SeverityCounts = { critical: 4, major: 2, minor: 1, nit: 0 };
 export const DEFAULT_CONVERGENCE_THRESHOLD = 1;
 
-export const convergenceScore = (
-  counts: SeverityCounts,
-  weights: SeverityWeights = DEFAULT_CONVERGENCE_WEIGHTS,
-): number =>
-  (["critical", "major", "minor", "nit"] as const).reduce(
-    (sum, k) => sum + counts[k] * weights[k],
-    0,
-  );
+export const convergenceScore = (counts: SeverityCounts): number =>
+  SEVERITIES.reduce((sum, k) => sum + counts[k] * CONVERGENCE_WEIGHTS[k], 0);
 
-// "**Convergence** ✅ 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". Score and threshold
-// print exactly (no lossy rounding) so the shown inequality can never contradict the computed
-// comparison — a `toFixed`-rounded threshold could display "1 > 1.0" for a real 1 > 0.95.
+// "**Convergence** 🏁 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". The converged glyph
+// is a checkered flag, NOT the verdict badge's ✅, so a reader (or the author-agent this steers) can't
+// skim the line as an approval. Score and threshold print exactly (no lossy rounding) so the shown
+// inequality can never contradict the computed comparison — `toFixed` could display "1 > 1.0" for 1 > 0.95.
 export const convergenceSummary = (
   counts: SeverityCounts,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
-  weights: SeverityWeights = DEFAULT_CONVERGENCE_WEIGHTS,
 ): string => {
-  const score = convergenceScore(counts, weights);
+  const score = convergenceScore(counts);
   return score <= threshold
-    ? `**Convergence** ✅ ${String(score)} ≤ ${String(threshold)} — converged`
+    ? `**Convergence** 🏁 ${String(score)} ≤ ${String(threshold)} — converged`
     : `**Convergence** 🔄 ${String(score)} > ${String(threshold)} — iterating`;
 };
 

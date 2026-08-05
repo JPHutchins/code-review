@@ -44,6 +44,15 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
     emptySeverityCounts(),
   );
 
+// The single decision "is THIS run a convergence-defining full-review round?" — a completed full
+// review (not a CI-fix mechanic pass, not an incomplete notice). post() calls it to decide the round
+// append AND passes the result to render() for the badge gate, so the two can never disagree; render()
+// falls back to it only for the standalone `render` command, which has no post to compute it.
+export const isConvergenceRound = (
+  route: string | null | undefined,
+  incomplete: boolean,
+): boolean => route === "full review" && !incomplete;
+
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
   const usageAvailable = input.envelope !== null;
@@ -65,12 +74,12 @@ export const render = (input: RenderInput): string => {
   const rounds = input.rounds ?? [];
   // The convergence badge is a property of a completed FULL-REVIEW round: render it only then, from
   // THIS run's counts. A CI-fix mechanic pass, a lost-envelope pass, and a notice each append no round
-  // and declare no convergence verdict — a badge from the current findings would sit "✅ converged"
-  // above a mechanic's fresh critical, and one from a carried-forward prior round would contradict the
+  // and declare no convergence verdict — a badge from the current findings would sit "converged" above
+  // a mechanic's fresh critical, and one from a carried-forward prior round would contradict the
   // findings beside it. Neither is a truthful stop signal, so no badge shows; the carried-forward
-  // trajectory alone gives context. On a full review the badge, the trajectory's new chip, and the
-  // findings line are all this same round's counts, so they cannot disagree.
-  const isFullReviewRound = route === "full review" && !incomplete;
+  // trajectory alone gives context. Prefer post's explicit signal (which also gates the round append,
+  // so badge ⇔ append); fall back to the shared predicate for the standalone `render` command.
+  const isFullReviewRound = input.convergenceRound ?? isConvergenceRound(route, incomplete);
 
   return eta.renderString(input.template, {
     findings: input.findings,

@@ -724,7 +724,10 @@ describe("post — §5.5 error semantics", () => {
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("diff for this PR is empty");
-    expect(body.body).toContain("🛠️ review did not complete");
+    expect(body.body).toContain("🛠️ no review verdict");
+    // An empty diff is incomplete, not a clean pass — never the clean-review line, never the marker.
+    expect(body.body).not.toContain("clean review");
+    expect(body.body).not.toContain("review-complete");
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -916,6 +919,41 @@ describe("post — §5.5 error semantics", () => {
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
     );
     expect(reviewCall).toBeUndefined();
+
+    exitSpy.mockRestore();
+  });
+
+  it("an error-verdict findings doc with a lost envelope renders incomplete, never a false clean review (issue #117)", async () => {
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+    // A notice whose envelope was lost still carries verdict "error"; render derives incompleteness
+    // from the verdict, so the sticky is a notice, not "No findings — clean review." with the marker.
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        schema_version: "0.5.0",
+        summary:
+          "### 🛠️ Security gate could not evaluate\n\nInfrastructure failure — not a verdict.",
+        verdict: "error",
+        findings: [],
+      }),
+    );
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(
+      post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("no review verdict");
+    expect(body.body).not.toContain("clean review");
+    expect(body.body).not.toContain("review-complete");
 
     exitSpy.mockRestore();
   });

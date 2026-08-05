@@ -657,6 +657,32 @@ describe("render", () => {
       });
       expect(result).toContain("changes requested");
     });
+
+    it('renders the "no review verdict" badge for an error verdict', () => {
+      const findings = mkFindings([], { verdict: "error" });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("no review verdict");
+    });
+
+    it("treats an error verdict as incomplete even when nothing flags it — no clean-review line, no marker (issue #117)", () => {
+      // baseEnvelope carries no `incomplete` flag; the error verdict alone must drive it.
+      const findings = mkFindings([], { verdict: "error" });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).not.toContain("clean review");
+      expect(result).not.toContain("<!-- review-complete -->");
+    });
   });
 
   describe("cost footer", () => {

@@ -1119,10 +1119,14 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(stdout.trim()).toBe("empty-had-prior");
     const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
       readonly summary: string;
+      readonly verdict: string;
       readonly findings: readonly unknown[];
     };
     expect(seeded.findings).toEqual([]);
-    expect(seeded.summary).toBe("");
+    // The scaffold carries verdict "error" so that if the agent dies before overwriting it, its
+    // recovery by `adapt` reads as incomplete, never as a false clean pass (issue #117).
+    expect(seeded.verdict).toBe("error");
+    expect(seeded.summary).toContain("Review did not complete");
     const v = await runCli(["validate", out]);
     expect(v.stdout).toContain("valid");
     // Every seeding path — prior or scaffold — must drop the marker, or the fan-out floor would

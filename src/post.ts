@@ -578,10 +578,16 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
 
   if (envelope === null) {
+    // The envelope carried the incomplete flag; with it lost, derive incompleteness from the verdict
+    // (render does the same) so an error-verdict findings doc here still reads as a notice and — via
+    // the guard below — can't bury a completed review, which this branch previously skipped.
+    const envelopelessIncomplete = findings.verdict === "error";
+    if (wouldBuryCompleted(envelopelessIncomplete)) leaveInPlace();
     const body = formatMarkdown(
       render({
         findings,
         envelope: null,
+        incomplete: envelopelessIncomplete,
         prices: decodedPrices.right,
         pricesProvided: input.pricesProvided,
         template,
@@ -605,7 +611,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // A completed review carries real telemetry; adapt (and the workflow's notice wrap) flag a run that
   // produced only a notice. Don't let such a notice bury an existing completed review or post a stray
   // empty inline review over it — leave the real review in place.
-  const thisIncomplete = envelope.incomplete === true;
+  const thisIncomplete = envelope.incomplete === true || findings.verdict === "error";
   if (wouldBuryCompleted(thisIncomplete)) leaveInPlace();
 
   // Base64-encode the whole-document marker once, reused across sticky + review body; each inline

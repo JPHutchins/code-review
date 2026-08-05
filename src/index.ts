@@ -34,7 +34,7 @@ import {
   FindingsCodec,
   PriceMapCodec,
   TestSummaryCodec,
-  emptyFindings,
+  incompleteFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import { parseFindingsMarker, parseReviewedSha } from "./surface.js";
@@ -780,10 +780,13 @@ const seedDraftCmd = defineCommand({
 
     const writeScaffold = (): boolean => {
       try {
-        writeFileSync(outPath, `${JSON.stringify(emptyFindings(""), null, 2)}\n`);
+        writeFileSync(
+          outPath,
+          `${JSON.stringify(incompleteFindings("### ⚠️ Review did not complete\n\nThe review agent wrote no findings — see the workflow logs."), null, 2)}\n`,
+        );
         writeSeedMarker();
         process.stderr.write(
-          `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
+          `Seeded ${outPath} with an incomplete-verdict scaffold — no decodable prior findings to build on; if the agent never overwrites it (it died first), the run reads as incomplete, not a false clean pass\n`,
         );
         return true;
       } catch (err) {

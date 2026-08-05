@@ -41,7 +41,11 @@ export const render = (input: RenderInput): string => {
   // The meta line prints turns/cost only when there is real usage to print — a present-but-zeroed
   // envelope (the synthesized notice wrap: no models) would otherwise show a false "$0.00 · turns 0".
   const hasUsage = input.envelope !== null && input.envelope.models.length > 0;
-  const incomplete = input.incomplete ?? input.envelope?.incomplete ?? false;
+  // Enforce the invariant here, not just at the producers: a `verdict: "error"` findings doc is
+  // ALWAYS incomplete, however it reached render (a scaffold `adapt` recovered when the agent died, an
+  // envelope-less notice), so it never renders "clean review" or the review-complete marker.
+  const incomplete =
+    (input.incomplete ?? input.envelope?.incomplete ?? false) || input.findings.verdict === "error";
   const costReport = input.envelope ? computeCost(input.envelope.models, input.prices) : null;
   const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;
@@ -95,7 +99,7 @@ export const render = (input: RenderInput): string => {
         case "changes":
           return "🔧 changes requested";
         case "error":
-          return "🛠️ review did not complete";
+          return "🛠️ no review verdict";
         default:
           return `❓ ${v}`;
       }

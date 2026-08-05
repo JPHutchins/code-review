@@ -5,22 +5,21 @@ import {
   isNoticeKind,
   NOTICE_KINDS,
 } from "./notice.js";
-import { ResultEnvelopeCodec, emptyFindings, incompleteFindings } from "./schema.js";
+import { ResultEnvelopeCodec, incompleteFindings } from "./schema.js";
 
 const KINDS = NOTICE_KINDS;
 
 describe("notice findings verdict — issue #117", () => {
   it("an incomplete notice is machine-readably distinct from a clean pass", () => {
-    const cleanPass = emptyFindings("Nothing to flag.");
+    // A clean pass is verdict "comment" with no findings; every notice must differ from that shape.
     for (const kind of KINDS) {
       const blob = buildNoticeEnvelope(kind).findings;
       expect(blob.verdict).toBe("error");
-      expect(blob.verdict).not.toBe(cleanPass.verdict);
+      expect(blob.verdict).not.toBe("comment");
     }
   });
 
-  it("emptyFindings is a neutral comment scaffold; incompleteFindings is an error", () => {
-    expect(emptyFindings("x").verdict).toBe("comment");
+  it("incompleteFindings carries the error verdict", () => {
     expect(incompleteFindings("x").verdict).toBe("error");
   });
 });

@@ -157,23 +157,14 @@ export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
 export type Verdict = t.TypeOf<typeof VerdictCodec>;
 
-// The initial $DRAFT scaffold: an empty valid findings doc the review agent overwrites. Its neutral
-// "comment" verdict is never posted as-is — if the agent produces nothing, the pipeline replaces this
-// with an `incompleteFindings` notice, so the scaffold must NOT carry the "error" verdict that would
-// misreport a still-running review as a failure.
-export const emptyFindings = (summary: string): Findings => ({
-  schema_version: DEFAULT_SCHEMA_VERSION,
-  summary,
-  verdict: "comment",
-  findings: [],
-});
-
-// The findings shape for a run that produced no code-review verdict — an operational failure or a
-// security refusal, always paired with envelope `incomplete: true`. `verdict: "error"` is the
-// machine-readable half of that flag: it stops the blob a consumer decodes from being byte-identical
-// to a clean pass (verdict "comment", findings []), so an agent that follows the decode-the-JSON
-// contract cannot mistake "could not evaluate" for "nothing found". Invariant: an incomplete envelope
-// carries verdict "error"; a completed review carries approve/comment/changes.
+// The findings shape for a run that produced no code-review verdict — an operational failure, a
+// security refusal, an empty diff with nothing to review, or the initial $DRAFT scaffold the agent
+// never overwrote (it died first). `verdict: "error"` is the machine-readable signal that the blob a
+// consumer decodes is NOT a clean pass (verdict "comment", findings []), so an agent following the
+// decode-the-JSON contract cannot mistake "no verdict was produced" for "nothing found". Invariant,
+// enforced at every consumption point (render, sticky precedence): verdict "error" ⟺ incomplete; a
+// completed review carries approve/comment/changes. The scaffold uses this too — its recovery by
+// `adapt` when the agent dies before writing must read as incomplete, not as a false clean pass.
 export const incompleteFindings = (summary: string): Findings => ({
   schema_version: DEFAULT_SCHEMA_VERSION,
   summary,

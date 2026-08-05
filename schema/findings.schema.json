@@ -18,8 +18,8 @@
     },
     "verdict": {
       "type": "string",
-      "enum": ["approve", "comment", "changes"],
-      "description": "Overall stance."
+      "enum": ["approve", "comment", "changes", "error"],
+      "description": "Overall stance. The review agent emits one of `approve`/`comment`/`changes`. `error` is reserved for the pipeline: it marks a run that produced no verdict about the diff (an operational failure, a security refusal, or an empty diff with nothing to review — always with `findings: []`), so a consumer switching on `verdict` gets a case it does not recognise rather than a false clean pass."
     },
     "findings": {
       "type": "array",

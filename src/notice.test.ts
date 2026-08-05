@@ -5,9 +5,50 @@ import {
   isNoticeKind,
   NOTICE_KINDS,
 } from "./notice.js";
-import { ResultEnvelopeCodec } from "./schema.js";
+import {
+  ResultEnvelopeCodec,
+  emptyFindings,
+  incompleteFindings,
+  isIncompleteFindings,
+} from "./schema.js";
+import type { Finding } from "./schema.js";
 
 const KINDS = NOTICE_KINDS;
+
+const aFinding: Finding = {
+  path: "src/x.ts",
+  start_line: 1,
+  end_line: 1,
+  severity: "minor",
+  title: "t",
+  description: "d",
+  reasoning: "r",
+  confidence: 0.5,
+};
+
+describe("notice findings verdict — issue #117", () => {
+  it("an incomplete notice is machine-readably distinct from a clean pass", () => {
+    // A clean pass is verdict "comment" with no findings; every notice must differ from that shape.
+    for (const kind of KINDS) {
+      const blob = buildNoticeEnvelope(kind).findings;
+      expect(blob.verdict).toBe("error");
+      expect(blob.verdict).not.toBe("comment");
+    }
+  });
+
+  it("incompleteFindings is an error notice; emptyFindings is a neutral comment scaffold", () => {
+    expect(incompleteFindings("x").verdict).toBe("error");
+    expect(emptyFindings("x").verdict).toBe("comment");
+  });
+
+  it("isIncompleteFindings is true ONLY for an error verdict with an empty findings array", () => {
+    expect(isIncompleteFindings(incompleteFindings("x"))).toBe(true);
+    expect(isIncompleteFindings(emptyFindings("x"))).toBe(false);
+    // A doc carrying findings is a real review whatever its verdict says — a spurious "error" can
+    // never silently suppress real findings (issue #117 round-2 finding).
+    expect(isIncompleteFindings({ ...incompleteFindings("x"), findings: [aFinding] })).toBe(false);
+  });
+});
 
 describe("buildNoticeEnvelope", () => {
   it("flags every kind incomplete, with zeroed telemetry that round-trips the envelope codec", () => {
@@ -19,7 +60,7 @@ describe("buildNoticeEnvelope", () => {
       expect(env.duration_ms).toBe(0);
       expect(env.vendor_cost_usd).toBeNull();
       expect(env.findings.findings).toEqual([]);
-      expect(env.findings.verdict).toBe("comment");
+      expect(env.findings.verdict).toBe("error");
       expect(ResultEnvelopeCodec.decode(env)._tag).toBe("Right");
     }
   });
@@ -70,7 +111,7 @@ describe("buildNoticeEnvelope", () => {
   it("degrades an unrecognized kind to an honest incomplete envelope naming the version skew", () => {
     const env = buildUnknownNoticeEnvelope("some-future-kind");
     expect(env.incomplete).toBe(true);
-    expect(env.findings.verdict).toBe("comment");
+    expect(env.findings.verdict).toBe("error");
     expect(env.findings.summary).toContain("some-future-kind");
     expect(env.findings.summary).toContain("older than the workflow");
     expect(ResultEnvelopeCodec.decode(env)._tag).toBe("Right");

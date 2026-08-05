@@ -12,7 +12,12 @@ const SeverityCodec = t.union([
 
 const SideCodec = t.union([t.literal("RIGHT"), t.literal("LEFT")]);
 
-const VerdictCodec = t.union([t.literal("approve"), t.literal("comment"), t.literal("changes")]);
+const VerdictCodec = t.union([
+  t.literal("approve"),
+  t.literal("comment"),
+  t.literal("changes"),
+  t.literal("error"),
+]);
 
 const LineNumber = t.refinement(
   t.number,
@@ -146,23 +151,44 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.4.0";
+export const DEFAULT_SCHEMA_VERSION = "0.5.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
+export type Verdict = t.TypeOf<typeof VerdictCodec>;
 
-// A valid empty-findings document carrying `summary` as its only content — the single shape for a
-// notice and a "did not complete" envelope. Callers supply fully-formatted markdown.
-export const noticeFindings = (summary: string): Findings => ({
+// The initial $DRAFT scaffold: an empty, neutral findings doc the review agent is told to fill in. It
+// carries "comment" (never the pipeline-only "error"), so an agent that populates it and forgets to
+// touch the verdict still ships a valid review. A dead-agent recovery of this untouched scaffold is
+// caught by `adapt`'s seed-marker check, not by its verdict — so the verdict stays a plain template.
+export const emptyFindings = (summary: string): Findings => ({
   schema_version: DEFAULT_SCHEMA_VERSION,
   summary,
   verdict: "comment",
   findings: [],
 });
+
+// The findings shape for a run that produced no code-review verdict — an operational failure, a
+// security refusal, or an empty diff with nothing to review. `verdict: "error"` is the machine-readable
+// signal that the blob a consumer decodes is NOT a clean pass (verdict "comment", findings []), so an
+// agent following the decode-the-JSON contract cannot mistake "no verdict was produced" for "nothing
+// found". A completed review carries approve/comment/changes.
+export const incompleteFindings = (summary: string): Findings => ({
+  schema_version: DEFAULT_SCHEMA_VERSION,
+  summary,
+  verdict: "error",
+  findings: [],
+});
+
+// The one predicate for "this findings doc is a no-verdict notice, not a completed review", shared by
+// render and the sticky-precedence guard so the rule lives in a single place. Requires an EMPTY
+// findings array: a doc that carries real findings is a real review whatever its verdict says, so a
+// spurious "error" verdict alongside findings can never silently suppress them.
+export const isIncompleteFindings = (findings: Findings): boolean =>
+  findings.verdict === "error" && findings.findings.length === 0;
 export type Triage = t.TypeOf<typeof TriageCodec>;
 export type Severity = t.TypeOf<typeof SeverityCodec>;
 export type Side = t.TypeOf<typeof SideCodec>;
-export type Verdict = t.TypeOf<typeof VerdictCodec>;
 export type ModelUsageEntry = t.TypeOf<typeof ModelUsageEntryCodec>;
 export type ResultEnvelope = t.TypeOf<typeof ResultEnvelopeCodec>;
 export type ModelPrices = t.TypeOf<typeof ModelPricesCodec>;

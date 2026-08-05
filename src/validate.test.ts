@@ -175,6 +175,11 @@ describe("validateAgainstSchema", () => {
       expect(result.errors.some((e) => e.includes("verdict"))).toBe(true);
     });
 
+    it("accepts the pipeline-reserved `error` verdict (0.5 widened the enum)", () => {
+      const result = validateAgainstSchema(doc([], { verdict: "error" }), schemaPath);
+      expect(result.valid).toBe(true);
+    });
+
     it("rejects invalid side value", () => {
       const result = validateAgainstSchema(doc([finding({ side: "BOTH" })]), schemaPath);
       expect(result.valid).toBe(false);

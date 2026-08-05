@@ -143,7 +143,7 @@ describe("adapt — claude-code", () => {
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
     expect(result.right.findings.findings).toEqual([]);
-    expect(result.right.findings.verdict).toBe("comment");
+    expect(result.right.findings.verdict).toBe("error");
     expect(result.right.findings.summary).toContain("did not complete");
     // Real telemetry from the native envelope survives the ladder miss (issue #18) — this is the
     // ladder-miss-WITH-usage regression test: no findings, but the run's actual usage is not lost.
@@ -225,6 +225,36 @@ describe("adapt — claude-code — extraction ladder integration", () => {
     if (result._tag !== "Right") return;
     expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
   });
+
+  it("seedUnrevised skips recovery and emits a 'did not complete' notice — a dead agent's untouched seed never posts as a review (issue #117)", () => {
+    const result = adapt(
+      "claude-code",
+      loadLadderFixture("f11-agent-file-wins.json"),
+      ladderFixturePath("f11-agent-file.json"),
+      { seedUnrevised: true },
+    );
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    // NOT the agent-file's findings — the draft is the untouched seed, so the run is incomplete.
+    expect(result.right.findings.verdict).toBe("error");
+    expect(result.right.findings.findings).toEqual([]);
+    expect(result.right.incomplete).toBe(true);
+    expect(result.right.findings.summary).toContain("did not write a review");
+    // The run's real telemetry still survives — no discarded envelope.
+    expect(result.right.turns).toBe(2);
+  });
+
+  it("seedUnrevised false recovers the agent-file normally (the agent DID overwrite the seed)", () => {
+    const result = adapt(
+      "claude-code",
+      loadLadderFixture("f11-agent-file-wins.json"),
+      ladderFixturePath("f11-agent-file.json"),
+      { seedUnrevised: false },
+    );
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
+  });
 });
 
 describe("adapt — claude-code — absent native envelope (issue #39)", () => {
@@ -239,7 +269,7 @@ describe("adapt — claude-code — absent native envelope (issue #39)", () => {
     expect(result.right.vendor_cost_usd).toBeNull();
     // No findings recoverable → the graceful notice, not a thrown/exited process.
     expect(result.right.findings.findings).toEqual([]);
-    expect(result.right.findings.verdict).toBe("comment");
+    expect(result.right.findings.verdict).toBe("error");
     expect(result.right.findings.summary).toContain("did not complete");
     // Flagged incomplete so the commenter renders it honestly and won't bury a real review.
     expect(result.right.incomplete).toBe(true);

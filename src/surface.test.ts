@@ -142,11 +142,12 @@ describe("rounds trajectory — issue #125", () => {
     expect(carryForwardMarkers(body)).toContain("reviewed-sha:");
   });
 
-  it("rejects rounds with negative, fractional, or non-integer counts", () => {
+  it("rejects rounds with negative, fractional, or unsafe-integer counts", () => {
     const marker = (round: unknown): string =>
       `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify([round]), "utf-8").toString("base64")} -->`;
     expect(parseRounds(marker({ critical: -1, major: 0, minor: 0, nit: 0 }))).toEqual([]);
     expect(parseRounds(marker({ critical: 1.5, major: 0, minor: 0, nit: 0 }))).toEqual([]);
+    expect(parseRounds(marker({ critical: 1e308, major: 0, minor: 0, nit: 0 }))).toEqual([]);
   });
 
   it("drops only the malformed round, keeping the valid ones — one bad entry can't erase the history", () => {

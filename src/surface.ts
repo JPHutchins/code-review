@@ -102,7 +102,9 @@ const isSeverityCounts = (u: unknown): u is SeverityCounts =>
   u !== null &&
   (["critical", "major", "minor", "nit"] as const).every((k) => {
     const v = (u as Record<string, unknown>)[k];
-    return typeof v === "number" && Number.isInteger(v) && v >= 0;
+    // isSafeInteger (not isInteger): a huge integer-valued float like 1e308 is an integer per
+    // Number.isInteger, and would render a garbage `🔴1e+308` chip and re-serialize forward.
+    return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   });
 
 export const parseRounds = (body: string): readonly SeverityCounts[] => {

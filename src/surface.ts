@@ -39,6 +39,16 @@ const encodeMarker = (document: unknown, jsonUrl: string | undefined, limit: num
   return marker ? `${AGENTS_STOP_DIRECTIVE}\n${marker}` : "";
 };
 
+// Decode a base64-in-HTML-comment marker payload, shared by the findings + rounds markers; undefined
+// on any malformed input so callers degrade rather than throw on the render path.
+const decodeBase64Json = (b64: string): unknown => {
+  try {
+    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
+  } catch {
+    return undefined;
+  }
+};
+
 export const findingsPointer = (
   findings: Findings,
   jsonUrl: string | undefined,
@@ -73,14 +83,9 @@ export const parseReviewComplete = (body: string): boolean => body.includes(REVI
 // null when the body carries no base64 marker (e.g. the jsonUrl-link fallback for oversized findings)
 // or the payload isn't valid JSON. Callers validate the result — a prior run may predate the shape.
 export const parseFindingsMarker = (body: string): unknown => {
-  const match = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body);
-  const b64 = match?.[1];
+  const b64 = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body)?.[1];
   if (b64 === undefined) return null;
-  try {
-    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
-  } catch {
-    return null;
-  }
+  return decodeBase64Json(b64) ?? null;
 };
 
 // Per-full-review-round severity counts, carried in a base64 marker so each completed full review
@@ -89,24 +94,24 @@ export const parseFindingsMarker = (body: string): unknown => {
 // non-conforming shape decodes to no history rather than throwing on this render path.
 const ROUNDS_RE = /<!-- code-review:rounds;base64 ([A-Za-z0-9+/=]+) -->/;
 
+// Non-negative integers only: a crafted/corrupted marker with a negative count would render as a
+// false "clean" chip (filtered by `> 0`), and a fractional/huge one as a garbage chip. Rejecting them
+// here drops the bad round instead of carrying it forward on every re-serialize.
 const isSeverityCounts = (u: unknown): u is SeverityCounts =>
   typeof u === "object" &&
   u !== null &&
-  (["critical", "major", "minor", "nit"] as const).every(
-    (k) => typeof (u as Record<string, unknown>)[k] === "number",
-  );
+  (["critical", "major", "minor", "nit"] as const).every((k) => {
+    const v = (u as Record<string, unknown>)[k];
+    return typeof v === "number" && Number.isInteger(v) && v >= 0;
+  });
 
 export const parseRounds = (body: string): readonly SeverityCounts[] => {
   const b64 = ROUNDS_RE.exec(body)?.[1];
   if (b64 === undefined) return [];
-  try {
-    const decoded: unknown = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
-    // Filter, not all-or-nothing: one future-shaped or corrupted round drops only itself rather than
-    // erasing the whole trajectory (post re-serializes the parsed array on every write).
-    return Array.isArray(decoded) ? decoded.filter(isSeverityCounts) : [];
-  } catch {
-    return [];
-  }
+  const decoded = decodeBase64Json(b64);
+  // Filter, not all-or-nothing: one future-shaped or corrupted round drops only itself rather than
+  // erasing the whole trajectory (post re-serializes the parsed array on every write).
+  return Array.isArray(decoded) ? decoded.filter(isSeverityCounts) : [];
 };
 
 export const roundsMarker = (rounds: readonly SeverityCounts[]): string =>

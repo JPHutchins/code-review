@@ -2698,6 +2698,15 @@ describe("post — convergence rounds (issue #125)", () => {
       ) as CommentBody
     ).body;
 
+  // How many rounds the carried marker encodes — the append/carry signal that survives even when the
+  // trajectory LINE is hidden (an incomplete notice embeds the marker but renders no line).
+  const roundsInMarker = (body: string): number => {
+    const b64 = /code-review:rounds;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    return b64 === undefined
+      ? 0
+      : (JSON.parse(Buffer.from(b64, "base64").toString("utf-8")) as unknown[]).length;
+  };
+
   it("a full review APPENDS a round — the trajectory grows", async () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
@@ -2736,16 +2745,16 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     const body = patchedBody(calls());
-    expect(body).toContain("**Round 1**");
-    expect(body).not.toContain("**Round 2**");
+    // The marker carries the prior round forward (not appended to 2), and a "did not complete" notice
+    // renders no trajectory line at all.
+    expect(roundsInMarker(body)).toBe(1);
+    expect(body).not.toContain("**Round");
   });
 
-  it("a re-review of the SAME head REPLACES the last round rather than adding a duplicate", async () => {
+  it("a same-head re-run APPENDS again — an identical chip reads as 'no change' (a reviewed-sha-keyed replace is unsafe: a mechanic stamps a new head without a round)", async () => {
     const sha = "a".repeat(40);
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 2, complete: true, sha }));
     await post(mkInput({ route: "full review", headSha: sha }), api);
-    const body = patchedBody(calls());
-    expect(body).toContain("**Round 2**");
-    expect(body).not.toContain("**Round 3**");
+    expect(patchedBody(calls())).toContain("**Round 3**");
   });
 });

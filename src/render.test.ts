@@ -1486,4 +1486,17 @@ describe("convergence trajectory — issue #125", () => {
     expect(result).not.toContain("Round ");
     expect(result).not.toContain("code-review:rounds");
   });
+
+  it("hides the trajectory LINE on an incomplete review but still carries the marker forward", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      incomplete: true,
+      rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
+    });
+    expect(result).not.toContain("**Round");
+    expect(result).toContain("<!-- code-review:rounds;base64 ");
+  });
 });

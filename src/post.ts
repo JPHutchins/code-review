@@ -658,15 +658,13 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // stamps it; `post` is not passed --route in the workflow), so read the effective route the same way
   // render does — `input.route` first, then the envelope — or the feature never grows a round in
   // production. A mechanic pass or any incomplete/failed run carries the trajectory forward unchanged
-  // (it is a CI fix or a non-review, not a round). A re-review of the SAME head (a CI retry) replaces
-  // the last round rather than appending a duplicate, so the count tracks pushes, not re-runs.
+  // (it is a CI fix or a non-review, not a round). A same-head CI retry simply appends again — an
+  // identical chip reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe
+  // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
   const effectiveRoute = input.route ?? envelope.route;
-  const sameHead = existingComplete && parseReviewedSha(existingSticky.body) === input.headSha;
   const rounds =
     effectiveRoute === "full review" && !thisIncomplete
-      ? sameHead && priorRounds.length > 0
-        ? [...priorRounds.slice(0, -1), currentCounts]
-        : [...priorRounds, currentCounts]
+      ? [...priorRounds, currentCounts]
       : priorRounds;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {

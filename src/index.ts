@@ -42,6 +42,7 @@ import {
   buildNoticeEnvelope,
   buildUnknownNoticeEnvelope,
   isNoticeKind,
+  parseAgentAllowlist,
   NOTICE_KINDS,
 } from "./notice.js";
 import { announce, post, reportIncomplete } from "./post.js";
@@ -113,6 +114,19 @@ const readJSONOrAbsent = (path: string): unknown => {
     process.stderr.write(
       `code-review: native envelope ${path} is not valid JSON (${errMsg(err)}) — proceeding with no native telemetry\n`,
     );
+    return undefined;
+  }
+};
+
+// The optional sandbox config a notice names its allowlist from. A missing file is the NORMAL case —
+// an early failure runs before the jail is set up — so this stays silent (unlike readJSONOrAbsent's
+// stderr) and yields undefined for any absent/unreadable/malformed path; the notice then omits the
+// allowlist rather than crashing the assemble step.
+const readSandboxConfigQuietly = (path: string | undefined): unknown => {
+  if (!path) return undefined;
+  try {
+    return JSON.parse(readFileSync(resolve(path), "utf-8")) as unknown;
+  } catch {
     return undefined;
   }
 };
@@ -948,6 +962,11 @@ const noticeCmd = defineCommand({
       description:
         "security-blocked / triage-error only: the triage's fail-closed reason string (empty/omitted ⇒ the no-reason wording)",
     },
+    "sandbox-config": {
+      type: "string",
+      description:
+        "no-output / triage-error only: path to the agent's sandbox-runtime settings (sandbox.json); its network.allowedDomains is named in the notice so an egress-blocked review self-diagnoses. Missing or unreadable ⇒ the allowlist is omitted (an early failure runs before the jail is set up).",
+    },
   },
   // An unrecognized kind degrades to a generic incomplete notice instead of exiting non-zero: a
   // `notice <kind>` call under the workflow's `set -euo pipefail` must never crash the assemble
@@ -960,8 +979,9 @@ const noticeCmd = defineCommand({
       process.stdout.write(`${JSON.stringify(buildUnknownNoticeEnvelope(args.kind), null, 2)}\n`);
       return;
     }
+    const agentAllowlist = parseAgentAllowlist(readSandboxConfigQuietly(args["sandbox-config"]));
     process.stdout.write(
-      `${JSON.stringify(buildNoticeEnvelope(args.kind, args.reasons), null, 2)}\n`,
+      `${JSON.stringify(buildNoticeEnvelope(args.kind, args.reasons, agentAllowlist), null, 2)}\n`,
     );
   },
 });

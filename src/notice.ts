@@ -24,6 +24,30 @@ export type NoticeKind = (typeof NOTICE_KINDS)[number];
 
 export const isNoticeKind = (s: string): s is NoticeKind => NOTICE_KINDS.some((k) => k === s);
 
+// The review agent's egress jail (sandbox-runtime) confines ONLY the agent — setup, install, and
+// gather run unfiltered. So when a jailed run produced no review, naming the jail's allowlist turns
+// "the agent could not reach a host it needed" into a one-line diagnosis. Pure: pulls
+// network.allowedDomains out of a parsed sandbox config, yielding no hosts for any other shape (a
+// missing/unreadable config, or a config before the jail was set up) ⇒ no note.
+export const parseAgentAllowlist = (sandboxConfig: unknown): readonly string[] => {
+  const domains = (sandboxConfig as { network?: { allowedDomains?: unknown } } | null | undefined)
+    ?.network?.allowedDomains;
+  return Array.isArray(domains) && domains.every((d): d is string => typeof d === "string")
+    ? domains
+    : [];
+};
+
+// Appended only to the notices where a jailed `claude -p` actually ran (no-output, triage-error), so
+// an egress-blocked host it needed is nameable against the allowlist. Empty allowlist ⇒ empty note.
+const egressNote = (agentAllowlist: readonly string[]): string =>
+  agentAllowlist.length === 0
+    ? ""
+    : `\n\nThe review agent runs under a network egress jail that allows only ${agentAllowlist
+        .map((host) => `\`${host}\``)
+        .join(
+          ", ",
+        )}. If the review needed another host — a package registry to validate the project, say — add it via the \`extra_endpoints\` input (or the \`--extra\` flag on \`sandbox-config\` in a single-file workflow).`;
+
 // Blockquote every line so a multi-line reason stays quoted, not just its first line.
 const blockquote = (text: string): string => text.replaceAll("\n", "\n> ");
 
@@ -36,7 +60,11 @@ const reasoned = (lead: string, noReason: string, reasons: string | undefined): 
     ? `${lead}\n\n> ${blockquote(reasons)}`
     : noReason;
 
-const noticeSummary = (kind: NoticeKind, reasons: string | undefined): string => {
+const noticeSummary = (
+  kind: NoticeKind,
+  reasons: string | undefined,
+  agentAllowlist: readonly string[],
+): string => {
   switch (kind) {
     case "security-blocked":
       return reasoned(
@@ -45,17 +73,22 @@ const noticeSummary = (kind: NoticeKind, reasons: string | undefined): string =>
         reasons,
       );
     case "triage-error":
-      return reasoned(
-        "### 🛠️ Security gate could not evaluate\n\nThe security triage could not produce a verdict (operational error), so the review failed closed — this is an infrastructure failure, not a finding about this diff. Re-run to retry a transient fault; a persistent one is a configuration issue (see the workflow logs). The triage step reported:",
-        "### 🛠️ Security gate could not evaluate\n\nThe security triage could not produce a verdict (operational error), so the review failed closed — this is an infrastructure failure, not a finding about this diff. Re-run to retry a transient fault; a persistent one is a configuration issue (see the workflow logs).",
-        reasons,
+      return (
+        reasoned(
+          "### 🛠️ Security gate could not evaluate\n\nThe security triage could not produce a verdict (operational error), so the review failed closed — this is an infrastructure failure, not a finding about this diff. Re-run to retry a transient fault; a persistent one is a configuration issue (see the workflow logs). The triage step reported:",
+          "### 🛠️ Security gate could not evaluate\n\nThe security triage could not produce a verdict (operational error), so the review failed closed — this is an infrastructure failure, not a finding about this diff. Re-run to retry a transient fault; a persistent one is a configuration issue (see the workflow logs).",
+          reasons,
+        ) + egressNote(agentAllowlist)
       );
     case "setup-failed":
       return "### 🛠️ Review did not run\n\nThe review job failed before the security triage could run (e.g. dependency install or environment setup). See the workflow logs — this is an infrastructure failure, not a security verdict.";
     case "checkout-failed":
       return "### ⚠️ Could not check out the PR head\n\nThe PR head commit could not be fetched or checked out (it may have been force-pushed away, or is otherwise unavailable), so the review was skipped rather than run against the wrong tree. See workflow logs.";
     case "no-output":
-      return "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs.";
+      return (
+        "### ⚠️ Review did not complete\n\nThe diff passed triage but the review produced no output. See workflow logs." +
+        egressNote(agentAllowlist)
+      );
   }
 };
 
@@ -69,8 +102,11 @@ const noticeEnvelope = (summary: string): ResultEnvelope => ({
   incomplete: true,
 });
 
-export const buildNoticeEnvelope = (kind: NoticeKind, reasons?: string): ResultEnvelope =>
-  noticeEnvelope(noticeSummary(kind, reasons));
+export const buildNoticeEnvelope = (
+  kind: NoticeKind,
+  reasons?: string,
+  agentAllowlist: readonly string[] = [],
+): ResultEnvelope => noticeEnvelope(noticeSummary(kind, reasons, agentAllowlist));
 
 // A workflow that asks for a kind this CLI does not know is almost always version skew — the pinned
 // CLI is older than the workflow calling it. Degrade to an honest incomplete envelope that names the

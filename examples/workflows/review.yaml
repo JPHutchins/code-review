@@ -562,12 +562,14 @@ jobs:
                 ;;
               error)
                 # Triage ran but produced no valid verdict (operational failure) — failed closed, not
-                # a finding about the diff.
-                code-review notice triage-error --reasons "$REASONS" >findings/envelope.json
+                # a finding about the diff. --sandbox-config names the agent jail's allowlist so an
+                # egress-blocked triage self-diagnoses (the jail is set up before triage runs).
+                code-review notice triage-error --reasons "$REASONS" --sandbox-config "$RUNNER_TEMP/sandbox.json" >findings/envelope.json
                 ;;
               safe)
-                # Triage passed (safe=true) but the review produced no findings.
-                code-review notice no-output >findings/envelope.json
+                # Triage passed (safe=true) but the review produced no findings. --sandbox-config names
+                # the agent jail's allowlist so an egress-blocked review self-diagnoses.
+                code-review notice no-output --sandbox-config "$RUNNER_TEMP/sandbox.json" >findings/envelope.json
                 ;;
               *)
                 # Triage never emitted a verdict — the job errored before the gate ran (install/setup).

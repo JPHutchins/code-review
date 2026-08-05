@@ -3,6 +3,7 @@ import {
   buildNoticeEnvelope,
   buildUnknownNoticeEnvelope,
   isNoticeKind,
+  parseAgentAllowlist,
   NOTICE_KINDS,
 } from "./notice.js";
 import {
@@ -123,5 +124,56 @@ describe("isNoticeKind", () => {
     for (const k of KINDS) expect(isNoticeKind(k)).toBe(true);
     expect(isNoticeKind("clean")).toBe(false);
     expect(isNoticeKind("")).toBe(false);
+  });
+});
+
+describe("parseAgentAllowlist — issue #97", () => {
+  it("extracts network.allowedDomains from a sandbox config", () => {
+    expect(parseAgentAllowlist({ network: { allowedDomains: ["a.com", "b.com"] } })).toEqual([
+      "a.com",
+      "b.com",
+    ]);
+  });
+
+  it("yields no hosts for any absent, malformed, or wrong-typed shape", () => {
+    expect(parseAgentAllowlist(undefined)).toEqual([]);
+    expect(parseAgentAllowlist(null)).toEqual([]);
+    expect(parseAgentAllowlist({})).toEqual([]);
+    expect(parseAgentAllowlist({ network: {} })).toEqual([]);
+    expect(parseAgentAllowlist({ network: { allowedDomains: "a.com" } })).toEqual([]);
+    expect(parseAgentAllowlist({ network: { allowedDomains: [1, 2] } })).toEqual([]);
+  });
+});
+
+describe("buildNoticeEnvelope egress note — issue #97", () => {
+  const allowlist = ["api.deepseek.com", "api.github.com", "github.com"];
+
+  it("names the agent jail's allowlist on the notices where a jailed agent ran", () => {
+    for (const kind of ["no-output", "triage-error"] as const) {
+      const summary = buildNoticeEnvelope(kind, undefined, allowlist).findings.summary;
+      expect(summary).toContain("network egress jail");
+      for (const host of allowlist) expect(summary).toContain(`\`${host}\``);
+      expect(summary).toContain("extra_endpoints");
+    }
+  });
+
+  it("does NOT add the egress note to failures where the agent never ran", () => {
+    for (const kind of ["setup-failed", "checkout-failed", "security-blocked"] as const) {
+      const summary = buildNoticeEnvelope(kind, undefined, allowlist).findings.summary;
+      expect(summary).not.toContain("network egress jail");
+    }
+  });
+
+  it("omits the note entirely when the allowlist is empty (no sandbox config)", () => {
+    expect(buildNoticeEnvelope("no-output").findings.summary).not.toContain("network egress jail");
+    expect(buildNoticeEnvelope("no-output", undefined, []).findings.summary).not.toContain(
+      "network egress jail",
+    );
+  });
+
+  it("keeps the triage-error reason AND the egress note together", () => {
+    const summary = buildNoticeEnvelope("triage-error", "boom", allowlist).findings.summary;
+    expect(summary).toContain("> boom");
+    expect(summary).toContain("network egress jail");
   });
 });

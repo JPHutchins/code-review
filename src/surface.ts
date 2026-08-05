@@ -101,7 +101,9 @@ export const parseRounds = (body: string): readonly SeverityCounts[] => {
   if (b64 === undefined) return [];
   try {
     const decoded: unknown = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
-    return Array.isArray(decoded) && decoded.every(isSeverityCounts) ? decoded : [];
+    // Filter, not all-or-nothing: one future-shaped or corrupted round drops only itself rather than
+    // erasing the whole trajectory (post re-serializes the parsed array on every write).
+    return Array.isArray(decoded) ? decoded.filter(isSeverityCounts) : [];
   } catch {
     return [];
   }
@@ -120,11 +122,17 @@ const roundChip = (c: SeverityCounts): string => {
   return parts.length === 0 ? "clean" : parts.join(" ");
 };
 
-// "**Round 3** · 🔴4 🟠3 → 🟠2 → clean" — the convergence line; "" when there is no round history.
-export const roundsSummary = (rounds: readonly SeverityCounts[]): string =>
-  rounds.length === 0
-    ? ""
-    : `**Round ${String(rounds.length)}** · ${rounds.map(roundChip).join(" → ")}`;
+// The convergence line: "**Round 3** · 🔴4 🟠3 → 🟠2 → clean"; "" when there is no round history. The
+// round number is always the true count; the trajectory shows only the most recent chips (with a
+// leading "…" when older ones are elided) so a long-running PR's line stays readable and bounded.
+const TRAJECTORY_CHIPS = 8;
+export const roundsSummary = (rounds: readonly SeverityCounts[]): string => {
+  if (rounds.length === 0) return "";
+  const chips = rounds.slice(-TRAJECTORY_CHIPS).map(roundChip);
+  const trajectory =
+    rounds.length > TRAJECTORY_CHIPS ? `… → ${chips.join(" → ")}` : chips.join(" → ");
+  return `**Round ${String(rounds.length)}** · ${trajectory}`;
+};
 
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must
 // survive — the "review in progress" placeholder swaps the visible summary yet must not clobber the

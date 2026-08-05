@@ -2647,31 +2647,49 @@ describe("post — incomplete result never buries a completed review (#107)", ()
 });
 
 describe("post — convergence rounds (issue #125)", () => {
-  const priorRoundsMarker = `<!-- code-review:rounds;base64 ${Buffer.from(
-    JSON.stringify([{ critical: 0, major: 1, minor: 0, nit: 0 }]),
-    "utf-8",
-  ).toString("base64")} -->`;
+  const roundsMarkerFor = (n: number): string =>
+    `<!-- code-review:rounds;base64 ${Buffer.from(
+      JSON.stringify(
+        Array.from({ length: n }, () => ({ critical: 0, major: 1, minor: 0, nit: 0 })),
+      ),
+      "utf-8",
+    ).toString("base64")} -->`;
 
-  const mocksWithPriorSticky = () => [
-    {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
-      response: inlineDiff,
-    },
-    {
-      match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-      response: `{"id": 999, "body": "<!-- code-review -->\\n${priorRoundsMarker}\\nold"}\n`,
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
-      response: "",
-    },
-    { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
-  ];
+  // A prior sticky carrying `n` rounds; `complete` + `sha` model a re-review of an already-reviewed head.
+  const mocksWithPriorSticky = (
+    opts: { rounds: number; complete?: boolean; sha?: string } = { rounds: 1 },
+  ) => {
+    const markers = [
+      opts.complete ? "<!-- review-complete -->" : "",
+      opts.sha ? `<!-- reviewed-sha: ${opts.sha} -->` : "",
+      roundsMarkerFor(opts.rounds),
+    ]
+      .filter(Boolean)
+      .join("\\n");
+    return [
+      {
+        match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: `{"id": 999, "body": "<!-- code-review -->\\n${markers}\\nold"}\n`,
+      },
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+        response: "",
+      },
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ];
+  };
 
   const patchedBody = (calls: readonly RecordedCall[]): string =>
     (
@@ -2681,16 +2699,53 @@ describe("post — convergence rounds (issue #125)", () => {
     ).body;
 
   it("a full review APPENDS a round — the trajectory grows", async () => {
-    const { api, calls } = mkMockGhApi(mocksWithPriorSticky());
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     expect(patchedBody(calls())).toContain("**Round 2**");
   });
 
+  it("reads the route from the ENVELOPE when --route is absent (the production path)", async () => {
+    // The workflow does not pass --route; the review job stamps it in the envelope. If the append
+    // gated on input.route the feature would be inert in production — this pins the envelope path.
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, route: "full review" }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    await post(mkInput({ route: undefined }), api);
+    expect(patchedBody(calls())).toContain("**Round 2**");
+  });
+
   it("a mechanic pass CARRIES the trajectory forward unchanged — not a review round", async () => {
-    const { api, calls } = mkMockGhApi(mocksWithPriorSticky());
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "mechanic" }), api);
     const body = patchedBody(calls());
     expect(body).toContain("**Round 1**");
     expect(body).not.toContain("**Round 2**");
+  });
+
+  it("an incomplete full review does NOT append a spurious 'clean' round", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({ schema_version: "0.4.0", summary: "s", verdict: "error", findings: [] }),
+    );
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, route: "full review" }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    expect(body).toContain("**Round 1**");
+    expect(body).not.toContain("**Round 2**");
+  });
+
+  it("a re-review of the SAME head REPLACES the last round rather than adding a duplicate", async () => {
+    const sha = "a".repeat(40);
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 2, complete: true, sha }));
+    await post(mkInput({ route: "full review", headSha: sha }), api);
+    const body = patchedBody(calls());
+    expect(body).toContain("**Round 2**");
+    expect(body).not.toContain("**Round 3**");
   });
 });

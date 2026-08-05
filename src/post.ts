@@ -652,6 +652,23 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const initialDisposition: InlineDisposition | undefined =
     comments.length === 0 && strays.length > 0 ? { kind: "none-in-diff" } : undefined;
 
+  const currentCounts = computeSeverityCounts(findings.findings);
+
+  // A convergence round is a COMPLETED FULL review. The route lives in the envelope (the review job
+  // stamps it; `post` is not passed --route in the workflow), so read the effective route the same way
+  // render does — `input.route` first, then the envelope — or the feature never grows a round in
+  // production. A mechanic pass or any incomplete/failed run carries the trajectory forward unchanged
+  // (it is a CI fix or a non-review, not a round). A re-review of the SAME head (a CI retry) replaces
+  // the last round rather than appending a duplicate, so the count tracks pushes, not re-runs.
+  const effectiveRoute = input.route ?? envelope.route;
+  const sameHead = existingComplete && parseReviewedSha(existingSticky.body) === input.headSha;
+  const rounds =
+    effectiveRoute === "full review" && !thisIncomplete
+      ? sameHead && priorRounds.length > 0
+        ? [...priorRounds.slice(0, -1), currentCounts]
+        : [...priorRounds, currentCounts]
+      : priorRounds;
+
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
     envelope,
@@ -663,13 +680,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     reviewedSha: input.headSha,
     effort: input.effort,
     testReport,
-    severityCounts: computeSeverityCounts(findings.findings),
-    // A completed FULL review is a convergence round: append this run's counts. A mechanic pass (or any
-    // other route) carries the trajectory forward unchanged — it is a CI fix, not a review round.
-    rounds:
-      input.route === "full review"
-        ? [...priorRounds, computeSeverityCounts(findings.findings)]
-        : priorRounds,
+    severityCounts: currentCounts,
+    rounds,
     strays,
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,

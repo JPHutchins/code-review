@@ -141,4 +141,24 @@ describe("rounds trajectory — issue #125", () => {
     expect(carryForwardMarkers(body)).toContain("code-review:rounds;base64");
     expect(carryForwardMarkers(body)).toContain("reviewed-sha:");
   });
+
+  it("drops only the malformed round, keeping the valid ones — one bad entry can't erase the history", () => {
+    const mixed = Buffer.from(
+      JSON.stringify([counts(0, 1, 0, 0), { critical: 1 }, counts(0, 0, 2, 0)]),
+      "utf-8",
+    ).toString("base64");
+    expect(parseRounds(`<!-- code-review:rounds;base64 ${mixed} -->`)).toEqual([
+      counts(0, 1, 0, 0),
+      counts(0, 0, 2, 0),
+    ]);
+  });
+
+  it("caps the visible trajectory with a leading ellipsis while keeping the true round number", () => {
+    const many = Array.from({ length: 12 }, (_, i) => counts(0, 0, i + 1, 0));
+    const summary = roundsSummary(many);
+    expect(summary.startsWith("**Round 12** · … → ")).toBe(true);
+    // Only the last 8 chips are shown; the earliest (🔵1) is elided.
+    expect(summary).toContain("🔵12");
+    expect(summary).not.toContain("🔵1 →");
+  });
 });

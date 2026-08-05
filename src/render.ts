@@ -5,7 +5,14 @@ import type { Finding, Severity } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
-import { severityEmoji, findingsPointer, projectPatch, formatConfidence } from "./surface.js";
+import {
+  severityEmoji,
+  findingsPointer,
+  projectPatch,
+  formatConfidence,
+  roundsMarker,
+  roundsSummary,
+} from "./surface.js";
 import type { PatchProjection } from "./surface.js";
 
 // pipes break markdown table columns.
@@ -75,6 +82,8 @@ export const render = (input: RenderInput): string => {
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
     findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
+    roundsMarker: roundsMarker(input.rounds ?? []),
+    roundsSummary: roundsSummary(input.rounds ?? []),
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

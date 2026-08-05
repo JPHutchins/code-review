@@ -3,6 +3,7 @@
 // projection. Pure.
 
 import type { Finding, Findings } from "./schema.js";
+import type { SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
 
 export const severityEmoji = (s: string): string => {
@@ -36,6 +37,16 @@ const encodeMarker = (document: unknown, jsonUrl: string | undefined, limit: num
         ? `<!-- code-review:findings-json ${jsonUrl} -->`
         : "";
   return marker ? `${AGENTS_STOP_DIRECTIVE}\n${marker}` : "";
+};
+
+// Decode a base64-in-HTML-comment marker payload, shared by the findings + rounds markers; undefined
+// on any malformed input so callers degrade rather than throw on the render path.
+const decodeBase64Json = (b64: string): unknown => {
+  try {
+    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
+  } catch {
+    return undefined;
+  }
 };
 
 export const findingsPointer = (
@@ -72,29 +83,80 @@ export const parseReviewComplete = (body: string): boolean => body.includes(REVI
 // null when the body carries no base64 marker (e.g. the jsonUrl-link fallback for oversized findings)
 // or the payload isn't valid JSON. Callers validate the result — a prior run may predate the shape.
 export const parseFindingsMarker = (body: string): unknown => {
-  const match = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body);
-  const b64 = match?.[1];
+  const b64 = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body)?.[1];
   if (b64 === undefined) return null;
-  try {
-    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
-  } catch {
-    return null;
-  }
+  return decodeBase64Json(b64) ?? null;
+};
+
+// Per-full-review-round severity counts, carried in a base64 marker so each completed full review
+// appends its own and the sticky renders the convergence trajectory. A CI-fix mechanic pass carries it
+// forward unchanged (it is not a review round). Best-effort like the findings marker: any
+// non-conforming shape decodes to no history rather than throwing on this render path.
+const ROUNDS_RE = /<!-- code-review:rounds;base64 ([A-Za-z0-9+/=]+) -->/;
+
+// Non-negative integers only: a crafted/corrupted marker with a negative count would render as a
+// false "clean" chip (filtered by `> 0`), and a fractional/huge one as a garbage chip. Rejecting them
+// here drops the bad round instead of carrying it forward on every re-serialize.
+const isSeverityCounts = (u: unknown): u is SeverityCounts =>
+  typeof u === "object" &&
+  u !== null &&
+  (["critical", "major", "minor", "nit"] as const).every((k) => {
+    const v = (u as Record<string, unknown>)[k];
+    // isSafeInteger (not isInteger): a huge integer-valued float like 1e308 is an integer per
+    // Number.isInteger, and would render a garbage `🔴1e+308` chip and re-serialize forward.
+    return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  });
+
+export const parseRounds = (body: string): readonly SeverityCounts[] => {
+  const b64 = ROUNDS_RE.exec(body)?.[1];
+  if (b64 === undefined) return [];
+  const decoded = decodeBase64Json(b64);
+  // Filter, not all-or-nothing: one future-shaped or corrupted round drops only itself rather than
+  // erasing the whole trajectory (post re-serializes the parsed array on every write).
+  return Array.isArray(decoded) ? decoded.filter(isSeverityCounts) : [];
+};
+
+export const roundsMarker = (rounds: readonly SeverityCounts[]): string =>
+  rounds.length === 0
+    ? ""
+    : `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->`;
+
+// One round's chip: "🔴4 🟠3" for findings, "clean" for none.
+const roundChip = (c: SeverityCounts): string => {
+  const parts = (["critical", "major", "minor", "nit"] as const)
+    .filter((k) => c[k] > 0)
+    .map((k) => `${severityEmoji(k)}${String(c[k])}`);
+  return parts.length === 0 ? "clean" : parts.join(" ");
+};
+
+// The convergence line: "**Round 3** · 🔴4 🟠3 → 🟠2 → clean"; "" when there is no round history. The
+// round number is always the true count; the trajectory shows only the most recent chips (with a
+// leading "…" when older ones are elided) so a long-running PR's line stays readable and bounded.
+const TRAJECTORY_CHIPS = 8;
+export const roundsSummary = (rounds: readonly SeverityCounts[]): string => {
+  if (rounds.length === 0) return "";
+  const chips = rounds.slice(-TRAJECTORY_CHIPS).map(roundChip);
+  const trajectory =
+    rounds.length > TRAJECTORY_CHIPS ? `… → ${chips.join(" → ")}` : chips.join(" → ");
+  return `**Round ${String(rounds.length)}** · ${trajectory}`;
 };
 
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must
 // survive — the "review in progress" placeholder swaps the visible summary yet must not clobber the
-// re-review seed the review job reads back from the sticky (the embedded findings + reviewed-sha).
-// The findings marker is extracted verbatim so both its base64 and jsonUrl-link forms survive; base64
-// (A–Z a–z 0–9 + / =) and URLs never contain '>', so `[^>]*` stops at its closing `-->`. The STOP
-// directive that always precedes it is re-emitted from AGENTS_STOP_DIRECTIVE (its SSOT above) rather
-// than re-matched, so a future edit to that constant can't silently desync a parallel regex. Returns
-// "" when the body carries neither marker.
+// re-review seed the review job reads back from the sticky (the embedded findings + reviewed-sha), nor
+// the round-history trajectory. The findings marker is extracted verbatim so both its base64 and
+// jsonUrl-link forms survive; base64 (A–Z a–z 0–9 + / =) and URLs never contain '>', so `[^>]*` stops
+// at its closing `-->`. The STOP directive that always precedes it is re-emitted from
+// AGENTS_STOP_DIRECTIVE (its SSOT above) rather than re-matched, so a future edit to that constant
+// can't silently desync a parallel regex. Returns "" when the body carries none of them.
 export const carryForwardMarkers = (body: string): string => {
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
+  const rounds = ROUNDS_RE.exec(body)?.[0];
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha].filter((m): m is string => m !== undefined).join("\n\n");
+  return [findingsBlock, reviewedSha, rounds]
+    .filter((m): m is string => m !== undefined)
+    .join("\n\n");
 };
 
 // Escape triple-backticks so fenced content can't break out of its block.

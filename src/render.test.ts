@@ -1464,3 +1464,39 @@ describe("strays list structural integrity", () => {
     expect(list).not.toMatch(/\n[ \t]*\n[ \t]*\n/);
   });
 });
+
+describe("convergence trajectory — issue #125", () => {
+  it("renders the round line and embeds the rounds marker when a history is supplied", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      rounds: [
+        { critical: 1, major: 2, minor: 0, nit: 0 },
+        { critical: 0, major: 0, minor: 0, nit: 0 },
+      ],
+    });
+    expect(result).toContain("**Round 2** · 🔴1 🟠2 → clean");
+    expect(result).toContain("<!-- code-review:rounds;base64 ");
+  });
+
+  it("renders no convergence line or marker when there is no round history", () => {
+    const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+    expect(result).not.toContain("Round ");
+    expect(result).not.toContain("code-review:rounds");
+  });
+
+  it("hides the trajectory LINE on an incomplete review but still carries the marker forward", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      incomplete: true,
+      rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
+    });
+    expect(result).not.toContain("**Round");
+    expect(result).toContain("<!-- code-review:rounds;base64 ");
+  });
+});

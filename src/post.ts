@@ -12,6 +12,7 @@ import {
   findingsPointer,
   parseReviewComplete,
   parseReviewedSha,
+  parseRounds,
   reviewBodyPointer,
 } from "./surface.js";
 import {
@@ -516,6 +517,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // placeholder is not "complete" (it lacks the marker), so its own commenter may still write.
   const existingComplete = existingSticky !== null && parseReviewComplete(existingSticky.body);
   const wouldBuryCompleted = (incomplete: boolean): boolean => incomplete && existingComplete;
+
+  // The full-review convergence history carried in the sticky's marker (it survives the announce
+  // placeholder via carryForwardMarkers). A completed FULL review appends this run's counts below; a
+  // CI-fix mechanic pass and every notice carry it forward unchanged so the trajectory is never lost.
+  const priorRounds = existingSticky !== null ? parseRounds(existingSticky.body) : [];
   const leaveInPlace = (): void => {
     process.stderr.write(
       `Review did not complete and the sticky already reflects a completed review — leaving it in place\n`,
@@ -543,6 +549,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         route: input.route,
         reviewedSha: input.headSha,
         effort: input.effort,
+        rounds: priorRounds,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
         postedAt: input.postedAt,
@@ -595,6 +602,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         route: input.route,
         reviewedSha: input.headSha,
         effort: input.effort,
+        rounds: priorRounds,
         testReport,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
@@ -644,6 +652,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const initialDisposition: InlineDisposition | undefined =
     comments.length === 0 && strays.length > 0 ? { kind: "none-in-diff" } : undefined;
 
+  const currentCounts = computeSeverityCounts(findings.findings);
+
+  // A convergence round is a COMPLETED FULL review. The route lives in the envelope (the review job
+  // stamps it; `post` is not passed --route in the workflow), so read the effective route the same way
+  // render does — `input.route` first, then the envelope — or the feature never grows a round in
+  // production. A mechanic pass or any incomplete/failed run carries the trajectory forward unchanged
+  // (it is a CI fix or a non-review, not a round). A same-head CI retry simply appends again — an
+  // identical chip reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe
+  // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
+  const effectiveRoute = input.route ?? envelope.route;
+  const rounds =
+    effectiveRoute === "full review" && !thisIncomplete
+      ? [...priorRounds, currentCounts]
+      : priorRounds;
+
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
     envelope,
@@ -655,7 +678,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     reviewedSha: input.headSha,
     effort: input.effort,
     testReport,
-    severityCounts: computeSeverityCounts(findings.findings),
+    severityCounts: currentCounts,
+    rounds,
     strays,
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,

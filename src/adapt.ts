@@ -7,7 +7,7 @@ import * as t from "io-ts";
 import type { Either } from "fp-ts/Either";
 import { resolve } from "./registry.js";
 import { extractStructured, describeLadderFailure } from "./extract.js";
-import { DEFAULT_SCHEMA_VERSION, noticeFindings } from "./schema.js";
+import { DEFAULT_SCHEMA_VERSION, incompleteFindings } from "./schema.js";
 import type { Findings, ModelUsageEntry, ResultEnvelope } from "./schema.js";
 
 // No value-level fp-ts import: a bare "fp-ts/Either" subpath import breaks under strict Node ESM
@@ -191,7 +191,7 @@ const buildEnvelope = (
     case "telemetry-only":
       return {
         schema_version: DEFAULT_SCHEMA_VERSION,
-        findings: noticeFindings(`### ⚠️ Review did not complete\n\n${outcome.reason}`),
+        findings: incompleteFindings(`### ⚠️ Review did not complete\n\n${outcome.reason}`),
         incomplete: true,
         ...telemetry,
       };

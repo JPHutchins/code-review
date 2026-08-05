@@ -67,7 +67,8 @@ ignored); a version outside the supported set degrades to a §5.5 sticky notice.
 | `v0.1.0` | superseded | Initial schema. Matches the proven camas reference implementation. |
 | `v0.2.0` | superseded | Adds required `schema_version`; optional `code`/`code_url` finding fields; normative `suggestion` `""`/`null` semantics; abstract vendor-neutral envelope (see SPEC §6.1). |
 | `v0.3.0` | superseded | Adds optional `reasoning` finding field. |
-| `v0.4.0` | **current** | Breaking: renames finding `body` → `description`; makes `reasoning` and `confidence` **required**; adds optional `recommendation` (prose fix); removes the free-text `suggestion` field (a `patch`, now `string \| null`, is the sole mechanical fix, projected into a suggestion by the commenter). The CLI supports only `0.4` — `0.2`/`0.3` documents cannot supply the now-required `reasoning`/`confidence`, so they degrade to a §5.5 unsupported-version notice rather than being upcast. |
+| `v0.4.0` | superseded | Breaking: renames finding `body` → `description`; makes `reasoning` and `confidence` **required**; adds optional `recommendation` (prose fix); removes the free-text `suggestion` field (a `patch`, now `string \| null`, is the sole mechanical fix, projected into a suggestion by the commenter). |
+| `v0.5.0` | **current** | Widens the `verdict` enum with a pipeline-reserved `error` value: a run that produced no verdict about the diff (operational failure or security refusal) now carries `verdict: "error"` with `findings: []`, so its machine-readable blob is no longer byte-identical to a clean pass. Backwards-compatible (a `0.4` document is a valid `0.5` document); the CLI keeps resolving `0.4` via an identity upcast, so a sticky embedded by a `0.4` CLI still seeds a re-review. |
 
 ### Price-map schema
 

@@ -724,7 +724,7 @@ describe("post — §5.5 error semantics", () => {
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("diff for this PR is empty");
-    expect(body.body).toContain("💬 comment");
+    expect(body.body).toContain("🛠️ review did not complete");
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,

@@ -12,7 +12,12 @@ const SeverityCodec = t.union([
 
 const SideCodec = t.union([t.literal("RIGHT"), t.literal("LEFT")]);
 
-const VerdictCodec = t.union([t.literal("approve"), t.literal("comment"), t.literal("changes")]);
+const VerdictCodec = t.union([
+  t.literal("approve"),
+  t.literal("comment"),
+  t.literal("changes"),
+  t.literal("error"),
+]);
 
 const LineNumber = t.refinement(
   t.number,
@@ -146,23 +151,38 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.4.0";
+export const DEFAULT_SCHEMA_VERSION = "0.5.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
+export type Verdict = t.TypeOf<typeof VerdictCodec>;
 
-// A valid empty-findings document carrying `summary` as its only content — the single shape for a
-// notice and a "did not complete" envelope. Callers supply fully-formatted markdown.
-export const noticeFindings = (summary: string): Findings => ({
+// The initial $DRAFT scaffold: an empty valid findings doc the review agent overwrites. Its neutral
+// "comment" verdict is never posted as-is — if the agent produces nothing, the pipeline replaces this
+// with an `incompleteFindings` notice, so the scaffold must NOT carry the "error" verdict that would
+// misreport a still-running review as a failure.
+export const emptyFindings = (summary: string): Findings => ({
   schema_version: DEFAULT_SCHEMA_VERSION,
   summary,
   verdict: "comment",
   findings: [],
 });
+
+// The findings shape for a run that produced no code-review verdict — an operational failure or a
+// security refusal, always paired with envelope `incomplete: true`. `verdict: "error"` is the
+// machine-readable half of that flag: it stops the blob a consumer decodes from being byte-identical
+// to a clean pass (verdict "comment", findings []), so an agent that follows the decode-the-JSON
+// contract cannot mistake "could not evaluate" for "nothing found". Invariant: an incomplete envelope
+// carries verdict "error"; a completed review carries approve/comment/changes.
+export const incompleteFindings = (summary: string): Findings => ({
+  schema_version: DEFAULT_SCHEMA_VERSION,
+  summary,
+  verdict: "error",
+  findings: [],
+});
 export type Triage = t.TypeOf<typeof TriageCodec>;
 export type Severity = t.TypeOf<typeof SeverityCodec>;
 export type Side = t.TypeOf<typeof SideCodec>;
-export type Verdict = t.TypeOf<typeof VerdictCodec>;
 export type ModelUsageEntry = t.TypeOf<typeof ModelUsageEntryCodec>;
 export type ResultEnvelope = t.TypeOf<typeof ResultEnvelopeCodec>;
 export type ModelPrices = t.TypeOf<typeof ModelPricesCodec>;

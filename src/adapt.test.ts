@@ -143,7 +143,7 @@ describe("adapt — claude-code", () => {
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
     expect(result.right.findings.findings).toEqual([]);
-    expect(result.right.findings.verdict).toBe("comment");
+    expect(result.right.findings.verdict).toBe("error");
     expect(result.right.findings.summary).toContain("did not complete");
     // Real telemetry from the native envelope survives the ladder miss (issue #18) — this is the
     // ladder-miss-WITH-usage regression test: no findings, but the run's actual usage is not lost.
@@ -239,7 +239,7 @@ describe("adapt — claude-code — absent native envelope (issue #39)", () => {
     expect(result.right.vendor_cost_usd).toBeNull();
     // No findings recoverable → the graceful notice, not a thrown/exited process.
     expect(result.right.findings.findings).toEqual([]);
-    expect(result.right.findings.verdict).toBe("comment");
+    expect(result.right.findings.verdict).toBe("error");
     expect(result.right.findings.summary).toContain("did not complete");
     // Flagged incomplete so the commenter renders it honestly and won't bury a real review.
     expect(result.right.incomplete).toBe(true);

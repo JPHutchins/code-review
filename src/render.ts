@@ -94,6 +94,8 @@ export const render = (input: RenderInput): string => {
           return "💬 comment";
         case "changes":
           return "🔧 changes requested";
+        case "error":
+          return "🛠️ review did not complete";
         default:
           return `❓ ${v}`;
       }

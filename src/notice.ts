@@ -7,7 +7,7 @@
 // review"/"$0.00", and an operational failure never reads as a security verdict about the diff) and
 // the sticky precedence guard treats them as non-completing.
 
-import { DEFAULT_SCHEMA_VERSION, noticeFindings } from "./schema.js";
+import { DEFAULT_SCHEMA_VERSION, incompleteFindings } from "./schema.js";
 import type { ResultEnvelope } from "./schema.js";
 
 // One list is the source of truth for the kind union, its runtime guard, and the CLI's kind listing,
@@ -61,7 +61,7 @@ const noticeSummary = (kind: NoticeKind, reasons: string | undefined): string =>
 
 const noticeEnvelope = (summary: string): ResultEnvelope => ({
   schema_version: DEFAULT_SCHEMA_VERSION,
-  findings: noticeFindings(summary),
+  findings: incompleteFindings(summary),
   models: [],
   turns: 0,
   duration_ms: 0,

@@ -14,7 +14,12 @@ import {
   parseReviewedSha,
   reviewBodyPointer,
 } from "./surface.js";
-import { ResultEnvelopeCodec, PriceMapCodec, TestSummaryCodec, noticeFindings } from "./schema.js";
+import {
+  ResultEnvelopeCodec,
+  PriceMapCodec,
+  TestSummaryCodec,
+  incompleteFindings,
+} from "./schema.js";
 import type { Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -528,7 +533,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const renderNotice = (message: string): string =>
     formatMarkdown(
       render({
-        findings: noticeFindings(`### ⚠️ ${message}`),
+        findings: incompleteFindings(`### ⚠️ ${message}`),
         envelope: null,
         incomplete: true,
         prices: decodedPrices.right,

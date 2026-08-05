@@ -34,7 +34,7 @@ import {
   FindingsCodec,
   PriceMapCodec,
   TestSummaryCodec,
-  noticeFindings,
+  emptyFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import { parseFindingsMarker, parseReviewedSha } from "./surface.js";
@@ -780,7 +780,7 @@ const seedDraftCmd = defineCommand({
 
     const writeScaffold = (): boolean => {
       try {
-        writeFileSync(outPath, `${JSON.stringify(noticeFindings(""), null, 2)}\n`);
+        writeFileSync(outPath, `${JSON.stringify(emptyFindings(""), null, 2)}\n`);
         writeSeedMarker();
         process.stderr.write(
           `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,

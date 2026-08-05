@@ -17,7 +17,9 @@
 <% if (it.roundsSummary) { %>
 <sub><%~ it.roundsSummary %></sub>
 <% } %>
+<% if (it.convergenceSummary) { %>
 <sub><%~ it.convergenceSummary %></sub>
+<% } %>
 <% } %>
 
 <%~ it.findings.summary %>

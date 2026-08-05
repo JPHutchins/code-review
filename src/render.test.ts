@@ -1504,17 +1504,24 @@ describe("convergence trajectory — issue #125", () => {
 });
 
 describe("convergence score — issue #133", () => {
-  it("renders the converged badge for a clean review, even with no round history", () => {
-    const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+  it("renders the converged badge for a clean full-review round", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      rounds: [{ critical: 0, major: 0, minor: 0, nit: 0 }],
+    });
     expect(result).toContain("**Convergence** ✅ 0 ≤ 1 — converged");
   });
 
-  it("renders the iterating badge when a major finding keeps the score over the threshold", () => {
+  it("renders the iterating badge when the latest round's score exceeds the threshold", () => {
     const result = render({
       findings: mkFindings([mkFinding({ severity: "major" })]),
       envelope: baseEnvelope,
       prices,
       template,
+      rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
     });
     expect(result).toContain("**Convergence** 🔄 2 > 1 — iterating");
   });
@@ -1525,18 +1532,41 @@ describe("convergence score — issue #133", () => {
       envelope: baseEnvelope,
       prices,
       template,
+      rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
       convergenceThreshold: 3,
     });
     expect(result).toContain("**Convergence** ✅ 2 ≤ 3 — converged");
   });
 
-  it("hides the convergence line on an incomplete review", () => {
+  it("derives the badge from the latest round, not this run's findings, so a mechanic pass can't contradict the trajectory (#135 review)", () => {
+    // A CI-fix mechanic pass: this run's findings are clean and it appends no round, yet the
+    // carried-forward trajectory's last round still holds a critical. The badge must reflect that
+    // round (iterating), never the clean current counts.
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      severityCounts: { critical: 0, major: 0, minor: 0, nit: 0 },
+      rounds: [{ critical: 1, major: 0, minor: 0, nit: 0 }],
+    });
+    expect(result).toContain("**Convergence** 🔄 4 > 1 — iterating");
+    expect(result).not.toContain("converged");
+  });
+
+  it("shows no badge when there is no round history — nothing has been fully reviewed yet", () => {
+    const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+    expect(result).not.toContain("**Convergence**");
+  });
+
+  it("hides the convergence line on an incomplete review even with round history", () => {
     const result = render({
       findings: mkFindings([]),
       envelope: baseEnvelope,
       prices,
       template,
       incomplete: true,
+      rounds: [{ critical: 0, major: 0, minor: 0, nit: 0 }],
     });
     expect(result).not.toContain("**Convergence**");
   });

@@ -62,6 +62,12 @@ export const render = (input: RenderInput): string => {
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
   const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
+  const rounds = input.rounds ?? [];
+  // The convergence badge is a view of the trajectory's LATEST round, never this run's raw counts, so
+  // it can't contradict the chips beside it: on a full review the latest round IS this run's counts;
+  // on a CI-fix mechanic pass (which appends no round) it reflects the last full review, exactly as
+  // the carried-forward trajectory does. No round history ⇒ nothing fully reviewed yet ⇒ no badge.
+  const latestRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -78,15 +84,17 @@ export const render = (input: RenderInput): string => {
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
     postedAt: input.postedAt ?? "",
     severityCounts,
-    convergenceSummary: convergenceSummary(severityCounts, input.convergenceThreshold),
+    convergenceSummary: latestRound
+      ? convergenceSummary(latestRound, input.convergenceThreshold)
+      : "",
     strays: (input.strays ?? []).map(sanitizeFinding),
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
     findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
-    roundsMarker: roundsMarker(input.rounds ?? []),
-    roundsSummary: roundsSummary(input.rounds ?? []),
+    roundsMarker: roundsMarker(rounds),
+    roundsSummary: roundsSummary(rounds),
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

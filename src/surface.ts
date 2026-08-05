@@ -163,18 +163,18 @@ export const convergenceScore = (
     0,
   );
 
-// "**Convergence** ✅ 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". Integer scores
-// (the default integer weights) render without a decimal; a fractional score/threshold keeps one.
+// "**Convergence** ✅ 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". Score and threshold
+// print exactly (no lossy rounding) so the shown inequality can never contradict the computed
+// comparison — a `toFixed`-rounded threshold could display "1 > 1.0" for a real 1 > 0.95.
 export const convergenceSummary = (
   counts: SeverityCounts,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
   weights: SeverityWeights = DEFAULT_CONVERGENCE_WEIGHTS,
 ): string => {
   const score = convergenceScore(counts, weights);
-  const n = (x: number): string => (Number.isInteger(x) ? String(x) : x.toFixed(1));
   return score <= threshold
-    ? `**Convergence** ✅ ${n(score)} ≤ ${n(threshold)} — converged`
-    : `**Convergence** 🔄 ${n(score)} > ${n(threshold)} — iterating`;
+    ? `**Convergence** ✅ ${String(score)} ≤ ${String(threshold)} — converged`
+    : `**Convergence** 🔄 ${String(score)} > ${String(threshold)} — iterating`;
 };
 
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must

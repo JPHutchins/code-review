@@ -416,16 +416,16 @@ const parseBudgetUsd = (raw: string | undefined): number | null => {
   return Number.isFinite(n) && n >= 0 ? n : null;
 };
 
-/** Parse `--convergence-threshold`: a non-negative finite number, or undefined when absent (the
- *  render layer then applies DEFAULT_CONVERGENCE_THRESHOLD as the SSOT default). A malformed or
- *  negative value fails loudly — a typo must not silently move the advisory tolerance. */
+/** Parse `--convergence-threshold`: a non-negative decimal, or undefined when absent (the render layer
+ *  then applies DEFAULT_CONVERGENCE_THRESHOLD as the SSOT default). Matches the whole string before
+ *  parsing — `Number.parseFloat` alone silently accepts a leading numeric prefix (`"1,5"`→1,
+ *  `"0x10"`→0), which would move the tolerance the flag controls; a malformed value must fail loudly. */
 const parseConvergenceThreshold = (raw: string | undefined): number | undefined => {
   if (raw === undefined) return undefined;
-  const n = Number.parseFloat(raw);
-  if (!Number.isFinite(n) || n < 0) {
+  if (!/^\d+(\.\d+)?$/.test(raw)) {
     fail(`--convergence-threshold must be a non-negative number; got "${raw}"`);
   }
-  return n;
+  return Number.parseFloat(raw);
 };
 
 const mtimeMsOf = (path: string): number | null => {

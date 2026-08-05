@@ -215,12 +215,20 @@ describe("convergence score — issue #133", () => {
     expect(convergenceSummary(counts(1, 0, 0, 0), 3)).toBe("**Convergence** 🔄 4 > 3 — iterating");
   });
 
-  it("keeps one decimal for a fractional threshold, none for integer scores", () => {
+  it("renders score and threshold exactly so the printed inequality matches the comparison (#135 review)", () => {
     expect(convergenceSummary(counts(0, 0, 1, 0), 1.5)).toBe(
       "**Convergence** ✅ 1 ≤ 1.5 — converged",
     );
     expect(convergenceSummary(counts(0, 0, 2, 0), 1.5)).toBe(
       "**Convergence** 🔄 2 > 1.5 — iterating",
+    );
+    // A threshold that toFixed(1) would round to "1.0" must print its true value, or the line reads
+    // as a false inequality (1 > 1.0 / 1 ≤ 1.0).
+    expect(convergenceSummary(counts(0, 0, 1, 0), 0.95)).toBe(
+      "**Convergence** 🔄 1 > 0.95 — iterating",
+    );
+    expect(convergenceSummary(counts(0, 0, 1, 0), 1.04)).toBe(
+      "**Convergence** ✅ 1 ≤ 1.04 — converged",
     );
   });
 });

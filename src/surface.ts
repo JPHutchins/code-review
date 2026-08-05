@@ -3,7 +3,7 @@
 // projection. Pure.
 
 import type { Finding, Findings } from "./schema.js";
-import type { SeverityCounts } from "./types.js";
+import type { SeverityCounts, SeverityWeights } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
 
 export const severityEmoji = (s: string): string => {
@@ -139,6 +139,42 @@ export const roundsSummary = (rounds: readonly SeverityCounts[]): string => {
   const trajectory =
     rounds.length > TRAJECTORY_CHIPS ? `… → ${chips.join(" → ")}` : chips.join(" → ");
   return `**Round ${String(rounds.length)}** · ${trajectory}`;
+};
+
+// The severity-weighted convergence score and its advisory badge. The score is a pure function of one
+// round's severities; the badge is score ≤ threshold. Nits weigh 0 so the reviewer's self-replenishing
+// nit floor never blocks convergence; the threshold is the single tolerance knob (default 1: unlimited
+// nits plus at most one minor). ADVISORY ONLY — this derives from the reviewer's own severities and
+// never alters the verdict; it exists so an iterating author-agent has a deterministic stop signal.
+export const DEFAULT_CONVERGENCE_WEIGHTS: SeverityWeights = {
+  critical: 4,
+  major: 2,
+  minor: 1,
+  nit: 0,
+};
+export const DEFAULT_CONVERGENCE_THRESHOLD = 1;
+
+export const convergenceScore = (
+  counts: SeverityCounts,
+  weights: SeverityWeights = DEFAULT_CONVERGENCE_WEIGHTS,
+): number =>
+  (["critical", "major", "minor", "nit"] as const).reduce(
+    (sum, k) => sum + counts[k] * weights[k],
+    0,
+  );
+
+// "**Convergence** ✅ 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". Integer scores
+// (the default integer weights) render without a decimal; a fractional score/threshold keeps one.
+export const convergenceSummary = (
+  counts: SeverityCounts,
+  threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
+  weights: SeverityWeights = DEFAULT_CONVERGENCE_WEIGHTS,
+): string => {
+  const score = convergenceScore(counts, weights);
+  const n = (x: number): string => (Number.isInteger(x) ? String(x) : x.toFixed(1));
+  return score <= threshold
+    ? `**Convergence** ✅ ${n(score)} ≤ ${n(threshold)} — converged`
+    : `**Convergence** 🔄 ${n(score)} > ${n(threshold)} — iterating`;
 };
 
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must

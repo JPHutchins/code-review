@@ -12,6 +12,7 @@ import {
   formatConfidence,
   roundsMarker,
   roundsSummary,
+  convergenceSummary,
 } from "./surface.js";
 import type { PatchProjection } from "./surface.js";
 
@@ -60,6 +61,7 @@ export const render = (input: RenderInput): string => {
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
+  const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -75,7 +77,8 @@ export const render = (input: RenderInput): string => {
     testReport: input.testReport ?? null,
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
     postedAt: input.postedAt ?? "",
-    severityCounts: input.severityCounts ?? computeSeverityCounts(input.findings.findings),
+    severityCounts,
+    convergenceSummary: convergenceSummary(severityCounts, input.convergenceThreshold),
     strays: (input.strays ?? []).map(sanitizeFinding),
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,

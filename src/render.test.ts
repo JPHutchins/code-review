@@ -942,8 +942,10 @@ describe("render", () => {
         route: "full review",
       });
       const subLines = result.split("\n").filter((l) => l.includes("<sub>"));
-      expect(subLines).toHaveLength(1);
-      expect(subLines[0]).not.toContain("|");
+      // The meta line and the convergence line are both <sub>; the regression guard is that the cost
+      // table's pipe rows live in NONE of them.
+      expect(subLines.length).toBeGreaterThanOrEqual(1);
+      expect(subLines.every((l) => !l.includes("|"))).toBe(true);
       expect(result).toContain("| **Total** |");
     });
 
@@ -1498,5 +1500,44 @@ describe("convergence trajectory — issue #125", () => {
     });
     expect(result).not.toContain("**Round");
     expect(result).toContain("<!-- code-review:rounds;base64 ");
+  });
+});
+
+describe("convergence score — issue #133", () => {
+  it("renders the converged badge for a clean review, even with no round history", () => {
+    const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+    expect(result).toContain("**Convergence** ✅ 0 ≤ 1 — converged");
+  });
+
+  it("renders the iterating badge when a major finding keeps the score over the threshold", () => {
+    const result = render({
+      findings: mkFindings([mkFinding({ severity: "major" })]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+    });
+    expect(result).toContain("**Convergence** 🔄 2 > 1 — iterating");
+  });
+
+  it("respects a raised --convergence-threshold", () => {
+    const result = render({
+      findings: mkFindings([mkFinding({ severity: "major" })]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      convergenceThreshold: 3,
+    });
+    expect(result).toContain("**Convergence** ✅ 2 ≤ 3 — converged");
+  });
+
+  it("hides the convergence line on an incomplete review", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      incomplete: true,
+    });
+    expect(result).not.toContain("**Convergence**");
   });
 });

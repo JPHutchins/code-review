@@ -48,6 +48,8 @@ export interface PostInput {
   readonly runUrl?: string;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
+  // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
+  readonly convergenceThreshold?: number;
   // Computed by the caller via formatUtc so post() stays a clockless pass-through into render().
   readonly postedAt?: string;
 }
@@ -550,6 +552,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        convergenceThreshold: input.convergenceThreshold,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
         postedAt: input.postedAt,
@@ -603,6 +606,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        convergenceThreshold: input.convergenceThreshold,
         testReport,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
@@ -680,6 +684,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     testReport,
     severityCounts: currentCounts,
     rounds,
+    convergenceThreshold: input.convergenceThreshold,
     strays,
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,

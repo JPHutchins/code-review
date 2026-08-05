@@ -29,6 +29,10 @@ export interface InlineResult {
 
 export type SeverityCounts = Readonly<Record<Severity, number>>;
 
+// Per-severity points for the advisory convergence score; structurally a SeverityCounts but named
+// apart so a weight map is never confused for a tally of findings.
+export type SeverityWeights = Readonly<Record<Severity, number>>;
+
 export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
@@ -54,6 +58,9 @@ export interface RenderInput {
   // review), rendered as the convergence trajectory and re-embedded as the carried-forward marker.
   // Omitted/empty ⇒ no convergence line.
   readonly rounds?: readonly SeverityCounts[];
+  // The advisory convergence tolerance — the weighted-severity score at or below which the round
+  // reads as "converged" (default 1: unlimited nits plus at most one minor). Omitted ⇒ the default.
+  readonly convergenceThreshold?: number;
   readonly strays?: readonly Finding[];
   // How many of `strays` are in-diff findings GitHub rejected inline, rather than out-of-diff; > 0
   // titles the section "Findings" and notes they couldn't be posted inline. Omitted/0 ⇒ all out-of-diff.

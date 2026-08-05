@@ -24,29 +24,37 @@ export type NoticeKind = (typeof NOTICE_KINDS)[number];
 
 export const isNoticeKind = (s: string): s is NoticeKind => NOTICE_KINDS.some((k) => k === s);
 
+// A hostname, optionally :port or a leading-wildcard form. Every allowlist entry should match; the
+// filter below drops any that does not — which also neutralizes a tampered sandbox.json (the agent
+// can overwrite it, since the jail confines egress, not the filesystem): a markdown- or
+// comment-marker-injection payload is not a hostname, so it never reaches the raw-rendered summary.
+const HOSTNAME_RE = /^[A-Za-z0-9.*:_-]+$/;
+
 // The review agent's egress jail (sandbox-runtime) confines ONLY the agent — setup, install, and
 // gather run unfiltered. So when a jailed run produced no review, naming the jail's allowlist turns
 // "the agent could not reach a host it needed" into a one-line diagnosis. Pure: pulls
-// network.allowedDomains out of a parsed sandbox config, yielding no hosts for any other shape (a
-// missing/unreadable config, or a config before the jail was set up) ⇒ no note.
+// network.allowedDomains out of a parsed sandbox config, keeping only well-formed hostnames and
+// yielding none for any other shape (a missing/unreadable config, or one before the jail was set up).
 export const parseAgentAllowlist = (sandboxConfig: unknown): readonly string[] => {
   const domains = (sandboxConfig as { network?: { allowedDomains?: unknown } } | null | undefined)
     ?.network?.allowedDomains;
-  return Array.isArray(domains) && domains.every((d): d is string => typeof d === "string")
-    ? domains
+  return Array.isArray(domains)
+    ? domains.filter((d): d is string => typeof d === "string" && HOSTNAME_RE.test(d))
     : [];
 };
 
 // Appended only to the notices where a jailed `claude -p` actually ran (no-output, triage-error), so
-// an egress-blocked host it needed is nameable against the allowlist. Empty allowlist ⇒ empty note.
+// an egress-blocked host it needed is nameable against the allowlist. Framed conditionally — these
+// notices also fire for non-egress causes (a missing key, a wall-clock kill) — so it informs without
+// asserting egress was the cause. Empty allowlist ⇒ empty note.
 const egressNote = (agentAllowlist: readonly string[]): string =>
   agentAllowlist.length === 0
     ? ""
-    : `\n\nThe review agent runs under a network egress jail that allows only ${agentAllowlist
+    : `\n\nIf the review failed because the agent could not reach a host it needed, note that its network egress is jailed to only ${agentAllowlist
         .map((host) => `\`${host}\``)
         .join(
           ", ",
-        )}. If the review needed another host — a package registry to validate the project, say — add it via the \`extra_endpoints\` input (or the \`--extra\` flag on \`sandbox-config\` in a single-file workflow).`;
+        )}. Add any missing host to the agent's egress allowlist — the reusable workflow's \`extra_endpoints\` input, or a single-file workflow's \`--extra\` flag on \`sandbox-config\`.`;
 
 // Blockquote every line so a multi-line reason stays quoted, not just its first line.
 const blockquote = (text: string): string => text.replaceAll("\n", "\n> ");

@@ -69,7 +69,7 @@ import {
 } from "./stop-gate.js";
 import { composeReviewSettings } from "./settings.js";
 import { buildSandboxConfig } from "./sandbox.js";
-import { annotationSafe, asRecord, errMsg, tryParseJson } from "./util.js";
+import { annotationSafe, asRecord, errMsg, readFileOrNull, tryParseJson } from "./util.js";
 
 const readJSON = (path: string): unknown => {
   try {
@@ -118,17 +118,22 @@ const readJSONOrAbsent = (path: string): unknown => {
   }
 };
 
-// The optional sandbox config a notice names its allowlist from. A missing file is the NORMAL case —
-// an early failure runs before the jail is set up — so this stays silent (unlike readJSONOrAbsent's
-// stderr) and yields undefined for any absent/unreadable/malformed path; the notice then omits the
-// allowlist rather than crashing the assemble step.
-const readSandboxConfigQuietly = (path: string | undefined): unknown => {
-  if (!path) return undefined;
-  try {
-    return JSON.parse(readFileSync(resolve(path), "utf-8")) as unknown;
-  } catch {
+// The optional sandbox config a notice names its allowlist from. A MISSING/unreadable file is the
+// normal early-failure case (the jail is set up after triage), so it stays silent and is treated as
+// absent. A file that is PRESENT but unparseable is the diagnostic case this feature exists for (a
+// truncated or agent-tampered config), so it warns rather than vanishing. Either way ⇒ undefined, and
+// the notice omits the allowlist rather than crashing the assemble step.
+const readSandboxConfigForNotice = (path: string): unknown => {
+  const text = readFileOrNull(resolve(path));
+  if (text === null) return undefined;
+  const parsed = tryParseJson(text);
+  if (!parsed.ok) {
+    process.stderr.write(
+      `code-review notice: ${path} is present but not valid JSON — omitting the agent allowlist from the notice\n`,
+    );
     return undefined;
   }
+  return parsed.value;
 };
 
 const readStdinJSON = (): unknown => {
@@ -979,7 +984,13 @@ const noticeCmd = defineCommand({
       process.stdout.write(`${JSON.stringify(buildUnknownNoticeEnvelope(args.kind), null, 2)}\n`);
       return;
     }
-    const agentAllowlist = parseAgentAllowlist(readSandboxConfigQuietly(args["sandbox-config"]));
+    // Read the sandbox config only for the kinds that name the allowlist (a jailed agent ran), so the
+    // "no-output / triage-error only" contract is enforced by the handler, not just documented.
+    const namesAllowlist = args.kind === "no-output" || args.kind === "triage-error";
+    const agentAllowlist =
+      namesAllowlist && args["sandbox-config"]
+        ? parseAgentAllowlist(readSandboxConfigForNotice(args["sandbox-config"]))
+        : [];
     process.stdout.write(
       `${JSON.stringify(buildNoticeEnvelope(args.kind, args.reasons, agentAllowlist), null, 2)}\n`,
     );

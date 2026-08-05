@@ -24,22 +24,33 @@ export type NoticeKind = (typeof NOTICE_KINDS)[number];
 
 export const isNoticeKind = (s: string): s is NoticeKind => NOTICE_KINDS.some((k) => k === s);
 
-// A hostname, optionally :port or a leading-wildcard form. Every allowlist entry should match; the
-// filter below drops any that does not — which also neutralizes a tampered sandbox.json (the agent
-// can overwrite it, since the jail confines egress, not the filesystem): a markdown- or
-// comment-marker-injection payload is not a hostname, so it never reaches the raw-rendered summary.
-const HOSTNAME_RE = /^[A-Za-z0-9.*:_-]+$/;
+// A host is safe to name in the raw-rendered, grep-scanned summary only if it can neither break out of
+// its backtick code span (`) nor forge a comment marker (<, >) nor start a new line (\n, \r) or table
+// cell (|). This is a render-safety denylist, NOT a hostname grammar: it keeps legitimate but unusual
+// hosts (bracketed IPv6, IDN) a strict pattern would wrongly drop, while still neutralizing a tampered
+// sandbox.json (the agent can rewrite it — the jail confines egress, not the filesystem).
+const UNSAFE_IN_SUMMARY = /[\n\r`<>|]/;
+
+// Cap how many hosts are named: a tampered config could pad allowedDomains until the rendered summary
+// blows past GitHub's 65536-char comment limit and the comment fails to post at all. A real allowlist
+// is a handful; the count is the diagnostic signal, not every entry.
+const MAX_NAMED_HOSTS = 20;
 
 // The review agent's egress jail (sandbox-runtime) confines ONLY the agent — setup, install, and
 // gather run unfiltered. So when a jailed run produced no review, naming the jail's allowlist turns
 // "the agent could not reach a host it needed" into a one-line diagnosis. Pure: pulls
-// network.allowedDomains out of a parsed sandbox config, keeping only well-formed hostnames and
-// yielding none for any other shape (a missing/unreadable config, or one before the jail was set up).
+// network.allowedDomains out of a parsed sandbox config, keeping only render-safe, sanely-sized host
+// strings (capped) and yielding none for any other shape (a missing config, or one before jail setup).
 export const parseAgentAllowlist = (sandboxConfig: unknown): readonly string[] => {
   const domains = (sandboxConfig as { network?: { allowedDomains?: unknown } } | null | undefined)
     ?.network?.allowedDomains;
   return Array.isArray(domains)
-    ? domains.filter((d): d is string => typeof d === "string" && HOSTNAME_RE.test(d))
+    ? domains
+        .filter(
+          (d): d is string =>
+            typeof d === "string" && d.length <= 256 && !UNSAFE_IN_SUMMARY.test(d),
+        )
+        .slice(0, MAX_NAMED_HOSTS)
     : [];
 };
 

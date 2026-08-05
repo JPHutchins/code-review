@@ -1493,13 +1493,13 @@ describe("cli — notice --sandbox-config (issue #97)", () => {
     expect(stderr).toContain("not valid JSON");
   });
 
-  it("ignores --sandbox-config for kinds that never name the allowlist", async () => {
-    const { stdout } = await runCli([
-      "notice",
-      "setup-failed",
-      "--sandbox-config",
-      writeSandbox(["api.deepseek.com"]),
-    ]);
+  it("does not even read --sandbox-config for kinds that never name the allowlist", async () => {
+    // A malformed file would warn IF the handler read it — a valid file could not tell a read-then-drop
+    // regression from a correct skip, so use a malformed one and assert the read never happened.
+    const bad = join(tmpDir, "sandbox.json");
+    writeFileSync(bad, "{ not json");
+    const { stdout, stderr } = await runCli(["notice", "setup-failed", "--sandbox-config", bad]);
     expect(parseSummary(stdout)).not.toContain("egress is jailed");
+    expect(stderr).toBe("");
   });
 });

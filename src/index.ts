@@ -129,7 +129,7 @@ const readSandboxConfigForNotice = (path: string): unknown => {
   const parsed = tryParseJson(text);
   if (!parsed.ok) {
     process.stderr.write(
-      `code-review notice: ${path} is present but not valid JSON — omitting the agent allowlist from the notice\n`,
+      `::warning::${annotationSafe(`code-review notice: ${path} is present but not valid JSON — omitting the agent allowlist from the notice`)}\n`,
     );
     return undefined;
   }

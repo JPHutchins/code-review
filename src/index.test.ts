@@ -1523,6 +1523,31 @@ describe("cli — sandbox-config derived-host validation (issue #129)", () => {
     expect(exitCode).toBe(1);
     expect(stderr).toContain("not a well-known provider");
   });
+
+  it("accepts a consumer-declared host silently, even under --strict-host (the release wiring)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.openai.com/v1",
+      "--known-model-host",
+      "api.openai.com",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).not.toContain("::warning::");
+  });
+
+  it("still fails a typo of a declared host under --strict-host (exact match, not fuzzy)", async () => {
+    const { exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.openai.cm/v1",
+      "--known-model-host",
+      "api.openai.com",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBe(1);
+  });
 });
 
 describe("cli — notice --sandbox-config (issue #97)", () => {

@@ -33,6 +33,13 @@ describe("isKnownModelHost (issue #129 — fail loud on a typo'd api_base_url)",
     expect(isKnownModelHost("api.anthropic.com.evil.com")).toBe(false);
     expect(isKnownModelHost("")).toBe(false);
   });
+
+  it("accepts a consumer-declared host by EXACT match — but a typo of it does not", () => {
+    expect(isKnownModelHost("api.openai.com", ["api.openai.com"])).toBe(true);
+    expect(isKnownModelHost("api.openai.cm", ["api.openai.com"])).toBe(false);
+    // declared is exact, not a suffix — a subdomain of a declared host is not blessed
+    expect(isKnownModelHost("evil.api.openai.com", ["api.openai.com"])).toBe(false);
+  });
 });
 
 describe("parseExtraEndpoints", () => {

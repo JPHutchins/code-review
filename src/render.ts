@@ -78,8 +78,13 @@ export const render = (input: RenderInput): string => {
   // a mechanic's fresh critical, and one from a carried-forward prior round would contradict the
   // findings beside it. Neither is a truthful stop signal, so no badge shows; the carried-forward
   // trajectory alone gives context. Prefer post's explicit signal (which also gates the round append,
-  // so badge ⇔ append); fall back to the shared predicate for the standalone `render` command.
-  const isFullReviewRound = input.convergenceRound ?? isConvergenceRound(route, incomplete);
+  // so badge ⇔ append); fall back to the shared predicate for the standalone `render` command. The
+  // extra verdict guard closes an edge isIncompleteFindings misses (it flags an "error" verdict only
+  // when findings are also empty): an error doc that carries findings must still show no badge, never
+  // "converged" beside the "no review verdict" badge.
+  const isFullReviewRound =
+    (input.convergenceRound ?? isConvergenceRound(route, incomplete)) &&
+    input.findings.verdict !== "error";
 
   return eta.renderString(input.template, {
     findings: input.findings,

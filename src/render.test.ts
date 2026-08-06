@@ -1615,4 +1615,19 @@ describe("convergence score — issue #133", () => {
     });
     expect(result).not.toContain("**Convergence**");
   });
+
+  it("shows no badge for an error verdict that CARRIES findings — isIncompleteFindings needs an empty array (#135 review r4)", () => {
+    // An "error" verdict with a finding attached escapes isIncompleteFindings (which requires empty
+    // findings), so the explicit verdict guard must still suppress the badge — never "converged"
+    // beside "no review verdict".
+    const result = render({
+      findings: mkFindings([mkFinding({ severity: "nit" })], { verdict: "error" }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+      convergenceRound: true,
+    });
+    expect(result).not.toContain("**Convergence**");
+  });
 });

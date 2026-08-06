@@ -143,6 +143,16 @@ on:
         type: string
         required: false
         default: ""
+      known_model_hosts:
+        description: Bare hostname(s) (whitespace-separated) to accept as the jail's derived egress target when your api_base_url is NOT a built-in provider (a subdomain of anthropic.com or deepseek.com). The setup fails closed if the host derived from api_base_url is neither built-in, listed here, nor in extra_endpoints — this is the guard against a mistyped api_base_url silently sending the key elsewhere. Leave empty for the built-in providers.
+        type: string
+        required: false
+        default: ""
+      convergence_threshold:
+        description: Advisory convergence tolerance shown in the review sticky — the weighted-severity score (critical 4 · major 2 · minor 1 · nit 0) at or below which the review reads as "converged". Empty ⇒ the default (1 — unlimited nits plus at most one minor).
+        type: string
+        required: false
+        default: ""
       egress_policy:
         description: Deprecated / no-op for the review agent, which is now always confined to a network namespace with its own egress allowlist (see the "Set up the agent network jail" step). The short write-token jobs (announce/comment/finalize) always enforce harden-runner block regardless. Retained for interface compatibility.
         type: string
@@ -162,7 +172,7 @@ on:
 # released together, so the @ref the consumer trusts carries its matching CLI. One definition both
 # jobs install from, so a release bump can't skew them. Bumped in the release commit with package.json.
 env:
-  CODE_REVIEW_VERSION: 0.1.0-alpha.37
+  CODE_REVIEW_VERSION: 0.1.0-alpha.38
 
 jobs:
   # Announce the review the moment it starts: a workflow_run review runs from the default branch and
@@ -341,6 +351,7 @@ jobs:
         env:
           API_BASE_URL: ${{ inputs.api_base_url }}
           EXTRA_ENDPOINTS: ${{ inputs.extra_endpoints }}
+          KNOWN_MODEL_HOSTS: ${{ inputs.known_model_hosts }}
         run: |
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
@@ -373,6 +384,8 @@ jobs:
           code-review sandbox-config \
             --api-base-url "$API_BASE_URL" \
             --extra "$EXTRA_ENDPOINTS" \
+            --known-model-host "$KNOWN_MODEL_HOSTS" \
+            --strict-host \
             --out "$RUNNER_TEMP/sandbox.json"
           cat "$RUNNER_TEMP/sandbox.json"
 
@@ -911,6 +924,7 @@ jobs:
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           FINDINGS_ARTIFACT_ID: ${{ needs.review.outputs.findings_artifact_id }}
+          CONVERGENCE_THRESHOLD: ${{ inputs.convergence_threshold }}
         run: |
           set -euo pipefail
 
@@ -936,6 +950,7 @@ jobs:
             --usage findings/envelope.json \
             --head-branch "$HEAD_BRANCH" \
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}" \
+            --convergence-threshold "$CONVERGENCE_THRESHOLD" \
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}"
 

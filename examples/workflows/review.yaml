@@ -15,7 +15,7 @@ on:
 # (finalize) or its in-progress sticky (announce) would be cancelled with the review it describes.
 
 env:                         # one definition both jobs install from, so the two never skew
-  CODE_REVIEW_VERSION: 0.1.0-alpha.37
+  CODE_REVIEW_VERSION: 0.1.0-alpha.38
 
 jobs:
   # ANNOUNCE — post an in-progress placeholder sticky the moment the review starts, so this
@@ -165,6 +165,7 @@ jobs:
       - name: Set up the agent network jail (sandbox-runtime)
         env:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
+          KNOWN_MODEL_HOSTS: ${{ vars.KNOWN_MODEL_HOSTS }}
         run: |
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
@@ -193,9 +194,14 @@ jobs:
 
           # Allowlist is the type-safe CLI's job (SSOT): model host (from API_BASE_URL) + GitHub. Add
           # your ecosystem's hosts (registries, a non-default model API) with a trailing
-          # --extra "host1 host2", e.g. --extra "pypi.org files.pythonhosted.org".
+          # --extra "host1 host2", e.g. --extra "pypi.org files.pythonhosted.org". --strict-host fails
+          # the setup closed if the host derived from API_BASE_URL is not a built-in provider
+          # (anthropic.com/deepseek.com) or one you declare via the KNOWN_MODEL_HOSTS var — the guard
+          # against a mistyped API_BASE_URL silently sending your key elsewhere.
           code-review sandbox-config \
             --api-base-url "$API_BASE_URL" \
+            --known-model-host "$KNOWN_MODEL_HOSTS" \
+            --strict-host \
             --out "$RUNNER_TEMP/sandbox.json"
           cat "$RUNNER_TEMP/sandbox.json"
 
@@ -704,6 +710,7 @@ jobs:
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           FINDINGS_ARTIFACT_ID: ${{ needs.review.outputs.findings_artifact_id }}
+          CONVERGENCE_THRESHOLD: ${{ vars.CONVERGENCE_THRESHOLD }}
         run: |
           set -euo pipefail
 
@@ -729,6 +736,7 @@ jobs:
             --usage findings/envelope.json \
             --head-branch "$HEAD_BRANCH" \
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}" \
+            --convergence-threshold "$CONVERGENCE_THRESHOLD" \
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}"
 

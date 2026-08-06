@@ -570,7 +570,7 @@ jobs:
             # OUTSIDE CONVERSATION_NOTE (whose text frames its contents as untrusted claims, never
             # instructions). Redirects spare budget from mining nits to verifying prior fixes; never
             # licenses dropping a real finding. Full-review only (empty on the mechanic path).
-            CONVERGENCE_NOTE=" Convergence: do not spend leftover time manufacturing marginal or borderline low-severity findings just to fill the budget — that padding is noise, not review. Once the substantive findings (critical and major) are resolved, put the remaining budget into VERIFYING those fixes actually hold and confirming no critical or major issue was missed. Still report every genuine defect you find at its honest severity, minor and nit included — this bars only manufactured padding, never a real finding — and do not re-list a low-severity item a prior round already raised."
+            CONVERGENCE_NOTE=" Convergence: do not spend leftover time manufacturing marginal or borderline low-severity findings just to fill the budget — that padding is noise, not review, and verifying that prior fixes actually hold is a better use of any spare time. Still report every genuine defect you find at its honest severity, minor and nit included — this bars only manufactured padding, never a real finding."
           else
             ROUTE="mechanic"; EFFORT="low"
             PROMPT="CI failed on this PR. The diff at pr.diff and the failing job logs at job_*.log show what broke. Propose minimal, targeted fixes ONLY for the failures — no comprehensive review. Do not fix unrelated issues."

@@ -344,11 +344,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
-          npm install -g @anthropic-ai/sandbox-runtime
+          npm install -g @anthropic-ai/sandbox-runtime@0.0.70
 
-          # ubuntu-latest (24.04) restricts the unprivileged user namespaces bubblewrap needs via
-          # AppArmor; grant just bwrap the capability (passwordless sudo on hosted runners).
-          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+          # ubuntu-latest (24.04+) restricts the unprivileged user namespaces bubblewrap needs via
+          # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
+          # bwrap the capability (passwordless sudo on hosted runners).
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" != "0" ]; then
             printf '%s\n' \
               'abi <abi/4.0>,' \
               'include <tunables/global>' \
@@ -358,6 +359,13 @@ jobs:
               '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
             sudo systemctl reload apparmor || sudo service apparmor reload || true
           fi
+
+          # Assert the capability the jail depends on is usable, diagnosed HERE at setup rather than as
+          # a generic "sandbox failed to start" at the canary: if the profile did not load (a parse
+          # error, or a hardened image where the grant is insufficient) bwrap cannot create the
+          # user+net namespace and every review would die downstream. Fails closed.
+          bwrap --unshare-net --unshare-user -- true \
+            || { echo "::error::bwrap cannot create an unprivileged user+net namespace — the AppArmor grant did not take effect (kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unknown)); failing closed"; exit 1; }
 
           # Allowlist is the type-safe CLI's job (SSOT): model host (from api_base_url) + GitHub +
           # extra_endpoints. Add your ecosystem's hosts (registries, a non-default model API) via the
@@ -376,6 +384,8 @@ jobs:
       # open link has time to connect (a short timeout could expire on a slow-but-open link and wrongly
       # pass); -sS keeps the progress meter off while still surfacing connection errors for debugging.
       - name: Jail canary — verify agent egress is denied
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url }}
         run: |
           set -euo pipefail
           command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress jail; failing closed"; exit 1; }
@@ -386,7 +396,21 @@ jobs:
             echo "::error::jail canary reached a non-allowlisted host — the sandbox is NOT enforcing agent egress; failing closed"
             exit 1
           fi
-          echo "Jail canary blocked — agent egress is enforced"
+          # Positive probes: prove the ALLOWED path works too, so a silently-wrong allowlist or a broken
+          # mount can't pass the deny checks above while leaving the agent unable to run. (a) the agent
+          # binary starts inside the jail; (b) the model host is NOT proxy-blocked — the deny probes rely
+          # on the proxy's "403 CONNECT tunnel" refusal, so its ABSENCE for the model host confirms the
+          # derived allowlist includes it. A slow/erroring model host (any other curl failure) is not a
+          # jail fault, so ONLY the 403-block signal fails the canary.
+          srt --settings "$RUNNER_TEMP/sandbox.json" -- claude --version >/dev/null \
+            || { echo "::error::agent cannot start inside the jail (claude --version failed) — failing closed"; exit 1; }
+          MODEL_HOST="$(printf '%s' "$API_BASE_URL" | sed -E 's#^[a-zA-Z]+://([^/:]+).*#\1#')"
+          if ! srt --settings "$RUNNER_TEMP/sandbox.json" -- curl -sS --max-time 15 -o /dev/null "https://$MODEL_HOST" 2>"$RUNNER_TEMP/canary_model.err" \
+             && grep -q "CONNECT tunnel failed, response 403" "$RUNNER_TEMP/canary_model.err"; then
+            echo "::error::the jail is BLOCKING the model host $MODEL_HOST — the derived allowlist is wrong; failing closed"
+            exit 1
+          fi
+          echo "Jail canary — non-allowlisted egress denied, agent starts, model host reachable"
 
       # Untrusted data written to fixed paths, never shell-interpolated.
       - name: Gather review inputs

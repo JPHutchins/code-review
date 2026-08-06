@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { deriveModelHost, parseExtraEndpoints, buildSandboxConfig } from "./sandbox.js";
+import {
+  deriveModelHost,
+  parseExtraEndpoints,
+  buildSandboxConfig,
+  isKnownModelHost,
+} from "./sandbox.js";
 
 describe("deriveModelHost", () => {
   it("strips scheme, path, and port to a bare hostname", () => {
@@ -11,6 +16,22 @@ describe("deriveModelHost", () => {
   it("throws on a value that is not a parseable URL", () => {
     expect(() => deriveModelHost("api.deepseek.com")).toThrow(/could not derive the model host/);
     expect(() => deriveModelHost("")).toThrow(/could not derive the model host/);
+  });
+});
+
+describe("isKnownModelHost (issue #129 — fail loud on a typo'd api_base_url)", () => {
+  it("accepts the well-known providers and their subdomains", () => {
+    expect(isKnownModelHost("api.deepseek.com")).toBe(true);
+    expect(isKnownModelHost("api.anthropic.com")).toBe(true);
+    expect(isKnownModelHost("anthropic.com")).toBe(true);
+    expect(isKnownModelHost("deepseek.com")).toBe(true);
+  });
+
+  it("rejects an unknown host and respects the subdomain boundary (no substring match)", () => {
+    expect(isKnownModelHost("evil.com")).toBe(false);
+    expect(isKnownModelHost("notanthropic.com")).toBe(false);
+    expect(isKnownModelHost("api.anthropic.com.evil.com")).toBe(false);
+    expect(isKnownModelHost("")).toBe(false);
   });
 });
 

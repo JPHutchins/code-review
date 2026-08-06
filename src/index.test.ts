@@ -1487,6 +1487,93 @@ describe("cli — render --test-report (REQ-CO-9)", () => {
   });
 });
 
+describe("cli — sandbox-config derived-host validation (issue #129)", () => {
+  it("emits the jail config silently for a well-known provider host", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.deepseek.com/anthropic",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).not.toContain("::warning::");
+    const config = JSON.parse(stdout) as { network: { allowedDomains: string[] } };
+    expect(config.network.allowedDomains).toContain("api.deepseek.com");
+  });
+
+  it("warns loudly but still emits config for an unknown-provider host (fail-open is at least visible)", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.mistake.example/v1",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toContain("::warning::");
+    expect(stderr).toContain("not a well-known or declared host");
+    const config = JSON.parse(stdout) as { network: { allowedDomains: string[] } };
+    expect(config.network.allowedDomains).toContain("api.mistake.example");
+  });
+
+  it("fails closed under --strict-host when the derived host is unknown", async () => {
+    const { stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.mistake.example/v1",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("not a well-known or declared host");
+  });
+
+  it("accepts a consumer-declared host silently, even under --strict-host (the release wiring)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.openai.com/v1",
+      "--known-model-host",
+      "api.openai.com",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).not.toContain("::warning::");
+  });
+
+  it("still fails a typo of a declared host under --strict-host (exact match, not fuzzy)", async () => {
+    const { exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.openai.cm/v1",
+      "--known-model-host",
+      "api.openai.com",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBe(1);
+  });
+
+  it("treats a model host declared via --extra as known too (the documented self-hosted case) (#137 review)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://models.internal.example/v1",
+      "--extra",
+      "models.internal.example",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).not.toContain("::warning::");
+  });
+
+  it("emits the unknown-host failure as a ::error:: annotation under --strict-host (#137 review)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.mistake.example/v1",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("::error::");
+  });
+});
+
 describe("cli — notice --sandbox-config (issue #97)", () => {
   const parseSummary = (stdout: string): string =>
     (JSON.parse(stdout) as { findings: { summary: string } }).findings.summary;

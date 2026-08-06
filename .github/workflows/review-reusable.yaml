@@ -344,11 +344,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
-          npm install -g @anthropic-ai/sandbox-runtime
+          npm install -g @anthropic-ai/sandbox-runtime@0.0.70
 
-          # ubuntu-latest (24.04) restricts the unprivileged user namespaces bubblewrap needs via
-          # AppArmor; grant just bwrap the capability (passwordless sudo on hosted runners).
-          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+          # ubuntu-latest (24.04+) restricts the unprivileged user namespaces bubblewrap needs via
+          # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
+          # bwrap the capability (passwordless sudo on hosted runners).
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" != "0" ]; then
             printf '%s\n' \
               'abi <abi/4.0>,' \
               'include <tunables/global>' \
@@ -358,6 +359,13 @@ jobs:
               '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
             sudo systemctl reload apparmor || sudo service apparmor reload || true
           fi
+
+          # Assert the capability the jail depends on is usable, diagnosed HERE at setup rather than as
+          # a generic "sandbox failed to start" at the canary: if the profile did not load (a parse
+          # error, or a hardened image where the grant is insufficient) bwrap cannot create the
+          # user+net namespace and every review would die downstream. Fails closed.
+          timeout 30s bwrap --unshare-net --unshare-user -- true \
+            || { echo "::error::bwrap cannot create an unprivileged user+net namespace — the sandbox cannot start on this runner; if kernel.apparmor_restrict_unprivileged_userns is non-zero, the AppArmor grant above did not take effect; failing closed"; exit 1; }
 
           # Allowlist is the type-safe CLI's job (SSOT): model host (from api_base_url) + GitHub +
           # extra_endpoints. Add your ecosystem's hosts (registries, a non-default model API) via the
@@ -386,7 +394,14 @@ jobs:
             echo "::error::jail canary reached a non-allowlisted host — the sandbox is NOT enforcing agent egress; failing closed"
             exit 1
           fi
-          echo "Jail canary blocked — agent egress is enforced"
+          # Positive control: the agent binary must actually START inside the jail — a broken mount or a
+          # silently-wrong sandbox would let the deny probes above pass while leaving the agent unable to
+          # run (surfacing later only as a generic triage error). Model-host reachability is not
+          # re-probed here: sandbox-config already validates the derived host, and a live CONNECT is
+          # fragile (matches one proxy-error string) and adds latency for little added assurance.
+          timeout 30s srt --settings "$RUNNER_TEMP/sandbox.json" -- claude --version >/dev/null \
+            || { echo "::error::agent cannot start inside the jail (claude --version failed) — failing closed"; exit 1; }
+          echo "Jail canary — non-allowlisted egress denied and the agent starts inside the jail"
 
       # Untrusted data written to fixed paths, never shell-interpolated.
       - name: Gather review inputs

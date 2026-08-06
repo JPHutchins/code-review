@@ -68,7 +68,12 @@ import {
   stopHookSettings,
 } from "./stop-gate.js";
 import { composeReviewSettings } from "./settings.js";
-import { buildSandboxConfig } from "./sandbox.js";
+import {
+  buildSandboxConfig,
+  deriveModelHost,
+  isKnownModelHost,
+  parseExtraEndpoints,
+} from "./sandbox.js";
 import { annotationSafe, asRecord, errMsg, readFileOrNull, tryParseJson } from "./util.js";
 
 const readJSON = (path: string): unknown => {
@@ -1831,8 +1836,40 @@ const sandboxConfigCmd = defineCommand({
       type: "string",
       description: "Write the settings JSON here instead of stdout",
     },
+    "known-model-host": {
+      type: "string",
+      description:
+        "Additional model HOST(S) to treat as known (space-separated bare hostnames, not URLs) — the consumer's declared host(s) for a provider outside the built-in set; a derived host outside the built-ins and this list warns (or fails under --strict-host)",
+    },
+    "strict-host": {
+      type: "boolean",
+      description:
+        "Fail (instead of warning) when the model host derived from api_base_url is not a well-known or declared host — closes the fail-open-on-typo gap where a mistyped api_base_url would still be allowlisted and sent the key",
+    },
   },
   run: ({ args }) => {
+    // The jail derives its ONLY egress allowlist entry from api_base_url; a typo now fails OPEN (dials
+    // whatever it names). Warn loudly on an unknown host so a misconfiguration is visible in the setup
+    // log, or hard-fail under --strict-host. A consumer on a provider outside the built-in set declares
+    // it via --known-model-host so it passes while a typo of it does not.
+    const modelHost = deriveModelHost(args["api-base-url"]);
+    // Both --known-model-host AND --extra count as declared: extra_endpoints already allowlists a
+    // consumer's self-hosted model host through this same jail (and the reusable documents that use),
+    // so treating it as known avoids warning on a host the admin explicitly vouched for.
+    const declaredHosts = [
+      ...(args["known-model-host"] ? parseExtraEndpoints(args["known-model-host"]) : []),
+      ...(args.extra ? parseExtraEndpoints(args.extra) : []),
+    ];
+    if (!isKnownModelHost(modelHost, declaredHosts)) {
+      const message = `code-review sandbox-config: derived model host "${modelHost}" is not a well-known or declared host — the jail will allow egress to it and send MODEL_API_KEY there; verify api_base_url is correct`;
+      // Both paths surface as GitHub annotations (::error:: hard-fails, ::warning:: continues), so the
+      // same condition is visible the same way whether or not --strict-host is set.
+      if (args["strict-host"]) {
+        process.stderr.write(`::error::${annotationSafe(message)}\n`);
+        process.exit(1);
+      }
+      process.stderr.write(`::warning::${annotationSafe(message)}\n`);
+    }
     const config = buildSandboxConfig({ apiBaseUrl: args["api-base-url"], extra: args.extra });
     const json = `${JSON.stringify(config, null, 2)}\n`;
     if (args.out) {

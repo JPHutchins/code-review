@@ -189,7 +189,7 @@ jobs:
           # error, or a hardened image where the grant is insufficient) bwrap cannot create the
           # user+net namespace and every review would die downstream. Fails closed.
           bwrap --unshare-net --unshare-user -- true \
-            || { echo "::error::bwrap cannot create an unprivileged user+net namespace — the sandbox cannot start on this runner (kernel.apparmor_restrict_unprivileged_userns=1002 4 20 24 25 27 29 30 44 46 100 107 110 992 993 1002 1003 30000sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unknown); when non-zero, the AppArmor grant above did not take effect); failing closed"; exit 1; }
+            || { echo "::error::bwrap cannot create an unprivileged user+net namespace — the sandbox cannot start on this runner; if kernel.apparmor_restrict_unprivileged_userns is non-zero, the AppArmor grant above did not take effect; failing closed"; exit 1; }
 
           # Allowlist is the type-safe CLI's job (SSOT): model host (from API_BASE_URL) + GitHub. Add
           # your ecosystem's hosts (registries, a non-default model API) with a trailing

@@ -20,17 +20,18 @@ describe("deriveModelHost", () => {
 });
 
 describe("isKnownModelHost (issue #129 — fail loud on a typo'd api_base_url)", () => {
-  it("accepts the well-known providers and their subdomains", () => {
+  it("accepts subdomains of the well-known providers", () => {
     expect(isKnownModelHost("api.deepseek.com")).toBe(true);
     expect(isKnownModelHost("api.anthropic.com")).toBe(true);
-    expect(isKnownModelHost("anthropic.com")).toBe(true);
-    expect(isKnownModelHost("deepseek.com")).toBe(true);
   });
 
-  it("rejects an unknown host and respects the subdomain boundary (no substring match)", () => {
+  it("rejects an unknown host, the bare provider domain (dropped-'api.' typo), and off-boundary variants", () => {
     expect(isKnownModelHost("evil.com")).toBe(false);
     expect(isKnownModelHost("notanthropic.com")).toBe(false);
     expect(isKnownModelHost("api.anthropic.com.evil.com")).toBe(false);
+    // bare registrable domain is a typo — the model API is always on a subdomain
+    expect(isKnownModelHost("anthropic.com")).toBe(false);
+    expect(isKnownModelHost("deepseek.com")).toBe(false);
     expect(isKnownModelHost("")).toBe(false);
   });
 

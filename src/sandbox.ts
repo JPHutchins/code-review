@@ -40,18 +40,19 @@ export const deriveModelHost = (apiBaseUrl: string): string => {
 // host) is warned about loudly by the `sandbox-config` command, or rejected under `--strict-host`.
 const KNOWN_MODEL_HOST_SUFFIXES = ["anthropic.com", "deepseek.com"] as const;
 
-// True when host is a built-in provider (or a subdomain of one — the `.`-prefixed suffix keeps the
-// boundary honest, so notanthropic.com and api.anthropic.com.evil.com are both unknown), or an EXACT
-// match for a consumer-declared host. A consumer on another provider declares their endpoint so it
-// passes while a typo of it (a different exact string) does not. Both sides are normalized (lowercased,
-// trailing FQDN dot dropped) so a case/dot variant of a declared host still matches — deriveModelHost
-// returns a URL-parser-lowercased hostname while a declared token is preserved as typed.
+// True when host is a SUBDOMAIN of a built-in provider (the model API always lives on a subdomain like
+// api.*, so the bare registrable domain is itself treated as a typo — e.g. a dropped "api." — and the
+// `.`-prefixed suffix keeps the boundary honest, so notanthropic.com and api.anthropic.com.evil.com are
+// both unknown), or an EXACT match for a consumer-declared host. A consumer on another provider declares
+// their host so it passes while a typo of it (a different exact string) does not. Both sides are
+// normalized (lowercased, trailing FQDN dot dropped) so a case/dot variant of a declared host still
+// matches — deriveModelHost returns a URL-parser-lowercased hostname while a declared token is as typed.
 export const isKnownModelHost = (host: string, declared: readonly string[] = []): boolean => {
   const normalize = (h: string): string => h.replace(/\.$/, "").toLowerCase();
   const target = normalize(host);
   return (
     declared.some((d) => normalize(d) === target) ||
-    KNOWN_MODEL_HOST_SUFFIXES.some((suffix) => target === suffix || target.endsWith(`.${suffix}`))
+    KNOWN_MODEL_HOST_SUFFIXES.some((suffix) => target.endsWith(`.${suffix}`))
   );
 };
 

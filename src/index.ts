@@ -1839,7 +1839,7 @@ const sandboxConfigCmd = defineCommand({
     "known-model-host": {
       type: "string",
       description:
-        "Additional model host(s) to treat as known (space-separated) — the consumer's declared endpoint(s) for a provider outside the built-in set; a derived host outside the built-ins and this list warns (or fails under --strict-host)",
+        "Additional model HOST(S) to treat as known (space-separated bare hostnames, not URLs) — the consumer's declared host(s) for a provider outside the built-in set; a derived host outside the built-ins and this list warns (or fails under --strict-host)",
     },
     "strict-host": {
       type: "boolean",

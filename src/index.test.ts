@@ -1508,7 +1508,7 @@ describe("cli — sandbox-config derived-host validation (issue #129)", () => {
     ]);
     expect(exitCode).toBeNull();
     expect(stderr).toContain("::warning::");
-    expect(stderr).toContain("not a well-known provider");
+    expect(stderr).toContain("not a well-known or declared host");
     const config = JSON.parse(stdout) as { network: { allowedDomains: string[] } };
     expect(config.network.allowedDomains).toContain("api.mistake.example");
   });
@@ -1521,7 +1521,7 @@ describe("cli — sandbox-config derived-host validation (issue #129)", () => {
       "--strict-host",
     ]);
     expect(exitCode).toBe(1);
-    expect(stderr).toContain("not a well-known provider");
+    expect(stderr).toContain("not a well-known or declared host");
   });
 
   it("accepts a consumer-declared host silently, even under --strict-host (the release wiring)", async () => {
@@ -1547,6 +1547,30 @@ describe("cli — sandbox-config derived-host validation (issue #129)", () => {
       "--strict-host",
     ]);
     expect(exitCode).toBe(1);
+  });
+
+  it("treats a model host declared via --extra as known too (the documented self-hosted case) (#137 review)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://models.internal.example/v1",
+      "--extra",
+      "models.internal.example",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).not.toContain("::warning::");
+  });
+
+  it("emits the unknown-host failure as a ::error:: annotation under --strict-host (#137 review)", async () => {
+    const { stderr, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.mistake.example/v1",
+      "--strict-host",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("::error::");
   });
 });
 

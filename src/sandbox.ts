@@ -43,10 +43,17 @@ const KNOWN_MODEL_HOST_SUFFIXES = ["anthropic.com", "deepseek.com"] as const;
 // True when host is a built-in provider (or a subdomain of one — the `.`-prefixed suffix keeps the
 // boundary honest, so notanthropic.com and api.anthropic.com.evil.com are both unknown), or an EXACT
 // match for a consumer-declared host. A consumer on another provider declares their endpoint so it
-// passes while a typo of it (a different exact string) does not.
-export const isKnownModelHost = (host: string, declared: readonly string[] = []): boolean =>
-  declared.includes(host) ||
-  KNOWN_MODEL_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+// passes while a typo of it (a different exact string) does not. Both sides are normalized (lowercased,
+// trailing FQDN dot dropped) so a case/dot variant of a declared host still matches — deriveModelHost
+// returns a URL-parser-lowercased hostname while a declared token is preserved as typed.
+export const isKnownModelHost = (host: string, declared: readonly string[] = []): boolean => {
+  const normalize = (h: string): string => h.replace(/\.$/, "").toLowerCase();
+  const target = normalize(host);
+  return (
+    declared.some((d) => normalize(d) === target) ||
+    KNOWN_MODEL_HOST_SUFFIXES.some((suffix) => target === suffix || target.endsWith(`.${suffix}`))
+  );
+};
 
 // The consumer's extra_endpoints: the same whitespace-separated host[:port] list they already pass to
 // harden-runner. Ports are dropped — the proxy matches on hostname (the only form validated on the

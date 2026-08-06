@@ -1853,16 +1853,22 @@ const sandboxConfigCmd = defineCommand({
     // log, or hard-fail under --strict-host. A consumer on a provider outside the built-in set declares
     // it via --known-model-host so it passes while a typo of it does not.
     const modelHost = deriveModelHost(args["api-base-url"]);
-    const declaredHosts = args["known-model-host"]
-      ? parseExtraEndpoints(args["known-model-host"])
-      : [];
+    // Both --known-model-host AND --extra count as declared: extra_endpoints already allowlists a
+    // consumer's self-hosted model host through this same jail (and the reusable documents that use),
+    // so treating it as known avoids warning on a host the admin explicitly vouched for.
+    const declaredHosts = [
+      ...(args["known-model-host"] ? parseExtraEndpoints(args["known-model-host"]) : []),
+      ...(args.extra ? parseExtraEndpoints(args.extra) : []),
+    ];
     if (!isKnownModelHost(modelHost, declaredHosts)) {
-      const message = `code-review sandbox-config: derived model host "${modelHost}" is not a well-known provider — the jail will allow egress to it and send MODEL_API_KEY there; verify api_base_url is correct`;
+      const message = `code-review sandbox-config: derived model host "${modelHost}" is not a well-known or declared host — the jail will allow egress to it and send MODEL_API_KEY there; verify api_base_url is correct`;
+      // Both paths surface as GitHub annotations (::error:: hard-fails, ::warning:: continues), so the
+      // same condition is visible the same way whether or not --strict-host is set.
       if (args["strict-host"]) {
-        fail(message);
-      } else {
-        process.stderr.write(`::warning::${annotationSafe(message)}\n`);
+        process.stderr.write(`::error::${annotationSafe(message)}\n`);
+        process.exit(1);
       }
+      process.stderr.write(`::warning::${annotationSafe(message)}\n`);
     }
     const config = buildSandboxConfig({ apiBaseUrl: args["api-base-url"], extra: args.extra });
     const json = `${JSON.stringify(config, null, 2)}\n`;

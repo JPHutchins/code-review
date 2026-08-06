@@ -40,6 +40,12 @@ describe("isKnownModelHost (issue #129 — fail loud on a typo'd api_base_url)",
     // declared is exact, not a suffix — a subdomain of a declared host is not blessed
     expect(isKnownModelHost("evil.api.openai.com", ["api.openai.com"])).toBe(false);
   });
+
+  it("normalizes case and a trailing FQDN dot on both sides (#137 review)", () => {
+    expect(isKnownModelHost("api.openai.com", ["API.OpenAI.com"])).toBe(true);
+    expect(isKnownModelHost("api.openai.com.", ["api.openai.com"])).toBe(true);
+    expect(isKnownModelHost("API.DEEPSEEK.COM")).toBe(true);
+  });
 });
 
 describe("parseExtraEndpoints", () => {

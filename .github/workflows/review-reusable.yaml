@@ -399,7 +399,7 @@ jobs:
           # run (surfacing later only as a generic triage error). Model-host reachability is not
           # re-probed here: sandbox-config already validates the derived host, and a live CONNECT is
           # fragile (matches one proxy-error string) and adds latency for little added assurance.
-          srt --settings "$RUNNER_TEMP/sandbox.json" -- claude --version >/dev/null \
+          timeout 30s srt --settings "$RUNNER_TEMP/sandbox.json" -- claude --version >/dev/null \
             || { echo "::error::agent cannot start inside the jail (claude --version failed) — failing closed"; exit 1; }
           echo "Jail canary — non-allowlisted egress denied and the agent starts inside the jail"
 

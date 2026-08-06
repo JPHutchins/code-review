@@ -12,6 +12,7 @@ import {
   formatConfidence,
   roundsMarker,
   roundsSummary,
+  convergenceSummary,
 } from "./surface.js";
 import type { PatchProjection } from "./surface.js";
 
@@ -43,6 +44,15 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
     emptySeverityCounts(),
   );
 
+// The single decision "is THIS run a convergence-defining full-review round?" — a completed full
+// review (not a CI-fix mechanic pass, not an incomplete notice). post() calls it to decide the round
+// append AND passes the result to render() for the badge gate, so the two can never disagree; render()
+// falls back to it only for the standalone `render` command, which has no post to compute it.
+export const isConvergenceRound = (
+  route: string | null | undefined,
+  incomplete: boolean,
+): boolean => route === "full review" && !incomplete;
+
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
   const usageAvailable = input.envelope !== null;
@@ -60,6 +70,21 @@ export const render = (input: RenderInput): string => {
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
+  const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
+  const rounds = input.rounds ?? [];
+  // The convergence badge is a property of a completed FULL-REVIEW round: render it only then, from
+  // THIS run's counts. A CI-fix mechanic pass, a lost-envelope pass, and a notice each append no round
+  // and declare no convergence verdict — a badge from the current findings would sit "converged" above
+  // a mechanic's fresh critical, and one from a carried-forward prior round would contradict the
+  // findings beside it. Neither is a truthful stop signal, so no badge shows; the carried-forward
+  // trajectory alone gives context. Prefer post's explicit signal (which also gates the round append,
+  // so badge ⇔ append); fall back to the shared predicate for the standalone `render` command. The
+  // extra verdict guard closes an edge isIncompleteFindings misses (it flags an "error" verdict only
+  // when findings are also empty): an error doc that carries findings must still show no badge, never
+  // "converged" beside the "no review verdict" badge.
+  const isFullReviewRound =
+    (input.convergenceRound ?? isConvergenceRound(route, incomplete)) &&
+    input.findings.verdict !== "error";
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -75,15 +100,18 @@ export const render = (input: RenderInput): string => {
     testReport: input.testReport ?? null,
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
     postedAt: input.postedAt ?? "",
-    severityCounts: input.severityCounts ?? computeSeverityCounts(input.findings.findings),
+    severityCounts,
+    convergenceSummary: isFullReviewRound
+      ? convergenceSummary(severityCounts, input.convergenceThreshold)
+      : "",
     strays: (input.strays ?? []).map(sanitizeFinding),
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
     findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
-    roundsMarker: roundsMarker(input.rounds ?? []),
-    roundsSummary: roundsSummary(input.rounds ?? []),
+    roundsMarker: roundsMarker(rounds),
+    roundsSummary: roundsSummary(rounds),
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

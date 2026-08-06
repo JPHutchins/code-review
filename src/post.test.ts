@@ -2722,7 +2722,11 @@ describe("post — convergence rounds (issue #125)", () => {
     );
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: undefined }), api);
-    expect(patchedBody(calls())).toContain("**Round 2**");
+    const body = patchedBody(calls());
+    expect(body).toContain("**Round 2**");
+    // The production seam (issue #133): post passes an explicit convergenceRound=true, so the badge
+    // renders through the real post→render path, not just render's fallback predicate.
+    expect(body).toContain("**Convergence**");
   });
 
   it("a mechanic pass CARRIES the trajectory forward unchanged — not a review round", async () => {
@@ -2731,6 +2735,8 @@ describe("post — convergence rounds (issue #125)", () => {
     const body = patchedBody(calls());
     expect(body).toContain("**Round 1**");
     expect(body).not.toContain("**Round 2**");
+    // post passes convergenceRound=false for a mechanic pass, so no badge (issue #133 r2/r3 fix).
+    expect(body).not.toContain("**Convergence**");
   });
 
   it("an incomplete full review does NOT append a spurious 'clean' round", async () => {

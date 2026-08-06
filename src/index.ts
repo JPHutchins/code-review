@@ -213,6 +213,9 @@ const resolvePrices = (pricesArg: string | undefined): PriceResolution => {
 const TEST_REPORT_DESCRIPTION =
   'Path to a JSON test summary: {"passed": number, "failed": number, "total": number, "failures"?: [{"name": string, "message"?: string}]}';
 
+const CONVERGENCE_THRESHOLD_DESCRIPTION =
+  "Advisory convergence tolerance: the weighted-severity score (critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged (default: 1 — unlimited nits plus at most one minor)";
+
 const renderCmd = defineCommand({
   meta: {
     name: "render",
@@ -256,6 +259,10 @@ const renderCmd = defineCommand({
       type: "string",
       description: TEST_REPORT_DESCRIPTION,
     },
+    "convergence-threshold": {
+      type: "string",
+      description: CONVERGENCE_THRESHOLD_DESCRIPTION,
+    },
   },
   run: async ({ args }) => {
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
@@ -277,6 +284,7 @@ const renderCmd = defineCommand({
       route: args.route,
       effort: args.effort,
       testReport,
+      convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
       postedAt: formatUtc(new Date()),
     });
     process.stdout.write(output);
@@ -406,6 +414,26 @@ const parseBudgetUsd = (raw: string | undefined): number | null => {
   if (raw === undefined) return null;
   const n = Number.parseFloat(raw);
   return Number.isFinite(n) && n >= 0 ? n : null;
+};
+
+/** Parse `--convergence-threshold`: a non-negative decimal, or undefined when absent/blank (the render
+ *  layer then applies DEFAULT_CONVERGENCE_THRESHOLD as the SSOT default). An unset optional workflow
+ *  input expands to "" — treat empty/whitespace as absent so the step falls back to the default rather
+ *  than hard-failing under `set -euo pipefail`. Match the whole string before parsing — `parseFloat`
+ *  alone silently accepts a numeric prefix (`"1,5"`→1, `"0x10"`→0) — and reject a non-finite result
+ *  (a 309+-digit string parses to Infinity, which would make `score <= threshold` always true, a false
+ *  "converged"); a malformed value must fail loudly, the same class the prefix guard covers. */
+const parseConvergenceThreshold = (raw: string | undefined): number | undefined => {
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === "") return undefined;
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    fail(`--convergence-threshold must be a non-negative number; got "${trimmed}"`);
+  }
+  const n = Number.parseFloat(trimmed);
+  if (!Number.isFinite(n)) {
+    fail(`--convergence-threshold is too large to be a meaningful tolerance; got "${trimmed}"`);
+  }
+  return n;
 };
 
 const mtimeMsOf = (path: string): number | null => {
@@ -1429,6 +1457,10 @@ const postCmd = defineCommand({
       description:
         "URL to the machine-readable findings JSON artifact, pointed at from the sticky and each inline comment",
     },
+    "convergence-threshold": {
+      type: "string",
+      description: CONVERGENCE_THRESHOLD_DESCRIPTION,
+    },
   },
   run: async ({ args }) => {
     const priceResolution = resolvePrices(args.prices);
@@ -1448,6 +1480,7 @@ const postCmd = defineCommand({
       testReportPath: args["test-report"],
       runUrl: args["run-url"],
       jsonUrl: args["json-url"],
+      convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
       postedAt: formatUtc(new Date()),
     });
   },

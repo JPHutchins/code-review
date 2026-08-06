@@ -8,6 +8,9 @@ import {
   roundsMarker,
   roundsSummary,
   carryForwardMarkers,
+  convergenceScore,
+  convergenceSummary,
+  DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
 import type { Findings } from "./schema.js";
 import type { SeverityCounts } from "./types.js";
@@ -168,5 +171,64 @@ describe("rounds trajectory — issue #125", () => {
     // Only the last 8 chips are shown; the earliest (🔵1) is elided.
     expect(summary).toContain("🔵12");
     expect(summary).not.toContain("🔵1 →");
+  });
+});
+
+describe("convergence score — issue #133", () => {
+  const counts = (critical: number, major: number, minor: number, nit: number): SeverityCounts => ({
+    critical,
+    major,
+    minor,
+    nit,
+  });
+
+  it("defaults to the naive weights: crit 4 · major 2 · minor 1 · nit 0", () => {
+    expect(DEFAULT_CONVERGENCE_THRESHOLD).toBe(1);
+    expect(convergenceScore(counts(1, 0, 0, 0))).toBe(4);
+    expect(convergenceScore(counts(0, 1, 0, 0))).toBe(2);
+    expect(convergenceScore(counts(0, 0, 1, 0))).toBe(1);
+    expect(convergenceScore(counts(0, 0, 0, 99))).toBe(0);
+    expect(convergenceScore(counts(1, 1, 1, 1))).toBe(7);
+  });
+
+  it("treats the nit floor as free — unlimited nits stay converged", () => {
+    expect(convergenceSummary(counts(0, 0, 0, 50))).toBe("**Convergence** 🏁 0 ≤ 1 — converged");
+  });
+
+  it("tolerates exactly one minor at the default threshold, but not two", () => {
+    expect(convergenceSummary(counts(0, 0, 1, 3))).toBe("**Convergence** 🏁 1 ≤ 1 — converged");
+    expect(convergenceSummary(counts(0, 0, 2, 0))).toBe("**Convergence** 🔄 2 > 1 — iterating");
+  });
+
+  it("never converges past a single major or critical", () => {
+    expect(convergenceSummary(counts(0, 1, 0, 0))).toBe("**Convergence** 🔄 2 > 1 — iterating");
+    expect(convergenceSummary(counts(1, 0, 0, 0))).toBe("**Convergence** 🔄 4 > 1 — iterating");
+  });
+
+  it("a clean review reads as converged (score 0)", () => {
+    expect(convergenceSummary(counts(0, 0, 0, 0))).toBe("**Convergence** 🏁 0 ≤ 1 — converged");
+  });
+
+  it("respects a raised threshold as the single tolerance knob", () => {
+    expect(convergenceSummary(counts(0, 0, 2, 0), 3)).toBe("**Convergence** 🏁 2 ≤ 3 — converged");
+    expect(convergenceSummary(counts(0, 1, 0, 0), 3)).toBe("**Convergence** 🏁 2 ≤ 3 — converged");
+    expect(convergenceSummary(counts(1, 0, 0, 0), 3)).toBe("**Convergence** 🔄 4 > 3 — iterating");
+  });
+
+  it("renders score and threshold exactly so the printed inequality matches the comparison (#135 review)", () => {
+    expect(convergenceSummary(counts(0, 0, 1, 0), 1.5)).toBe(
+      "**Convergence** 🏁 1 ≤ 1.5 — converged",
+    );
+    expect(convergenceSummary(counts(0, 0, 2, 0), 1.5)).toBe(
+      "**Convergence** 🔄 2 > 1.5 — iterating",
+    );
+    // A threshold that toFixed(1) would round to "1.0" must print its true value, or the line reads
+    // as a false inequality (1 > 1.0 / 1 ≤ 1.0).
+    expect(convergenceSummary(counts(0, 0, 1, 0), 0.95)).toBe(
+      "**Convergence** 🔄 1 > 0.95 — iterating",
+    );
+    expect(convergenceSummary(counts(0, 0, 1, 0), 1.04)).toBe(
+      "**Convergence** 🏁 1 ≤ 1.04 — converged",
+    );
   });
 });

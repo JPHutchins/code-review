@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import { render, computeSeverityCounts } from "./render.js";
+import { render, computeSeverityCounts, isConvergenceRound } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
@@ -48,6 +48,8 @@ export interface PostInput {
   readonly runUrl?: string;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
+  // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
+  readonly convergenceThreshold?: number;
   // Computed by the caller via formatUtc so post() stays a clockless pass-through into render().
   readonly postedAt?: string;
 }
@@ -550,6 +552,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
         postedAt: input.postedAt,
@@ -603,6 +606,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        convergenceRound: false,
         testReport,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
@@ -662,10 +666,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // identical chip reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe
   // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
   const effectiveRoute = input.route ?? envelope.route;
-  const rounds =
-    effectiveRoute === "full review" && !thisIncomplete
-      ? [...priorRounds, currentCounts]
-      : priorRounds;
+  const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
+  const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
@@ -680,6 +682,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     testReport,
     severityCounts: currentCounts,
     rounds,
+    convergenceThreshold: input.convergenceThreshold,
+    convergenceRound: isRound,
     strays,
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,

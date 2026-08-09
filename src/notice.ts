@@ -28,8 +28,10 @@ export const isNoticeKind = (s: string): s is NoticeKind => NOTICE_KINDS.some((k
 // its backtick code span (`) nor forge a comment marker (<, >) nor start a new line (\n, \r) or table
 // cell (|). This is a render-safety denylist, NOT a hostname grammar: it keeps legitimate but unusual
 // hosts (bracketed IPv6, IDN) a strict pattern would wrongly drop, while still neutralizing a tampered
-// sandbox.json (the agent can rewrite it — the jail confines egress, not the filesystem).
-const UNSAFE_IN_SUMMARY = /[\n\r`<>|]/;
+// sandbox.json (the agent can rewrite it — the jail confines egress, not the filesystem). Shared with
+// scope.ts, whose scope values are spliced into the review prompt and must reject exactly these
+// prompt-structure breakers (issue #139).
+export const UNSAFE_IN_SUMMARY = /[\n\r`<>|]/;
 
 // Cap how many hosts are named: a tampered config could pad allowedDomains until the rendered summary
 // blows past GitHub's 65536-char comment limit and the comment fails to post at all. A real allowlist

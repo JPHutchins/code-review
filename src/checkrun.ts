@@ -46,7 +46,6 @@ const latest = (checks: readonly ExistingCheck[]): ExistingCheck | null =>
     null,
   );
 
-const isOpen = (status: string): boolean => status === "in_progress" || status === "queued";
 const settled = new Set(["success", "neutral", "skipped"]);
 
 // The run id the announce job stamps into the check's details_url (`.../actions/runs/<run_id>`), used
@@ -75,6 +74,9 @@ export const decideCancelledAction = (
     return { kind: "noop", reason: "no check was created by this run to settle" };
   if (owned.status === "completed" && owned.conclusion === "cancelled")
     return { kind: "noop", reason: "the check already records this cancelled run" };
+  // Forward-only like `failure`: never overwrite a completed review's settled check with cancelled.
+  if (owned.status === "completed" && owned.conclusion !== null && settled.has(owned.conclusion))
+    return { kind: "noop", reason: "a completed review already recorded this head" };
   return { kind: "patch", id: owned.id, status: "completed", conclusion: "cancelled" };
 };
 
@@ -85,9 +87,12 @@ export const decideCheckAction = (
   const head = latest(checks);
   switch (intent) {
     case "in_progress":
-      return head !== null && isOpen(head.status)
-        ? { kind: "noop", reason: "a check is already in progress for this head" }
-        : { kind: "create", status: "in_progress" };
+      // ALWAYS create a fresh check — per-run ownership. A same-SHA supersede (concurrency
+      // cancel-in-progress) must not share the superseded run's check: the cancelled run settles its
+      // OWN check (matched by details_url) and the superseding run's comment job finalizes ITS OWN
+      // (the latest by id). Nooping on an existing open check would give the superseding run no check
+      // of its own, so the cancelled run's settle would land on the shared live check (issue #139 r5).
+      return { kind: "create", status: "in_progress" };
     case "neutral":
       if (head === null) return { kind: "create", status: "completed", conclusion: "neutral" };
       return head.status === "completed" && head.conclusion === "neutral"

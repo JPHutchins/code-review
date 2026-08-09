@@ -3,14 +3,15 @@
 // #139). Pure parse + grammar; the CLI's `check-scope` command is the only caller, so the grammar the
 // prompt is built from and the grammar the tests pin are the same code.
 
+import { UNSAFE_IN_SUMMARY } from "./notice.js";
+
 // A scope value is spliced into the review agent's system prompt, so the characters that break prompt
-// structure are rejected: newline/carriage-return (starts a new block), backtick (closes a code span),
-// `<`/`>` (close an HTML comment), and `|` (breaks a markdown table) — exactly the set in SCOPE_UNSAFE.
-// The value is trusted consumer config, but a malformed splice would silently corrupt the instruction.
-// Everything else printable and structure-safe is accepted (C++, C#, C/C++, Objective-C). A multi-word
-// name is not a unit here — whitespace separates tokens, so spell a multi-word name with a dash (e.g.
-// "visual-basic") or list its words separately.
-const SCOPE_UNSAFE = /[\n\r`<>|]/;
+// structure are rejected — the same render-safety denylist notice.ts uses for summary text (newline/
+// carriage-return start a new block, a backtick closes a code span, `<`/`>` close an HTML comment, `|`
+// breaks a markdown table). The value is trusted consumer config, but a malformed splice would silently
+// corrupt the instruction. Everything else printable and structure-safe is accepted (C++, C#, C/C++,
+// Objective-C). A multi-word name is not a unit here — whitespace separates tokens, so spell a
+// multi-word name with a dash (e.g. "visual-basic") or list its words separately.
 
 export type ScopeParse =
   // Empty/whitespace — no declared scope; the reviewer infers it from the README's first paragraph.
@@ -26,7 +27,7 @@ const SCOPE_SEPARATOR_RE = /[\s,;]+/;
 export const parseScope = (raw: string | undefined): ScopeParse => {
   const trimmed = raw?.trim();
   if (trimmed === undefined || trimmed === "") return { kind: "absent" };
-  if (SCOPE_UNSAFE.test(trimmed)) {
+  if (UNSAFE_IN_SUMMARY.test(trimmed)) {
     return {
       kind: "invalid",
       reason:

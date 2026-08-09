@@ -2668,22 +2668,23 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     stderrSpy.mockRestore();
   });
 
-  it("cancelled: posts a 'superseded' notice, NOT the failure wording, when no sticky exists (issue #139)", async () => {
+  it("cancelled: posts the 'superseded' wording, NOT the failure wording, onto its OWN placeholder (issue #139)", async () => {
+    const runUrl = "https://github.com/owner/repo/actions/runs/12345";
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      `🔄 **Code review in progress** for \`abc123d\` — see the [workflow run](${runUrl})`,
+    ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: "" },
-      {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
-        response: '{"id": 555, "html_url": "https://example.com/c/555"}',
-      },
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
-    await reportIncomplete({ ...mkAnnounceInput(), cancelled: true }, api);
+    await reportIncomplete({ ...mkAnnounceInput({ runUrl }), cancelled: true }, api);
 
-    const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
-    );
-    const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
     expect(body).toContain("<!-- code-review -->");
     expect(body).toContain("Code review superseded");
     expect(body).toContain("No action needed");
@@ -2692,12 +2693,22 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     expect(body).not.toContain("did not complete");
     expect(body).not.toContain("Re-request");
     expect(body).not.toContain("review-complete");
-    // The wording must not over-assert: `cancelled` also fires for a manual cancel, and the run it
-    // links is this (cancelled) one, not a "latest" run it cannot name.
+    // The wording must not over-assert: `cancelled` also fires for a manual cancel, so the cause is
+    // hedged with "typically", and the run it links is this (cancelled) one, not a "latest" run it
+    // cannot name.
     expect(body).not.toContain("latest run");
-    expect(body).not.toContain(
-      "a newer review run started on this branch and this run was cancelled",
-    );
+    expect(body).toContain("typically");
+  });
+
+  it("cancelled: does NOT create a lone superseded sticky when no placeholder exists (nothing superseded it)", async () => {
+    const { api, calls } = mkMockGhApi([openPr, { match: commentsMatch, response: "" }]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await reportIncomplete({ ...mkAnnounceInput(), cancelled: true }, api);
+
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("no sticky to supersede"));
+    stderrSpy.mockRestore();
   });
 
   it("cancelled: overwrites its OWN placeholder and carries re-review markers forward, with the superseded wording", async () => {

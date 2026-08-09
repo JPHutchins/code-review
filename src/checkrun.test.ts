@@ -40,12 +40,14 @@ const ownedCancelled: ExistingCheck = {
 };
 
 describe("decideCheckAction", () => {
-  it("in_progress creates when none exists and no-ops when one is already open", () => {
+  it("in_progress ALWAYS creates a fresh check — per-run ownership (issue #139 r5)", () => {
+    // A same-SHA supersede must not share the superseded run's check: each run owns its own, so the
+    // cancelled run settles its own (by details_url) and the superseding run finalizes its own.
     expect(decideCheckAction([], "in_progress")).toEqual({ kind: "create", status: "in_progress" });
-    expect(decideCheckAction([open], "in_progress").kind).toBe("noop");
-  });
-
-  it("in_progress re-creates once the prior check has settled", () => {
+    expect(decideCheckAction([open], "in_progress")).toEqual({
+      kind: "create",
+      status: "in_progress",
+    });
     expect(decideCheckAction([doneNeutral], "in_progress")).toEqual({
       kind: "create",
       status: "in_progress",
@@ -128,6 +130,18 @@ describe("decideCancelledAction — issue #139", () => {
     expect(decideCancelledAction([], "https://github.com/o/r/actions/runs/123").kind).toBe("noop");
   });
 
+  it("never overwrites a completed review's settled check (forward-only, like failure)", () => {
+    const ownedNeutral: ExistingCheck = {
+      id: 7,
+      status: "completed",
+      conclusion: "neutral",
+      detailsUrl: "https://github.com/o/r/actions/runs/123",
+    };
+    expect(
+      decideCancelledAction([ownedNeutral], "https://github.com/o/r/actions/runs/123").kind,
+    ).toBe("noop");
+  });
+
   it("does not match a successor whose run id has this run's id as a numeric prefix", () => {
     // Run 123 must NOT settle run 1234's check (123 is a prefix of 1234).
     expect(
@@ -156,13 +170,28 @@ describe("checkRun", () => {
     expect(body).toMatchObject({ name: "Code review", head_sha: "abc", status: "in_progress" });
   });
 
-  it("makes no write call when the decision is a no-op", async () => {
+  it("makes no write call when the decision is a no-op (an already-neutral check)", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
     const ghApi = (args: readonly string[]): Promise<string> => {
       calls.push({ args });
-      return Promise.resolve('{"id":1,"status":"in_progress","conclusion":null}');
+      return Promise.resolve(
+        '{"id":1,"status":"completed","conclusion":"neutral","details_url":null}',
+      );
     };
-    await checkRun({ repo: "o/r", headSha: "abc", intent: "in_progress", runUrl: "u" }, ghApi);
+    await checkRun({ repo: "o/r", headSha: "abc", intent: "neutral", runUrl: "u" }, ghApi);
+    expect(calls.some((c) => c.args.includes("POST") || c.args.includes("PATCH"))).toBe(false);
+  });
+
+  it("makes no write call when a cancelled run owns no check", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const ghApi = (args: readonly string[]): Promise<string> => {
+      calls.push({ args });
+      return Promise.resolve("[]");
+    };
+    await checkRun(
+      { repo: "o/r", headSha: "abc", intent: "cancelled", runUrl: "https://g/runs/123" },
+      ghApi,
+    );
     expect(calls.some((c) => c.args.includes("POST") || c.args.includes("PATCH"))).toBe(false);
   });
 });

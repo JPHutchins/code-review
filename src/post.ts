@@ -45,6 +45,7 @@ import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
+import { runIdFromUrl } from "./checkrun.js";
 import { errMsg, tryParseJson, asRecord } from "./util.js";
 
 export interface PostInput {
@@ -956,13 +957,13 @@ const noticeBody = (lead: string, existingBody: string | undefined): string => {
   return carried ? `${lead}\n\n${carried}` : lead;
 };
 
-// Whether a sticky body references THIS run's URL — matched by the run id with a non-digit boundary so
-// a successor whose numeric run id has this one as a prefix (…/runs/123 vs …/runs/1234) is not mistaken
-// for this run. Falls back to a plain substring when the run URL carries no run id.
+// Whether a sticky body references THIS run's URL — matched by the run id (shared grammar with
+// checkrun's runIdFromUrl) with a non-digit boundary so a successor whose numeric run id has this one
+// as a prefix (…/runs/123 vs …/runs/1234) is not mistaken for this run. Falls back to a plain substring
+// when the run URL carries no run id.
 const bodyRefsRun = (body: string, runUrl: string): boolean => {
-  const m = /\/actions\/runs\/(\d+)\/?$/.exec(runUrl);
-  const runId = m?.[1];
-  return runId === undefined
+  const runId = runIdFromUrl(runUrl);
+  return runId === null
     ? body.includes(runUrl)
     : new RegExp(`/actions/runs/${runId}(?!\\d)`).test(body);
 };
@@ -1084,6 +1085,14 @@ export const reportIncomplete = async (
   // numeric run id has this one as a prefix (123 vs 1234) is not mistaken for this run.
   if (existing !== null && !bodyRefsRun(existing.body, input.runUrl)) {
     process.stderr.write(`Sticky belongs to another run — leaving it in place\n`);
+    return;
+  }
+  // A CANCELLED run with NO placeholder at all (cancelled before its announce, or a manual cancel with
+  // nothing ever posted) must not CREATE a lone "superseded" sticky — nothing superseded it. Only a
+  // run that announced (or already posted its own notice) replaces its placeholder. A superseding run
+  // will post its own review, so a missing sticky is not a gap.
+  if (input.cancelled && existing === null) {
+    process.stderr.write(`Cancelled review has no sticky to supersede — leaving it absent\n`);
     return;
   }
   await upsertSticky(

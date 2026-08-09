@@ -192,11 +192,14 @@ this doc.
   "⚠️ Review did not complete — re-request" notice as a real failure, which read as an agent crash. The
   `finalize` job now distinguishes `cancelled` from `failure`: a cancelled (superseded) run posts an
   informational "superseded — no action needed" sticky (`report-incomplete --cancelled`), never the
-  failure reading, and the in-progress check is deliberately left for the superseding run to settle
-  (stamping it could settle a same-head re-run's live check or mask a real failure). The wording is
-  soft about *why* it was cancelled — `result == 'cancelled'` also fires for a manual cancel — and links
-  the cancelled run itself, never a "latest" run it cannot name. The same guards as the failure notice
-  keep it from clobbering the superseding run's live placeholder or a completed review.
+  failure reading, and it settles the check this run's announce created to `cancelled` — matched by the
+  check's details_url (which the announce stamps with this run's URL), so a superseding run's live check
+  on the same head is never touched. Each run owns its own check (announce always opens a fresh one), so
+  ownership is unambiguous. The wording is soft about *why* it was cancelled — `result == 'cancelled'`
+  also fires for a manual cancel — and links the cancelled run itself, never a "latest" run it cannot
+  name; a cancelled run with no sticky at all (cancelled before announcing) posts nothing, because
+  nothing superseded it. The same guards as the failure notice keep it from clobbering the superseding
+  run's live placeholder or a completed review.
 - **The stop signal lives in the data, not the prose.** The AGENTS directive on the findings marker
   tells a decoding agent to ignore the prose — which would leave the convergence badge (prose-only)
   invisible to exactly the iterating author-agent it exists for. So the surfaced findings document

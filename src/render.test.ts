@@ -13,6 +13,7 @@ import type {
   TestSummary,
   SystemicProblem,
 } from "./schema.js";
+import type { RoundRecord } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const template = readFileSync(resolve(__dirname, "..", "templates", "comment.eta"), "utf-8");
@@ -1813,5 +1814,62 @@ describe("convergence score — issue #133", () => {
       convergenceRound: true,
     });
     expect(result).not.toContain("**Convergence**");
+  });
+});
+
+describe("scope metastasis + same-root notes — issue #145", () => {
+  const coded = (codes: Record<string, number>): RoundRecord => ({
+    critical: 0,
+    major: 0,
+    minor: 0,
+    nit: 0,
+    codes,
+  });
+
+  it("renders the advisory note when a mechanism streaks across 3 consecutive rounds", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      rounds: [coded({ a: 1 }), coded({ a: 1 }), coded({ a: 1 })],
+    });
+    expect(result).toContain("Scope metastasis");
+    expect(result).toContain("`a`");
+  });
+
+  it("renders no note when no mechanism reaches the streak threshold", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      rounds: [coded({ a: 1 }), coded({ b: 1 })],
+    });
+    expect(result).not.toContain("Scope metastasis");
+  });
+
+  it("annotates a stray finding whose code recurred in a prior round", () => {
+    const result = render({
+      findings: mkFindings([mkFinding({ code: "a" })]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [mkFinding({ code: "a", title: "Recurring" })],
+      sameRootNotes: { a: "Same mechanism as round 2 (`a`) — re-opened." },
+    });
+    expect(result).toContain("Same mechanism as round 2");
+  });
+
+  it("hides the metastasis note on an incomplete review", () => {
+    const result = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      incomplete: true,
+      rounds: [coded({ a: 1 }), coded({ a: 1 }), coded({ a: 1 })],
+    });
+    expect(result).not.toContain("Scope metastasis");
   });
 });

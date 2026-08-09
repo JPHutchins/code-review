@@ -9,6 +9,8 @@ import { render, computeSeverityCounts, computeRoundCounts, isConvergenceRound }
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
+  computeCodeCounts,
+  computeSameRootNotes,
   findingsMarkerForm,
   findingsPointer,
   isFullReviewSticky,
@@ -18,6 +20,7 @@ import {
   parseReviewedSha,
   parseRounds,
   reviewBodyPointer,
+  roundRecord,
 } from "./surface.js";
 import {
   ResultEnvelopeCodec,
@@ -691,6 +694,16 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   if (emptyMechanicWouldBury(effectiveRoute, thisIncomplete) && existingSticky !== null)
     await emptyMechanicLeaveOrNote(existingSticky);
 
+  // A convergence round is a COMPLETED FULL review. A mechanic pass or any incomplete/failed run
+  // carries the trajectory forward unchanged (it is a CI fix or a non-review, not a round). A
+  // same-head CI retry simply appends again — an identical chip reads as "no change", which is
+  // accurate; a reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without
+  // adding a round, so the last round need not be its head. The same-root annotation is a property of
+  // a REVIEW round — a mechanic pass is a CI-fix pass, not a round, so it carries no notes — and
+  // names the most recent prior round each of this round's recurring codes appeared in.
+  const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
+  const sameRootNotes = isRound ? computeSameRootNotes(priorRounds, findings.findings) : {};
+
   // Base64-encode the whole-document marker once, reused across sticky + review body; each inline
   // comment embeds only its own finding instead.
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
@@ -719,6 +732,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     models: envelope.models.map((m) => m.model),
     findings,
     jsonUrl: input.jsonUrl,
+    sameRootNotes,
   });
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
@@ -737,16 +751,17 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   const currentCounts = computeSeverityCounts(findings.findings);
 
-  // A convergence round is a COMPLETED FULL review. A mechanic pass or any incomplete/failed run
-  // carries the trajectory forward unchanged (it is a CI fix or a non-review, not a round). A
-  // same-head CI retry simply appends again — an identical chip reads as "no change", which is
-  // accurate; a reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without
-  // adding a round, so the last round need not be its head.
-  const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
   // The round entry carries the ROUND counts (findings + systemic severities) — the same
   // computeRoundCounts the badge scores with, so a systemic-only round with a critical systemic item
-  // stores and shows 🔴1 rather than masquerading as "clean".
-  const rounds = isRound ? [...priorRounds, computeRoundCounts(findings)] : priorRounds;
+  // stores and shows 🔴1 rather than masquerading as "clean" — plus this round's mechanism-frequency
+  // map, so the carried trajectory tells a later round which mechanisms keep recurring. `isRound` was
+  // computed above, where it also gates the same-root notes.
+  const rounds = isRound
+    ? [
+        ...priorRounds,
+        roundRecord(computeRoundCounts(findings), computeCodeCounts(findings.findings)),
+      ]
+    : priorRounds;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
@@ -761,6 +776,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     testReport,
     severityCounts: currentCounts,
     rounds,
+    sameRootNotes,
     convergenceThreshold: input.convergenceThreshold,
     convergenceRound: isRound,
     strays,

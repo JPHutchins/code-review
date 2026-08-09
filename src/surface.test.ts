@@ -16,9 +16,15 @@ import {
   convergenceScore,
   convergenceSummary,
   DEFAULT_CONVERGENCE_THRESHOLD,
+  computeCodeCounts,
+  roundRecord,
+  consecutiveCodeStreaks,
+  metastasisNote,
+  computeSameRootNotes,
+  MAX_CODES_PER_ROUND,
 } from "./surface.js";
-import type { Findings } from "./schema.js";
-import type { SeverityCounts } from "./types.js";
+import type { Finding, Findings } from "./schema.js";
+import type { RoundRecord, SeverityCounts } from "./types.js";
 
 const findings = {
   schema_version: "0.4.0",
@@ -361,5 +367,142 @@ describe("convergence score — issue #133", () => {
     expect(convergenceSummary(counts(0, 0, 1, 0), 1.04)).toBe(
       "**Convergence** 🏁 1 ≤ 1.04 — converged",
     );
+  });
+});
+
+describe("mechanism frequency rounds — issue #145", () => {
+  const counts = (critical: number, major: number, minor: number, nit: number): SeverityCounts => ({
+    critical,
+    major,
+    minor,
+    nit,
+  });
+  const mkFinding = (overrides: Partial<Finding>): Finding => ({
+    path: "src/x.ts",
+    start_line: 1,
+    end_line: 1,
+    severity: "minor",
+    title: "t",
+    description: "d",
+    reasoning: "r",
+    confidence: 0.5,
+    ...overrides,
+  });
+  const coded = (c: SeverityCounts, codes: Record<string, number>): RoundRecord => ({
+    ...c,
+    codes,
+  });
+
+  it("computeCodeCounts counts findings by code, ignoring uncoded and empty-code findings", () => {
+    expect(
+      computeCodeCounts([
+        mkFinding({ code: "null-check-missing" }),
+        mkFinding({ code: "null-check-missing" }),
+        mkFinding({ code: "body-reconstruction" }),
+        mkFinding({}),
+        mkFinding({ code: "" }),
+      ]),
+    ).toEqual({ "null-check-missing": 2, "body-reconstruction": 1 });
+  });
+
+  it("roundRecord omits the codes field when no finding carried a code (pre-feature marker shape)", () => {
+    expect(roundRecord(counts(1, 0, 0, 0), {})).toEqual({
+      critical: 1,
+      major: 0,
+      minor: 0,
+      nit: 0,
+    });
+  });
+
+  it("roundRecord adds the codes map when present", () => {
+    expect(roundRecord(counts(1, 0, 0, 0), { "null-check-missing": 1 })).toEqual({
+      critical: 1,
+      major: 0,
+      minor: 0,
+      nit: 0,
+      codes: { "null-check-missing": 1 },
+    });
+  });
+
+  it("caps a round's recorded codes at the top-N by count", () => {
+    const many = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`code-${String(i)}`, 1]));
+    const record = roundRecord(counts(0, 0, 0, 0), many);
+    expect(record.codes).toBeDefined();
+    expect(Object.keys(record.codes ?? {})).toHaveLength(MAX_CODES_PER_ROUND);
+  });
+
+  it("parseRounds round-trips coded rounds and keeps count-only rounds beside them", () => {
+    const rounds: RoundRecord[] = [
+      counts(1, 0, 0, 0),
+      coded(counts(0, 1, 0, 0), { "body-reconstruction": 2 }),
+    ];
+    expect(parseRounds(`prose\n${roundsMarker(rounds)}\nmore`)).toEqual(rounds);
+  });
+
+  it("parseRounds strips a malformed codes shape but keeps the round's severity counts", () => {
+    const bad = Buffer.from(
+      JSON.stringify([{ critical: 0, major: 0, minor: 0, nit: 0, codes: "garbage" }]),
+      "utf-8",
+    ).toString("base64");
+    expect(parseRounds(`<!-- code-review:rounds;base64 ${bad} -->`)).toEqual([
+      { critical: 0, major: 0, minor: 0, nit: 0 },
+    ]);
+  });
+
+  it("consecutiveCodeStreaks counts trailing rounds per code and stops at an uncoded round", () => {
+    const rounds: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      counts(0, 0, 0, 0), // no codes record — ends every streak
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1, b: 1 }),
+    ];
+    expect(consecutiveCodeStreaks(rounds)).toEqual({
+      a: { streak: 2, startRound: 3 },
+      b: { streak: 1, startRound: 4 },
+    });
+  });
+
+  it("metastasisNote is empty below the streak threshold and names the mechanism above it", () => {
+    const twoStreak: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+    ];
+    expect(metastasisNote(twoStreak)).toBe("");
+
+    const threeStreak: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+    ];
+    const note = metastasisNote(threeStreak);
+    expect(note).toContain("Scope metastasis");
+    expect(note).toContain("`a`");
+    expect(note).toContain("3 consecutive rounds");
+    expect(note).toContain("rounds 1–3");
+  });
+
+  it("metastasisNote honors a custom minStreak", () => {
+    const twoStreak: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+    ];
+    expect(metastasisNote(twoStreak, 2)).toContain("Scope metastasis");
+    expect(metastasisNote(twoStreak, 3)).toBe("");
+  });
+
+  it("computeSameRootNotes names the most recent prior round for each recurring code", () => {
+    const prior: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      counts(0, 0, 0, 0),
+      coded(counts(0, 0, 0, 0), { a: 1, b: 1 }),
+    ];
+    const notes = computeSameRootNotes(prior, [
+      mkFinding({ code: "a" }),
+      mkFinding({ code: "b" }),
+      mkFinding({}),
+    ]);
+    expect(notes["a"]).toContain("round 3");
+    expect(notes["b"]).toContain("round 3");
+    expect(notes["c"]).toBeUndefined();
   });
 });

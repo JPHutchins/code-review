@@ -16,6 +16,7 @@ const renderCommentBody = (
   modelsText: string,
   jsonUrl: string | undefined,
   pointer: string,
+  sameRootNote: string,
 ): string =>
   // Eta.renderString returns string | Promise<string>; with autoTrim:false it's always sync.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
@@ -27,6 +28,7 @@ const renderCommentBody = (
     modelsText,
     jsonUrl: jsonUrl ?? null,
     findingsPointer: pointer,
+    sameRootNote,
   }) as string;
 
 export interface InlineContext {
@@ -36,6 +38,9 @@ export interface InlineContext {
   // Each in-diff comment embeds only its OWN finding, but needs the document's schema_version to do
   // so; omitted when the caller has no document (each comment's marker is then omitted too).
   readonly findings?: Findings;
+  // Code → "same mechanism as round N" note, rendered under a finding whose code recurred in a prior
+  // round; omitted/empty ⇒ no per-comment annotation.
+  readonly sameRootNotes?: Readonly<Record<string, string>>;
 }
 
 export const buildInlineComments = (
@@ -51,11 +56,13 @@ export const buildInlineComments = (
 
   const comments: InlineComment[] = inDiff.map((f) => {
     const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";
+    const sameRootNote =
+      f.code !== undefined && f.code !== "" ? (context.sameRootNotes?.[f.code] ?? "") : "";
     const comment: InlineComment = {
       path: f.path,
       line: f.end_line,
       side: defaultSide(f.side),
-      body: renderCommentBody(f, eta, inlineTemplate, modelsText, jsonUrl, pointer),
+      body: renderCommentBody(f, eta, inlineTemplate, modelsText, jsonUrl, pointer, sameRootNote),
     };
     if (f.start_line < f.end_line) {
       return {

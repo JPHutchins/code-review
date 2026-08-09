@@ -1301,15 +1301,16 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(existsSync(priorContextPath(out))).toBe(false);
   });
 
-  it("still seeds from a pre-route-marker FULL review via its carried round history — the shared predicate's fallback", async () => {
+  it("does NOT seed from a no-route prior even with round history — a mechanic carries a full review's rounds forward, so the route marker is the only reliable signal (issue #127 round-2)", async () => {
     const prior = writePrior(
       `<!-- code-review -->\n${oneRoundMarker}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
-    expect(stdout.trim()).toBe("prior-new");
-    expect(existsSync(priorContextPath(out))).toBe(true);
+    expect(stdout.trim()).toBe("empty-had-prior");
+    assertSentinelOnly(out);
+    expect(existsSync(priorContextPath(out))).toBe(false);
   });
 
   it("still seeds from a prior whose route marker names the full review", async () => {

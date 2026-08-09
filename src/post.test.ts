@@ -122,6 +122,34 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   ...overrides,
 });
 
+const roundsMarkerFor = (n: number): string =>
+  `<!-- code-review:rounds;base64 ${Buffer.from(
+    JSON.stringify(Array.from({ length: n }, () => ({ critical: 0, major: 1, minor: 0, nit: 0 }))),
+    "utf-8",
+  ).toString("base64")} -->`;
+
+// Shared by the sticky-precedence describes: the bot's own prior sticky + the post call surface.
+const mkMocks = (stickyBody: string) => [
+  {
+    match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+    response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+  },
+  {
+    match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+    response: inlineDiff,
+  },
+  {
+    match: (a: readonly string[]) =>
+      a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+    response: `${JSON.stringify({ id: 999, body: stickyBody })}\n`,
+  },
+  {
+    match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+    response: "",
+  },
+  { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
+];
+
 interface RecordedCall {
   readonly args: readonly string[];
   readonly stdin?: string;
@@ -2537,27 +2565,6 @@ describe("post — incomplete result never buries a completed review (#107)", ()
     "🔄 Code review in progress",
   ].join("\n");
 
-  const mkMocks = (stickyBody: string) => [
-    {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
-      response: inlineDiff,
-    },
-    {
-      match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-      response: `${JSON.stringify({ id: 999, body: stickyBody })}\n`,
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
-      response: "",
-    },
-    { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
-  ];
-
   const writeIncomplete = (): void => {
     writeFileSync(
       join(tmpDir, "envelope.json"),
@@ -2647,14 +2654,6 @@ describe("post — incomplete result never buries a completed review (#107)", ()
 });
 
 describe("post — an empty CI-fix mechanic pass never buries a completed FULL review (#127)", () => {
-  const roundsMarkerFor = (n: number): string =>
-    `<!-- code-review:rounds;base64 ${Buffer.from(
-      JSON.stringify(
-        Array.from({ length: n }, () => ({ critical: 0, major: 1, minor: 0, nit: 0 })),
-      ),
-      "utf-8",
-    ).toString("base64")} -->`;
-
   const stickyFrom = (markers: readonly string[]): string =>
     `<!-- code-review -->\n${markers.join("\n")}\n\n### 💬 comment — the prior review`;
 
@@ -2684,6 +2683,7 @@ describe("post — an empty CI-fix mechanic pass never buries a completed FULL r
     "<!-- code-review -->",
     "<!-- reviewed-route: full review -->",
     roundsMarkerFor(1),
+    FINDINGS_MARKER,
     "",
     "🔄 **Code review in progress** for `abc123d` — see the [workflow run](https://github.com/owner/repo/actions/runs/12345)",
   ].join("\n");
@@ -2693,27 +2693,6 @@ describe("post — an empty CI-fix mechanic pass never buries a completed FULL r
     "",
     "🔄 **Code review in progress** for `abc123d`",
   ].join("\n");
-
-  const mkMocks = (stickyBody: string) => [
-    {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
-      response: inlineDiff,
-    },
-    {
-      match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-      response: `${JSON.stringify({ id: 999, body: stickyBody })}\n`,
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
-      response: "",
-    },
-    { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
-  ];
 
   const writeEmptyMechanic = (): void => {
     writeFileSync(
@@ -2782,10 +2761,55 @@ describe("post — an empty CI-fix mechanic pass never buries a completed FULL r
     expect(body).toContain("**route:** mechanic");
   });
 
-  it("leaves the sticky in place when the ANNOUNCE PLACEHOLDER still records the full review (review-complete is stripped, route + rounds carried)", async () => {
+  const postExpectingExit = async (
+    api: GhApi,
+    calls: () => readonly RecordedCall[],
+  ): Promise<string> => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await expect(post(mkInput({ route: undefined }), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    const patchCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    expect(patchCall).toBeDefined();
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    stderrSpy.mockRestore();
+    exitSpy.mockRestore();
+    return body;
+  };
+
+  it("replaces the ANNOUNCE PLACEHOLDER with a compact honest notice instead of a clean pass or a stale 'in progress' — the full review's markers are carried forward (review-complete is stripped, route + rounds + findings carried)", async () => {
     writeEmptyMechanic();
     const { api, calls } = mkMockGhApi(mkMocks(placeholderOfFullReviewSticky));
-    await expectLeftInPlace(api, calls);
+    const body = await postExpectingExit(api, calls);
+    // Honest prose — never "No findings — clean review."
+    expect(body).toContain("CI-fix pass completed with no findings");
+    expect(body).not.toContain("clean review");
+    expect(body).not.toContain("in progress");
+    // The preserved full review's machine-readable record survives the swap.
+    expect(body).toContain("reviewed-route: full review");
+    expect(body).toContain("code-review:rounds;base64");
+    expect(body).toContain("code-review:findings-json");
+  });
+
+  it("protects a PRE-ROUTE/PRE-ROUNDS full review through the placeholder via the carried completed-ancestor marker — no false clean pass", async () => {
+    writeEmptyMechanic();
+    // A markerless completed full review, then the announce placeholder replaced it: only the
+    // findings + reviewed-sha + the completed-ancestor marker survive (no route, no rounds).
+    const ancestorPlaceholderSticky = [
+      "<!-- code-review -->",
+      "<!-- reviewed-sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
+      "<!-- review-complete-ancestor -->",
+      "",
+      "🔄 **Code review in progress** for `abc123d`",
+    ].join("\n");
+    const { api, calls } = mkMockGhApi(mkMocks(ancestorPlaceholderSticky));
+    const body = await postExpectingExit(api, calls);
+    expect(body).toContain("CI-fix pass completed with no findings");
+    expect(body).not.toContain("clean review");
   });
 
   it("recognizes a MARKERLESS completed full review (review-complete only, predating route and rounds markers) and leaves it in place", async () => {
@@ -2855,14 +2879,6 @@ describe("post — an empty CI-fix mechanic pass never buries a completed FULL r
 });
 
 describe("post — convergence rounds (issue #125)", () => {
-  const roundsMarkerFor = (n: number): string =>
-    `<!-- code-review:rounds;base64 ${Buffer.from(
-      JSON.stringify(
-        Array.from({ length: n }, () => ({ critical: 0, major: 1, minor: 0, nit: 0 })),
-      ),
-      "utf-8",
-    ).toString("base64")} -->`;
-
   // A prior sticky carrying `n` rounds; `complete` + `sha` model a re-review of an already-reviewed head.
   const mocksWithPriorSticky = (
     opts: { rounds: number; complete?: boolean; sha?: string } = { rounds: 1 },

@@ -4,6 +4,8 @@ import {
   parseReviewedSha,
   parseReviewedRoute,
   parseReviewComplete,
+  parseCompletedAncestor,
+  COMPLETED_ANCESTOR_MARKER,
   isFullReviewSticky,
   findingsPointer,
   parseRounds,
@@ -103,7 +105,7 @@ describe("parseReviewedRoute", () => {
   });
 });
 
-describe("isFullReviewSticky — the shared full-review predicate (issue #127)", () => {
+describe("isFullReviewSticky — post's full-review predicate (issue #127)", () => {
   const oneRound = roundsMarker([{ critical: 0, major: 1, minor: 0, nit: 0 }]);
 
   it("route marker 'full review' wins, even with no round history", () => {
@@ -114,12 +116,34 @@ describe("isFullReviewSticky — the shared full-review predicate (issue #127)",
     expect(isFullReviewSticky(`<!-- reviewed-route: mechanic -->\n${oneRound}`)).toBe(false);
   });
 
-  it("round history is the pre-route-marker fallback — only a completed full review appends a round", () => {
+  it("round history is the pre-route-marker fallback — only a completed full review APPENDS a round (a mechanic can only carry one)", () => {
     expect(isFullReviewSticky(oneRound)).toBe(true);
   });
 
   it("no signal at all is not a full review (a notice, an in-progress placeholder, or a pre-marker mechanic)", () => {
     expect(isFullReviewSticky("<!-- code-review -->\nplain")).toBe(false);
+  });
+});
+
+describe("completed-ancestor marker — the placeholder's completed-review ancestry (issue #127)", () => {
+  it("parseCompletedAncestor is true only when the marker is present", () => {
+    expect(parseCompletedAncestor(COMPLETED_ANCESTOR_MARKER)).toBe(true);
+    expect(parseCompletedAncestor("<!-- code-review -->\nplain")).toBe(false);
+    // review-complete itself is NOT the ancestor marker — the two are distinct signals.
+    expect(parseCompletedAncestor("<!-- review-complete -->")).toBe(false);
+  });
+
+  it("carryForwardMarkers emits the ancestor marker when the replaced sticky was a completed review — and carries it onward through chained placeholders", () => {
+    const fromCompleted = carryForwardMarkers("<!-- code-review -->\n<!-- review-complete -->\nx");
+    expect(fromCompleted).toContain(COMPLETED_ANCESTOR_MARKER);
+    const fromPlaceholder = carryForwardMarkers(
+      `<!-- code-review -->\n${COMPLETED_ANCESTOR_MARKER}\nx`,
+    );
+    expect(fromPlaceholder).toContain(COMPLETED_ANCESTOR_MARKER);
+    // A notice's sticky never carries it.
+    expect(
+      carryForwardMarkers("<!-- code-review -->\n### ⚠️ Review did not complete"),
+    ).not.toContain(COMPLETED_ANCESTOR_MARKER);
   });
 });
 

@@ -5,7 +5,7 @@
 // citty requires async run() even when the body has no explicit await
 
 import { defineCommand, runMain } from "citty";
-import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
@@ -39,7 +39,7 @@ import {
   isIncompleteFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
-import { parseFindingsMarker, parseReviewedSha, isFullReviewSticky } from "./surface.js";
+import { parseFindingsMarker, parseReviewedRoute, parseReviewedSha } from "./surface.js";
 import {
   buildNoticeEnvelope,
   buildUnknownNoticeEnvelope,
@@ -451,12 +451,36 @@ const transcriptPathOf = (input: unknown): string | undefined => {
   return typeof tp === "string" ? tp : undefined;
 };
 
+const statMtimeMsOrNull = (path: string): number | null => {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+};
+
+const statSizeOrNull = (path: string): number | null => {
+  try {
+    return statSync(path).size;
+  } catch {
+    return null;
+  }
+};
+
 /** Snapshot the draft to its last-valid sidecar when it passes the same extraction ladder `adapt`
  *  will read it back through, so `adapt`'s fallback rung only ever sees a document it accepts.
  *  The pre-seed sentinel never validates, so the untouched seed can never be checkpointed here.
  *  Best-effort — a snapshot miss never perturbs the hook's stdout decision. */
 export const snapshotIfValid = (draftPath: string): void => {
   try {
+    // Skip the ladder when the draft is not newer than the snapshot already taken: the hook fires
+    // on every main-agent PostToolBatch, and re-validating an unchanged draft each batch is the
+    // same per-event I/O class the lazy-thunk change elsewhere eliminated.
+    const snapPath = lastValidPath(draftPath);
+    const draftMtime = statMtimeMsOrNull(draftPath);
+    if (draftMtime === null) return;
+    const snapMtime = statMtimeMsOrNull(snapPath);
+    if (snapMtime !== null && draftMtime <= snapMtime) return;
     // Validate the LIVE draft only (no agentFileFallbackPath): passing the snapshot as a fallback
     // here would let a valid snapshot rescue an invalid live draft through the ladder, then copy that
     // invalid draft over the good snapshot — corrupting the last-valid state we exist to preserve.
@@ -464,7 +488,7 @@ export const snapshotIfValid = (draftPath: string): void => {
       extractStructured({ kind: "findings", native: undefined, agentFilePath: draftPath }).kind ===
       "ok"
     )
-      copyFileSync(draftPath, lastValidPath(draftPath));
+      copyFileSync(draftPath, snapPath);
   } catch (err) {
     process.stderr.write(
       `code-review: could not snapshot the last-valid draft (${errMsg(err)}) — any prior snapshot is unchanged\n`,
@@ -859,15 +883,16 @@ const seedDraftCmd = defineCommand({
                 : schemaPathFor(kind, args["schema-version"]);
               if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
               // Skip a prior that never completed (verdict "error" + no findings — the notice
-              // signature, isIncompleteFindings) and a prior that is not a completed FULL review
-              // (route-aware seed chain): a CI-fix mechanic pass — modern (route marker) or
-              // pre-marker (no round history) — must not sit in the seed chain as if it were the
-              // previous review. The shared isFullReviewSticky predicate keeps seed-draft and post's
-              // empty-mechanic guard in agreement (issue #127).
+              // signature, isIncompleteFindings) and a prior that is not unmistakably a completed
+              // FULL review (route-aware seed chain): a CI-fix mechanic pass must not sit in the
+              // seed chain as if it were the previous review. The route marker is the ONLY
+              // reliable signal — round history can't identify the last review (a mechanic carries
+              // a full review's rounds forward), so a no-route prior is unknown and skipped: one
+              // cold review is cheaper than a false prior (issue #127 round-2).
               const resolution = resolveRegistry("findings", priorFindings);
               if (resolution.kind !== "ok") return false;
               if (isIncompleteFindings(resolution.value)) return false;
-              if (!isFullReviewSticky(priorBody ?? "")) return false;
+              if (parseReviewedRoute(priorBody ?? "") !== "full review") return false;
               writeFileSync(outPath, SEED_SENTINEL);
               writeFileSync(
                 priorContextPath(outPath),
@@ -952,8 +977,14 @@ const adaptCmd = defineCommand({
     // a coarse-timestamp filesystem can't misclassify a fresh draft). The sentinel never validates,
     // so it can't be recovered as a review; the flag only refines the "did not complete" message.
     // A missing draft is inert (there is no seed to recover), and a non-seeded caller sees nothing.
+    // Size-gated: only a sentinel-sized file (plus a trailing-newline tolerance) can be the
+    // sentinel, so a real review — the largest input read back — is never read twice per run.
     const agentFile = args["agent-file"];
-    const seedUnrevised = agentFile ? isSeedSentinel(readFileOrNull(agentFile)) : false;
+    const agentFileSize = agentFile ? statSizeOrNull(agentFile) : null;
+    const seedUnrevised =
+      agentFileSize !== null &&
+      agentFileSize <= Buffer.byteLength(SEED_SENTINEL) + 2 &&
+      isSeedSentinel(readFileOrNull(agentFile));
     const envelope = unwrapAdapt(
       adapt(requireAdapterName(args.adapter), readJSONOrAbsent(args.native), agentFile, {
         route: args.route,

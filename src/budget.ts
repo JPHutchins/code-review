@@ -176,14 +176,19 @@ export const SEED_SENTINEL =
 
 // A normalized compare: a trailing newline, CRLF, or leading BOM added by any tool that touches the
 // file must not silently flip the "untouched seed" signal. Anything beyond that is a different
-// content — the agent's own writing.
+// content — the agent's own writing. One normalization, shared by both predicates.
+const normalizedDraft = (draftText: string | null): string =>
+  typeof draftText === "string" ? draftText.replace(/^\uFEFF/, "").trim() : "";
+
 export const isSeedSentinel = (draftText: string | null): boolean =>
-  typeof draftText === "string" && draftText.replace(/^\uFEFF/, "").trim() === SEED_SENTINEL;
+  normalizedDraft(draftText) === SEED_SENTINEL;
 
 // The fan-out floor: the main agent has replaced the sentinel with real first-pass content — an
 // empty or missing draft is not a first pass.
-export const mainHasWrittenDraft = (draftText: string | null): boolean =>
-  draftText !== null && draftText.trim() !== "" && !isSeedSentinel(draftText);
+export const mainHasWrittenDraft = (draftText: string | null): boolean => {
+  const normalized = normalizedDraft(draftText);
+  return normalized !== "" && normalized !== SEED_SENTINEL;
+};
 
 // One sidecar-name derivation for every postfix-before-extension convention, so last-valid and
 // prior-context can never drift apart.

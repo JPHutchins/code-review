@@ -139,9 +139,14 @@ this doc.
   live draft, the last-valid snapshot, the native envelope — can mistake the untouched seed for a
   completed review of the current head (issue #127), and "agent produced nothing" is always an honest
   "did not complete" notice. The seed chain is **route-aware**: a prior that never completed (an
-  error-verdict notice) or that a CI-fix mechanic pass produced is skipped, and an empty mechanic pass
-  never buries a completed full review's sticky. The sticky *summary* comment is editable
-  (find-and-PATCH) while a fresh *review* is posted per head SHA with the prior bot review dismissed.
+  error-verdict notice) or that is not unmistakably a completed full review (a CI-fix mechanic pass —
+  the route marker is the only reliable signal, since a mechanic carries a full review's rounds
+  forward) is skipped, and an empty mechanic pass never buries a completed full review's sticky — the
+  guard reads the route/rounds markers and a carried completed-ancestor marker, so it holds even when
+  the announce placeholder has replaced the sticky, and it leaves a compact honest notice instead of a
+  stale "in progress" when what it preserves is only a placeholder. The sticky *summary* comment is
+  editable (find-and-PATCH) while a fresh *review* is posted per head SHA with the prior bot review
+  dismissed.
 - **Author dispositions as untrusted context.** Alongside the seeded prior review, a re-review sees the
   PR's own description (`pr_context.json`) and the full human discussion (`pr_conversation.json` — issue
   comments, inline review-thread replies with their `path`/`line`, and review submissions; *every author

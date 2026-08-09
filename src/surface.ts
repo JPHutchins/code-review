@@ -75,20 +75,32 @@ export const parseReviewedSha = (body: string): string | null => {
 // The route of the COMPLETED review that stamped the sticky ("full review" | "mechanic"; absent on
 // notices and on pre-route-marker stickies). The seed chain is route-aware on it: a CI-fix mechanic
 // pass must not seed a later full review as if it were the previous full review (issue #127).
-export const parseReviewedRoute = (body: string): string | null =>
-  /<!-- reviewed-route: ([^>]*) -->/.exec(body)?.[1] || null;
+const ROUTE_RE = /<!-- reviewed-route: ([^>]*) -->/;
+export const parseReviewedRoute = (body: string): string | null => ROUTE_RE.exec(body)?.[1] || null;
 
-// The one "is this sticky's last completed review a FULL review" predicate, shared by post's
-// empty-mechanic guard and seed-draft's route-aware seed-chain skip so the two can't drift. The
-// route marker wins: a mechanic sticky carries a prior full review's round history forward, so
-// round history alone can't distinguish it. Round history is the fallback for pre-route-marker
-// stickies (only a completed full review appends a round). With no signal at all the review is not
-// classified as full — a pre-rounds, pre-route full review is indistinguishable from a mechanic of
-// the same era, and callers with more context (post's review-complete marker) add their own fallback.
+// Post's empty-mechanic guard predicate: "does this sticky record a completed FULL review as its
+// last completed review?" The route marker wins — a mechanic sticky carries a prior full review's
+// round history forward, so round history alone can't distinguish it — and round history is the
+// fallback for pre-route-marker stickies (only a completed full review ever APPENDS a round; a
+// mechanic can only carry one). With no signal at all the review is not classified as full here;
+// post adds its own completed-review fallbacks (review-complete, or the placeholder's
+// completed-ancestor marker) for the pre-rounds era. seed-draft deliberately does NOT use this
+// predicate: for seeding, a no-route prior is unknown (a pre-route mechanic that carried rounds
+// looks identical to a pre-route full review), and the false-prior direction is worse than one cold
+// review, so it requires the route marker outright.
 export const isFullReviewSticky = (body: string): boolean => {
   const route = parseReviewedRoute(body);
   return route === "full review" || (route !== "mechanic" && parseRounds(body).length > 0);
 };
+
+// Carried by the announce placeholder when the sticky it replaced was a COMPLETED review: the
+// placeholder strips review-complete (it must not read as a finished review of the new head), yet
+// the empty-mechanic guard needs to know the placeholder descends from a completed review to
+// protect a pre-route/pre-rounds full review that would otherwise lose every signal (issue #127
+// round-2). Only ever carried — never emitted by a completed render, which has review-complete.
+export const COMPLETED_ANCESTOR_MARKER = "<!-- review-complete-ancestor -->";
+export const parseCompletedAncestor = (body: string): boolean =>
+  body.includes(COMPLETED_ANCESTOR_MARKER);
 
 // A POSITIVE marker: present only in a sticky the commenter wrote for a COMPLETED review. It is
 // absent from an incomplete notice AND from an in-progress placeholder (which carries forward a prior
@@ -199,10 +211,16 @@ export const convergenceSummary = (
 export const carryForwardMarkers = (body: string): string => {
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
-  const reviewedRoute = /<!-- reviewed-route: [^>]* -->/.exec(body)?.[0];
+  const reviewedRoute = ROUTE_RE.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
+  // The replaced sticky was a completed review — the placeholder must record that ancestry even
+  // though review-complete itself is never carried (it would read as a finished review).
+  const completedAncestor =
+    parseReviewComplete(body) || parseCompletedAncestor(body)
+      ? COMPLETED_ANCESTOR_MARKER
+      : undefined;
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, reviewedRoute, rounds]
+  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, rounds]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
 };

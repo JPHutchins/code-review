@@ -1200,6 +1200,35 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.findings[0]!.title).toBe("Prior finding");
   });
 
+  it("seeds from a SURFACED 0.7.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
+    // The sticky's embedded marker is the surfaced document: the agent's fields plus the
+    // pipeline-stamped stop signal. Only the agent's own fields may reach $DRAFT.
+    const surfaced = {
+      ...priorFindings,
+      schema_version: "0.7.0",
+      round: 2,
+      convergence: { score: 0, threshold: 1, converged: true },
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    // $DRAFT itself is the sentinel; the prior travels to the read-only context file, stripped of
+    // the pipeline-stamped surface fields and restored to a draft version.
+    assertSentinelOnly(out);
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings;
+    // stripSurfaceFields restores the CURRENT draft version (0.6.0 after #134), not the surfaced 0.7.0.
+    expect(context.schema_version).toBe("0.6.0");
+    expect(context).not.toHaveProperty("convergence");
+    expect(context).not.toHaveProperty("round");
+    expect(context.findings).toHaveLength(1);
+  });
+
   it("reports 'empty-had-prior' when a prior review comment exists but carries no decodable findings marker", async () => {
     const prior = writePrior("<!-- code-review -->\njust prose, no findings marker");
     const out = join(tmpDir, "draft.json");

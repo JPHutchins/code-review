@@ -5,23 +5,36 @@ import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import { render, computeSeverityCounts, computeRoundCounts, isConvergenceRound } from "./render.js";
+import {
+  render,
+  computeSeverityCounts,
+  computeRoundCounts,
+  isConvergenceRound,
+  isReviewVerdict,
+} from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
   computeCodeCounts,
   computeSameRootNotes,
   findingsMarkerForm,
-  findingsPointer,
   isFullReviewSticky,
   parseCompletedAncestor,
+  parseFindingsMarker,
   parseReviewComplete,
   parseReviewedRoute,
   parseReviewedSha,
   parseRounds,
+  parseSignalMarker,
+  parseSurfaceSignal,
   reviewBodyPointer,
   roundRecord,
+  signalForRound,
+  signalMarker,
+  surfaceFindings,
+  surfacedFindingsPointer,
 } from "./surface.js";
+import type { SurfaceSignal } from "./surface.js";
 import {
   ResultEnvelopeCodec,
   PriceMapCodec,
@@ -559,6 +572,27 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // placeholder via carryForwardMarkers). A completed FULL review appends this run's counts below; a
   // CI-fix mechanic pass and every notice carry it forward unchanged so the trajectory is never lost.
   const priorRounds = existingSticky !== null ? parseRounds(existingSticky.body) : [];
+  // The last completed round's stop signal, carried VERBATIM into non-round posts — re-deriving it
+  // at the current threshold would flip a prior round's `converged` when the operator changes
+  // convergence_threshold mid-PR. Read from the compact signal marker first (an oversized prior
+  // review embeds only that), then from the surfaced blob. Null when the prior sticky has neither or
+  // no round has completed (the blob then carries no signal, exactly like a first-run post).
+  const priorSignal =
+    existingSticky === null
+      ? null
+      : (parseSignalMarker(existingSticky.body) ??
+        parseSurfaceSignal(parseFindingsMarker(existingSticky.body)));
+
+  // A post whose blob embeds no signal (a notice — any error-verdict doc) still preserves the prior
+  // round's stop signal on the sticky in the compact marker, so the next post reads it back via
+  // parseSignalMarker: the notice itself never claims a signal, but a completed round's `converged`
+  // is not erased by a failed run (issue #141 review r3).
+  const findingsMarkerFor = (findings: Findings, signal: SurfaceSignal | null): string => {
+    const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl);
+    return signal !== null || priorSignal === null
+      ? pointer
+      : `${pointer}\n${signalMarker(priorSignal)}`;
+  };
   const leaveInPlace = (message?: string): never => {
     process.stderr.write(
       message ??
@@ -594,10 +628,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const template = readFileSync(input.templatePath, "utf-8");
   const inlineTemplate = readFileSync(input.inlineTemplatePath, "utf-8");
 
-  const renderNotice = (message: string): string =>
-    formatMarkdown(
+  const renderNotice = (message: string): string => {
+    const findings = incompleteFindings(`### ⚠️ ${message}`);
+    return formatMarkdown(
       render({
-        findings: incompleteFindings(`### ⚠️ ${message}`),
+        findings,
         envelope: null,
         incomplete: true,
         prices: decodedPrices.right,
@@ -608,12 +643,19 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         effort: input.effort,
         rounds: priorRounds,
         sameRootNotes: {},
+        roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
+        // A notice's own blob stays clean: verdict "error" + a carried "converged" would read as a
+        // stop signal for a run that produced no verdict (issue #141 review r2). The prior signal
+        // survives on the sticky in the compact marker (findingsMarkerFor), and the carried-forward
+        // trajectory (rounds marker) remains the historical record.
+        findingsPointer: findingsMarkerFor(findings, null),
         postedAt: input.postedAt,
       }),
     );
+  };
 
   if (isEmptyDiff(diff)) {
     if (wouldBuryCompleted(true)) leaveInPlace();
@@ -672,11 +714,18 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         effort: input.effort,
         rounds: priorRounds,
         sameRootNotes: {},
+        roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         testReport,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
+        // Same signal rule as the main path: only a completed-review doc carries the prior signal
+        // in its blob; an error-verdict doc preserves it in the compact marker instead.
+        findingsPointer: findingsMarkerFor(
+          findings,
+          isReviewVerdict(findings.verdict) ? priorSignal : null,
+        ),
         postedAt: input.postedAt,
       }),
     );
@@ -696,34 +745,23 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   if (emptyMechanicWouldBury(effectiveRoute, thisIncomplete) && existingSticky !== null)
     await emptyMechanicLeaveOrNote(existingSticky);
 
-  // A convergence round is a COMPLETED FULL review. A mechanic pass or any incomplete/failed run
-  // carries the trajectory forward unchanged (it is a CI fix or a non-review, not a round). A
-  // same-head CI retry simply appends again — an identical chip reads as "no change", which is
-  // accurate; a reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without
-  // adding a round, so the last round need not be its head. The same-root annotation is a property of
-  // a REVIEW round — a mechanic pass is a CI-fix pass, not a round, so it carries no notes — and
-  // names the most recent prior round each of this round's recurring codes appeared in.
-  const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
-  const sameRootNotes = isRound ? computeSameRootNotes(priorRounds, findings.findings) : {};
-
-  // Base64-encode the whole-document marker once, reused across sticky + review body; each inline
-  // comment embeds only its own finding instead.
-  const findingsMarker = findingsPointer(findings, input.jsonUrl);
-
-  // Only the embedded base64 form is decodable back by a re-review seed (parseFindingsMarker), so a
-  // degraded marker would silently drop the embedded machine channel — surface the degradation in
-  // the run log rather than letting it vanish. The link form still carries a machine-readable
-  // pointer; only the omitted form loses the channel entirely.
-  const markerForm = findingsMarkerForm(findings, input.jsonUrl);
-  if (markerForm === "link") {
-    process.stderr.write(
-      "Warning: the findings-json marker exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact instead of the embedded JSON\n",
-    );
-  } else if (markerForm === "omitted") {
-    process.stderr.write(
-      "Warning: the findings-json marker exceeds the embed limit and no --json-url was given — the machine-readable channel is omitted from the posted surfaces\n",
-    );
-  }
+  // A convergence round is a COMPLETED FULL review (effectiveRoute read above — `input.route` first,
+  // then the envelope — the same way render does). A mechanic pass or any incomplete/failed run
+  // carries the trajectory forward unchanged (it is a CI fix or a non-review, not a round). The
+  // verdict guard (isReviewVerdict, render's badge uses the same predicate) also gates the append
+  // here, so an out-of-contract "error" verdict that somehow carries findings never counts as a
+  // round: the trajectory, the badge, and the blob's convergence stay one decision. A same-head CI
+  // retry simply appends again — an identical chip reads as "no change", which is accurate; a
+  // reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without adding a
+  // round, so the last round need not be its head. The same-root annotation is a property of a
+  // REVIEW round — a mechanic pass is a CI-fix pass, not a round, so it carries no notes — and names
+  // the most recent prior round (excluding a same-head retry) each of this round's recurring codes
+  // appeared in.
+  const isRound =
+    isConvergenceRound(effectiveRoute, thisIncomplete) && isReviewVerdict(findings.verdict);
+  const sameRootNotes = isRound
+    ? computeSameRootNotes(priorRounds, findings.findings, input.headSha.slice(0, 12))
+    : {};
 
   const {
     comments: rawComments,
@@ -773,6 +811,43 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ]
     : priorRounds;
 
+  // The stop signal the surfaced blob embeds: THIS round's signal when the run completes a round,
+  // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived. An
+  // incomplete run or a no-verdict doc embeds NO signal: a carried "converged" beside "no review
+  // verdict" (or beside a run the envelope says did not complete) would read as a stop signal for a
+  // run that produced none (issue #141 reviews r2 + r4). The round number can never regress: the
+  // rounds marker is best-effort (parseRounds filters corrupt entries), so a completing round
+  // numbers itself after the carried count when it is ahead.
+  const signal = isRound
+    ? signalForRound(
+        Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1,
+        computeRoundCounts(findings),
+        input.convergenceThreshold,
+      )
+    : thisIncomplete || !isReviewVerdict(findings.verdict)
+      ? null
+      : priorSignal;
+
+  // Base64-encode the SURFACED whole-document marker once (the agent's doc + the stop signal),
+  // reused across sticky + review body; each inline comment embeds only its own finding instead.
+  const findingsMarker = findingsMarkerFor(findings, signal);
+
+  // Only the embedded base64 form is decodable back by a re-review seed (parseFindingsMarker), so a
+  // degraded marker would silently drop the embedded machine channel — surface the degradation in
+  // the run log rather than letting it vanish. The link form still carries a machine-readable
+  // pointer; only the omitted form loses the channel entirely. Measured on the SURFACED marker
+  // (surfaceFindings — the agent's doc plus the stop signal), which is the form actually embedded.
+  const markerForm = findingsMarkerForm(surfaceFindings(findings, signal), input.jsonUrl);
+  if (markerForm === "link") {
+    process.stderr.write(
+      "Warning: the findings-json marker exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact instead of the embedded JSON\n",
+    );
+  } else if (markerForm === "omitted") {
+    process.stderr.write(
+      "Warning: the findings-json marker exceeds the embed limit and no --json-url was given — the machine-readable channel is omitted from the posted surfaces\n",
+    );
+  }
+
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
     envelope,
@@ -787,6 +862,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     severityCounts: currentCounts,
     rounds,
     sameRootNotes,
+    roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,
     convergenceRound: isRound,
     strays,

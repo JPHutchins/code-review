@@ -83,6 +83,10 @@ export interface RenderInput {
   // derives it from rounds.slice(0, -1)). Omitted ⇒ derived. Rendered as an advisory one-liner under
   // each such finding (sticky strays + inline comments); never alters severity or verdict.
   readonly sameRootNotes?: Readonly<Record<string, string>>;
+  // The true completed-round count for the trajectory label, when it differs from `rounds.length`
+  // (post derives it from the carried signal, which survives corrupt rounds-marker entries that
+  // parseRounds filters). Omitted ⇒ the parsed history length.
+  readonly roundCount?: number;
   // The advisory convergence tolerance — the weighted-severity score at or below which the round
   // reads as "converged" (default 1: unlimited nits plus at most one minor). Omitted ⇒ the default.
   readonly convergenceThreshold?: number;

@@ -38,11 +38,21 @@ const SchemaVersion = t.refinement(
   "SchemaVersion",
 );
 
+// Mirrors ajv-formats' `uri` format (an absolute, RFC 3986 URI) so the codec gate and the ajv gate
+// agree on code_url — the extraction ladder runs both gates, and post's decode-only path must not
+// accept what ajv rejects. Verified against ajv-formats over the URI corpus; the whitespace check
+// closes the one divergence (URL() auto-encodes raw spaces that a URI cannot contain).
+const UriString = t.refinement(
+  t.string,
+  (s): s is string => !/\s/.test(s) && URL.canParse(s),
+  "UriString",
+);
+
 // The stable rule identifier pair, shared by findings and systemic problems so the two shapes can
 // never diverge on it.
 const FindingRuleCodec = t.partial({
   code: t.string,
-  code_url: t.string,
+  code_url: UriString,
 });
 
 const FindingShape = t.intersection([

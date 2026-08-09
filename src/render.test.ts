@@ -537,7 +537,7 @@ describe("render", () => {
       expect(result).not.toContain("clean review");
     });
 
-    it("shows NO convergence badge for a systemic-only full-review round — the score formula is findings-only (issue #134 review)", () => {
+    it("scores systemic severities into the badge — a systemic-only round with a major item reads 'iterating', never 'converged' (issue #134 review)", () => {
       const findings = mkFindings([], {
         systemic_problems: [mkSystemic()],
       });
@@ -548,10 +548,38 @@ describe("render", () => {
         template,
         route: "full review",
       });
-      expect(result).not.toContain("**Convergence**");
+      expect(result).toContain("**Convergence** 🔄 2 > 1 — iterating");
     });
 
-    it("shows NO convergence badge when systemic problems accompany findings — the score is findings-only, so any systemic problem blocks the claim (issue #134 review)", () => {
+    it("treats a nit systemic item as free, like a nit finding — nits never block convergence (issue #134 review)", () => {
+      const findings = mkFindings([], {
+        systemic_problems: [mkSystemic({ severity: "nit" })],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
+    });
+
+    it("a critical systemic problem beside a nit-only round reads 'iterating' — the badge is severity-aware (issue #134 review)", () => {
+      const findings = mkFindings([mkFinding({ severity: "nit" })], {
+        systemic_problems: [mkSystemic({ severity: "critical" })],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**Convergence** 🔄 4 > 1 — iterating");
+    });
+
+    it("scores findings and systemic severities together for a mixed round", () => {
       const findings = systemicFindings({
         systemic_problems: [mkSystemic()],
       });
@@ -562,7 +590,8 @@ describe("render", () => {
         template,
         route: "full review",
       });
-      expect(result).not.toContain("**Convergence**");
+      // one major finding + one major systemic item
+      expect(result).toContain("**Convergence** 🔄 4 > 1 — iterating");
     });
 
     it("still shows the convergence badge for a round without systemic problems", () => {

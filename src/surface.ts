@@ -28,6 +28,11 @@ const EMBED_LIMIT = 40000;
 const AGENTS_STOP_DIRECTIVE =
   "<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->";
 
+// The base64 length of a document's JSON — the one size computation both encodeMarker and
+// findingsMarkerForm share, so the form report and the emitted marker can never disagree.
+const b64LengthOf = (document: unknown): number =>
+  Buffer.from(JSON.stringify(document), "utf-8").toString("base64").length;
+
 const encodeMarker = (document: unknown, jsonUrl: string | undefined, limit: number): string => {
   const b64 = Buffer.from(JSON.stringify(document), "utf-8").toString("base64");
   const marker =
@@ -66,8 +71,7 @@ export const findingsMarkerForm = (
   jsonUrl: string | undefined,
   limit = EMBED_LIMIT,
 ): FindingsMarkerForm => {
-  const b64 = Buffer.from(JSON.stringify(findings), "utf-8").toString("base64");
-  if (b64.length <= limit) return "embedded";
+  if (b64LengthOf(findings) <= limit) return "embedded";
   return jsonUrl ? "link" : "omitted";
 };
 
@@ -127,47 +131,32 @@ const isSeverityCounts = (u: unknown): u is SeverityCounts =>
     return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   });
 
-// A round's severity counts, optionally flagged when the round carried systemic problems without
-// findings — its counts are then all zero, but the round is NOT clean, so its chip must not read
-// "clean" either. Only the four severity keys are validated on parse; the flag rides along and
-// round-trips through the marker.
-export type RoundEntry = SeverityCounts & { readonly systemic?: boolean };
-
-// The flag must be absent or exactly true — a crafted/corrupt marker carrying `systemic: "yes"` (or
-// 1) would otherwise falsify a round's chip into "systemic" when the round was actually clean.
-const isRoundEntry = (u: unknown): u is RoundEntry => {
-  if (!isSeverityCounts(u)) return false;
-  const systemic = (u as Record<string, unknown>)["systemic"];
-  return systemic === undefined || systemic === true;
-};
-
-export const parseRounds = (body: string): readonly RoundEntry[] => {
+export const parseRounds = (body: string): readonly SeverityCounts[] => {
   const b64 = ROUNDS_RE.exec(body)?.[1];
   if (b64 === undefined) return [];
   const decoded = decodeBase64Json(b64);
   // Filter, not all-or-nothing: one future-shaped or corrupted round drops only itself rather than
   // erasing the whole trajectory (post re-serializes the parsed array on every write).
-  return Array.isArray(decoded) ? decoded.filter(isRoundEntry) : [];
+  return Array.isArray(decoded) ? decoded.filter(isSeverityCounts) : [];
 };
 
-export const roundsMarker = (rounds: readonly RoundEntry[]): string =>
+export const roundsMarker = (rounds: readonly SeverityCounts[]): string =>
   rounds.length === 0
     ? ""
     : `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->`;
 
-// One round's chip: "🔴4 🟠3" for findings, "systemic" for a round that carried systemic problems
-// without findings, "clean" for none.
-const roundChip = (c: RoundEntry): string => {
+// One round's chip: "🔴4 🟠3" for the round's severity content (findings + systemic, as stored), or
+// "clean" for none.
+const roundChip = (c: SeverityCounts): string => {
   const parts = SEVERITIES.filter((k) => c[k] > 0).map((k) => `${severityEmoji(k)}${String(c[k])}`);
-  if (parts.length === 0) return c.systemic ? "systemic" : "clean";
-  return parts.join(" ");
+  return parts.length === 0 ? "clean" : parts.join(" ");
 };
 
 // The convergence line: "**Round 3** · 🔴4 🟠3 → 🟠2 → clean"; "" when there is no round history. The
 // round number is always the true count; the trajectory shows only the most recent chips (with a
 // leading "…" when older ones are elided) so a long-running PR's line stays readable and bounded.
 const TRAJECTORY_CHIPS = 8;
-export const roundsSummary = (rounds: readonly RoundEntry[]): string => {
+export const roundsSummary = (rounds: readonly SeverityCounts[]): string => {
   if (rounds.length === 0) return "";
   const chips = rounds.slice(-TRAJECTORY_CHIPS).map(roundChip);
   const trajectory =

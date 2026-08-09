@@ -5,6 +5,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
 import { post, announce, reportIncomplete } from "./post.js";
+import { parseRounds } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -334,6 +335,9 @@ describe("post — systemic problems (issue #134)", () => {
     };
     expect(decoded.systemic_problems).toHaveLength(1);
     expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
+    // The convergence round entry carries the systemic severity too (one minor finding + one major
+    // systemic item) — a systemic-only critical round can never masquerade as "clean".
+    expect(parseRounds(body.body).at(-1)).toEqual({ critical: 0, major: 1, minor: 1, nit: 0 });
   });
 
   it("warns to the run log when the whole-document marker degrades past the embed limit (issue #134 review)", async () => {

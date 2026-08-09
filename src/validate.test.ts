@@ -286,6 +286,11 @@ describe("FindingCodec — code / code_url (REQ-SC-7)", () => {
     const decoded = FindingCodec.decode(finding());
     expect(decoded._tag).toBe("Right");
   });
+
+  it("rejects a non-URI code_url — mirroring the schema's format: uri so the codec gate agrees with the ajv gate (issue #134 review)", () => {
+    expect(FindingCodec.decode(finding({ code_url: "/docs/rules/foo" }))._tag).toBe("Left");
+    expect(FindingCodec.decode(finding({ code_url: "not a url" }))._tag).toBe("Left");
+  });
 });
 
 describe("FindingCodec — end_line >= start_line (REQ-SC-6)", () => {
@@ -415,6 +420,18 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
 
   it("codec rejects unknown keys on a systemic item on decode — matching the schema's additionalProperties:false (issue #134 review)", () => {
     expect(FindingsCodec.decode(withSystemic([systemic({ bogus: 1 })]))._tag).toBe("Left");
+  });
+
+  it("codec accepts an absolute-URI code_url on a systemic item", () => {
+    const result = FindingsCodec.decode(
+      withSystemic([systemic({ code_url: "https://example.com/rules/retry" })]),
+    );
+    expect(result._tag).toBe("Right");
+  });
+
+  it("codec rejects a non-URI code_url on a systemic item — mirroring the schema's format: uri (issue #134 review)", () => {
+    const result = FindingsCodec.decode(withSystemic([systemic({ code_url: "/docs/rules/foo" })]));
+    expect(result._tag).toBe("Left");
   });
 
   it("codec rejects a systemic item missing a required field on decode", () => {

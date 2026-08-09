@@ -5,12 +5,7 @@ import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import {
-  render,
-  computeSeverityCounts,
-  isConvergenceRound,
-  hasSystemicProblems,
-} from "./render.js";
+import { render, computeSeverityCounts, computeRoundCounts, isConvergenceRound } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
@@ -638,12 +633,17 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
 
   // Only the embedded base64 form is decodable back by a re-review seed (parseFindingsMarker), so a
-  // degraded marker would silently drop the machine channel — surface the degradation in the run log
-  // rather than letting it vanish.
+  // degraded marker would silently drop the embedded machine channel — surface the degradation in
+  // the run log rather than letting it vanish. The link form still carries a machine-readable
+  // pointer; only the omitted form loses the channel entirely.
   const markerForm = findingsMarkerForm(findings, input.jsonUrl);
-  if (markerForm !== "embedded") {
+  if (markerForm === "link") {
     process.stderr.write(
-      `Warning: the findings-json marker exceeds the embed limit — degraded to the ${markerForm === "link" ? "jsonUrl-link" : "omitted"} form; the machine-readable channel is not embedded in the posted surfaces\n`,
+      "Warning: the findings-json marker exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact instead of the embedded JSON\n",
+    );
+  } else if (markerForm === "omitted") {
+    process.stderr.write(
+      "Warning: the findings-json marker exceeds the embed limit and no --json-url was given — the machine-readable channel is omitted from the posted surfaces\n",
     );
   }
 
@@ -683,13 +683,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
   const effectiveRoute = input.route ?? envelope.route;
   const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
-  // A systemic-only round (systemic problems, no findings) has all-zero counts but is NOT clean —
-  // flag it via the shared predicate (the same one render's badge gate uses) so the trajectory chip
-  // reads "systemic", never "clean", and the flag matches its documented meaning exactly.
-  const systemicOnlyRound = findings.findings.length === 0 && hasSystemicProblems(findings);
-  const rounds = isRound
-    ? [...priorRounds, { ...currentCounts, ...(systemicOnlyRound ? { systemic: true } : {}) }]
-    : priorRounds;
+  // The round entry carries the ROUND counts (findings + systemic severities) — the same
+  // computeRoundCounts the badge scores with, so a systemic-only round with a critical systemic item
+  // stores and shows 🔴1 rather than masquerading as "clean".
+  const rounds = isRound ? [...priorRounds, computeRoundCounts(findings)] : priorRounds;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,

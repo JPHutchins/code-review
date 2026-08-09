@@ -55,6 +55,17 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
     emptySeverityCounts(),
   );
 
+// The severity counts a convergence round stores and scores: findings PLUS systemic problems at
+// their (now required) severities — a systemic critical weighs like a finding critical, so a review
+// carrying one can never read "converged" beside it. The sticky's "Findings:" histogram stays
+// findings-only (computeSeverityCounts); this is the convergence channel only. Single source for
+// both the badge (render) and the round append (post), so the two can never disagree.
+export const computeRoundCounts = (findings: Findings): SeverityCounts =>
+  (findings.systemic_problems ?? []).reduce<Record<Severity, number>>(
+    (acc, s) => (s.severity in acc ? { ...acc, [s.severity]: acc[s.severity] + 1 } : acc),
+    computeSeverityCounts(findings.findings),
+  );
+
 // The single decision "is THIS run a convergence-defining full-review round?" — a completed full
 // review (not a CI-fix mechanic pass, not an incomplete notice). post() calls it to decide the round
 // append AND passes the result to render() for the badge gate, so the two can never disagree; render()
@@ -63,14 +74,6 @@ export const isConvergenceRound = (
   route: string | null | undefined,
   incomplete: boolean,
 ): boolean => route === "full review" && !incomplete;
-
-// Whether a full-review round's findings doc carries systemic problems. Shared by post (which flags
-// the round entry so its trajectory chip reads "systemic" instead of "clean" for a systemic-only
-// round) and render (which suppresses the convergence badge while any systemic problem exists — the
-// score formula is findings-only, so a badge beside a systemic problem would be a false stop
-// signal), so the two can never disagree on the condition.
-export const hasSystemicProblems = (findings: Findings): boolean =>
-  (findings.systemic_problems?.length ?? 0) > 0;
 
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
@@ -92,22 +95,21 @@ export const render = (input: RenderInput): string => {
   const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
   const rounds = input.rounds ?? [];
   // The convergence badge is a property of a completed FULL-REVIEW round: render it only then, from
-  // THIS run's counts. A CI-fix mechanic pass, a lost-envelope pass, and a notice each append no round
-  // and declare no convergence verdict — a badge from the current findings would sit "converged" above
-  // a mechanic's fresh critical, and one from a carried-forward prior round would contradict the
-  // findings beside it. Neither is a truthful stop signal, so no badge shows; the carried-forward
-  // trajectory alone gives context. Prefer post's explicit signal (which also gates the round append,
-  // so badge ⇔ append for rounds without systemic problems); fall back to the shared predicate for
-  // the standalone `render` command. Two further guards: an "error" verdict never gets a badge (even
-  // when it carries findings — isIncompleteFindings needs an empty array, so the explicit verdict
-  // check closes that edge), and a round whose doc carries systemic problems gets NO badge at all —
-  // the score formula is findings-only, so a "converged" (or even "iterating") badge beside a
-  // systemic problem would be a false stop signal; the round still appends, flagged via
-  // hasSystemicProblems so its chip never reads "clean" either.
+  // THIS run's round counts (computeRoundCounts — findings PLUS systemic severities, so a systemic
+  // critical weighs like a finding critical and the badge can never read "converged" beside one).
+  // A CI-fix mechanic pass, a lost-envelope pass, and a notice each append no round and declare no
+  // convergence verdict — a badge from the current findings would sit "converged" above a mechanic's
+  // fresh critical, and one from a carried-forward prior round would contradict the findings beside
+  // it. Neither is a truthful stop signal, so no badge shows; the carried-forward trajectory alone
+  // gives context. Prefer post's explicit signal (which also gates the round append, so badge ⇔
+  // append); fall back to the shared predicate for the standalone `render` command. The verdict
+  // guard closes an edge isIncompleteFindings misses (it flags an "error" verdict only when findings
+  // are also empty): an error doc that carries findings must still show no badge, never "converged"
+  // beside the "no review verdict" badge.
   const isFullReviewRound =
     (input.convergenceRound ?? isConvergenceRound(route, incomplete)) &&
-    input.findings.verdict !== "error" &&
-    !hasSystemicProblems(input.findings);
+    input.findings.verdict !== "error";
+  const roundCounts = computeRoundCounts(input.findings);
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -125,7 +127,7 @@ export const render = (input: RenderInput): string => {
     postedAt: input.postedAt ?? "",
     severityCounts,
     convergenceSummary: isFullReviewRound
-      ? convergenceSummary(severityCounts, input.convergenceThreshold)
+      ? convergenceSummary(roundCounts, input.convergenceThreshold)
       : "",
     strays: (input.strays ?? []).map(sanitizeFinding),
     systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),

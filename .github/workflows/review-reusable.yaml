@@ -571,9 +571,9 @@ jobs:
           SEED_MODE="$(code-review seed-draft --prior prior_review.json --head-sha "$HEAD_SHA" --out "$DRAFT")"
           case "$SEED_MODE" in
             prior-same)
-              SEED_NOTE=" $DRAFT is PRE-SEEDED with your previous review of THIS SAME commit — the code under review has not changed since. Use those findings to steer your investigation: reconfirm each still holds (correct any that were wrong or imprecise), then spend the remaining budget hunting for NEW issues the earlier pass missed rather than only re-checking old ones. Refine $DRAFT in place." ;;
+              SEED_NOTE=" $DRAFT is PRE-SEEDED with your previous review of THIS SAME commit — the code under review has not changed since. Use those findings and systemic_problems to steer your investigation: reconfirm each still holds (correct any that were wrong or imprecise), then spend the remaining budget hunting for NEW issues the earlier pass missed rather than only re-checking old ones. Refine $DRAFT in place." ;;
             prior-new)
-              SEED_NOTE=" $DRAFT is PRE-SEEDED with your previous review of an EARLIER commit of this PR; new commits have landed since. Treat those findings as the prior state: for each, decide whether the new commits ADDRESSED it — drop it if fixed or no longer applicable, keep it if it still holds — then review the newly-changed code for issues the earlier pass never saw. Add new findings freely and refine $DRAFT in place." ;;
+              SEED_NOTE=" $DRAFT is PRE-SEEDED with your previous review of an EARLIER commit of this PR; new commits have landed since. Treat those findings and systemic_problems as the prior state: for each, decide whether the new commits ADDRESSED it — drop it if fixed or no longer applicable, keep it if it still holds — then review the newly-changed code for issues the earlier pass never saw. Add new findings freely and refine $DRAFT in place." ;;
             empty-had-prior)
               SEED_NOTE=" $DRAFT holds a valid but EMPTY findings document to populate as you review. A previous review of this PR exists but its findings could not be pre-loaded here — do a full, fresh review and treat every finding as new." ;;
             empty)

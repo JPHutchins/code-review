@@ -11,6 +11,7 @@ import type {
   Finding,
   ModelUsageEntry,
   TestSummary,
+  SystemicProblem,
 } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -420,6 +421,189 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       expect(result).toContain("src/x.ts:10–14");
+    });
+  });
+
+  describe("systemic problems section (issue #134)", () => {
+    const mkSystemic = (overrides: Partial<SystemicProblem> = {}): SystemicProblem => ({
+      title: "Retry plumbing is inconsistent",
+      description: "Three spots, three retry policies — the pattern is the problem.",
+      severity: "major",
+      reasoning: "Each touched file implements its own retry policy.",
+      confidence: 0.8,
+      ...overrides,
+    });
+
+    const systemicFindings = (overrides?: Partial<Omit<Findings, "findings">>): Findings =>
+      mkFindings([mkFinding({ severity: "major", title: "Anchored finding" })], {
+        summary: "The verdict follows from the shape of the change.",
+        ...overrides,
+      });
+
+    it("renders its own section with severity emoji, title, confidence, description, paths, and tied codes when systemic_problems is non-empty", () => {
+      const findings = systemicFindings({
+        systemic_problems: [
+          mkSystemic({
+            finding_codes: ["widened-type"],
+            paths: ["src/upload/config.ts", "src/upload/client.ts"],
+          }),
+        ],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+
+      expect(result).toContain("### 🔗 Systemic problems");
+      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80");
+      expect(result).toContain("Three spots, three retry policies — the pattern is the problem.");
+      expect(result).toContain("_Affects: `src/upload/config.ts`, `src/upload/client.ts`");
+      expect(result).toContain("Ties together: `widened-type`");
+    });
+
+    it("renders a reasoning fold for each systemic item (mirroring strays)", () => {
+      const findings = systemicFindings({
+        systemic_problems: [mkSystemic({ reasoning: "First paragraph.\n\nSecond paragraph." })],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("> [!TIP]");
+      expect(result).toContain("<details><summary>Reasoning</summary>");
+      expect(result).toContain("> First paragraph.");
+      expect(result).toContain("> Second paragraph.");
+    });
+
+    it("omits the meta line when the item carries neither paths nor finding_codes", () => {
+      const findings = systemicFindings({ systemic_problems: [mkSystemic()] });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent");
+      expect(result).not.toContain("_Affects:");
+      expect(result).not.toContain("Ties together:");
+    });
+
+    it("is absent when systemic_problems is empty — no placeholder noise", () => {
+      const findings = systemicFindings({ systemic_problems: [] });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("Systemic problems");
+    });
+
+    it("is absent when systemic_problems is omitted entirely", () => {
+      const result = render({
+        findings: systemicFindings(),
+        envelope: baseEnvelope,
+        prices,
+        template,
+      });
+      expect(result).not.toContain("Systemic problems");
+    });
+
+    it("is absent from an incomplete review — a notice never carries the section (issue #134 review)", () => {
+      const findings = mkFindings([], {
+        systemic_problems: [mkSystemic()],
+      });
+      const result = render({
+        findings,
+        envelope: { ...baseEnvelope, incomplete: true },
+        prices,
+        template,
+      });
+      expect(result).not.toContain("Systemic problems");
+    });
+
+    it("escapes pipes in the title and backticks in paths and finding_codes (render safety, mirroring strays)", () => {
+      const findings = systemicFindings({
+        systemic_problems: [
+          mkSystemic({
+            title: "Pipe | in title",
+            description: "d",
+            paths: ["src/bad`path`.ts"],
+            finding_codes: ["widened`type"],
+          }),
+        ],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("Pipe \\| in title");
+      expect(result).toContain("src/bad-path-.ts");
+      expect(result).not.toContain("bad`path`");
+      // A backtick inside a finding_code must not break out of its inline code span.
+      expect(result).toContain("widened-type");
+      expect(result).not.toContain("widened`type");
+    });
+
+    it("never claims 'clean review' beside systemic problems — a systemic-only review is not clean", () => {
+      const findings = mkFindings([], {
+        systemic_problems: [
+          mkSystemic({ title: "Pattern only", description: "Spans the change without an anchor." }),
+        ],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("### 🔗 Systemic problems");
+      expect(result).not.toContain("clean review");
+    });
+
+    it("scores systemic severities into the badge — a systemic-only round with a major item reads 'iterating', never 'converged' (issue #134 review)", () => {
+      const findings = mkFindings([], {
+        systemic_problems: [mkSystemic()],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**Convergence** 🔄 2 > 1 — iterating");
+    });
+
+    it("treats a nit systemic item as free, like a nit finding — nits never block convergence (issue #134 review)", () => {
+      const findings = mkFindings([], {
+        systemic_problems: [mkSystemic({ severity: "nit" })],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
+    });
+
+    it("a critical systemic problem beside a nit-only round reads 'iterating' — the badge is severity-aware (issue #134 review)", () => {
+      const findings = mkFindings([mkFinding({ severity: "nit" })], {
+        systemic_problems: [mkSystemic({ severity: "critical" })],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**Convergence** 🔄 4 > 1 — iterating");
+    });
+
+    it("scores findings and systemic severities together for a mixed round", () => {
+      const findings = systemicFindings({
+        systemic_problems: [mkSystemic()],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      // one major finding + one major systemic item
+      expect(result).toContain("**Convergence** 🔄 4 > 1 — iterating");
+    });
+
+    it("still shows the convergence badge for a round without systemic problems", () => {
+      const findings = systemicFindings();
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**Convergence**");
     });
   });
 

@@ -14,12 +14,69 @@
     },
     "summary": {
       "type": "string",
-      "description": "1-4 sentence markdown walkthrough of the overall assessment."
+      "description": "1-4 sentence markdown justification of the overall verdict — the shape of the review and why the verdict follows from it. Do not restate individual findings (those live in `findings`) or cross-cutting observations (those live in `systemic_problems`); the summary explains the verdict, the arrays carry the evidence."
     },
     "verdict": {
       "type": "string",
       "enum": ["approve", "comment", "changes", "error"],
       "description": "Overall stance. The review agent emits one of `approve`/`comment`/`changes`. `error` is reserved for the pipeline: it marks a run that produced no verdict about the diff (an operational failure, a security refusal, or an empty diff with nothing to review — always with `findings: []`), so a consumer switching on `verdict` gets a case it does not recognise rather than a false clean pass."
+    },
+    "systemic_problems": {
+      "type": "array",
+      "description": "Zero or more cross-cutting observations that tie several findings together or describe a pattern spanning the change, and are hard to express with a single line range. Omit the field when there are none; the summary must not restate them.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "description", "severity", "reasoning", "confidence"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "One-line summary of the systemic problem."
+          },
+          "description": {
+            "type": "string",
+            "description": "1-3 sentence markdown explanation of the pattern and why it matters — how it ties the related findings together. Details belong in the individual findings' `reasoning`."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor", "nit"],
+            "description": "Overall severity of the systemic problem — the severity of the pattern itself, not of any single finding. It does not count toward the findings severity histogram."
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "Rationale/evidence for why the systemic problem holds, so a human or downstream agent can judge its soundness — distinct from `description`, which explains the pattern to the reader. Mirrors the finding field of the same name."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "0..1 confidence in the systemic problem itself. Mirrors the finding field of the same name."
+          },
+          "code": {
+            "type": "string",
+            "description": "Stable rule identifier (e.g. \"repeated-null-check\") for rule-based filtering, suppression, and cross-run dedup — mirrors the finding field of the same name."
+          },
+          "code_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL documenting the rule named by code."
+          },
+          "finding_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The `code` values of the findings this systemic problem ties together, when those findings carry codes."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Repo-relative file paths the systemic problem spans."
+          }
+        }
+      }
     },
     "findings": {
       "type": "array",

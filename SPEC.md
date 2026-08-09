@@ -131,8 +131,9 @@ a concrete platform binding is illustrative, not part of the contract (Appendix 
 ### 3.2 The deliverable
 
 The reviewer's output is a **structured document** — an overall assessment plus zero or more findings,
-each anchored to a precise location in the change — accompanied by a **vendor-neutral record of model
-usage** (per-model token counts, turns, duration) sufficient to report cost independently of any
+each anchored to a precise location in the change, and MAY additionally carry cross-cutting systemic
+observations that are not anchored to a single location — accompanied by a **vendor-neutral record of
+model usage** (per-model token counts, turns, duration) sufficient to report cost independently of any
 backend's own pricing.
 
 The document MUST be **validated against a published schema before anything is posted**. The schema —

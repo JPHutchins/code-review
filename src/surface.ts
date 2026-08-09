@@ -28,6 +28,11 @@ const EMBED_LIMIT = 40000;
 const AGENTS_STOP_DIRECTIVE =
   "<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->";
 
+// The base64 length of a document's JSON — the one size computation both encodeMarker and
+// findingsMarkerForm share, so the form report and the emitted marker can never disagree.
+const b64LengthOf = (document: unknown): number =>
+  Buffer.from(JSON.stringify(document), "utf-8").toString("base64").length;
+
 const encodeMarker = (document: unknown, jsonUrl: string | undefined, limit: number): string => {
   const b64 = Buffer.from(JSON.stringify(document), "utf-8").toString("base64");
   const marker =
@@ -54,6 +59,21 @@ export const findingsPointer = (
   jsonUrl: string | undefined,
   limit = EMBED_LIMIT,
 ): string => encodeMarker(findings, jsonUrl, limit);
+
+// The form findingsPointer will emit for a whole-document marker, exposed so the IO-bound callers
+// (post) can warn when the embedded machine channel degrades instead of failing silently — only the
+// base64 form is decodable back (parseFindingsMarker), so "link"/"omitted" silently drop the seed
+// for a re-review.
+export type FindingsMarkerForm = "embedded" | "link" | "omitted";
+
+export const findingsMarkerForm = (
+  findings: Findings,
+  jsonUrl: string | undefined,
+  limit = EMBED_LIMIT,
+): FindingsMarkerForm => {
+  if (b64LengthOf(findings) <= limit) return "embedded";
+  return jsonUrl ? "link" : "omitted";
+};
 
 // Per-finding counterpart: an inline comment embeds only its own finding, so the sticky and review
 // body stay the whole-document SSOT.
@@ -155,7 +175,8 @@ export const roundsMarker = (rounds: readonly SeverityCounts[]): string =>
     ? ""
     : `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->`;
 
-// One round's chip: "🔴4 🟠3" for findings, "clean" for none.
+// One round's chip: "🔴4 🟠3" for the round's severity content (findings + systemic, as stored), or
+// "clean" for none.
 const roundChip = (c: SeverityCounts): string => {
   const parts = SEVERITIES.filter((k) => c[k] > 0).map((k) => `${severityEmoji(k)}${String(c[k])}`);
   return parts.length === 0 ? "clean" : parts.join(" ");

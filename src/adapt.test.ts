@@ -183,6 +183,39 @@ describe("adapt — claude-code — extraction ladder integration", () => {
     ]);
   });
 
+  it("carries systemic_problems through from structured_output (issue #134 — the ladder accepts the 0.6 shape)", () => {
+    const native = {
+      modelUsage: {
+        "deepseek-v4-pro": { inputTokens: 100, outputTokens: 50 },
+      },
+      num_turns: 1,
+      duration_ms: 1000,
+      structured_output: {
+        schema_version: "0.6.0",
+        summary: "The verdict follows from the shape of the change.",
+        verdict: "comment",
+        findings: [],
+        systemic_problems: [
+          {
+            title: "Retry plumbing is inconsistent",
+            description: "Three spots, three retry policies.",
+            severity: "major",
+            reasoning: "Each file implements its own policy.",
+            confidence: 0.8,
+            finding_codes: ["widened-type"],
+          },
+        ],
+      },
+    };
+    const result = adapt("claude-code", native);
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    expect(result.right.findings.systemic_problems).toHaveLength(1);
+    expect(result.right.findings.systemic_problems?.[0]?.title).toBe(
+      "Retry plumbing is inconsistent",
+    );
+  });
+
   it("--agent-file wins over a disagreeing fenced block; envelope fields still come from the native envelope", () => {
     const result = adapt(
       "claude-code",

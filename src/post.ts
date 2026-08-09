@@ -5,10 +5,11 @@ import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import { render, computeSeverityCounts, isConvergenceRound } from "./render.js";
+import { render, computeSeverityCounts, computeRoundCounts, isConvergenceRound } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
+  findingsMarkerForm,
   findingsPointer,
   isFullReviewSticky,
   parseCompletedAncestor,
@@ -694,6 +695,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // comment embeds only its own finding instead.
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
 
+  // Only the embedded base64 form is decodable back by a re-review seed (parseFindingsMarker), so a
+  // degraded marker would silently drop the embedded machine channel — surface the degradation in
+  // the run log rather than letting it vanish. The link form still carries a machine-readable
+  // pointer; only the omitted form loses the channel entirely.
+  const markerForm = findingsMarkerForm(findings, input.jsonUrl);
+  if (markerForm === "link") {
+    process.stderr.write(
+      "Warning: the findings-json marker exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact instead of the embedded JSON\n",
+    );
+  } else if (markerForm === "omitted") {
+    process.stderr.write(
+      "Warning: the findings-json marker exceeds the embed limit and no --json-url was given — the machine-readable channel is omitted from the posted surfaces\n",
+    );
+  }
+
   const {
     comments: rawComments,
     strays,
@@ -727,7 +743,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // accurate; a reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without
   // adding a round, so the last round need not be its head.
   const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
-  const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
+  // The round entry carries the ROUND counts (findings + systemic severities) — the same
+  // computeRoundCounts the badge scores with, so a systemic-only round with a critical systemic item
+  // stores and shows 🔴1 rather than masquerading as "clean".
+  const rounds = isRound ? [...priorRounds, computeRoundCounts(findings)] : priorRounds;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,

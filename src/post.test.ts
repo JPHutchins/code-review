@@ -5,6 +5,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
 import { post, announce, reportIncomplete } from "./post.js";
+import { parseRounds } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -301,6 +302,124 @@ describe("post — upsert sticky comment", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     expect(postCall).toBeDefined();
+  });
+});
+
+describe("post — systemic problems (issue #134)", () => {
+  it("renders the systemic section in the sticky and carries the array through the findings marker", async () => {
+    const withSystemic: Findings = {
+      ...mkFindings([mkFinding({ start_line: 10, end_line: 10 })]),
+      systemic_problems: [
+        {
+          title: "Retry plumbing is inconsistent",
+          description: "Three spots, three retry policies.",
+          severity: "major",
+          reasoning: "Each file implements its own policy.",
+          confidence: 0.8,
+          finding_codes: ["widened-type"],
+          paths: ["src/foo.ts"],
+        },
+      ],
+    };
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(withSystemic));
+
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+        response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    expect(stickyCall).toBeDefined();
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("### 🔗 Systemic problems");
+    expect(body.body).toContain("Retry plumbing is inconsistent");
+    // The machine channel carries the systemic array verbatim, not just the rendered prose.
+    const marker = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body.body);
+    expect(marker).not.toBeNull();
+    const decoded = JSON.parse(Buffer.from(marker?.[1] ?? "", "base64").toString("utf-8")) as {
+      systemic_problems?: readonly unknown[];
+    };
+    expect(decoded.systemic_problems).toHaveLength(1);
+    expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
+    // The convergence round entry carries the systemic severity too (one minor finding + one major
+    // systemic item) — a systemic-only critical round can never masquerade as "clean".
+    expect(parseRounds(body.body).at(-1)).toEqual({ critical: 0, major: 1, minor: 1, nit: 0 });
+  });
+
+  it("warns to the run log when the whole-document marker degrades past the embed limit (issue #134 review)", async () => {
+    const huge: Findings = {
+      ...mkFindings([]),
+      findings: Array.from({ length: 500 }, (_, i) =>
+        mkFinding({ title: `Finding ${String(i)}`, description: "x".repeat(200) }),
+      ),
+    };
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(huge));
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { api, calls } = mkMockGhApi([
+        {
+          match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+          response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        },
+        {
+          match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+          response: inlineDiff,
+        },
+        {
+          match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+          response: "",
+        },
+        {
+          match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+          response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
+        },
+        {
+          match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+          response: "",
+        },
+      ]);
+
+      await post(mkInput({}), api);
+
+      const stickyCall = calls().find(
+        (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      );
+      expect(stickyCall).toBeDefined();
+      const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+      // The marker is omitted entirely (no --json-url in this invocation) — the degradation must not
+      // pass silently.
+      expect(body.body).not.toContain("code-review:findings-json");
+      expect(
+        stderrSpy.mock.calls.some((c) => String(c[0]).includes("exceeds the embed limit")),
+      ).toBe(true);
+    } finally {
+      // Restore even when an assertion above fails — a leaked spy swallows stderr for the rest of
+      // the suite (vitest has no restoreMocks configured).
+      stderrSpy.mockRestore();
+    }
   });
 });
 

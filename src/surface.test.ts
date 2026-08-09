@@ -8,6 +8,7 @@ import {
   COMPLETED_ANCESTOR_MARKER,
   isFullReviewSticky,
   findingsPointer,
+  findingsMarkerForm,
   parseRounds,
   roundsMarker,
   roundsSummary,
@@ -43,6 +44,29 @@ describe("parseFindingsMarker", () => {
     expect(parseFindingsMarker(body)).toEqual(findings);
   });
 
+  it("round-trips systemic_problems through the marker (issue #134 — the machine channel carries them)", () => {
+    const withSystemic = {
+      ...findings,
+      systemic_problems: [
+        {
+          title: "Retry inconsistency",
+          description: "Three policies in three spots.",
+          severity: "major",
+          reasoning: "Each file implements its own policy.",
+          confidence: 0.8,
+          finding_codes: ["widened-type"],
+          paths: ["src/a.ts"],
+        },
+      ],
+    } as unknown as Findings;
+    const body = `sticky prose\n${findingsPointer(withSystemic, undefined)}\nmore prose`;
+    const decoded = parseFindingsMarker(body) as {
+      systemic_problems?: readonly unknown[];
+    };
+    expect(decoded.systemic_problems).toHaveLength(1);
+    expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
+  });
+
   it("returns null when the body carries no findings marker", () => {
     expect(parseFindingsMarker("just a comment, nothing embedded")).toBeNull();
   });
@@ -74,6 +98,47 @@ describe("parseFindingsMarker", () => {
     const first = findingsPointer(findings, undefined);
     const second = findingsPointer({ ...findings, summary: "second" }, undefined);
     expect(parseFindingsMarker(`${first}\n${second}`)).toEqual(findings);
+  });
+});
+
+describe("findingsMarkerForm", () => {
+  it("reports embedded when the document fits under the limit", () => {
+    expect(findingsMarkerForm(findings, undefined)).toBe("embedded");
+  });
+
+  it("reports link when the document exceeds the limit and a jsonUrl is given", () => {
+    const huge = {
+      ...findings,
+      findings: [
+        ...findings.findings,
+        ...Array.from({ length: 500 }, (_, i) => ({
+          ...findings.findings[0],
+          title: `F${String(i)}`,
+          description: "x".repeat(200),
+        })),
+      ],
+    } as unknown as Findings;
+    expect(findingsMarkerForm(huge, "https://example.com/findings.zip")).toBe("link");
+  });
+
+  it("reports omitted when the document exceeds the limit and no jsonUrl is given", () => {
+    const huge = {
+      ...findings,
+      findings: [
+        ...findings.findings,
+        ...Array.from({ length: 500 }, (_, i) => ({
+          ...findings.findings[0],
+          title: `F${String(i)}`,
+          description: "x".repeat(200),
+        })),
+      ],
+    } as unknown as Findings;
+    expect(findingsMarkerForm(huge, undefined)).toBe("omitted");
+  });
+
+  it("agrees with what findingsPointer actually emits (embedded form is the decodable one)", () => {
+    expect(findingsMarkerForm(findings, undefined)).toBe("embedded");
+    expect(findingsPointer(findings, undefined)).toContain("code-review:findings-json;base64");
   });
 });
 

@@ -9,13 +9,14 @@ import { render, computeSeverityCounts, isConvergenceRound, isReviewVerdict } fr
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
-  convergenceSignal,
   parseFindingsMarker,
   parseReviewComplete,
   parseReviewedSha,
   parseRounds,
+  parseSignalMarker,
   parseSurfaceSignal,
   reviewBodyPointer,
+  signalForRound,
   surfacedFindingsPointer,
 } from "./surface.js";
 import {
@@ -527,12 +528,16 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // placeholder via carryForwardMarkers). A completed FULL review appends this run's counts below; a
   // CI-fix mechanic pass and every notice carry it forward unchanged so the trajectory is never lost.
   const priorRounds = existingSticky !== null ? parseRounds(existingSticky.body) : [];
-  // The last completed round's stop signal, carried VERBATIM into every non-round post (mechanic,
-  // notice) — re-deriving it at the current threshold would flip a prior round's `converged` when the
-  // operator changes convergence_threshold mid-PR. Null when the prior sticky has no surfaced blob or
+  // The last completed round's stop signal, carried VERBATIM into non-round posts — re-deriving it
+  // at the current threshold would flip a prior round's `converged` when the operator changes
+  // convergence_threshold mid-PR. Read from the compact signal marker first (an oversized prior
+  // review embeds only that), then from the surfaced blob. Null when the prior sticky has neither or
   // no round has completed (the blob then carries no signal, exactly like a first-run post).
   const priorSignal =
-    existingSticky === null ? null : parseSurfaceSignal(parseFindingsMarker(existingSticky.body));
+    existingSticky === null
+      ? null
+      : (parseSignalMarker(existingSticky.body) ??
+        parseSurfaceSignal(parseFindingsMarker(existingSticky.body)));
   const leaveInPlace = (): void => {
     process.stderr.write(
       `Review did not complete and the sticky already reflects a completed review — leaving it in place\n`,
@@ -565,7 +570,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
-        findingsPointer: surfacedFindingsPointer(findings, priorSignal, input.jsonUrl),
+        // A notice's own blob stays clean: verdict "error" + a carried "converged" would read as a
+        // stop signal for a run that produced no verdict (issue #141 review r2). The carried-forward
+        // trajectory (rounds marker) remains the historical record.
+        findingsPointer: surfacedFindingsPointer(findings, null, input.jsonUrl),
         postedAt: input.postedAt,
       }),
     );
@@ -623,7 +631,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
-        findingsPointer: surfacedFindingsPointer(findings, priorSignal, input.jsonUrl),
+        // Same signal rule as the main path: only a completed-review doc carries the prior signal.
+        findingsPointer: surfacedFindingsPointer(
+          findings,
+          isReviewVerdict(findings.verdict) ? priorSignal : null,
+          input.jsonUrl,
+        ),
         postedAt: input.postedAt,
       }),
     );
@@ -683,13 +696,20 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
 
   // The stop signal the surfaced blob embeds: THIS round's signal when the run completes a round,
-  // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived.
+  // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived. A
+  // no-verdict doc (verdict "error") embeds NO signal: a carried "converged" beside "no review
+  // verdict" would read as a stop signal for a run that produced none (issue #141 review r2).
+  // The round number can never regress: the rounds marker is best-effort (parseRounds filters
+  // corrupt entries), so a completing round numbers itself after the carried count when it is ahead.
   const signal = isRound
-    ? {
-        round: rounds.length,
-        convergence: convergenceSignal(currentCounts, input.convergenceThreshold),
-      }
-    : priorSignal;
+    ? signalForRound(
+        Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1,
+        currentCounts,
+        input.convergenceThreshold,
+      )
+    : isReviewVerdict(findings.verdict)
+      ? priorSignal
+      : null;
 
   // Base64-encode the SURFACED whole-document marker once (the agent's doc + the stop signal),
   // reused across sticky + review body; each inline comment embeds only its own finding instead.

@@ -12,10 +12,10 @@ import {
   roundsMarker,
   roundsSummary,
   convergenceSummary,
-  convergenceSignal,
+  signalForRound,
   surfacedFindingsPointer,
 } from "./surface.js";
-import type { PatchProjection, SurfaceSignal } from "./surface.js";
+import type { PatchProjection } from "./surface.js";
 
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
@@ -79,33 +79,24 @@ export const render = (input: RenderInput): string => {
   const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
   const rounds = input.rounds ?? [];
   // The convergence badge is a property of a completed FULL-REVIEW round: render it only then, from
-  // THIS run's counts. A CI-fix mechanic pass, a lost-envelope pass, and a notice each append no round
-  // and declare no convergence verdict — a badge from the current findings would sit "converged" above
-  // a mechanic's fresh critical, and one from a carried-forward prior round would contradict the
-  // findings beside it. Neither is a truthful stop signal, so no badge shows; the carried-forward
-  // trajectory alone gives context. Prefer post's explicit signal (which also gates the round append,
-  // so badge ⇔ append); fall back to the shared predicate for the standalone `render` command. The
-  // verdict guard (isReviewVerdict, shared with post's round append) closes an edge isIncompleteFindings
-  // misses (it flags an "error" verdict only when findings are also empty): an error doc that carries
-  // findings must still show no badge, never "converged" beside the "no review verdict" badge.
+  // the completed round's counts. A CI-fix mechanic pass, a lost-envelope pass, and a notice each
+  // append no round and declare no convergence verdict — a badge from the current findings would sit
+  // "converged" above a mechanic's fresh critical, and one from a carried-forward prior round would
+  // contradict the findings beside it. Neither is a truthful stop signal, so no badge shows; the
+  // carried-forward trajectory alone gives context. Prefer post's explicit signal (which also gates
+  // the round append, so badge ⇔ append); fall back to the shared predicate for the standalone
+  // `render` command. The verdict guard (isReviewVerdict, shared with post's round append) closes an
+  // edge isIncompleteFindings misses (it flags an "error" verdict only when findings are also empty):
+  // an error doc that carries findings must still show no badge, never "converged" beside the "no
+  // review verdict" badge.
   const isFullReviewRound =
     (input.convergenceRound ?? isConvergenceRound(route, incomplete)) &&
     isReviewVerdict(input.findings.verdict);
 
-  // The stop signal the default marker embeds: the last round's counts when a history exists; a
-  // standalone full-review render carries no history, so THIS run is round 1 — the embedded blob and
-  // the badge can never disagree. Null only when no round has completed (and this run is not one).
-  const markerSignal = ((): SurfaceSignal | null => {
-    const last = rounds[rounds.length - 1];
-    if (last !== undefined)
-      return {
-        round: rounds.length,
-        convergence: convergenceSignal(last, input.convergenceThreshold),
-      };
-    return isFullReviewRound
-      ? { round: 1, convergence: convergenceSignal(severityCounts, input.convergenceThreshold) }
-      : null;
-  })();
+  // The convergence counts the badge AND the fallback blob signal both derive from — the last
+  // completed round when a history exists (post-style histories end with THIS run), else this run's
+  // own counts — one source, so the two can never disagree (issue #141 review r2).
+  const convergenceCounts = rounds[rounds.length - 1] ?? severityCounts;
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -123,7 +114,7 @@ export const render = (input: RenderInput): string => {
     postedAt: input.postedAt ?? "",
     severityCounts,
     convergenceSummary: isFullReviewRound
-      ? convergenceSummary(severityCounts, input.convergenceThreshold)
+      ? convergenceSummary(convergenceCounts, input.convergenceThreshold)
       : "",
     strays: (input.strays ?? []).map(sanitizeFinding),
     unanchoredCount: input.unanchoredCount ?? 0,
@@ -131,7 +122,20 @@ export const render = (input: RenderInput): string => {
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
     findingsPointer:
-      input.findingsPointer ?? surfacedFindingsPointer(input.findings, markerSignal, input.jsonUrl),
+      input.findingsPointer ??
+      surfacedFindingsPointer(
+        input.findings,
+        // The fallback embeds a signal exactly when the badge renders — never beside a suppressed
+        // badge — and from the same counts the badge reads. With no history, THIS run is round 1.
+        isFullReviewRound
+          ? signalForRound(
+              rounds.length > 0 ? rounds.length : 1,
+              convergenceCounts,
+              input.convergenceThreshold,
+            )
+          : null,
+        input.jsonUrl,
+      ),
     roundsMarker: roundsMarker(rounds),
     roundsSummary: roundsSummary(rounds),
     reviewUrl: input.reviewUrl ?? null,

@@ -126,11 +126,23 @@ links to:
   last completed round is at or below the convergence tolerance, so another iteration round is not
   warranted. The agent never writes these fields — the commenter computes them from the review's own
   severities at render time — and they are omitted until at least one full-review round has
-  completed (a first-run mechanic pass or notice has no stop signal to report). They survive the
-  "review in progress" banner: the banner replaces only the sticky's prose and carries the embedded
-  marker forward verbatim. The 0.6.0 surfaced contract applies to the **whole-document** marker only;
-  each inline comment embeds a per-finding fragment (`schema_version` + one finding) at the draft's
-  own version, since the fragment carries no stop signal.
+  completed. They survive the "review in progress" banner: the banner replaces only the sticky's
+  prose and carries the embedded marker forward verbatim. The 0.6.0 surfaced contract applies to the
+  **whole-document** marker only; each inline comment embeds a per-finding fragment
+  (`schema_version` + one finding) at the draft's own version, since the fragment carries no stop
+  signal.
+
+  Semantics on non-round posts: a mechanic (CI-fix) pass or an envelope-loss post embeds the
+  **last completed round's stored signal** (round + its own threshold — never re-derived, so an
+  operator changing `convergence_threshold` mid-PR cannot flip a stored `converged`) beside its own
+  findings, so the signal always describes the last completed full-review round, not the findings
+  that happen to sit beside it. A notice — a post whose verdict is `error` (empty diff, corrupt
+  output, did-not-complete) — embeds **no** signal at all: its document already says no review was
+  produced this run, and a carried `converged` beside that would read as a stop signal for a run
+  that produced none. When the embedded payload is too large and the marker falls back to the
+  artifact link, a compact `<!-- code-review:signal;base64 <base64> -->` marker still carries
+  `round` + `convergence`, so an oversized review's stop signal stays readable and can be carried
+  forward.
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
   phases. This is advisory/auditability only: it is never read by the comment job and never affects
   what gets posted.

@@ -208,6 +208,7 @@ describe("render", () => {
         envelope: baseEnvelope,
         prices,
         template,
+        route: "full review",
         rounds: [{ critical: 0, major: 0, minor: 1, nit: 0 }],
       });
       const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
@@ -224,6 +225,25 @@ describe("render", () => {
       expect(decoded.schema_version).toBe("0.6.0");
       expect(decoded.round).toBe(1);
       expect(decoded.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+    });
+
+    it("a non-round render embeds NO stop signal even when a round history is supplied — no badge, no signal (issue #141 review r2)", () => {
+      const findings = mkFindings([mkFinding({ severity: "critical" })]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "mechanic",
+        rounds: [{ critical: 0, major: 0, minor: 1, nit: 0 }],
+      });
+      expect(result).not.toContain("**Convergence**");
+      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
+      expect(match).not.toBeNull();
+      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
+        readonly round?: number;
+      };
+      expect(decoded.round).toBeUndefined();
     });
 
     it("a standalone full-review render's blob and badge agree — THIS run is round 1 (#141 review)", () => {

@@ -6,7 +6,6 @@ import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 import type { Finding, Findings } from "./schema.js";
 import type { SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
-import { supportedVersions } from "./registry.js";
 
 export const severityEmoji = (s: string): string => {
   switch (s) {
@@ -207,6 +206,14 @@ export const convergenceSignal = (
   return { score, threshold, converged: score <= threshold };
 };
 
+// The full {round, convergence} construction, shared by post (a completing round) and render's
+// fallback (the round-1 / last-round cases) — one helper so every site builds the same shape.
+export const signalForRound = (
+  round: number,
+  counts: SeverityCounts,
+  threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
+): SurfaceSignal => ({ round, convergence: convergenceSignal(counts, threshold) });
+
 export const surfaceFindings = (
   findings: Findings,
   signal: SurfaceSignal | null,
@@ -217,12 +224,29 @@ export const surfaceFindings = (
 });
 
 // The whole-document marker, surfaced — one helper owns the construction so the sticky, the review
-// body, and the standalone render can never disagree on the embedded shape.
+// body, and the standalone render can never disagree on the embedded shape. When the whole-doc
+// payload falls to the link form (or is dropped), the compact signal marker still embeds — an
+// oversized review's stop signal stays readable and can be carried forward by later posts.
 export const surfacedFindingsPointer = (
   findings: Findings,
   signal: SurfaceSignal | null,
   jsonUrl: string | undefined,
-): string => findingsPointer(surfaceFindings(findings, signal), jsonUrl);
+): string => {
+  const marker = findingsPointer(surfaceFindings(findings, signal), jsonUrl);
+  if (signal === null || marker.includes("findings-json;base64")) return marker;
+  const signalMarker = `<!-- code-review:signal;base64 ${Buffer.from(JSON.stringify(signal), "utf-8").toString("base64")} -->`;
+  return marker === "" ? signalMarker : `${marker}\n${signalMarker}`;
+};
+
+const SIGNAL_RE = /<!-- code-review:signal;base64 ([A-Za-z0-9+/=]+) -->/;
+
+// The stop signal embedded on its own when the whole-doc marker fell to the link form — the
+// counter-part of parseSurfaceSignal for a body carrying the compact marker.
+export const parseSignalMarker = (body: string): SurfaceSignal | null => {
+  const b64 = SIGNAL_RE.exec(body)?.[1];
+  if (b64 === undefined) return null;
+  return parseSurfaceSignal(decodeBase64Json(b64));
+};
 
 // Best-effort like parseRounds: the carried stop signal read back from a prior sticky's surfaced
 // blob, null on any malformed shape or pre-surface blob so a non-round post carries nothing rather
@@ -235,9 +259,14 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   if (typeof round !== "number" || !Number.isSafeInteger(round) || round < 1) return null;
   if (typeof convergence !== "object" || convergence === null) return null;
   const c = convergence as Record<string, unknown>;
+  // isFinite (not just typeof): JSON.parse("1e400") yields Infinity, which typeof says is a number
+  // but JSON.stringify coerces to null — a non-finite score would survive one hop and then silently
+  // drop the whole carried signal on the next.
   if (
     typeof c["score"] !== "number" ||
+    !Number.isFinite(c["score"]) ||
     typeof c["threshold"] !== "number" ||
+    !Number.isFinite(c["threshold"]) ||
     typeof c["converged"] !== "boolean"
   ) {
     return null;
@@ -248,20 +277,23 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   };
 };
 
+// Every surfaced-document version this CLI can strip back to the agent document — grows with each
+// surface version emitted, so a sticky written by an older release still seeds. A dedicated list,
+// deliberately distinct from the draft-version registry axis: only these versions declare the
+// surface shape, so a future draft bump can never be mistaken for one.
+export const SURFACE_SCHEMA_VERSIONS: readonly string[] = ["0.6.0"];
+
 // The inverse for the agent channel: the re-review seed decodes the sticky's surfaced blob, and the
-// agent must only ever see its own document. Version-gated, not key-gated: a doc declaring a
-// registry-supported DRAFT version passes through untouched (a future draft field named `round`
-// must not be stripped), while any other declared version is a surfaced doc — its pipeline-stamped
-// convergence/round dropped and its version restored to the current draft default, so the seeded
-// draft still validates. Tolerant of future surface versions (0.7.0+). A non-object stays as-is and
-// fails schema validation downstream.
+// agent must only ever see its own document. Version-gated, not key-gated: a doc declaring a known
+// SURFACE version has its pipeline-stamped convergence/round dropped and its version restored to
+// the current draft default, so the seeded draft still validates; anything else (a draft version, an
+// unknown future version, a malformed version) passes through untouched and fails or passes schema
+// validation downstream on its own merits — never silently rewritten. A non-object stays as-is.
 export const stripSurfaceFields = (doc: unknown): unknown => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return doc;
   const o = doc as Record<string, unknown>;
   const declared = o["schema_version"];
-  if (typeof declared !== "string") return doc;
-  const minor = declared.split(".").slice(0, 2).join(".");
-  if (supportedVersions("findings").includes(minor)) return doc;
+  if (typeof declared !== "string" || !SURFACE_SCHEMA_VERSIONS.includes(declared)) return doc;
   const rest = Object.fromEntries(
     Object.entries(o).filter(([key]) => key !== "convergence" && key !== "round"),
   );
@@ -280,8 +312,9 @@ export const carryForwardMarkers = (body: string): string => {
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
+  const signal = SIGNAL_RE.exec(body)?.[0];
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, rounds]
+  return [findingsBlock, reviewedSha, rounds, signal]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
 };

@@ -6,10 +6,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Validation } from "io-ts";
-import { render, computeSeverityCounts } from "../src/render.js";
+import {
+  render,
+  computeSeverityCounts,
+  isConvergenceRound,
+  isReviewVerdict,
+} from "../src/render.js";
 import { buildInlineComments } from "../src/inline.js";
-import { convergenceSignal, reviewBodyPointer, surfacedFindingsPointer } from "../src/surface.js";
-import type { SurfaceSignal } from "../src/surface.js";
+import { reviewBodyPointer, signalForRound, surfacedFindingsPointer } from "../src/surface.js";
 import { formatUtc } from "../src/format.js";
 import {
   FindingsCodec,
@@ -81,10 +85,14 @@ const { comments, strays } = buildInlineComments(findings.findings, diff, {
   findings,
 });
 
-const previewSignal: SurfaceSignal = {
-  round: 1,
-  convergence: convergenceSignal(computeSeverityCounts(findings.findings)),
-};
+// Mirror post's isRound: only a completed full-review run carries a stop signal. The fixture is
+// rendered as such (explicit route), with its own counts as round 1 — so the reference demonstrates
+// the signal, the badge, AND the trajectory together, exactly as a real round-1 sticky would.
+const isFullReviewRound =
+  isConvergenceRound("full review", false) && isReviewVerdict(findings.verdict);
+const previewCounts = computeSeverityCounts(findings.findings);
+const previewRounds = isFullReviewRound ? [previewCounts] : [];
+const previewSignal = isFullReviewRound ? signalForRound(1, previewCounts) : null;
 
 // The surfaced marker is built ONCE and shared by the sticky and the review body, exactly like
 // post — the fixture's own counts as round 1, so the reference actually demonstrates the stop
@@ -97,9 +105,11 @@ const sticky = render({
   prices,
   pricesProvided: true,
   template: readFileSync(resolve(root, "templates/comment.eta"), "utf-8"),
+  route: "full review",
   reviewedSha: REVIEWED_SHA,
   testReport,
   strays,
+  rounds: previewRounds,
   findingsPointer: marker,
   postedAt: formatUtc(new Date()),
 });

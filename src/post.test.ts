@@ -2655,25 +2655,40 @@ describe("post — convergence rounds (issue #125)", () => {
       "utf-8",
     ).toString("base64")} -->`;
 
-  // A prior sticky carrying `n` rounds; `complete` + `sha` model a re-review of an already-reviewed head.
-  // Every prior round is {major: 1} — score 2 at the default threshold 1 — and the embedded surfaced
-  // blob carries that round's signal, so a non-round post can carry it forward verbatim.
+  // A prior sticky carrying `n` rounds; `complete` + `sha` model a re-review of an already-reviewed
+  // head. Every prior round is {major: 1} — score 2 at the default threshold 1 — and the embedded
+  // surfaced blob carries that round's signal (round `signalRound`, defaulting to the round count),
+  // so a non-round post can carry it forward verbatim. `blobLink` models an oversized prior review:
+  // the findings marker fell to the link form and only the compact signal marker remains.
   const mocksWithPriorSticky = (
-    opts: { rounds: number; complete?: boolean; sha?: string } = { rounds: 1 },
+    opts: {
+      rounds?: number;
+      complete?: boolean;
+      sha?: string;
+      signalRound?: number;
+      blobLink?: boolean;
+    } = {},
   ) => {
+    const rounds = opts.rounds ?? 1;
+    const signal = {
+      round: opts.signalRound ?? rounds,
+      convergence: { score: 2, threshold: 1, converged: false },
+    };
     const priorBlob = JSON.stringify({
       schema_version: "0.6.0",
       summary: "prior review",
       verdict: "comment",
       findings: [],
-      round: opts.rounds,
-      convergence: { score: 2, threshold: 1, converged: false },
+      ...signal,
     });
+    const findingsMarker = opts.blobLink
+      ? `<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\\n<!-- code-review:signal;base64 ${Buffer.from(JSON.stringify(signal), "utf-8").toString("base64")} -->`
+      : `<!-- code-review:findings-json;base64 ${Buffer.from(priorBlob, "utf-8").toString("base64")} -->`;
     const markers = [
       opts.complete ? "<!-- review-complete -->" : "",
       opts.sha ? `<!-- reviewed-sha: ${opts.sha} -->` : "",
-      `<!-- code-review:findings-json;base64 ${Buffer.from(priorBlob, "utf-8").toString("base64")} -->`,
-      roundsMarkerFor(opts.rounds),
+      findingsMarker,
+      roundsMarkerFor(rounds),
     ]
       .filter(Boolean)
       .join("\\n");
@@ -2818,7 +2833,7 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
 
-  it("an incomplete full review carries the prior round's convergence forward too (issue #141 item 3)", async () => {
+  it("an incomplete full review embeds NO signal in its blob — 'error' + a carried 'converged' would read as a stop signal for a run that produced none (issue #141 review r2)", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),
       JSON.stringify({ schema_version: "0.4.0", summary: "s", verdict: "error", findings: [] }),
@@ -2830,8 +2845,9 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.round).toBe(1);
-    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+    expect(blob.schema_version).toBe("0.6.0");
+    expect(blob.convergence).toBeUndefined();
+    expect(blob.round).toBeUndefined();
   });
 
   it("a first-run mechanic pass (no prior round) embeds no convergence — there is no stop signal yet", async () => {
@@ -2876,7 +2892,7 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
 
-  it("an envelope-loss notice carries the prior round's signal forward in its blob too (issue #141 item 3)", async () => {
+  it("an envelope-loss NOTICE embeds no signal in its blob (same rule as every error-verdict post)", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),
       JSON.stringify({ schema_version: "0.4.0", summary: "s", verdict: "error", findings: [] }),
@@ -2889,6 +2905,43 @@ describe("post — convergence rounds (issue #125)", () => {
       post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
     ).rejects.toThrow("exit");
     exitSpy.mockRestore();
+    const blob = decodedBlob(calls());
+    expect(blob.convergence).toBeUndefined();
+    expect(blob.round).toBeUndefined();
+  });
+
+  it("an envelope-loss post of a REAL review carries the prior signal — the run is a review, its round history is the last completed round (issue #141 review r2)", async () => {
+    // The default fixture findings (verdict comment, one minor) with the envelope missing: the
+    // envelope-null branch renders a real review, and its blob carries the prior round's signal
+    // verbatim — never re-derived, never dropped.
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(
+      post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const blob = decodedBlob(calls());
+    expect(blob.round).toBe(1);
+    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+  });
+
+  it("a completing round never regresses the round counter — the carried count wins when the rounds marker lost an entry (issue #141 review r2)", async () => {
+    // The prior blob's carried signal says round 2 while the rounds marker holds only 1 entry (a
+    // corrupt round was filtered by parseRounds) — the new round must be 3, never 2 again.
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1, signalRound: 2 }));
+    await post(mkInput({ route: "full review" }), api);
+    const blob = decodedBlob(calls());
+    expect(blob.round).toBe(3);
+    expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+  });
+
+  it("an oversized prior review's signal survives via the compact marker — a mechanic still carries it (issue #141 review r2)", async () => {
+    // The prior sticky's findings marker fell to the link form (payload over EMBED_LIMIT); only the
+    // compact signal marker remains, and the carry must still find it.
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1, blobLink: true }));
+    await post(mkInput({ route: "mechanic" }), api);
     const blob = decodedBlob(calls());
     expect(blob.round).toBe(1);
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });

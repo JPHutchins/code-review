@@ -373,19 +373,6 @@ jobs:
           LAST_VALID="${DRAFT%.json}.last-valid.json"
           rm -f "$DRAFT" "$DRAFT.nudges" "$PRIOR_CONTEXT" "$LAST_VALID"
 
-          # The project's declared scope (the `SCOPE` Actions variable) — validated + normalized by
-          # the CLI (a malformed value fails this step loudly) and spliced into the full-review prompt
-          # so the reviewer triages "is this input in scope?" BEFORE severities (issue #139). Empty ⇒
-          # the reviewer infers scope from the README's first paragraph. Version-skew guard:
-          # `check-scope` is release-gated, so the pinned CLI may predate it — probe with a valid
-          # scope (exit 0 = the command exists) and degrade to the raw value on an older CLI rather
-          # than aborting the review under set -e.
-          if code-review check-scope --scope C >/dev/null 2>&1; then
-            NORMALIZED_SCOPE="$(code-review check-scope --scope "${SCOPE:-}")"
-          else
-            NORMALIZED_SCOPE="${SCOPE:-}"
-          fi
-
           # The PR's own description + the human discussion (issue comments, inline review-thread
           # replies, and review submissions) gather staged. UNTRUSTED (attacker-reachable), so it is
           # framed below as claims to VERIFY, never as instructions. Always surfaced — the description
@@ -407,10 +394,19 @@ jobs:
             # A TRUSTED, first-class scope steer (issue #139) — its OWN variable like CONVERGENCE_NOTE,
             # spliced OUTSIDE CONVERSATION_NOTE. "Is this input in scope?" is a TRIAGE question answered
             # BEFORE severities; an out-of-scope input is a scope note, never a severity-bearing finding.
+            # The scope is validated + normalized by `code-review check-scope` ONLY on this route — the
+            # mechanic/CI-fix route never consumes it, so a malformed value must not abort there. The
+            # CLI is release-gated: on an older pin, treat the scope as ABSENT (the reviewer infers it
+            # from the README) rather than splicing an unvalidated value into the prompt.
+            NORMALIZED_SCOPE=""
+            if code-review check-scope --scope C >/dev/null 2>&1; then
+              NORMALIZED_SCOPE="$(code-review check-scope --scope "${SCOPE:-}")"
+            fi
+            SCOPE_TRIAGE=" Treat \"is this input a program the project accepts?\" as a TRIAGE question to answer BEFORE assigning any severity: an out-of-scope input is NOT a finding, it is a scope note. Do not raise a layout/correctness/severity-bearing finding for an input the project does not accept (a project that formats C receiving C++ is out of scope, not a C++ layout regression). If a substantial part of the diff is out of scope, name that in ONE sentence in the summary; do not manufacture findings for those inputs."
             if [ -n "$NORMALIZED_SCOPE" ]; then
-              SCOPE_NOTE=" The project declares its scope as ${NORMALIZED_SCOPE} — the languages/inputs it accepts. Treat \"is this input a program the project accepts?\" as a TRIAGE question to answer BEFORE assigning any severity: an out-of-scope input is NOT a finding, it is a scope note. Do not raise a layout/correctness/severity-bearing finding for an input the project does not accept (a project that formats C receiving C++ is out of scope, not a C++ layout regression). If a substantial part of the diff is out of scope, name that in ONE sentence in the summary; do not manufacture findings for those inputs."
+              SCOPE_NOTE=" The project declares its scope as ${NORMALIZED_SCOPE} — the languages/inputs it accepts.${SCOPE_TRIAGE}"
             else
-              SCOPE_NOTE=" Determine the project's scope — the languages/inputs it accepts — from the README's first paragraph, and treat \"is this input a program the project accepts?\" as a TRIAGE question to answer BEFORE assigning any severity: an out-of-scope input is NOT a finding, it is a scope note. Do not raise a layout/correctness/severity-bearing finding for an input the project does not accept (a project that formats C receiving C++ is out of scope, not a C++ layout regression). If a substantial part of the diff is out of scope, name that in ONE sentence in the summary; do not manufacture findings for those inputs."
+              SCOPE_NOTE=" Determine the project's scope — the languages/inputs it accepts — from the README's first paragraph.${SCOPE_TRIAGE}"
             fi
 
             # Seed $DRAFT with a NON-REVIEW SENTINEL (issue #127): the seed must never be a
@@ -824,9 +820,10 @@ jobs:
           (needs.review.result == 'failure' || needs.review.result == 'success' || needs.review.result == 'cancelled') &&
           needs.review.outputs.has_findings != 'true' }}
     # Its OWN group — NOT the review group — so a superseding run cancels the stale review but never
-    # this finalization (a failed review's attribution must survive that cancellation).
+    # this finalization (a failed review's attribution must survive that cancellation). Keyed on run_id
+    # so a superseding run's own finalize can't cancel this one mid-flight.
     concurrency:
-      group: finalize-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      group: finalize-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}-${{ github.event.workflow_run.id }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -892,11 +889,16 @@ jobs:
             # sticky. The in-progress check is deliberately left alone — a superseding run (typically a
             # newer review on this branch) owns the head now, so stamping it could settle a same-head
             # re-run's live check or mask a real failure; it settles the check itself when it completes.
-            code-review report-incomplete --cancelled \
-              --repo "$REPO" \
-              --head-sha "$HEAD_SHA" \
-              --head-branch "$HEAD_BRANCH" \
-              --run-url "$RUN_URL"
+            # Release-gated: `--cancelled` ships with the next CLI, so probe the installed CLI (its
+            # help lists the flag) — on an older pin citty would silently drop the flag and post the
+            # FAILURE notice, so skip entirely and leave the sticky to the superseding run.
+            if code-review report-incomplete --help 2>&1 | grep -q -- '--cancelled'; then
+              code-review report-incomplete --cancelled \
+                --repo "$REPO" \
+                --head-sha "$HEAD_SHA" \
+                --head-branch "$HEAD_BRANCH" \
+                --run-url "$RUN_URL"
+            fi
           else
             # gather-skip: nothing to review, so the announce check must not hang in_progress.
             code-review check-run neutral \

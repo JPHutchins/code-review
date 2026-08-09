@@ -91,9 +91,9 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   an out-of-scope input is a **scope note** (a sentence in the summary), never a severity-bearing
   finding — a project that formats C receiving C++ is out of scope, not a C++ layout regression. When
   `scope` is empty, the reviewer infers scope from the README's first paragraph instead. A malformed
-  value (e.g. one containing a newline or `<`) fails the review step loudly rather than corrupting the
-  prompt. (`check-scope` is release-gated, so on a pinned CLI that predates it the workflow degrades
-  to the unvalidated value rather than failing the review.)
+  value (e.g. one containing a newline or `<`) fails the full-review step loudly rather than corrupting
+  the prompt. (`check-scope` is release-gated, so on a pinned CLI that predates it the scope is treated
+  as absent and the reviewer infers it from the README.)
 
 ### Check-running with the reusable workflow
 

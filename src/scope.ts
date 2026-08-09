@@ -3,12 +3,13 @@
 // #139). Pure parse + grammar; the CLI's `check-scope` command is the only caller, so the grammar the
 // prompt is built from and the grammar the tests pin are the same code.
 
-// A scope value is spliced into the review agent's system prompt, so any character that breaks prompt
-// structure (a newline starting a new block, a backtick closing a code span, `<`/`>` closing an HTML
-// comment, `|` breaking a markdown table) is rejected — the value is trusted consumer config, but a
-// malformed splice would silently corrupt the instruction. Everything printable and structure-safe is
-// accepted (C++, C#, C/C++, Objective-C). A multi-word name is not a unit here — whitespace separates
-// tokens, so spell a multi-word name with a dash (e.g. "visual-basic") or list its words separately.
+// A scope value is spliced into the review agent's system prompt, so the characters that break prompt
+// structure are rejected: newline/carriage-return (starts a new block), backtick (closes a code span),
+// `<`/`>` (close an HTML comment), and `|` (breaks a markdown table) — exactly the set in SCOPE_UNSAFE.
+// The value is trusted consumer config, but a malformed splice would silently corrupt the instruction.
+// Everything else printable and structure-safe is accepted (C++, C#, C/C++, Objective-C). A multi-word
+// name is not a unit here — whitespace separates tokens, so spell a multi-word name with a dash (e.g.
+// "visual-basic") or list its words separately.
 const SCOPE_UNSAFE = /[\n\r`<>|]/;
 
 export type ScopeParse =

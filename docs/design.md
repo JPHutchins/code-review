@@ -184,8 +184,9 @@ this doc.
   as a finding, not the findings schema, and no version bump is involved. The input is validated by a
   small `code-review check-scope` command (the same fail-loud posture as `--convergence-threshold`), so
   a malformed value cannot corrupt the prompt it is spliced into. Because the CLI is release-gated, the
-  workflow probes for `check-scope` support and degrades to the unvalidated raw value on an older pinned
-  CLI rather than aborting the review.
+  workflow probes for `check-scope` support (full-review route only, so a malformed value never aborts
+  the mechanic/CI-fix path); on an older pinned CLI the scope is treated as absent and the reviewer
+  falls back to inferring it from the README.
 - **Cancelled review is informational, not a crash (issue #139).** Pushing twice within minutes cancels
   the first review (`cancel-in-progress` — correct), but the cancelled run then posted the same
   "⚠️ Review did not complete — re-request" notice as a real failure, which read as an agent crash. The

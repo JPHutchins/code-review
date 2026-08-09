@@ -1053,18 +1053,21 @@ jobs:
   #     (ownership-matched by details_url, so it never settles a superseding run's live check).
   #   - result == 'success' + no findings (a legitimate gather-skip): nothing to review, so just
   #     finalize the lingering check `neutral` — no sticky.
+  #   - result == 'success' + the comment job was CANCELLED mid-post: the review completed but its
+  #     check was never finalized, so settle it `neutral` here (issue #139 r6).
   # The has_findings guard excludes a review that DID post (including an honest triage-error notice)
   # but failed a later step — comment already finalized that one. EXCEPT for a cancelled review: a
   # cancellation racing just past the assemble step leaves has_findings=true but the comment job is
   # cancelled with the review, so the guard would otherwise skip finalize and nothing settles the
   # review — run finalize for cancelled regardless of has_findings (issue #139).
   finalize:
-    needs: review
+    needs: [review, comment]
     if: >-
       ${{ always() &&
           inputs.trigger_event == 'pull_request' &&
           (inputs.conclusion == 'success' || inputs.conclusion == 'failure') &&
           (needs.review.result == 'cancelled' ||
+           (needs.review.result == 'success' && needs.comment.result == 'cancelled') ||
            ((needs.review.result == 'failure' || needs.review.result == 'success') &&
             needs.review.outputs.has_findings != 'true')) }}
     runs-on: ubuntu-latest
@@ -1156,7 +1159,8 @@ jobs:
                 --run-url "$RUN_URL"
             fi
           else
-            # gather-skip: nothing to review, so the announce check must not hang in_progress.
+            # gather-skip (nothing to review), or a completed review whose comment job was cancelled
+            # mid-post: settle the check neutral so it doesn't hang. Ownership-matched to this run.
             code-review check-run neutral \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

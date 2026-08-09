@@ -819,18 +819,20 @@ jobs:
   # on this branch) → an informational "superseded — no action needed" sticky — NOT the failure notice
   # (issue #139) — and the check this run's announce created is settled to `cancelled`
   # (ownership-matched by details_url, so a superseding run's live check is never touched); result ==
-  # 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`. The has_findings guard
-  # excludes a review that DID post but failed a later step (comment finalized it) — EXCEPT for a
-  # cancelled review, which runs finalize regardless so a cancellation racing past assemble still gets
-  # settled (issue #139).
+  # 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`; result == 'success'
+  # + the comment job was CANCELLED mid-post → settle the check `neutral` here (issue #139 r6). The
+  # has_findings guard excludes a review that DID post but failed a later step (comment finalized it)
+  # — EXCEPT for a cancelled review, which runs finalize regardless so a cancellation racing past
+  # assemble still gets settled (issue #139).
   finalize:
-    needs: review
+    needs: [review, comment]
     if: >-
       ${{ always() &&
           github.event.workflow_run.event == 'pull_request' &&
           (github.event.workflow_run.conclusion == 'success' ||
            github.event.workflow_run.conclusion == 'failure') &&
           (needs.review.result == 'cancelled' ||
+           (needs.review.result == 'success' && needs.comment.result == 'cancelled') ||
            ((needs.review.result == 'failure' || needs.review.result == 'success') &&
             needs.review.outputs.has_findings != 'true')) }}
     # Its OWN group — NOT the review group — so a superseding run cancels the stale review but never
@@ -920,7 +922,8 @@ jobs:
                 --run-url "$RUN_URL"
             fi
           else
-            # gather-skip: nothing to review, so the announce check must not hang in_progress.
+            # gather-skip (nothing to review), or a completed review whose comment job was cancelled
+            # mid-post: settle the check neutral so it doesn't hang. Ownership-matched to this run.
             code-review check-run neutral \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

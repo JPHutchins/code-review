@@ -192,10 +192,12 @@ this doc.
   "⚠️ Review did not complete — re-request" notice as a real failure, which read as an agent crash. The
   `finalize` job now distinguishes `cancelled` from `failure`: a cancelled (superseded) run posts an
   informational "superseded — no action needed" sticky (`report-incomplete --cancelled`), never the
-  failure reading, and it settles the check this run's announce created to `cancelled` — matched by the
-  check's details_url (which the announce stamps with this run's URL), so a superseding run's live check
-  on the same head is never touched. Each run owns its own check (announce always opens a fresh one), so
-  ownership is unambiguous. The wording is soft about *why* it was cancelled — `result == 'cancelled'`
+  failure reading, and it settles the check this run's announce created to `cancelled`. Every check
+  settlement (neutral, failure, cancelled) is ownership-matched by the check's details_url, which the
+  announce stamps with this run's URL — so a superseding run's live check on the same head is never
+  touched by another run's settlement. Each run owns its own check (announce always opens a fresh one,
+  idempotently per run), so ownership is unambiguous across all three writers. The wording is soft about
+  *why* it was cancelled — `result == 'cancelled'`
   also fires for a manual cancel — and links the cancelled run itself, never a "latest" run it cannot
   name; a cancelled run with no sticky at all (cancelled before announcing) posts nothing, because
   nothing superseded it. The same guards as the failure notice keep it from clobbering the superseding

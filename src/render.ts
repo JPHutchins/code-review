@@ -1,21 +1,21 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
-import type { Finding, Severity } from "./schema.js";
+import type { Finding, Severity, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
 import {
   severityEmoji,
-  findingsPointer,
   projectPatch,
   formatConfidence,
   roundsMarker,
   roundsSummary,
   convergenceSummary,
-  surfaceFindings,
+  convergenceSignal,
+  surfacedFindingsPointer,
 } from "./surface.js";
-import type { PatchProjection } from "./surface.js";
+import type { PatchProjection, SurfaceSignal } from "./surface.js";
 
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
@@ -44,6 +44,11 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
     (acc, f) => (f.severity in acc ? { ...acc, [f.severity]: acc[f.severity] + 1 } : acc),
     emptySeverityCounts(),
   );
+
+// The other half of the round decision, shared by post (round append) and render (badge): "error"
+// is the pipeline-reserved no-verdict value, so a doc that carries it — even one that somehow also
+// carries findings — never counts as a completed review and must never read as converged (#141).
+export const isReviewVerdict = (verdict: Verdict): boolean => verdict !== "error";
 
 // The single decision "is THIS run a convergence-defining full-review round?" — a completed full
 // review (not a CI-fix mechanic pass, not an incomplete notice). post() calls it to decide the round
@@ -80,12 +85,27 @@ export const render = (input: RenderInput): string => {
   // findings beside it. Neither is a truthful stop signal, so no badge shows; the carried-forward
   // trajectory alone gives context. Prefer post's explicit signal (which also gates the round append,
   // so badge ⇔ append); fall back to the shared predicate for the standalone `render` command. The
-  // extra verdict guard closes an edge isIncompleteFindings misses (it flags an "error" verdict only
-  // when findings are also empty): an error doc that carries findings must still show no badge, never
-  // "converged" beside the "no review verdict" badge.
+  // verdict guard (isReviewVerdict, shared with post's round append) closes an edge isIncompleteFindings
+  // misses (it flags an "error" verdict only when findings are also empty): an error doc that carries
+  // findings must still show no badge, never "converged" beside the "no review verdict" badge.
   const isFullReviewRound =
     (input.convergenceRound ?? isConvergenceRound(route, incomplete)) &&
-    input.findings.verdict !== "error";
+    isReviewVerdict(input.findings.verdict);
+
+  // The stop signal the default marker embeds: the last round's counts when a history exists; a
+  // standalone full-review render carries no history, so THIS run is round 1 — the embedded blob and
+  // the badge can never disagree. Null only when no round has completed (and this run is not one).
+  const markerSignal = ((): SurfaceSignal | null => {
+    const last = rounds[rounds.length - 1];
+    if (last !== undefined)
+      return {
+        round: rounds.length,
+        convergence: convergenceSignal(last, input.convergenceThreshold),
+      };
+    return isFullReviewRound
+      ? { round: 1, convergence: convergenceSignal(severityCounts, input.convergenceThreshold) }
+      : null;
+  })();
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -111,11 +131,7 @@ export const render = (input: RenderInput): string => {
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
     findingsPointer:
-      input.findingsPointer ??
-      findingsPointer(
-        surfaceFindings(input.findings, rounds, input.convergenceThreshold),
-        input.jsonUrl,
-      ),
+      input.findingsPointer ?? surfacedFindingsPointer(input.findings, markerSignal, input.jsonUrl),
     roundsMarker: roundsMarker(rounds),
     roundsSummary: roundsSummary(rounds),
     reviewUrl: input.reviewUrl ?? null,

@@ -10,13 +10,16 @@ import {
   carryForwardMarkers,
   convergenceScore,
   convergenceSummary,
+  convergenceSignal,
   surfaceFindings,
   stripSurfaceFields,
+  parseSurfaceSignal,
   SURFACE_SCHEMA_VERSION,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
 import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 import type { Findings } from "./schema.js";
+import type { SurfaceSignal } from "./surface.js";
 import type { SeverityCounts } from "./types.js";
 
 const findings = {
@@ -244,56 +247,130 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     minor,
     nit,
   });
+  const signal = (round: number, c: SeverityCounts): SurfaceSignal => ({
+    round,
+    convergence: convergenceSignal(c),
+  });
 
   it("stamps the 0.6.0 surface version on every surfaced document, keeping the agent's fields verbatim", () => {
-    const doc = surfaceFindings(findings, []);
+    const doc = surfaceFindings(findings, null);
     expect(doc.schema_version).toBe(SURFACE_SCHEMA_VERSION);
     expect(doc).toEqual({ ...findings, schema_version: SURFACE_SCHEMA_VERSION });
   });
 
-  it("adds round + convergence from the last completed round — converged as a literal boolean", () => {
-    const doc = surfaceFindings(findings, [counts(0, 1, 0, 0), counts(0, 0, 0, 50)]);
+  it("embeds the given stop signal — converged as a literal boolean", () => {
+    const doc = surfaceFindings(findings, signal(2, counts(0, 0, 0, 50)));
     expect(doc.round).toBe(2);
     expect(doc.convergence).toEqual({ score: 0, threshold: 1, converged: true });
   });
 
-  it("omits convergence and round until at least one round has completed", () => {
-    const doc = surfaceFindings(findings, []);
+  it("omits convergence and round when the signal is null (no round has completed)", () => {
+    const doc = surfaceFindings(findings, null);
     expect(doc.convergence).toBeUndefined();
     expect(doc.round).toBeUndefined();
   });
 
-  it("reports an iterating round with its exact score and the effective threshold", () => {
-    const doc = surfaceFindings(findings, [counts(0, 1, 0, 0)], 3);
-    expect(doc.convergence).toEqual({ score: 2, threshold: 3, converged: true });
-    expect(surfaceFindings(findings, [counts(1, 0, 0, 0)]).convergence).toEqual({
+  it("convergenceSignal computes score/threshold/converged from one round's counts", () => {
+    expect(convergenceSignal(counts(1, 0, 0, 0))).toEqual({
       score: 4,
       threshold: 1,
       converged: false,
     });
+    expect(convergenceSignal(counts(0, 0, 0, 50))).toEqual({
+      score: 0,
+      threshold: 1,
+      converged: true,
+    });
+    expect(convergenceSignal(counts(0, 1, 0, 0), 3)).toEqual({
+      score: 2,
+      threshold: 3,
+      converged: true,
+    });
   });
 
-  it("the findings-json marker round-trips the surfaced document, convergence included", () => {
-    const doc = surfaceFindings(findings, [counts(0, 0, 1, 0)]);
+  it("the findings-json marker round-trips the surfaced document, signal included", () => {
+    const doc = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
     const body = `sticky prose\n${findingsPointer(doc, undefined)}\nmore prose`;
     expect(parseFindingsMarker(body)).toEqual(doc);
   });
 
+  it("budgets the surfaced overhead — a doc at the old embed boundary still embeds as base64 (issue #141 review)", () => {
+    let doc = { ...findings, summary: "x".repeat(20000) };
+    const b64 = (d: Findings): number =>
+      Buffer.from(
+        JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)))),
+        "utf-8",
+      ).toString("base64").length;
+    // Grow the summary until the SURFACED marker crosses the old 40000 limit.
+    while (b64(doc) <= 40000) {
+      doc = { ...doc, summary: `${doc.summary}x` };
+    }
+    // The raised limit budgets the ~100-char stop signal, so a review that previously embedded as
+    // base64 still does — it doesn't fall to the link form and lose the seed + signal.
+    expect(b64(doc)).toBeLessThanOrEqual(40200);
+    expect(
+      findingsPointer(surfaceFindings(doc, signal(1, counts(0, 0, 1, 0))), undefined),
+    ).toContain(";base64");
+  });
+
   it("stripSurfaceFields drops the surface fields and restores the draft version on a 0.6.0 doc", () => {
-    const surfaced = surfaceFindings(findings, [counts(0, 0, 1, 0)]);
+    const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
     expect(stripSurfaceFields(surfaced)).toEqual({
       ...findings,
       schema_version: DEFAULT_SCHEMA_VERSION,
     });
   });
 
-  it("stripSurfaceFields leaves a pre-surface blob untouched (draft version, no surface fields)", () => {
-    expect(stripSurfaceFields(findings)).toEqual(findings);
+  it("stripSurfaceFields tolerates future surface versions (0.7.0) the same way", () => {
+    const surfaced = {
+      ...surfaceFindings(findings, signal(2, counts(0, 0, 1, 0))),
+      schema_version: "0.7.0",
+    };
+    expect(stripSurfaceFields(surfaced)).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+    });
   });
 
-  it("stripSurfaceFields passes non-objects through for downstream validation to reject", () => {
+  it("stripSurfaceFields leaves draft-version blobs untouched — even one carrying a 'round' key", () => {
+    expect(stripSurfaceFields(findings)).toEqual(findings);
+    expect(stripSurfaceFields({ ...findings, round: 7 })).toEqual({ ...findings, round: 7 });
+  });
+
+  it("stripSurfaceFields passes non-objects and versionless docs through for downstream validation", () => {
     expect(stripSurfaceFields("junk")).toBe("junk");
     expect(stripSurfaceFields([1, 2])).toEqual([1, 2]);
     expect(stripSurfaceFields(null)).toBeNull();
+    const noVersion = { summary: "s", verdict: "comment", findings: [] };
+    expect(stripSurfaceFields(noVersion)).toEqual(noVersion);
+  });
+});
+
+describe("parseSurfaceSignal — issue #141 (verbatim carry of the prior round's signal)", () => {
+  const signal: SurfaceSignal = {
+    round: 2,
+    convergence: { score: 1, threshold: 1, converged: true },
+  };
+
+  it("parses a well-formed signal from a surfaced blob", () => {
+    expect(parseSurfaceSignal(surfaceFindings(findings, signal))).toEqual(signal);
+  });
+
+  it("returns null when the doc carries no signal (a pre-surface blob, or no round yet)", () => {
+    expect(parseSurfaceSignal(findings)).toBeNull();
+    expect(parseSurfaceSignal(surfaceFindings(findings, null))).toBeNull();
+  });
+
+  it("returns null on malformed signals rather than carrying corruption forward", () => {
+    const base = surfaceFindings(findings, signal);
+    expect(parseSurfaceSignal({ ...base, round: 1.5 })).toBeNull();
+    expect(parseSurfaceSignal({ ...base, round: 0 })).toBeNull();
+    expect(
+      parseSurfaceSignal({ ...base, convergence: { score: "0", threshold: 1, converged: true } }),
+    ).toBeNull();
+    expect(
+      parseSurfaceSignal({ ...base, convergence: { score: 0, threshold: 1, converged: "yes" } }),
+    ).toBeNull();
+    expect(parseSurfaceSignal("junk")).toBeNull();
   });
 });

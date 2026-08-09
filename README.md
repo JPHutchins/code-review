@@ -128,7 +128,9 @@ links to:
   severities at render time — and they are omitted until at least one full-review round has
   completed (a first-run mechanic pass or notice has no stop signal to report). They survive the
   "review in progress" banner: the banner replaces only the sticky's prose and carries the embedded
-  marker forward verbatim.
+  marker forward verbatim. The 0.6.0 surfaced contract applies to the **whole-document** marker only;
+  each inline comment embeds a per-finding fragment (`schema_version` + one finding) at the draft's
+  own version, since the fragment carries no stop signal.
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
   phases. This is advisory/auditability only: it is never read by the comment job and never affects
   what gets posted.

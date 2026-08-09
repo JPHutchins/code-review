@@ -5,16 +5,18 @@ import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import { render, computeSeverityCounts, isConvergenceRound } from "./render.js";
+import { render, computeSeverityCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
-  findingsPointer,
+  convergenceSignal,
+  parseFindingsMarker,
   parseReviewComplete,
   parseReviewedSha,
   parseRounds,
+  parseSurfaceSignal,
   reviewBodyPointer,
-  surfaceFindings,
+  surfacedFindingsPointer,
 } from "./surface.js";
 import {
   ResultEnvelopeCodec,
@@ -525,6 +527,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // placeholder via carryForwardMarkers). A completed FULL review appends this run's counts below; a
   // CI-fix mechanic pass and every notice carry it forward unchanged so the trajectory is never lost.
   const priorRounds = existingSticky !== null ? parseRounds(existingSticky.body) : [];
+  // The last completed round's stop signal, carried VERBATIM into every non-round post (mechanic,
+  // notice) — re-deriving it at the current threshold would flip a prior round's `converged` when the
+  // operator changes convergence_threshold mid-PR. Null when the prior sticky has no surfaced blob or
+  // no round has completed (the blob then carries no signal, exactly like a first-run post).
+  const priorSignal =
+    existingSticky === null ? null : parseSurfaceSignal(parseFindingsMarker(existingSticky.body));
   const leaveInPlace = (): void => {
     process.stderr.write(
       `Review did not complete and the sticky already reflects a completed review — leaving it in place\n`,
@@ -540,10 +548,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const template = readFileSync(input.templatePath, "utf-8");
   const inlineTemplate = readFileSync(input.inlineTemplatePath, "utf-8");
 
-  const renderNotice = (message: string): string =>
-    formatMarkdown(
+  const renderNotice = (message: string): string => {
+    const findings = incompleteFindings(`### ⚠️ ${message}`);
+    return formatMarkdown(
       render({
-        findings: incompleteFindings(`### ⚠️ ${message}`),
+        findings,
         envelope: null,
         incomplete: true,
         prices: decodedPrices.right,
@@ -556,9 +565,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
+        findingsPointer: surfacedFindingsPointer(findings, priorSignal, input.jsonUrl),
         postedAt: input.postedAt,
       }),
     );
+  };
 
   if (isEmptyDiff(diff)) {
     if (wouldBuryCompleted(true)) leaveInPlace();
@@ -612,6 +623,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
+        findingsPointer: surfacedFindingsPointer(findings, priorSignal, input.jsonUrl),
         postedAt: input.postedAt,
       }),
     );
@@ -659,25 +671,29 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // stamps it; `post` is not passed --route in the workflow), so read the effective route the same way
   // render does — `input.route` first, then the envelope — or the feature never grows a round in
   // production. A mechanic pass or any incomplete/failed run carries the trajectory forward unchanged
-  // (it is a CI fix or a non-review, not a round). The verdict guard (render's isFullReviewRound
-  // applies it to the badge) also gates the append here, so an out-of-contract "error" verdict that
+  // (it is a CI fix or a non-review, not a round). The verdict guard (isReviewVerdict, render's badge
+  // uses the same predicate) also gates the append here, so an out-of-contract "error" verdict that
   // somehow carries findings never counts as a round: the trajectory, the badge, and the blob's
   // convergence stay one decision. A same-head CI retry simply appends again — an identical chip
   // reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe because a
   // mechanic stamps a new head without adding a round, so the last round need not be its head.
   const effectiveRoute = input.route ?? envelope.route;
   const isRound =
-    isConvergenceRound(effectiveRoute, thisIncomplete) && findings.verdict !== "error";
+    isConvergenceRound(effectiveRoute, thisIncomplete) && isReviewVerdict(findings.verdict);
   const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
 
-  // Base64-encode the SURFACED whole-document marker once (the agent's doc + the pipeline-stamped
-  // convergence/round stop signal), reused across sticky + review body; each inline comment embeds
-  // only its own finding instead. Computed here so the blob always describes the same round state
-  // the trajectory and badge render.
-  const findingsMarker = findingsPointer(
-    surfaceFindings(findings, rounds, input.convergenceThreshold),
-    input.jsonUrl,
-  );
+  // The stop signal the surfaced blob embeds: THIS round's signal when the run completes a round,
+  // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived.
+  const signal = isRound
+    ? {
+        round: rounds.length,
+        convergence: convergenceSignal(currentCounts, input.convergenceThreshold),
+      }
+    : priorSignal;
+
+  // Base64-encode the SURFACED whole-document marker once (the agent's doc + the stop signal),
+  // reused across sticky + review body; each inline comment embeds only its own finding instead.
+  const findingsMarker = surfacedFindingsPointer(findings, signal, input.jsonUrl);
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,

@@ -226,6 +226,50 @@ describe("render", () => {
       expect(decoded.convergence).toEqual({ score: 1, threshold: 1, converged: true });
     });
 
+    it("a standalone full-review render's blob and badge agree — THIS run is round 1 (#141 review)", () => {
+      // The render command passes no round history, so the fallback treats a full-review run as
+      // round 1 — the embedded stop signal and the badge can never disagree.
+      const findings = mkFindings([mkFinding({ severity: "minor" })]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**Convergence**");
+      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
+      expect(match).not.toBeNull();
+      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
+        readonly round?: number;
+        readonly convergence?: {
+          readonly score: number;
+          readonly threshold: number;
+          readonly converged: boolean;
+        };
+      };
+      expect(decoded.round).toBe(1);
+      expect(decoded.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+    });
+
+    it("a standalone mechanic render embeds no stop signal — no round has completed", () => {
+      const findings = mkFindings([mkFinding({ severity: "critical" })]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "mechanic",
+      });
+      expect(result).not.toContain("**Convergence**");
+      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
+      expect(match).not.toBeNull();
+      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
+        readonly round?: number;
+      };
+      expect(decoded.round).toBeUndefined();
+    });
+
     it("falls back to the jsonUrl link marker when the embedded payload is too large", () => {
       const findings = mkFindings(
         Array.from({ length: 500 }, (_, i) =>

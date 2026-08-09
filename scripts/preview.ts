@@ -6,9 +6,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Validation } from "io-ts";
-import { render } from "../src/render.js";
+import { render, computeSeverityCounts } from "../src/render.js";
 import { buildInlineComments } from "../src/inline.js";
-import { findingsPointer, reviewBodyPointer, surfaceFindings } from "../src/surface.js";
+import { convergenceSignal, reviewBodyPointer, surfacedFindingsPointer } from "../src/surface.js";
+import type { SurfaceSignal } from "../src/surface.js";
 import { formatUtc } from "../src/format.js";
 import {
   FindingsCodec,
@@ -80,6 +81,16 @@ const { comments, strays } = buildInlineComments(findings.findings, diff, {
   findings,
 });
 
+const previewSignal: SurfaceSignal = {
+  round: 1,
+  convergence: convergenceSignal(computeSeverityCounts(findings.findings)),
+};
+
+// The surfaced marker is built ONCE and shared by the sticky and the review body, exactly like
+// post — the fixture's own counts as round 1, so the reference actually demonstrates the stop
+// signal rather than a stamped blob with no signal.
+const marker = surfacedFindingsPointer(findings, previewSignal, undefined);
+
 const sticky = render({
   findings,
   envelope,
@@ -89,13 +100,10 @@ const sticky = render({
   reviewedSha: REVIEWED_SHA,
   testReport,
   strays,
+  findingsPointer: marker,
   postedAt: formatUtc(new Date()),
 });
 
-const reviewBody = reviewBodyPointer(
-  REVIEWED_SHA,
-  undefined,
-  findingsPointer(surfaceFindings(findings, []), undefined),
-);
+const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined, marker);
 
 process.stdout.write(buildPreviewDoc(sticky, reviewBody, comments));

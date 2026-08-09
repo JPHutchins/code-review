@@ -2656,12 +2656,23 @@ describe("post — convergence rounds (issue #125)", () => {
     ).toString("base64")} -->`;
 
   // A prior sticky carrying `n` rounds; `complete` + `sha` model a re-review of an already-reviewed head.
+  // Every prior round is {major: 1} — score 2 at the default threshold 1 — and the embedded surfaced
+  // blob carries that round's signal, so a non-round post can carry it forward verbatim.
   const mocksWithPriorSticky = (
     opts: { rounds: number; complete?: boolean; sha?: string } = { rounds: 1 },
   ) => {
+    const priorBlob = JSON.stringify({
+      schema_version: "0.6.0",
+      summary: "prior review",
+      verdict: "comment",
+      findings: [],
+      round: opts.rounds,
+      convergence: { score: 2, threshold: 1, converged: false },
+    });
     const markers = [
       opts.complete ? "<!-- review-complete -->" : "",
       opts.sha ? `<!-- reviewed-sha: ${opts.sha} -->` : "",
+      `<!-- code-review:findings-json;base64 ${Buffer.from(priorBlob, "utf-8").toString("base64")} -->`,
       roundsMarkerFor(opts.rounds),
     ]
       .filter(Boolean)
@@ -2853,5 +2864,33 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.schema_version).toBe("0.6.0");
     expect(blob.convergence).toBeUndefined();
     expect(blob.round).toBeUndefined();
+  });
+
+  it("a mechanic pass carries the prior round's signal VERBATIM — a changed current threshold must not flip it (issue #141 review)", async () => {
+    // The prior round was judged at threshold 1 (score 2 → not converged); the operator now
+    // configures threshold 3. Recomputing the carried signal would flip it to converged — the blob
+    // must keep the round's own threshold and verdict.
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    await post(mkInput({ route: "mechanic", convergenceThreshold: 3 }), api);
+    const blob = decodedBlob(calls());
+    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+  });
+
+  it("an envelope-loss notice carries the prior round's signal forward in its blob too (issue #141 item 3)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({ schema_version: "0.4.0", summary: "s", verdict: "error", findings: [] }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(
+      post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const blob = decodedBlob(calls());
+    expect(blob.round).toBe(1);
+    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
 });

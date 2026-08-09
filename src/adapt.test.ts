@@ -259,22 +259,64 @@ describe("adapt — claude-code — extraction ladder integration", () => {
     expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
   });
 
-  it("seedUnrevised skips recovery and emits a 'did not complete' notice — a dead agent's untouched seed never posts as a review (issue #117)", () => {
+  it("seedUnrevised emits a 'did not complete' notice naming the sentinel when nothing else recovered — a dead agent never posts the seed as a review (issue #127)", () => {
+    // The agent-file's content is not a valid findings doc — it represents the pre-seed sentinel,
+    // which never validates (here: an envelope-shaped file, invalid as a findings document).
     const result = adapt(
       "claude-code",
-      loadLadderFixture("f11-agent-file-wins.json"),
-      ladderFixturePath("f11-agent-file.json"),
+      loadLadderFixture("f08-prose-only.json"),
+      ladderFixturePath("f08-prose-only.json"),
       { seedUnrevised: true },
     );
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
-    // NOT the agent-file's findings — the draft is the untouched seed, so the run is incomplete.
+    // NOT the agent-file's content — the draft holds the sentinel, so the run is incomplete.
     expect(result.right.findings.verdict).toBe("error");
     expect(result.right.findings.findings).toEqual([]);
     expect(result.right.incomplete).toBe(true);
     expect(result.right.findings.summary).toContain("did not write a review");
+    expect(result.right.findings.summary).toContain("sentinel");
     // The run's real telemetry still survives — no discarded envelope.
     expect(result.right.turns).toBe(2);
+  });
+
+  it("seedUnrevised does NOT discard a REAL review in the native envelope — the sentinel can never be there, so structured_output is recovered (issue #127 recovery-path 2)", () => {
+    const native = {
+      modelUsage: { "deepseek-v4-pro": { inputTokens: 100, outputTokens: 50 } },
+      num_turns: 1,
+      duration_ms: 1000,
+      structured_output: {
+        schema_version: "0.4.0",
+        summary: "the agent's own completed review, answered in the native envelope",
+        verdict: "comment",
+        findings: [],
+      },
+    };
+    // The agent-file holds the sentinel (not a validating findings doc — this envelope-shaped file
+    // fails the ladder's gate, exactly as the sentinel does).
+    const result = adapt("claude-code", native, ladderFixturePath("f08-prose-only.json"), {
+      seedUnrevised: true,
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    // The draft is the untouched sentinel, but the agent DID produce a review — recover it, don't
+    // discard it with the seed (the old mtime-only guard's false incomplete).
+    expect(result.right.findings.summary).toBe(
+      "the agent's own completed review, answered in the native envelope",
+    );
+    expect(result.right.incomplete).toBeUndefined();
+  });
+
+  it("seedUnrevised still recovers a real last-valid snapshot — only the sentinel is unrecoverable, and it never validates into the snapshot", () => {
+    const result = adapt("claude-code", undefined, ladderFixturePath("f08-prose-only.json"), {
+      agentFileFallbackPath: ladderFixturePath("f11-agent-file.json"),
+      seedUnrevised: true,
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+    // The live draft is the sentinel (unrevised), but the snapshot holds a real checkpointed review
+    // the agent wrote earlier in the run — that is a genuine deliverable, not the seed.
+    expect(result.right.findings.summary).toBe("Authoritative: from the agent-written file.");
   });
 
   it("seedUnrevised false recovers the agent-file normally (the agent DID overwrite the seed)", () => {

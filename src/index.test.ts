@@ -1,19 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { runCommand } from "citty";
-import {
-  writeFileSync,
-  mkdirSync,
-  rmSync,
-  readFileSync,
-  statSync,
-  existsSync,
-  utimesSync,
-} from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main, snapshotIfValid } from "./index.js";
-import { lastValidPath, seedMarkerPath } from "./budget.js";
+import { lastValidPath, priorContextPath, SEED_SENTINEL } from "./budget.js";
 import { ResultEnvelopeCodec } from "./schema.js";
 import { findingsPointer } from "./surface.js";
 import type { Findings } from "./schema.js";
@@ -201,6 +193,13 @@ describe("cli — $DRAFT last-valid snapshot (issue #61)", () => {
     expect(existsSync(lastValidPath(draft))).toBe(false);
   });
 
+  it("snapshotIfValid NEVER checkpoints the untouched pre-seed sentinel into last-valid (issue #127 recovery-path 1)", () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    writeFileSync(draft, SEED_SENTINEL);
+    snapshotIfValid(draft);
+    expect(existsSync(lastValidPath(draft))).toBe(false);
+  });
+
   it("adapt recovers findings from --agent-file-fallback when --agent-file was truncated by a wall-kill", async () => {
     const draft = join(tmpDir, "findings-draft.json");
     const snap = lastValidPath(draft);
@@ -243,19 +242,25 @@ describe("cli — $DRAFT last-valid snapshot (issue #61)", () => {
     );
   });
 
-  it("adapt emits a 'did not complete' notice when --agent-file is the untouched seed (marker no older than the draft) — issue #117", async () => {
+  it("adapt emits a 'did not complete' notice when --agent-file still holds the pre-seed sentinel — a dead agent's seed never posts as a review (issue #127)", async () => {
     const draft = join(tmpDir, "findings-draft.json");
-    // A VALID findings doc — but it is the untouched pre-seed (a re-review's prior verdict), so it
-    // must NOT post as a review of the current head.
-    writeFileSync(draft, validFindings("prior review — must not post as the current head"));
-    writeFileSync(seedMarkerPath(draft), "seed marker\n");
-    // Marker no older than the draft ⇒ unrevised. Pin explicit mtimes so the comparison is
-    // deterministic regardless of the filesystem's timestamp resolution.
-    utimesSync(draft, new Date(1000), new Date(1000));
-    utimesSync(seedMarkerPath(draft), new Date(2000), new Date(2000));
+    // The pre-seed SENTINEL — not a valid findings doc, so no recovery path can validate it.
+    writeFileSync(draft, SEED_SENTINEL);
+    // A native envelope with nothing recoverable (a wall-kill left no answer).
+    const native = join(tmpDir, "native-no-review.json");
+    writeFileSync(
+      native,
+      JSON.stringify({
+        modelUsage: {},
+        num_turns: 0,
+        duration_ms: 0,
+        structured_output: null,
+        result: "the agent died before producing anything",
+      }),
+    );
     const { stdout } = await runCli([
       "adapt",
-      nativeFixturePath,
+      native,
       "--adapter",
       "claude-code",
       "--agent-file",
@@ -269,14 +274,12 @@ describe("cli — $DRAFT last-valid snapshot (issue #61)", () => {
     expect(env.findings.verdict).toBe("error");
     expect(env.findings.findings).toEqual([]);
     expect(env.findings.summary).toContain("did not write a review");
+    expect(env.findings.summary).toContain("sentinel");
   });
 
-  it("adapt recovers --agent-file when the agent overwrote the seed (draft newer than the marker)", async () => {
+  it("adapt recovers --agent-file once the agent replaced the sentinel with its own review", async () => {
     const draft = join(tmpDir, "findings-draft.json");
     writeFileSync(draft, validFindings("the agent's real review"));
-    writeFileSync(seedMarkerPath(draft), "seed marker\n");
-    utimesSync(seedMarkerPath(draft), new Date(1000), new Date(1000));
-    utimesSync(draft, new Date(2000), new Date(2000));
     const { stdout } = await runCli([
       "adapt",
       nativeFixturePath,
@@ -288,6 +291,24 @@ describe("cli — $DRAFT last-valid snapshot (issue #61)", () => {
     expect((JSON.parse(stdout) as { findings: { summary: string } }).findings.summary).toBe(
       "the agent's real review",
     );
+  });
+
+  it("adapt does NOT discard a REAL review in the native envelope just because the draft is the untouched sentinel (issue #127 recovery-path 2)", async () => {
+    const draft = join(tmpDir, "findings-draft.json");
+    writeFileSync(draft, SEED_SENTINEL);
+    // nativeFixture's structured_output holds the agent's own completed review — the sentinel can
+    // never be there, so it is recovered instead of a false "did not complete".
+    const { stdout } = await runCli([
+      "adapt",
+      nativeFixturePath,
+      "--adapter",
+      "claude-code",
+      "--agent-file",
+      draft,
+    ]);
+    const env = JSON.parse(stdout) as { incomplete?: boolean; findings: { summary: string } };
+    expect(env.incomplete).toBeUndefined();
+    expect(env.findings.summary).toContain("Adds a retry wrapper around the upload client");
   });
 });
 
@@ -1121,7 +1142,7 @@ describe("cli — validate --explain (issue #45: schema on failure, fix the shap
   });
 });
 
-describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () => {
+describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of-band re-review context)", () => {
   const priorFindings = {
     schema_version: "0.4.0",
     summary: "Prior review summary.",
@@ -1146,24 +1167,37 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     return p;
   };
 
-  it("seeds $DRAFT from a prior review's embedded findings and reports 'prior-new' when no head SHA is given to compare", async () => {
+  // A realistic full-review sticky carries the route marker this pipeline stamps on completion; the
+  // shared isFullReviewSticky predicate (route marker, else round history) gates the seed chain.
+  const FULL_REVIEW_MARKER = "<!-- reviewed-route: full review -->";
+  const oneRoundMarker = `<!-- code-review:rounds;base64 ${Buffer.from(
+    JSON.stringify([{ critical: 0, major: 1, minor: 0, nit: 0 }]),
+    "utf-8",
+  ).toString("base64")} -->`;
+
+  const assertSentinelOnly = (out: string): void => {
+    // $DRAFT holds the NON-REVIEW sentinel — never a valid findings doc, never the prior review —
+    // so no recovery path can validate the untouched seed as a review (issue #127).
+    expect(readFileSync(out, "utf-8")).toBe(SEED_SENTINEL);
+    // No seed marker sidecar remains — the sentinel's CONTENT is the signal, not an mtime.
+    expect(existsSync(`${out}.seed`)).toBe(false);
+  };
+
+  it("delivers a prior review's embedded findings OUT-OF-BAND and reports 'prior-new' when no head SHA is given to compare", async () => {
     const prior = writePrior(
-      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}\nold sticky`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}\nold sticky`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("prior-new");
-    const seeded = JSON.parse(readFileSync(out, "utf-8")) as typeof priorFindings;
-    expect(seeded.findings).toHaveLength(1);
-    expect(seeded.findings[0]!.title).toBe("Prior finding");
-    const v = await runCli(["validate", out]);
-    expect(v.stdout).toContain("valid");
-    // The sidecar marker lands beside the seed so the budget hook can tell the untouched seed from
-    // a draft the agent wrote itself. Only its mtime matters (never its content), and it is written
-    // AFTER the draft, so the seed's mtime never exceeds the marker's.
-    expect(statSync(`${out}.seed`).isFile()).toBe(true);
-    expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
+    // $DRAFT itself is the sentinel; the prior review travels to the read-only context file.
+    assertSentinelOnly(out);
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings;
+    expect(context.findings).toHaveLength(1);
+    expect(context.findings[0]!.title).toBe("Prior finding");
   });
 
   it("reports 'empty-had-prior' when a prior review comment exists but carries no decodable findings marker", async () => {
@@ -1172,51 +1206,31 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("empty-had-prior");
-    const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
-      readonly summary: string;
-      readonly verdict: string;
-      readonly findings: readonly unknown[];
-    };
-    expect(seeded.findings).toEqual([]);
-    // A neutral "comment" template the agent fills in; a dead-agent recovery of this untouched
-    // scaffold is caught by adapt's seed-marker check, not its verdict (issue #117).
-    expect(seeded.verdict).toBe("comment");
-    expect(seeded.summary).toBe("");
-    const v = await runCli(["validate", out]);
-    expect(v.stdout).toContain("valid");
-    // Every seeding path — prior or scaffold — must drop the marker, or the fan-out floor would
-    // treat the untouched scaffold as agent-written and let the agent fan out without revising it.
-    expect(statSync(`${out}.seed`).isFile()).toBe(true);
-    expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
+    assertSentinelOnly(out);
+    // No prior context to deliver.
+    expect(existsSync(priorContextPath(out))).toBe(false);
   });
 
-  it("seeds an empty scaffold when --prior is the literal null gather stages on a first review", async () => {
+  it("writes the sentinel when --prior is the literal null gather stages on a first review", async () => {
     const prior = join(tmpDir, "prior_review.json");
     writeFileSync(prior, "null");
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("empty");
-    const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
-      readonly findings: readonly unknown[];
-    };
-    expect(seeded.findings).toEqual([]);
-    const v = await runCli(["validate", out]);
-    expect(v.stdout).toContain("valid");
-    expect(statSync(`${out}.seed`).isFile()).toBe(true);
+    assertSentinelOnly(out);
+    expect(existsSync(priorContextPath(out))).toBe(false);
   });
 
-  it("seeds an empty scaffold (never crashes) when --prior is omitted entirely", async () => {
+  it("writes the sentinel (never crashes) when --prior is omitted entirely", async () => {
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--out", out]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("empty");
-    const v = await runCli(["validate", out]);
-    expect(v.stdout).toContain("valid");
-    expect(statSync(`${out}.seed`).isFile()).toBe(true);
+    assertSentinelOnly(out);
   });
 
-  it("falls back to the scaffold and reports 'empty-had-prior' when the prior findings don't validate against the current schema", async () => {
+  it("reports 'empty-had-prior' and writes the sentinel only when the prior findings don't validate against the current schema", async () => {
     const skillShaped = {
       schema_version: "0.4.0",
       summary: "x",
@@ -1228,11 +1242,97 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("empty-had-prior");
-    const v = await runCli(["validate", out]);
-    expect(v.stdout).toContain("valid");
+    assertSentinelOnly(out);
+    expect(existsSync(priorContextPath(out))).toBe(false);
   });
 
-  it("degrades to the scaffold and still exits 0 on a bad --schema-version (never fails the review step)", async () => {
+  it("skips a prior that NEVER COMPLETED (an error-verdict notice) — re-review seeding must not pre-load a notice (issue #127 recovery-path 3)", async () => {
+    const incompletePrior = {
+      schema_version: "0.5.0",
+      summary: "### ⚠️ Review did not complete",
+      verdict: "error",
+      findings: [],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(incompletePrior as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty-had-prior");
+    assertSentinelOnly(out);
+    // The error notice must not travel as re-review context either.
+    expect(existsSync(priorContextPath(out))).toBe(false);
+  });
+
+  it("skips a prior that a CI-fix MECHANIC pass produced — the seed chain is route-aware (issue #127)", async () => {
+    const mechanicFindings = {
+      schema_version: "0.4.0",
+      summary: "Fix the failing test",
+      verdict: "comment",
+      findings: [],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${findingsPointer(mechanicFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty-had-prior");
+    assertSentinelOnly(out);
+    expect(existsSync(priorContextPath(out))).toBe(false);
+  });
+
+  it("skips a pre-route-marker mechanic sticky too — no route marker and no round history means the shared predicate says 'not a full review' (issue #127 round-2)", async () => {
+    const mechanicFindings = {
+      schema_version: "0.4.0",
+      summary: "Fix the failing test",
+      verdict: "comment",
+      findings: [],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(mechanicFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty-had-prior");
+    assertSentinelOnly(out);
+    expect(existsSync(priorContextPath(out))).toBe(false);
+  });
+
+  it("does NOT seed from a no-route prior even with round history — a mechanic carries a full review's rounds forward, so the route marker is the only reliable signal (issue #127 round-2)", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${oneRoundMarker}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty-had-prior");
+    assertSentinelOnly(out);
+    expect(existsSync(priorContextPath(out))).toBe(false);
+  });
+
+  it("still seeds from a prior whose route marker names the full review", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    expect(existsSync(priorContextPath(out))).toBe(true);
+  });
+
+  it("reports 'none' (still exits 0) when even the sentinel write fails — no seed, no marker to lose", async () => {
+    const out = join(tmpDir, "missing-dir", "draft.json"); // parent does not exist
+    const { stdout, exitCode, stderr } = await runCli(["seed-draft", "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("none");
+    expect(stderr).toContain("Warning");
+  });
+
+  it("degrades to the sentinel only and still exits 0 on a bad --schema-version (never fails the review step)", async () => {
     const prior = writePrior(
       `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
@@ -1248,15 +1348,15 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     ]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("empty-had-prior");
-    const v = await runCli(["validate", out]);
-    expect(v.stdout).toContain("valid");
+    assertSentinelOnly(out);
+    expect(existsSync(priorContextPath(out))).toBe(false);
   });
 
   const shaA = "a".repeat(40);
   const shaB = "b".repeat(40);
   const priorWithSha = (sha: string): string =>
     writePrior(
-      `<!-- code-review -->\n<!-- reviewed-sha: ${sha} -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- reviewed-sha: ${sha} -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
 
   it("reports 'prior-same' when --head-sha matches the prior review's reviewed-sha", async () => {
@@ -1273,13 +1373,11 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     ]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("prior-same");
-    expect((JSON.parse(readFileSync(out, "utf-8")) as typeof priorFindings).findings).toHaveLength(
-      1,
-    );
-    // The seeded path drops the sidecar marker after the seed, same as the scaffold path, so the
-    // fan-out floor can tell the untouched seed from an agent-written draft.
-    expect(statSync(`${out}.seed`).isFile()).toBe(true);
-    expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
+    assertSentinelOnly(out);
+    // The prior findings are delivered out-of-band, exactly as on prior-new.
+    expect(
+      (JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as typeof priorFindings).findings,
+    ).toHaveLength(1);
   });
 
   it("reports 'prior-new' when --head-sha differs from the prior review's reviewed-sha", async () => {
@@ -1300,7 +1398,7 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
 
   it("reports 'prior-new' when the prior review has no reviewed-sha to compare, even with --head-sha", async () => {
     const prior = writePrior(
-      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli([

@@ -73,11 +73,11 @@ export interface RunMeta {
   // Last valid draft snapshot, recovered when the live agent-file no longer validates (e.g. a
   // wall-kill truncated it).
   readonly agentFileFallbackPath?: string;
-  // The agent-file is the UNREVISED seed the pipeline pre-wrote (the agent died before touching it),
-  // decided by the caller from the seed-marker mtime. Recovering it would post the seed — a
-  // first-review scaffold OR a re-review's PRIOR verdict — as a completed review of the current head:
-  // the false-clean-pass class (issue #117). So skip recovery entirely and emit a "did not complete"
-  // notice, keeping whatever telemetry the run produced.
+  // The agent-file still holds the pipeline's pre-seed SENTINEL (the agent died without writing a
+  // review), decided by the caller from the file's content — the sentinel never validates, so no
+  // rung can recover it as a review (issue #127). The flag only refines the "did not complete"
+  // notice's message; the ladder still runs, so a real review living in the native envelope is
+  // recovered rather than discarded with the seed.
   readonly seedUnrevised?: boolean;
 }
 
@@ -191,28 +191,25 @@ const buildEnvelope = (
   agentFileFallbackPath: string | undefined,
   seedUnrevised: boolean,
 ): ResultEnvelope => {
-  // The agent never wrote the draft — recovering the untouched seed would post it as a completed
-  // review of the current head (issue #117). Emit the notice instead, keeping the run's telemetry.
-  if (seedUnrevised)
-    return {
-      schema_version: DEFAULT_SCHEMA_VERSION,
-      findings: incompleteFindings(
-        "### ⚠️ Review did not complete\n\nThe review agent did not write a review (its draft is the untouched pre-seed). See the workflow logs.",
-      ),
-      incomplete: true,
-      ...telemetry,
-    };
+  // The sentinel never validates, so the ladder cannot recover the pre-seed from the agent-file or
+  // last-valid rungs — but it still runs: a REAL review the agent produced in the native envelope
+  // (structured_output/result) is recovered, not discarded with the seed. Only the miss is
+  // re-worded: the untouched sentinel names the cause precisely (issue #127).
   const outcome = findingsOutcome(native, agentFilePath, agentFileFallbackPath);
   switch (outcome.kind) {
     case "ok":
       return { schema_version: outcome.version, findings: outcome.findings, ...telemetry };
-    case "telemetry-only":
+    case "telemetry-only": {
+      const reason = seedUnrevised
+        ? "the review agent did not write a review (its draft is still the pre-seeded sentinel)"
+        : outcome.reason;
       return {
         schema_version: DEFAULT_SCHEMA_VERSION,
-        findings: incompleteFindings(`### ⚠️ Review did not complete\n\n${outcome.reason}`),
+        findings: incompleteFindings(`### ⚠️ Review did not complete\n\n${reason}`),
         incomplete: true,
         ...telemetry,
       };
+    }
   }
 };
 

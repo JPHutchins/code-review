@@ -44,5 +44,6 @@ jobs:
       model_full:    deepseek-v4-flash
       model_mechanic: deepseek-v4-flash
       install_command: npm ci     # this repo is node-based; run its checks so the agent can validate
+      scope:         ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README's first paragraph (#139)
     secrets:
       MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}

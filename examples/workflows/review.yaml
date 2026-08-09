@@ -396,11 +396,16 @@ jobs:
             # BEFORE severities; an out-of-scope input is a scope note, never a severity-bearing finding.
             # The scope is validated + normalized by `code-review check-scope` ONLY on this route — the
             # mechanic/CI-fix route never consumes it, so a malformed value must not abort there. The
-            # CLI is release-gated: on an older pin, treat the scope as ABSENT (the reviewer infers it
-            # from the README) rather than splicing an unvalidated value into the prompt.
+            # CLI is release-gated: probe with a valid scope (exit 0 = the command exists); on an older
+            # pin, treat the scope as ABSENT (the reviewer infers it from the README) rather than
+            # splicing an unvalidated value into the prompt. A MALFORMED consumer scope is a config
+            # typo — warn and treat as absent, never abort the review into a confusing crash notice.
             NORMALIZED_SCOPE=""
-            if code-review check-scope --scope C >/dev/null 2>&1; then
-              NORMALIZED_SCOPE="$(code-review check-scope --scope "${SCOPE:-}")"
+            if [ -n "${SCOPE:-}" ] && code-review check-scope --scope C >/dev/null 2>&1; then
+              if ! NORMALIZED_SCOPE="$(code-review check-scope --scope "${SCOPE}" 2>/dev/null)"; then
+                echo "::warning::code-review check-scope rejected the scope input '${SCOPE}' — treating scope as absent; the reviewer will infer it from the README's first paragraph"
+                NORMALIZED_SCOPE=""
+              fi
             fi
             SCOPE_TRIAGE=" Treat \"is this input a program the project accepts?\" as a TRIAGE question to answer BEFORE assigning any severity: an out-of-scope input is NOT a finding, it is a scope note. Do not raise a layout/correctness/severity-bearing finding for an input the project does not accept (a project that formats C receiving C++ is out of scope, not a C++ layout regression). If a substantial part of the diff is out of scope, name that in ONE sentence in the summary; do not manufacture findings for those inputs."
             if [ -n "$NORMALIZED_SCOPE" ]; then
@@ -596,9 +601,13 @@ jobs:
       # Assemble findings — every branch below writes BOTH findings/findings.json and a matching
       # abstract envelope, so the comment job always has a valid pair to render, even when
       # the security gate or the agent itself produced nothing.
+      # NOT on cancellation: a cancelled review (a superseding run on this branch, or a manual cancel)
+      # must not synthesize a "no-output" notice that reads as a crash — issue #139. Skipping assemble
+      # leaves has_findings unset, so the comment job does not run and the finalize job (which
+      # distinguishes result == 'cancelled') posts the informational superseded notice instead.
       - name: Assemble findings
         id: assemble
-        if: ${{ always() && steps.gather.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && steps.gather.outputs.skip != 'true' }}
         env:
           OUTCOME: ${{ steps.triage.outputs.outcome }}
           REASONS: ${{ steps.triage.outputs.reasons }}
@@ -661,7 +670,8 @@ jobs:
       # artifact's own download endpoint.
       - uses: actions/upload-artifact@v7
         id: upload-findings
-        if: ${{ always() && steps.gather.outputs.skip != 'true' }}
+        # Not on cancellation: assemble is skipped there, so findings/ would not exist to upload.
+        if: ${{ !cancelled() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-findings
           path: findings/
@@ -820,11 +830,13 @@ jobs:
           (needs.review.result == 'failure' || needs.review.result == 'success' || needs.review.result == 'cancelled') &&
           needs.review.outputs.has_findings != 'true' }}
     # Its OWN group — NOT the review group — so a superseding run cancels the stale review but never
-    # this finalization (a failed review's attribution must survive that cancellation). Keyed on run_id
-    # so a superseding run's own finalize can't cancel this one mid-flight.
+    # this finalization (a failed review's attribution must survive that cancellation). No
+    # cancel-in-progress: finalizes for the same branch SERIALIZE (queue) instead of a newer run's
+    # finalize cancelling an older one mid-flight, so a superseded run's failure/superseded notice
+    # always lands before the next run's finalize.
     concurrency:
-      group: finalize-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}-${{ github.event.workflow_run.id }}
-      cancel-in-progress: true
+      group: finalize-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -889,10 +901,11 @@ jobs:
             # sticky. The in-progress check is deliberately left alone — a superseding run (typically a
             # newer review on this branch) owns the head now, so stamping it could settle a same-head
             # re-run's live check or mask a real failure; it settles the check itself when it completes.
-            # Release-gated: `--cancelled` ships with the next CLI, so probe the installed CLI (its
-            # help lists the flag) — on an older pin citty would silently drop the flag and post the
-            # FAILURE notice, so skip entirely and leave the sticky to the superseding run.
-            if code-review report-incomplete --help 2>&1 | grep -q -- '--cancelled'; then
+            # Release-gated: `--cancelled` ships with the same CLI release as `check-scope`, so probe
+            # the exit-code way (the one idiom for this release); on an older pin citty would silently
+            # drop the flag and post the FAILURE notice, so skip entirely and leave the sticky to the
+            # superseding run.
+            if code-review check-scope --scope C >/dev/null 2>&1; then
               code-review report-incomplete --cancelled \
                 --repo "$REPO" \
                 --head-sha "$HEAD_SHA" \

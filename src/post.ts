@@ -611,7 +611,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     if (existingComplete) leaveInPlace(EMPTY_MECHANIC_LEAVE_MESSAGE);
     const priorSha = parseReviewedSha(sticky.body);
     const body = formatMarkdown(
-      `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.\n\n${carryForwardMarkers(sticky.body)}`,
+      noticeBody(
+        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.`,
+        sticky.body,
+      ),
     );
     await upsertSticky(input.repo, prNumber, sticky, body, ghApi);
     process.exit(0);

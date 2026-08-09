@@ -41,7 +41,15 @@ export type CodeCounts = Readonly<Record<string, number>>;
 // so the trajectory marker stays backward-compatible and a future-shaped round is never a parse
 // failure. The sha lets the streak detector recognize a same-head CI retry (which appends an identical
 // round) as the same review iteration re-examined, not new evidence of recurrence.
-export type RoundRecord = SeverityCounts & { readonly codes?: CodeCounts; readonly sha?: string };
+export type RoundRecord = SeverityCounts & {
+  readonly codes?: CodeCounts;
+  readonly sha?: string;
+  // The TRUE completed-round number (1-indexed) this record represents. The rounds marker's array
+  // position can drift from it when parseRounds filters a corrupt entry, and the trajectory label
+  // (and the blob signal) number rounds by the carried count — so the same-root annotation must
+  // reference this, not the parsed index. Absent on pre-feature rounds ⇒ the parsed index + 1.
+  readonly round?: number;
+};
 
 // A code's recurrence streak ending at the last recorded round: how many consecutive rounds carried a
 // finding with that code, and the 1-indexed round number where the streak began.

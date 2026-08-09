@@ -650,6 +650,22 @@ describe("mechanism frequency rounds — issue #145", () => {
     );
   });
 
+  it("computeSameRootNotes names the TRUE round number from the record, not the parsed index (issue #145 r4)", () => {
+    // The rounds marker lost a corrupt entry, so position 1 actually represents round 5 — the
+    // record's `round` field must win over the array index.
+    const prior: RoundRecord[] = [{ ...coded(counts(0, 0, 0, 0), { a: 1 }), round: 5 }];
+    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })])["a"]).toContain("round 5");
+  });
+
+  it("the per-round cap never drops a code that recurred in the previous round, even at a low count (issue #145 r4)", () => {
+    const codes: Record<string, number> = Object.fromEntries([
+      ...Array.from({ length: 8 }, (_, i) => [`bulk-${String(i)}`, 5] as [string, number]),
+      ["watched", 1] as [string, number],
+    ]);
+    const record = roundRecord(counts(0, 0, 0, 0), codes, { watched: 1 });
+    expect(record.codes?.["watched"]).toBe(1);
+  });
+
   it("computeSameRootNotes also collapses a same-sha retry DEEPER in the history (issue #145 r3)", () => {
     // r2 is a retry of r1 (same sha); the mechanism's last real occurrence is round 1 — the retry
     // must not be named as "round 2" (the streak detector collapses it too, so the two advisory

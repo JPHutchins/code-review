@@ -178,9 +178,11 @@ const hasCode = (codes: CodeCounts | undefined, code: string): boolean =>
   codes !== undefined && Object.prototype.hasOwnProperty.call(codes, code);
 
 // Codes render inside backticks in the advisory notes; a backtick inside a (reviewer-supplied) code
-// would break the span, so escape it the way paths are escaped for inline code. Shared with render.ts
-// (which escapes paths into backtick spans) so the escaping rule lives in one place.
-export const escapeCodeBackticks = (code: string): string => code.replace(/`/g, "-");
+// would break the span, and a newline would break out of the note's blockquote, so both are escaped
+// (newlines collapse to a space). Shared with render.ts (which escapes paths into backtick spans) so
+// the escaping rule lives in one place.
+export const escapeCodeBackticks = (code: string): string =>
+  code.replace(/`/g, "-").replace(/\r?\n/g, " ");
 
 // The codes field of a round record, validated and capped: string → positive safe-integer counts only
 // (a count-0 entry means "no findings this round" and is not recorded — every consumer agrees that 0
@@ -203,9 +205,24 @@ const normalizeCodeCounts = (codes: unknown, priorCodes?: CodeCounts): CodeCount
       if (aPrior !== bPrior) return bPrior - aPrior;
       return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
     });
-  return entries.length === 0
-    ? undefined
-    : Object.fromEntries(entries.slice(0, MAX_CODES_PER_ROUND));
+  if (entries.length === 0) return undefined;
+  const sorted = entries.sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    const aPrior = hasCode(priorCodes, a[0]) ? 1 : 0;
+    const bPrior = hasCode(priorCodes, b[0]) ? 1 : 0;
+    if (aPrior !== bPrior) return bPrior - aPrior;
+    return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+  });
+  // The base cap is the top-N by (count, prior-preference). A mechanism the streak detector is
+  // watching (it recurred in the previous round) is never dropped by a finding-heavy round even when
+  // its count is low — any such code cut by the cap is appended after the base (bounded by a second
+  // cap), so a recurrence can't silently end.
+  const base = sorted.slice(0, MAX_CODES_PER_ROUND);
+  const priorKept = sorted
+    .slice(MAX_CODES_PER_ROUND)
+    .filter(([code]) => hasCode(priorCodes, code))
+    .slice(0, MAX_CODES_PER_ROUND);
+  return Object.fromEntries([...base, ...priorKept]);
 };
 
 export const parseRounds = (body: string): readonly RoundRecord[] => {
@@ -217,14 +234,19 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   // field is normalized independently — a bad codes shape strips just that field, never the round.
   if (!Array.isArray(decoded)) return [];
   return (decoded as readonly unknown[]).filter(isSeverityCounts).map((u) => {
-    const codes = normalizeCodeCounts((u as Record<string, unknown>)["codes"]);
-    const sha = (u as Record<string, unknown>)["sha"];
+    const rec = u as Record<string, unknown>;
+    const codes = normalizeCodeCounts(rec["codes"]);
+    const sha = rec["sha"];
     const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;
+    const round = rec["round"];
+    const roundNum =
+      typeof round === "number" && Number.isSafeInteger(round) && round >= 1 ? round : undefined;
     const base =
       codes === undefined
         ? { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit }
         : { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit, codes };
-    return shaStr === undefined ? base : { ...base, sha: shaStr };
+    const kept = shaStr === undefined ? base : { ...base, sha: shaStr };
+    return roundNum === undefined ? kept : { ...kept, round: roundNum };
   });
 };
 
@@ -239,21 +261,22 @@ export const roundsMarker = (rounds: readonly RoundRecord[]): string => {
   if (rounds.length === 0) return "";
   const serialize = (kept: readonly RoundRecord[]): string =>
     `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(kept), "utf-8").toString("base64")} -->`;
-  // Stage 1: strip the codes+sha from the oldest rounds, oldest first, until the marker fits — the
-  // severity counts (the trajectory) always survive.
-  let kept: readonly RoundRecord[] = rounds;
-  for (let n = 0; n <= rounds.length; n++) {
-    const candidate = rounds.map((r, i) =>
+  const stripCodes = (n: number): readonly RoundRecord[] =>
+    rounds.map((r, i) =>
       i < n ? { critical: r.critical, major: r.major, minor: r.minor, nit: r.nit } : r,
     );
-    kept = candidate;
-    if (serialize(candidate).length <= ROUNDS_MARKER_LIMIT) break;
+  // Stage 1: strip the codes+sha from the oldest rounds, oldest first, until the marker fits — the
+  // severity counts (the trajectory) always survive.
+  let stripped = 0;
+  while (stripped < rounds.length && serialize(stripCodes(stripped)).length > ROUNDS_MARKER_LIMIT) {
+    stripped += 1;
   }
+  const kept = stripCodes(stripped);
   // Stage 2: even count-only, a very long history can still exceed the cap — keep only the most
   // recent rounds (the trajectory label uses the true count via the carried signal, so eliding
   // entries never falsifies the round number).
-  if (serialize(kept).length > ROUNDS_MARKER_LIMIT) kept = kept.slice(-8);
-  return serialize(kept);
+  const bounded = serialize(kept).length > ROUNDS_MARKER_LIMIT ? kept.slice(-8) : kept;
+  return serialize(bounded);
 };
 
 // One round's chip: "🔴4 🟠3" for the round's severity content (findings + systemic, as stored), or
@@ -318,10 +341,16 @@ export const roundRecord = (
   codes: CodeCounts,
   priorCodes?: CodeCounts,
   sha?: string,
+  round?: number,
 ): RoundRecord => {
   const normalized = normalizeCodeCounts(codes, priorCodes);
-  const base = normalized === undefined ? { ...counts } : { ...counts, codes: normalized };
-  return sha === undefined ? base : { ...base, sha };
+  const record: RoundRecord =
+    normalized === undefined ? { ...counts } : { ...counts, codes: normalized };
+  return {
+    ...record,
+    ...(sha !== undefined ? { sha } : {}),
+    ...(round !== undefined ? { round } : {}),
+  };
 };
 
 // Per code, how many consecutive rounds (ending at the last recorded round) carried a finding with
@@ -355,7 +384,9 @@ export const consecutiveCodeStreaks = (
       streak += 1;
       startIndex = i;
     }
-    if (streak > 0) entries.push([code, { streak, startRound: startIndex + 1 }]);
+    if (streak > 0) {
+      entries.push([code, { streak, startRound: rounds[startIndex]?.round ?? startIndex + 1 }]);
+    }
   }
   // Object.fromEntries so a reviewer-supplied code like "__proto__" becomes an own key, never the
   // map's prototype (which would corrupt the result and render [object Object] in the note).
@@ -411,15 +442,19 @@ export const computeSameRootNotes = (
       // retry deeper in the history (a round that merely re-examines the commit before it) is
       // collapsed the same way consecutiveCodeStreaks collapses it, so both advisory signals agree.
       if (currentSha !== undefined && priorRounds[i]?.sha === currentSha) continue;
+      // Collapse a same-sha retry exactly like consecutiveCodeStreaks does: only when the code ALSO
+      // appeared in the retried round is the evidence genuinely repeated — a code NEW in the retry
+      // round is fresh and is named here (the two advisory signals agree).
       if (
         i > 0 &&
         priorRounds[i]?.sha !== undefined &&
-        priorRounds[i]?.sha === priorRounds[i - 1]?.sha
+        priorRounds[i]?.sha === priorRounds[i - 1]?.sha &&
+        hasCode(priorRounds[i - 1]?.codes, code)
       )
         continue;
       const count = priorRounds[i]?.codes?.[code];
       if (count !== undefined && count > 0) {
-        lastRound = i + 1;
+        lastRound = priorRounds[i]?.round ?? i + 1;
         break;
       }
     }

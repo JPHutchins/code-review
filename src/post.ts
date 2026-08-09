@@ -799,6 +799,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const currentCodes = computeCodeCounts(findings.findings, findings.systemic_problems ?? []);
   const priorLastCodes =
     priorRounds.length > 0 ? priorRounds[priorRounds.length - 1]?.codes : undefined;
+  // The TRUE completed-round number of this run's round: the rounds marker is best-effort
+  // (parseRounds filters corrupt entries), so the appended record numbers itself after the carried
+  // count when it is ahead — the same value the trajectory label and the blob signal use, so the
+  // same-root annotation never drifts from them.
+  const roundNumber = Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1;
   const rounds = isRound
     ? [
         ...priorRounds,
@@ -807,6 +812,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
           currentCodes,
           priorLastCodes,
           input.headSha.slice(0, 12),
+          roundNumber,
         ),
       ]
     : priorRounds;
@@ -819,11 +825,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // rounds marker is best-effort (parseRounds filters corrupt entries), so a completing round
   // numbers itself after the carried count when it is ahead.
   const signal = isRound
-    ? signalForRound(
-        Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1,
-        computeRoundCounts(findings),
-        input.convergenceThreshold,
-      )
+    ? signalForRound(roundNumber, computeRoundCounts(findings), input.convergenceThreshold)
     : thisIncomplete || !isReviewVerdict(findings.verdict)
       ? null
       : priorSignal;

@@ -48,6 +48,8 @@ describe("parseFindingsMarker", () => {
           title: "Retry inconsistency",
           description: "Three policies in three spots.",
           severity: "major",
+          reasoning: "Each file implements its own policy.",
+          confidence: 0.8,
           finding_codes: ["widened-type"],
           paths: ["src/a.ts"],
         },
@@ -214,6 +216,12 @@ describe("rounds trajectory — issue #125", () => {
     expect(parseRounds(marker({ critical: -1, major: 0, minor: 0, nit: 0 }))).toEqual([]);
     expect(parseRounds(marker({ critical: 1.5, major: 0, minor: 0, nit: 0 }))).toEqual([]);
     expect(parseRounds(marker({ critical: 1e308, major: 0, minor: 0, nit: 0 }))).toEqual([]);
+  });
+
+  it("round-trips a systemic-flagged round through the marker, and its chip reads 'systemic', never 'clean' (issue #134 review)", () => {
+    const rounds = [counts(0, 0, 0, 0), { ...counts(0, 0, 0, 0), systemic: true }];
+    expect(parseRounds(`prose\n${roundsMarker(rounds)}\nmore`)).toEqual(rounds);
+    expect(roundsSummary(rounds)).toBe("**Round 2** · clean → systemic");
   });
 
   it("drops only the malformed round, keeping the valid ones — one bad entry can't erase the history", () => {

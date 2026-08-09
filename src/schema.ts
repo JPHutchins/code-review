@@ -74,20 +74,45 @@ export const FindingCodec = t.exact(EndGeStart);
 
 // Cross-cutting observations that tie findings together, with no required line anchor — mirrors
 // findings.schema.json's systemic_problems items exactly, reusing the shared rule-identifier pair.
+// severity/reasoning/confidence are required (owner direction on #134).
 const SystemicProblemShape = t.intersection([
   t.type({
     title: t.string,
     description: t.string,
+    severity: SeverityCodec,
+    reasoning: t.string,
+    confidence: Confidence,
   }),
   FindingRuleCodec,
   t.partial({
-    severity: SeverityCodec,
     finding_codes: t.array(t.string),
     paths: t.array(t.string),
   }),
 ]);
 
-export const SystemicProblemCodec = t.exact(SystemicProblemShape);
+// The schema declares additionalProperties: false, but t.exact only strips unknown keys on encode —
+// on decode it accepts them. The refinement closes the gap so the codec gate rejects exactly what
+// the ajv gate rejects (the extraction ladder runs both gates).
+const SYSTEMIC_KEYS = new Set([
+  "title",
+  "description",
+  "severity",
+  "reasoning",
+  "confidence",
+  "code",
+  "code_url",
+  "finding_codes",
+  "paths",
+]);
+
+const SystemicProblemStrict = t.refinement(
+  SystemicProblemShape,
+  (s): s is t.TypeOf<typeof SystemicProblemShape> =>
+    Object.keys(s).every((k) => SYSTEMIC_KEYS.has(k)),
+  "SystemicProblemStrict",
+);
+
+export const SystemicProblemCodec = t.exact(SystemicProblemStrict);
 
 export const FindingsCodec = t.exact(
   t.intersection([

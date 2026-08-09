@@ -56,6 +56,8 @@ describe('resolve("findings", ...)', () => {
           title: "Inconsistent retry policy",
           description: "Three spots, three retry policies.",
           severity: "major",
+          reasoning: "Each file implements its own policy.",
+          confidence: 0.8,
           code: "retry-policy-inconsistent",
           finding_codes: ["widened-type"],
           paths: ["src/upload/config.ts"],

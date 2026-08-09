@@ -320,21 +320,23 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
   const systemic = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
     title: "Inconsistent retry policy",
     description: "Three spots, three retry policies.",
+    severity: "major",
+    reasoning: "Each file implements its own policy.",
+    confidence: 0.8,
     ...overrides,
   });
 
   const withSystemic = (items: readonly unknown[]): unknown =>
     doc([], { systemic_problems: items });
 
-  it("accepts a document with a valid systemic problem (title + description only)", () => {
+  it("accepts a valid systemic problem with all required fields", () => {
     expect(validateAgainstSchema(withSystemic([systemic()]), schemaPath).valid).toBe(true);
   });
 
-  it("accepts every optional field (severity, code, code_url, finding_codes, paths)", () => {
+  it("accepts every optional field (code, code_url, finding_codes, paths)", () => {
     const result = validateAgainstSchema(
       withSystemic([
         systemic({
-          severity: "major",
           code: "retry-policy-inconsistent",
           code_url: "https://example.com/rules/retry-policy-inconsistent",
           finding_codes: ["widened-type", "null-check-missing"],
@@ -366,6 +368,30 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
     expect(result.errors.some((e) => e.includes("description"))).toBe(true);
   });
 
+  it("rejects a systemic item missing severity (required per owner direction)", () => {
+    const withoutSeverity: Record<string, unknown> = systemic();
+    Reflect.deleteProperty(withoutSeverity, "severity");
+    const result = validateAgainstSchema(withSystemic([withoutSeverity]), schemaPath);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("severity"))).toBe(true);
+  });
+
+  it("rejects a systemic item missing reasoning (required per owner direction)", () => {
+    const withoutReasoning: Record<string, unknown> = systemic();
+    Reflect.deleteProperty(withoutReasoning, "reasoning");
+    const result = validateAgainstSchema(withSystemic([withoutReasoning]), schemaPath);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("reasoning"))).toBe(true);
+  });
+
+  it("rejects a systemic item missing confidence (required per owner direction)", () => {
+    const withoutConfidence: Record<string, unknown> = systemic();
+    Reflect.deleteProperty(withoutConfidence, "confidence");
+    const result = validateAgainstSchema(withSystemic([withoutConfidence]), schemaPath);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("confidence"))).toBe(true);
+  });
+
   it("rejects an unknown property on a systemic item (strict schema)", () => {
     const result = validateAgainstSchema(withSystemic([systemic({ line_range: 12 })]), schemaPath);
     expect(result.valid).toBe(false);
@@ -387,6 +413,16 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
     expect(result.valid).toBe(false);
   });
 
+  it("codec rejects unknown keys on a systemic item on decode — matching the schema's additionalProperties:false (issue #134 review)", () => {
+    expect(FindingsCodec.decode(withSystemic([systemic({ bogus: 1 })]))._tag).toBe("Left");
+  });
+
+  it("codec rejects a systemic item missing a required field on decode", () => {
+    const withoutConfidence: Record<string, unknown> = systemic();
+    Reflect.deleteProperty(withoutConfidence, "confidence");
+    expect(FindingsCodec.decode(withSystemic([withoutConfidence]))._tag).toBe("Left");
+  });
+
   it("round-trips systemic_problems through the io-ts codec", () => {
     const data: Findings = {
       ...decodeFindings(validFindings),
@@ -395,6 +431,8 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
           title: "Retry inconsistency",
           description: "Three policies in three spots.",
           severity: "major",
+          reasoning: "Each file implements its own policy.",
+          confidence: 0.8,
           finding_codes: ["widened-type"],
         },
       ],

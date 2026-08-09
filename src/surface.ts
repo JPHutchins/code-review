@@ -127,31 +127,41 @@ const isSeverityCounts = (u: unknown): u is SeverityCounts =>
     return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   });
 
-export const parseRounds = (body: string): readonly SeverityCounts[] => {
+// A round's severity counts, optionally flagged when the round carried systemic problems without
+// findings — its counts are then all zero, but the round is NOT clean, so its chip must not read
+// "clean" either. Only the four severity keys are validated on parse; the flag rides along and
+// round-trips through the marker.
+export type RoundEntry = SeverityCounts & { readonly systemic?: boolean };
+
+const isRoundEntry = (u: unknown): u is RoundEntry => isSeverityCounts(u);
+
+export const parseRounds = (body: string): readonly RoundEntry[] => {
   const b64 = ROUNDS_RE.exec(body)?.[1];
   if (b64 === undefined) return [];
   const decoded = decodeBase64Json(b64);
   // Filter, not all-or-nothing: one future-shaped or corrupted round drops only itself rather than
   // erasing the whole trajectory (post re-serializes the parsed array on every write).
-  return Array.isArray(decoded) ? decoded.filter(isSeverityCounts) : [];
+  return Array.isArray(decoded) ? decoded.filter(isRoundEntry) : [];
 };
 
-export const roundsMarker = (rounds: readonly SeverityCounts[]): string =>
+export const roundsMarker = (rounds: readonly RoundEntry[]): string =>
   rounds.length === 0
     ? ""
     : `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->`;
 
-// One round's chip: "🔴4 🟠3" for findings, "clean" for none.
-const roundChip = (c: SeverityCounts): string => {
+// One round's chip: "🔴4 🟠3" for findings, "systemic" for a round that carried systemic problems
+// without findings, "clean" for none.
+const roundChip = (c: RoundEntry): string => {
   const parts = SEVERITIES.filter((k) => c[k] > 0).map((k) => `${severityEmoji(k)}${String(c[k])}`);
-  return parts.length === 0 ? "clean" : parts.join(" ");
+  if (parts.length === 0) return c.systemic ? "systemic" : "clean";
+  return parts.join(" ");
 };
 
 // The convergence line: "**Round 3** · 🔴4 🟠3 → 🟠2 → clean"; "" when there is no round history. The
 // round number is always the true count; the trajectory shows only the most recent chips (with a
 // leading "…" when older ones are elided) so a long-running PR's line stays readable and bounded.
 const TRAJECTORY_CHIPS = 8;
-export const roundsSummary = (rounds: readonly SeverityCounts[]): string => {
+export const roundsSummary = (rounds: readonly RoundEntry[]): string => {
   if (rounds.length === 0) return "";
   const chips = rounds.slice(-TRAJECTORY_CHIPS).map(roundChip);
   const trajectory =

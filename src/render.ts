@@ -95,7 +95,11 @@ export const render = (input: RenderInput): string => {
   // "converged" beside the "no review verdict" badge.
   const isFullReviewRound =
     (input.convergenceRound ?? isConvergenceRound(route, incomplete)) &&
-    input.findings.verdict !== "error";
+    input.findings.verdict !== "error" &&
+    // A round that reports systemic problems without findings is not clean — its score is 0 by the
+    // findings-only formula, so a "converged" badge would be the same false stop signal as the
+    // "clean review" prose the systemic-only case already suppresses. No badge, no false claim.
+    !(input.findings.findings.length === 0 && (input.findings.systemic_problems?.length ?? 0) > 0);
 
   return eta.renderString(input.template, {
     findings: input.findings,

@@ -678,7 +678,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
   const effectiveRoute = input.route ?? envelope.route;
   const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
-  const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
+  // A round that carried systemic problems without findings has all-zero counts but is NOT clean —
+  // flag it so the trajectory chip reads "systemic", never "clean".
+  const hasSystemic = (findings.systemic_problems?.length ?? 0) > 0;
+  const rounds = isRound
+    ? [...priorRounds, { ...currentCounts, ...(hasSystemic ? { systemic: true } : {}) }]
+    : priorRounds;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,

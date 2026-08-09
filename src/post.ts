@@ -10,6 +10,7 @@ import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
   findingsPointer,
+  isFullReviewSticky,
   parseReviewComplete,
   parseReviewedRoute,
   parseReviewedSha,
@@ -521,10 +522,28 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const existingComplete = existingSticky !== null && parseReviewComplete(existingSticky.body);
   const wouldBuryCompleted = (incomplete: boolean): boolean => incomplete && existingComplete;
 
-  // "The sticky reflects a completed FULL review": its route marker says so, or (an older sticky
-  // that predates the marker) it carries round history — only a completed full review appends a round.
+  // "The sticky reflects a completed FULL review": the shared isFullReviewSticky predicate (route
+  // marker wins, round history as the pre-marker fallback), plus the review-complete marker for a
+  // sticky that predates both — a completed review with no route or round signal is a full review of
+  // the pre-marker era (a notice can never carry review-complete). This deliberately does NOT
+  // require review-complete: the announce placeholder strips it while preserving the route and round
+  // markers, and an empty mechanic must not bury the full review the placeholder still records.
   const priorIsFullReview = (body: string): boolean =>
-    parseReviewedRoute(body) === "full review" || parseRounds(body).length > 0;
+    isFullReviewSticky(body) || (parseReviewedRoute(body) === null && parseReviewComplete(body));
+
+  // An EMPTY CI-fix mechanic pass must not bury a completed FULL review either: it completes with
+  // genuinely empty findings ({verdict: "comment", findings: []}), so it is not "incomplete" and
+  // wouldBuryCompleted can't see it — yet replacing a full review's sticky with "No findings — clean
+  // review." is the same false clean pass class (issue #127). A mechanic WITH findings still
+  // supersedes (its fixes are the actionable output on a red CI). The route comes from the review
+  // job (passed through as --route; the envelope is the fallback for standalone callers), so the
+  // guard also fires when the result envelope was lost in transit.
+  const emptyMechanicWouldBury = (route: string | null | undefined, incomplete: boolean): boolean =>
+    route === "mechanic" &&
+    !incomplete &&
+    findings.findings.length === 0 &&
+    existingSticky !== null &&
+    priorIsFullReview(existingSticky.body);
 
   // The full-review convergence history carried in the sticky's marker (it survives the announce
   // placeholder via carryForwardMarkers). A completed FULL review appends this run's counts below; a
@@ -601,6 +620,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     // the guard below — can't bury a completed review, which this branch previously skipped.
     const envelopelessIncomplete = isIncompleteFindings(findings);
     if (wouldBuryCompleted(envelopelessIncomplete)) leaveInPlace();
+    // The route is passed through as --route, so an empty mechanic with a lost envelope still
+    // cannot bury a completed full review (issue #127).
+    if (emptyMechanicWouldBury(input.route, envelopelessIncomplete))
+      leaveInPlace(
+        "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n",
+      );
     const body = formatMarkdown(
       render({
         findings,
@@ -634,26 +659,13 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const thisIncomplete = envelope.incomplete === true || isIncompleteFindings(findings);
   if (wouldBuryCompleted(thisIncomplete)) leaveInPlace();
 
-  // An EMPTY CI-fix mechanic pass must not bury a completed FULL review either: it completes with
-  // genuinely empty findings ({verdict: "comment", findings: []}), so it is not "incomplete" and
-  // wouldBuryCompleted can't see it — yet replacing a full review's sticky with "No findings — clean
-  // review." is the same false clean pass class (issue #127). A mechanic WITH findings still
-  // supersedes (its fixes are the actionable output on a red CI). The route lives in the envelope
-  // (the review job stamps it; `post` is not passed --route in the workflow), so read the effective
-  // route the same way render does — `input.route` first, then the envelope.
+  // The route the review job stamped, read the same way render does — `input.route` first, then the
+  // envelope — so the workflow's --route passthrough and standalone callers both work.
   const effectiveRoute = input.route ?? envelope.route;
-  if (
-    effectiveRoute === "mechanic" &&
-    !thisIncomplete &&
-    findings.findings.length === 0 &&
-    existingSticky !== null &&
-    existingComplete &&
-    priorIsFullReview(existingSticky.body)
-  ) {
+  if (emptyMechanicWouldBury(effectiveRoute, thisIncomplete))
     leaveInPlace(
       "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n",
     );
-  }
 
   // Base64-encode the whole-document marker once, reused across sticky + review body; each inline
   // comment embeds only its own finding instead.

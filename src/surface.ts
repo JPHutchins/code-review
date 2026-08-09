@@ -78,6 +78,18 @@ export const parseReviewedSha = (body: string): string | null => {
 export const parseReviewedRoute = (body: string): string | null =>
   /<!-- reviewed-route: ([^>]*) -->/.exec(body)?.[1] || null;
 
+// The one "is this sticky's last completed review a FULL review" predicate, shared by post's
+// empty-mechanic guard and seed-draft's route-aware seed-chain skip so the two can't drift. The
+// route marker wins: a mechanic sticky carries a prior full review's round history forward, so
+// round history alone can't distinguish it. Round history is the fallback for pre-route-marker
+// stickies (only a completed full review appends a round). With no signal at all the review is not
+// classified as full — a pre-rounds, pre-route full review is indistinguishable from a mechanic of
+// the same era, and callers with more context (post's review-complete marker) add their own fallback.
+export const isFullReviewSticky = (body: string): boolean => {
+  const route = parseReviewedRoute(body);
+  return route === "full review" || (route !== "mechanic" && parseRounds(body).length > 0);
+};
+
 // A POSITIVE marker: present only in a sticky the commenter wrote for a COMPLETED review. It is
 // absent from an incomplete notice AND from an in-progress placeholder (which carries forward a prior
 // review's reviewed-sha yet is not itself a completed review) — so a precedence check can tell those

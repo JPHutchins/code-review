@@ -4,6 +4,7 @@ import {
   parseReviewedSha,
   parseReviewedRoute,
   parseReviewComplete,
+  isFullReviewSticky,
   findingsPointer,
   parseRounds,
   roundsMarker,
@@ -99,6 +100,26 @@ describe("parseReviewedRoute", () => {
   it("returns null when the body carries no route marker (a notice, or an older sticky)", () => {
     expect(parseReviewedRoute("<!-- code-review -->\nplain")).toBeNull();
     expect(parseReviewedRoute("<!-- reviewed-route: -->\nempty")).toBeNull();
+  });
+});
+
+describe("isFullReviewSticky — the shared full-review predicate (issue #127)", () => {
+  const oneRound = roundsMarker([{ critical: 0, major: 1, minor: 0, nit: 0 }]);
+
+  it("route marker 'full review' wins, even with no round history", () => {
+    expect(isFullReviewSticky("<!-- reviewed-route: full review -->")).toBe(true);
+  });
+
+  it("route marker 'mechanic' is NEVER a full review — even when it carries a full review's round history forward", () => {
+    expect(isFullReviewSticky(`<!-- reviewed-route: mechanic -->\n${oneRound}`)).toBe(false);
+  });
+
+  it("round history is the pre-route-marker fallback — only a completed full review appends a round", () => {
+    expect(isFullReviewSticky(oneRound)).toBe(true);
+  });
+
+  it("no signal at all is not a full review (a notice, an in-progress placeholder, or a pre-marker mechanic)", () => {
+    expect(isFullReviewSticky("<!-- code-review -->\nplain")).toBe(false);
   });
 });
 

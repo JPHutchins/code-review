@@ -39,7 +39,7 @@ import {
   isIncompleteFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
-import { parseFindingsMarker, parseReviewedRoute, parseReviewedSha } from "./surface.js";
+import { parseFindingsMarker, parseReviewedSha, isFullReviewSticky } from "./surface.js";
 import {
   buildNoticeEnvelope,
   buildUnknownNoticeEnvelope,
@@ -553,7 +553,8 @@ const budgetHookCmd = defineCommand({
             : DEFAULT_RESERVE.flatMs,
         },
         draftPath,
-        mainDraftWritten: mainHasWrittenDraft(readFileOrNull(draftPath)),
+        // Lazy: the spawn gate is the only consumer, and the hook fires on every tool event.
+        mainDraftWritten: (): boolean => mainHasWrittenDraft(readFileOrNull(draftPath)),
       });
       // Only the main agent writes the draft (single-writer), so a subagent batch never introduces a
       // new valid state to preserve — snapshot on the main agent's PostToolBatch only.
@@ -858,12 +859,15 @@ const seedDraftCmd = defineCommand({
                 : schemaPathFor(kind, args["schema-version"]);
               if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
               // Skip a prior that never completed (verdict "error" + no findings — the notice
-              // signature, isIncompleteFindings) and a CI-fix mechanic pass (route-aware seed
-              // chain): neither is "the previous review" an incremental re-review should build on.
+              // signature, isIncompleteFindings) and a prior that is not a completed FULL review
+              // (route-aware seed chain): a CI-fix mechanic pass — modern (route marker) or
+              // pre-marker (no round history) — must not sit in the seed chain as if it were the
+              // previous review. The shared isFullReviewSticky predicate keeps seed-draft and post's
+              // empty-mechanic guard in agreement (issue #127).
               const resolution = resolveRegistry("findings", priorFindings);
               if (resolution.kind !== "ok") return false;
               if (isIncompleteFindings(resolution.value)) return false;
-              if (parseReviewedRoute(priorBody ?? "") === "mechanic") return false;
+              if (!isFullReviewSticky(priorBody ?? "")) return false;
               writeFileSync(outPath, SEED_SENTINEL);
               writeFileSync(
                 priorContextPath(outPath),

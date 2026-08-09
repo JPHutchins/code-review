@@ -174,30 +174,35 @@ export const singleWriterMessage = (draftPath: string): string =>
 export const SEED_SENTINEL =
   "code-review seed sentinel — not a review; replace this file with your findings review.";
 
+// A normalized compare: a trailing newline, CRLF, or leading BOM added by any tool that touches the
+// file must not silently flip the "untouched seed" signal. Anything beyond that is a different
+// content — the agent's own writing.
 export const isSeedSentinel = (draftText: string | null): boolean =>
-  draftText !== null && draftText === SEED_SENTINEL;
+  typeof draftText === "string" && draftText.replace(/^\uFEFF/, "").trim() === SEED_SENTINEL;
 
-// The fan-out floor: the main agent has replaced the sentinel with its own first-pass draft.
+// The fan-out floor: the main agent has replaced the sentinel with real first-pass content — an
+// empty or missing draft is not a first pass.
 export const mainHasWrittenDraft = (draftText: string | null): boolean =>
-  draftText !== null && !isSeedSentinel(draftText);
+  draftText !== null && draftText.trim() !== "" && !isSeedSentinel(draftText);
+
+// One sidecar-name derivation for every postfix-before-extension convention, so last-valid and
+// prior-context can never drift apart.
+const sidecarPath = (draftPath: string, postfix: string): string => {
+  const ext = extname(draftPath);
+  return join(dirname(draftPath), `${basename(draftPath, ext)}${postfix}${ext}`);
+};
 
 // The prior review's decoded findings, delivered OUT-OF-BAND beside the sentinel draft: the agent
 // may read this as re-review context, but no recovery path ever validates it as the run's
 // deliverable (only $DRAFT, its last-valid snapshot, and the native envelope are read back).
-export const priorContextPath = (draftPath: string): string => {
-  const ext = extname(draftPath);
-  return join(dirname(draftPath), `${basename(draftPath, ext)}.prior${ext}`);
-};
+export const priorContextPath = (draftPath: string): string => sidecarPath(draftPath, ".prior");
 
 // Holds only ever a document that passed the extraction ladder: the budget hook snapshots the draft
 // here whenever it validates, so a wall-kill that leaves the live draft truncated still recovers the
 // last valid state instead of posting "did not complete". The postfix goes before the extension so
 // the snapshot keeps the draft's real type (findings-draft.last-valid.json). The sentinel never
 // validates, so it can never be checkpointed here.
-export const lastValidPath = (draftPath: string): string => {
-  const ext = extname(draftPath);
-  return join(dirname(draftPath), `${basename(draftPath, ext)}.last-valid${ext}`);
-};
+export const lastValidPath = (draftPath: string): string => sidecarPath(draftPath, ".last-valid");
 
 // Agent-facing: no internal refs.
 export const spawnFloorMessage = (draftPath: string): string =>
@@ -219,7 +224,10 @@ export interface BudgetParams {
   readonly wallMs: number | null;
   readonly reserve: ReserveParams;
   readonly draftPath: string;
-  readonly mainDraftWritten: boolean;
+  // A THUNK: the draft read is only needed on the main agent's PreToolUse spawn gate, the single
+  // consumer of this check — evaluating it on every hook event would read the whole draft file on
+  // every tool call (the hook fires with no matcher).
+  readonly mainDraftWritten: () => boolean;
 }
 
 const denyPreTool = (reason: string): Record<string, unknown> => ({
@@ -272,7 +280,7 @@ export const evaluateBudgetHook = (
         return denyPreTool(budgetMessage(inputs, phase, params.draftPath, isSubagent));
       // Gate the main agent's first fan-out on its own draft existing; then background every spawn.
       if (SPAWN_TOOLS.has(toolName)) {
-        if (!isSubagent && !params.mainDraftWritten)
+        if (!isSubagent && !params.mainDraftWritten())
           return denyPreTool(spawnFloorMessage(params.draftPath));
         return forceBackgroundSpawn(rec["tool_input"]);
       }

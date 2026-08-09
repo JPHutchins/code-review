@@ -1167,6 +1167,14 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     return p;
   };
 
+  // A realistic full-review sticky carries the route marker this pipeline stamps on completion; the
+  // shared isFullReviewSticky predicate (route marker, else round history) gates the seed chain.
+  const FULL_REVIEW_MARKER = "<!-- reviewed-route: full review -->";
+  const oneRoundMarker = `<!-- code-review:rounds;base64 ${Buffer.from(
+    JSON.stringify([{ critical: 0, major: 1, minor: 0, nit: 0 }]),
+    "utf-8",
+  ).toString("base64")} -->`;
+
   const assertSentinelOnly = (out: string): void => {
     // $DRAFT holds the NON-REVIEW sentinel — never a valid findings doc, never the prior review —
     // so no recovery path can validate the untouched seed as a review (issue #127).
@@ -1177,7 +1185,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
 
   it("delivers a prior review's embedded findings OUT-OF-BAND and reports 'prior-new' when no head SHA is given to compare", async () => {
     const prior = writePrior(
-      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}\nold sticky`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}\nold sticky`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1275,6 +1283,35 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(existsSync(priorContextPath(out))).toBe(false);
   });
 
+  it("skips a pre-route-marker mechanic sticky too — no route marker and no round history means the shared predicate says 'not a full review' (issue #127 round-2)", async () => {
+    const mechanicFindings = {
+      schema_version: "0.4.0",
+      summary: "Fix the failing test",
+      verdict: "comment",
+      findings: [],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(mechanicFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty-had-prior");
+    assertSentinelOnly(out);
+    expect(existsSync(priorContextPath(out))).toBe(false);
+  });
+
+  it("still seeds from a pre-route-marker FULL review via its carried round history — the shared predicate's fallback", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${oneRoundMarker}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    expect(existsSync(priorContextPath(out))).toBe(true);
+  });
+
   it("still seeds from a prior whose route marker names the full review", async () => {
     const prior = writePrior(
       `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
@@ -1318,7 +1355,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
   const shaB = "b".repeat(40);
   const priorWithSha = (sha: string): string =>
     writePrior(
-      `<!-- code-review -->\n<!-- reviewed-sha: ${sha} -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- reviewed-sha: ${sha} -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
 
   it("reports 'prior-same' when --head-sha matches the prior review's reviewed-sha", async () => {
@@ -1360,7 +1397,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
 
   it("reports 'prior-new' when the prior review has no reviewed-sha to compare, even with --head-sha", async () => {
     const prior = writePrior(
-      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli([

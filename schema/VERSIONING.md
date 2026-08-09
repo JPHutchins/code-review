@@ -70,6 +70,20 @@ ignored); a version outside the supported set degrades to a §5.5 sticky notice.
 | `v0.4.0` | superseded | Breaking: renames finding `body` → `description`; makes `reasoning` and `confidence` **required**; adds optional `recommendation` (prose fix); removes the free-text `suggestion` field (a `patch`, now `string \| null`, is the sole mechanical fix, projected into a suggestion by the commenter). |
 | `v0.5.0` | **current** | Widens the `verdict` enum with a pipeline-reserved `error` value: a run that produced no verdict about the diff (operational failure or security refusal) now carries `verdict: "error"` with `findings: []`, so its machine-readable blob is no longer byte-identical to a clean pass. Backwards-compatible (a `0.4` document is a valid `0.5` document); the CLI keeps resolving `0.4` via an identity upcast, so a sticky embedded by a `0.4` CLI still seeds a re-review. |
 
+### Surfaced findings document
+
+The commenter does not embed the agent's raw findings document in review comments — it embeds a
+**surfaced** copy (`<!-- code-review:findings-json -->`): the same fields, stamped with a surface
+version and the pipeline-computed `convergence` (`{score, threshold, converged}` — a literal
+boolean, so a decoding agent cannot re-derive the weights) and `round` (the count of completed
+full-review rounds) of the last completed full-review round. The agent never writes these fields
+(it cannot know the score — the weights and threshold are commenter-side), so the findings schema
+above describes only the agent-written document; the surfaced document has its own version axis:
+
+| Version | Status | Notes |
+|---|---|---|
+| `v0.6.0` | **current** | The surfaced document carries `convergence` + `round` — the deterministic stop signal an iterating author-agent decodes instead of the prose (issue #141). Both are omitted until at least one full-review round has completed, and both survive the in-progress banner (carried forward verbatim with the marker). `stripSurfaceFields` drops them when a surfaced blob feeds back into the agent channel (the re-review seed), restoring the draft version. |
+
 ### Price-map schema
 
 [`prices.schema.json`](prices.schema.json) is versioned separately from the findings schema (it

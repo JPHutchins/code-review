@@ -37,7 +37,7 @@ import {
   emptyFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
-import { parseFindingsMarker, parseReviewedSha } from "./surface.js";
+import { parseFindingsMarker, parseReviewedSha, stripSurfaceFields } from "./surface.js";
 import {
   buildNoticeEnvelope,
   buildUnknownNoticeEnvelope,
@@ -865,7 +865,11 @@ const seedDraftCmd = defineCommand({
         ? raw.body
         : null;
     })();
-    const priorFindings = priorBody === null ? null : parseFindingsMarker(priorBody);
+    // The surfaced blob (agent doc + pipeline-stamped convergence/round) is stripped back to the
+    // agent's own document before seeding — the agent must only ever see its own fields, and only
+    // draft versions validate against the registry.
+    const priorFindings =
+      priorBody === null ? null : stripSurfaceFields(parseFindingsMarker(priorBody));
 
     // Validate + write WITHOUT the process-exiting require* helpers: any failure (bad
     // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the

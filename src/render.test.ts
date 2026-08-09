@@ -187,7 +187,7 @@ describe("render", () => {
       expect(result).not.toContain("Reviewing agents: fetch");
     });
 
-    it("round-trips the exact findings object through the embedded base64 marker", () => {
+    it("embeds the SURFACED findings document — the agent's fields plus the 0.6.0 surface version (issue #141)", () => {
       const findings = mkFindings([
         mkFinding({ severity: "critical", title: "Round-trip me", description: "detail here" }),
       ]);
@@ -197,7 +197,33 @@ describe("render", () => {
       const decoded: unknown = JSON.parse(
         Buffer.from(match?.[1] ?? "", "base64").toString("utf-8"),
       );
-      expect(decoded).toEqual(findings);
+      // No round history is supplied, so the surfaced doc carries no convergence — only the stamp.
+      expect(decoded).toEqual({ ...findings, schema_version: "0.6.0" });
+    });
+
+    it("embeds the convergence stop signal (score/threshold/converged + round) when round history is supplied (#141)", () => {
+      const findings = mkFindings([mkFinding({ severity: "minor" })]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        rounds: [{ critical: 0, major: 0, minor: 1, nit: 0 }],
+      });
+      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
+      expect(match).not.toBeNull();
+      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
+        readonly schema_version: string;
+        readonly round?: number;
+        readonly convergence?: {
+          readonly score: number;
+          readonly threshold: number;
+          readonly converged: boolean;
+        };
+      };
+      expect(decoded.schema_version).toBe("0.6.0");
+      expect(decoded.round).toBe(1);
+      expect(decoded.convergence).toEqual({ score: 1, threshold: 1, converged: true });
     });
 
     it("falls back to the jsonUrl link marker when the embedded payload is too large", () => {

@@ -10,8 +10,12 @@ import {
   carryForwardMarkers,
   convergenceScore,
   convergenceSummary,
+  surfaceFindings,
+  stripSurfaceFields,
+  SURFACE_SCHEMA_VERSION,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
+import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 import type { Findings } from "./schema.js";
 import type { SeverityCounts } from "./types.js";
 
@@ -230,5 +234,66 @@ describe("convergence score — issue #133", () => {
     expect(convergenceSummary(counts(0, 0, 1, 0), 1.04)).toBe(
       "**Convergence** 🏁 1 ≤ 1.04 — converged",
     );
+  });
+});
+
+describe("surface findings document — issue #141 (the stop signal in the blob agents read)", () => {
+  const counts = (critical: number, major: number, minor: number, nit: number): SeverityCounts => ({
+    critical,
+    major,
+    minor,
+    nit,
+  });
+
+  it("stamps the 0.6.0 surface version on every surfaced document, keeping the agent's fields verbatim", () => {
+    const doc = surfaceFindings(findings, []);
+    expect(doc.schema_version).toBe(SURFACE_SCHEMA_VERSION);
+    expect(doc).toEqual({ ...findings, schema_version: SURFACE_SCHEMA_VERSION });
+  });
+
+  it("adds round + convergence from the last completed round — converged as a literal boolean", () => {
+    const doc = surfaceFindings(findings, [counts(0, 1, 0, 0), counts(0, 0, 0, 50)]);
+    expect(doc.round).toBe(2);
+    expect(doc.convergence).toEqual({ score: 0, threshold: 1, converged: true });
+  });
+
+  it("omits convergence and round until at least one round has completed", () => {
+    const doc = surfaceFindings(findings, []);
+    expect(doc.convergence).toBeUndefined();
+    expect(doc.round).toBeUndefined();
+  });
+
+  it("reports an iterating round with its exact score and the effective threshold", () => {
+    const doc = surfaceFindings(findings, [counts(0, 1, 0, 0)], 3);
+    expect(doc.convergence).toEqual({ score: 2, threshold: 3, converged: true });
+    expect(surfaceFindings(findings, [counts(1, 0, 0, 0)]).convergence).toEqual({
+      score: 4,
+      threshold: 1,
+      converged: false,
+    });
+  });
+
+  it("the findings-json marker round-trips the surfaced document, convergence included", () => {
+    const doc = surfaceFindings(findings, [counts(0, 0, 1, 0)]);
+    const body = `sticky prose\n${findingsPointer(doc, undefined)}\nmore prose`;
+    expect(parseFindingsMarker(body)).toEqual(doc);
+  });
+
+  it("stripSurfaceFields drops the surface fields and restores the draft version on a 0.6.0 doc", () => {
+    const surfaced = surfaceFindings(findings, [counts(0, 0, 1, 0)]);
+    expect(stripSurfaceFields(surfaced)).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+    });
+  });
+
+  it("stripSurfaceFields leaves a pre-surface blob untouched (draft version, no surface fields)", () => {
+    expect(stripSurfaceFields(findings)).toEqual(findings);
+  });
+
+  it("stripSurfaceFields passes non-objects through for downstream validation to reject", () => {
+    expect(stripSurfaceFields("junk")).toBe("junk");
+    expect(stripSurfaceFields([1, 2])).toEqual([1, 2]);
+    expect(stripSurfaceFields(null)).toBeNull();
   });
 });

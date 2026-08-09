@@ -14,6 +14,7 @@ import {
   parseReviewedSha,
   parseRounds,
   reviewBodyPointer,
+  surfaceFindings,
 } from "./surface.js";
 import {
   ResultEnvelopeCodec,
@@ -627,10 +628,6 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const thisIncomplete = envelope.incomplete === true || isIncompleteFindings(findings);
   if (wouldBuryCompleted(thisIncomplete)) leaveInPlace();
 
-  // Base64-encode the whole-document marker once, reused across sticky + review body; each inline
-  // comment embeds only its own finding instead.
-  const findingsMarker = findingsPointer(findings, input.jsonUrl);
-
   const {
     comments: rawComments,
     strays,
@@ -662,12 +659,25 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // stamps it; `post` is not passed --route in the workflow), so read the effective route the same way
   // render does — `input.route` first, then the envelope — or the feature never grows a round in
   // production. A mechanic pass or any incomplete/failed run carries the trajectory forward unchanged
-  // (it is a CI fix or a non-review, not a round). A same-head CI retry simply appends again — an
-  // identical chip reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe
-  // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
+  // (it is a CI fix or a non-review, not a round). The verdict guard (render's isFullReviewRound
+  // applies it to the badge) also gates the append here, so an out-of-contract "error" verdict that
+  // somehow carries findings never counts as a round: the trajectory, the badge, and the blob's
+  // convergence stay one decision. A same-head CI retry simply appends again — an identical chip
+  // reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe because a
+  // mechanic stamps a new head without adding a round, so the last round need not be its head.
   const effectiveRoute = input.route ?? envelope.route;
-  const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
+  const isRound =
+    isConvergenceRound(effectiveRoute, thisIncomplete) && findings.verdict !== "error";
   const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
+
+  // Base64-encode the SURFACED whole-document marker once (the agent's doc + the pipeline-stamped
+  // convergence/round stop signal), reused across sticky + review body; each inline comment embeds
+  // only its own finding instead. Computed here so the blob always describes the same round state
+  // the trajectory and badge render.
+  const findingsMarker = findingsPointer(
+    surfaceFindings(findings, rounds, input.convergenceThreshold),
+    input.jsonUrl,
+  );
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,

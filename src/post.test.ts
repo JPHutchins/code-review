@@ -2763,4 +2763,95 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "full review", headSha: sha }), api);
     expect(patchedBody(calls())).toContain("**Round 3**");
   });
+
+  interface DecodedBlob {
+    readonly schema_version: string;
+    readonly round?: number;
+    readonly convergence?: {
+      readonly score: number;
+      readonly threshold: number;
+      readonly converged: boolean;
+    };
+  }
+
+  // The surfaced findings blob embedded in whichever sticky write this run made (patch or post).
+  const decodedBlob = (calls: readonly RecordedCall[]): DecodedBlob => {
+    const sticky = calls.find(
+      (c) =>
+        (c.args[0] === "repos/owner/repo/issues/comments/999" ||
+          c.args[0] === "repos/owner/repo/issues/42/comments") &&
+        c.stdin !== undefined,
+    );
+    const body = (JSON.parse(sticky?.stdin ?? "{}") as CommentBody).body;
+    const b64 = /code-review:findings-json;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    if (b64 === undefined) throw new Error("no embedded findings marker in the sticky");
+    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8")) as DecodedBlob;
+  };
+
+  it("a full review's blob carries round + convergence from the round just appended (issue #141)", async () => {
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    await post(mkInput({ route: "full review" }), api);
+    const blob = decodedBlob(calls());
+    expect(blob.schema_version).toBe("0.6.0");
+    expect(blob.round).toBe(2);
+    // The default fixture findings are one minor → score 1 at the default threshold 1 → converged.
+    expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+  });
+
+  it("a mechanic pass carries the last completed round's convergence forward in its blob (issue #141 item 3)", async () => {
+    // The prior round is {major: 1} → score 2 > threshold 1 → iterating; a mechanic is not a round.
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    await post(mkInput({ route: "mechanic" }), api);
+    const blob = decodedBlob(calls());
+    expect(blob.round).toBe(1);
+    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+  });
+
+  it("an incomplete full review carries the prior round's convergence forward too (issue #141 item 3)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({ schema_version: "0.4.0", summary: "s", verdict: "error", findings: [] }),
+    );
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, route: "full review" }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    await post(mkInput({ route: "full review" }), api);
+    const blob = decodedBlob(calls());
+    expect(blob.round).toBe(1);
+    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+  });
+
+  it("a first-run mechanic pass (no prior round) embeds no convergence — there is no stop signal yet", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: "",
+      },
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+    await post(mkInput({ route: "mechanic" }), api);
+    const blob = decodedBlob(calls());
+    expect(blob.schema_version).toBe("0.6.0");
+    expect(blob.convergence).toBeUndefined();
+    expect(blob.round).toBeUndefined();
+  });
 });

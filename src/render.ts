@@ -13,6 +13,7 @@ import {
   roundsMarker,
   roundsSummary,
   convergenceSummary,
+  surfaceFindings,
 } from "./surface.js";
 import type { PatchProjection } from "./surface.js";
 
@@ -109,7 +110,12 @@ export const render = (input: RenderInput): string => {
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
-    findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
+    findingsPointer:
+      input.findingsPointer ??
+      findingsPointer(
+        surfaceFindings(input.findings, rounds, input.convergenceThreshold),
+        input.jsonUrl,
+      ),
     roundsMarker: roundsMarker(rounds),
     roundsSummary: roundsSummary(rounds),
     reviewUrl: input.reviewUrl ?? null,

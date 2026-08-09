@@ -1166,6 +1166,34 @@ describe("cli — seed-draft (issues #52, #53: a valid $DRAFT from turn 0)", () 
     expect(statSync(out).mtimeMs).toBeLessThanOrEqual(statSync(`${out}.seed`).mtimeMs);
   });
 
+  it("seeds from a SURFACED 0.6.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
+    // The sticky's embedded marker is the surfaced document: the agent's fields plus the
+    // pipeline-stamped stop signal. Only the agent's own fields may reach $DRAFT.
+    const surfaced = {
+      ...priorFindings,
+      schema_version: "0.6.0",
+      round: 2,
+      convergence: { score: 0, threshold: 1, converged: true },
+    };
+    const prior = writePrior(findingsPointer(surfaced as unknown as Findings, undefined));
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const seeded = JSON.parse(readFileSync(out, "utf-8")) as {
+      readonly schema_version: string;
+      readonly convergence?: unknown;
+      readonly round?: unknown;
+      readonly findings: readonly unknown[];
+    };
+    expect(seeded.schema_version).toBe("0.5.0");
+    expect(seeded.convergence).toBeUndefined();
+    expect(seeded.round).toBeUndefined();
+    expect(seeded.findings).toHaveLength(1);
+    const v = await runCli(["validate", out]);
+    expect(v.stdout).toContain("valid");
+  });
+
   it("reports 'empty-had-prior' when a prior review comment exists but carries no decodable findings marker", async () => {
     const prior = writePrior("<!-- code-review -->\njust prose, no findings marker");
     const out = join(tmpDir, "draft.json");

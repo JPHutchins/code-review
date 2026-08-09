@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import type { Validation } from "io-ts";
 import { render } from "../src/render.js";
 import { buildInlineComments } from "../src/inline.js";
-import { findingsPointer, reviewBodyPointer } from "../src/surface.js";
+import { findingsPointer, reviewBodyPointer, surfaceFindings } from "../src/surface.js";
 import { formatUtc } from "../src/format.js";
 import {
   FindingsCodec,
@@ -92,6 +92,10 @@ const sticky = render({
   postedAt: formatUtc(new Date()),
 });
 
-const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined, findingsPointer(findings, undefined));
+const reviewBody = reviewBodyPointer(
+  REVIEWED_SHA,
+  undefined,
+  findingsPointer(surfaceFindings(findings, []), undefined),
+);
 
 process.stdout.write(buildPreviewDoc(sticky, reviewBody, comments));

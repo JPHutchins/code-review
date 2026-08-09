@@ -2,6 +2,7 @@
 // must agree on: severity→emoji, the machine-readable findings-json marker, and patch→suggestion
 // projection. Pure.
 
+import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 import type { Finding, Findings } from "./schema.js";
 import type { SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
@@ -167,6 +168,63 @@ export const convergenceSummary = (
   return score <= threshold
     ? `**Convergence** 🏁 ${String(score)} ≤ ${String(threshold)} — converged`
     : `**Convergence** 🔄 ${String(score)} > ${String(threshold)} — iterating`;
+};
+
+// The surfaced findings document — what the sticky/review-body findings-json marker actually embeds:
+// the agent's validated findings doc, stamped with the surface version plus the pipeline-computed
+// stop signal for an author-agent that decodes the JSON: `convergence` (score / threshold / converged
+// as a literal boolean, so the agent cannot get the weights wrong) and `round`, both describing the
+// LAST completed full-review round. The agent never writes these fields (it cannot know the score —
+// the weights are commenter-side), so the draft schema does not carry them; `stripSurfaceFields`
+// drops them when a surfaced doc feeds back into the agent channel (the re-review seed).
+export const SURFACE_SCHEMA_VERSION = "0.6.0";
+
+export interface ConvergenceSignal {
+  readonly score: number;
+  readonly threshold: number;
+  readonly converged: boolean;
+}
+
+export type SurfaceFindings = Findings & {
+  readonly convergence?: ConvergenceSignal;
+  readonly round?: number;
+};
+
+// `round` is the count of completed full-review rounds (the rounds-marker array length after this
+// run's possible append) and `convergence` derives from the LAST round's counts, so the blob's stop
+// signal, the sticky's badge, and the trajectory can never disagree. Both are omitted until at least
+// one round has completed — a first-run mechanic pass or notice has no stop signal to report.
+export const surfaceFindings = (
+  findings: Findings,
+  rounds: readonly SeverityCounts[],
+  threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
+): SurfaceFindings => {
+  const last = rounds[rounds.length - 1];
+  if (last === undefined) return { ...findings, schema_version: SURFACE_SCHEMA_VERSION };
+  const score = convergenceScore(last);
+  return {
+    ...findings,
+    schema_version: SURFACE_SCHEMA_VERSION,
+    round: rounds.length,
+    convergence: { score, threshold, converged: score <= threshold },
+  };
+};
+
+// The inverse for the agent channel: the re-review seed decodes the sticky's surfaced blob, and the
+// agent must only ever see its own document. Drops the pipeline-stamped fields, and restores the
+// draft version when the doc declares the surface version (the registry accepts only draft
+// versions), so the seeded draft still validates. A pre-surface blob (a draft version, no surface
+// fields) passes through untouched; a non-object stays as-is and fails schema validation downstream.
+export const stripSurfaceFields = (doc: unknown): unknown => {
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return doc;
+  const rest = Object.fromEntries(
+    Object.entries(doc as Record<string, unknown>).filter(
+      ([key]) => key !== "convergence" && key !== "round",
+    ),
+  );
+  return rest["schema_version"] === SURFACE_SCHEMA_VERSION
+    ? { ...rest, schema_version: DEFAULT_SCHEMA_VERSION }
+    : rest;
 };
 
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must

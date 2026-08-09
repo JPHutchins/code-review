@@ -283,11 +283,18 @@ export const signalForRound = (
 export const surfaceFindings = (
   findings: Findings,
   signal: SurfaceSignal | null,
-): SurfaceFindings => ({
-  ...findings,
-  schema_version: SURFACE_SCHEMA_VERSION,
-  ...(signal === null ? {} : signal),
-});
+): SurfaceFindings => {
+  // A crafted/corrupt draft carrying round/convergence must not survive the stamp: parseSurfaceSignal
+  // gates on the surface version, so such a doc would otherwise be read back as a pipeline signal.
+  const agentDoc = Object.fromEntries(
+    Object.entries(findings).filter(([key]) => key !== "round" && key !== "convergence"),
+  );
+  return {
+    ...(agentDoc as Findings),
+    schema_version: SURFACE_SCHEMA_VERSION,
+    ...(signal === null ? {} : signal),
+  };
+};
 
 // The compact signal marker: the stop signal on its own, self-describing (it declares the surface
 // version, so parseSurfaceSignal's version gate applies to it too). Embedded when the whole-doc

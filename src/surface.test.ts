@@ -423,6 +423,20 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     expect(doc.round).toBeUndefined();
   });
 
+  it("drops a crafted draft's OWN round/convergence keys — only the pipeline signal may survive the stamp (issue #141 review r6)", () => {
+    // A corrupt/crafted doc declaring 0.7.0 with round/convergence keys must not be read back as a
+    // pipeline signal; surfaceFindings strips any pre-existing keys before stamping its own.
+    const crafted = {
+      ...findings,
+      schema_version: "0.7.0",
+      round: 99,
+      convergence: { score: 0, threshold: 1, converged: true },
+    };
+    const doc = surfaceFindings(crafted, signal(2, counts(0, 0, 1, 0)));
+    expect(doc.round).toBe(2);
+    expect(doc.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+  });
+
   it("convergenceSignal computes score/threshold/converged from one round's counts", () => {
     expect(convergenceSignal(counts(1, 0, 0, 0))).toEqual({
       score: 4,

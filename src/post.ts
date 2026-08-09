@@ -9,6 +9,7 @@ import { render, computeSeverityCounts, isConvergenceRound } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
+  findingsMarkerForm,
   findingsPointer,
   parseReviewComplete,
   parseReviewedSha,
@@ -630,6 +631,16 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // Base64-encode the whole-document marker once, reused across sticky + review body; each inline
   // comment embeds only its own finding instead.
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
+
+  // Only the embedded base64 form is decodable back by a re-review seed (parseFindingsMarker), so a
+  // degraded marker would silently drop the machine channel — surface the degradation in the run log
+  // rather than letting it vanish.
+  const markerForm = findingsMarkerForm(findings, input.jsonUrl);
+  if (markerForm !== "embedded") {
+    process.stderr.write(
+      `Warning: the findings-json marker exceeds the embed limit — degraded to the ${markerForm === "link" ? "jsonUrl-link" : "omitted"} form; the machine-readable channel is not embedded in the posted surfaces\n`,
+    );
+  }
 
   const {
     comments: rawComments,

@@ -55,6 +55,22 @@ export const findingsPointer = (
   limit = EMBED_LIMIT,
 ): string => encodeMarker(findings, jsonUrl, limit);
 
+// The form findingsPointer will emit for a whole-document marker, exposed so the IO-bound callers
+// (post) can warn when the embedded machine channel degrades instead of failing silently — only the
+// base64 form is decodable back (parseFindingsMarker), so "link"/"omitted" silently drop the seed
+// for a re-review.
+export type FindingsMarkerForm = "embedded" | "link" | "omitted";
+
+export const findingsMarkerForm = (
+  findings: Findings,
+  jsonUrl: string | undefined,
+  limit = EMBED_LIMIT,
+): FindingsMarkerForm => {
+  const b64 = Buffer.from(JSON.stringify(findings), "utf-8").toString("base64");
+  if (b64.length <= limit) return "embedded";
+  return jsonUrl ? "link" : "omitted";
+};
+
 // Per-finding counterpart: an inline comment embeds only its own finding, so the sticky and review
 // body stay the whole-document SSOT.
 export const findingPointer = (

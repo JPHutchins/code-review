@@ -333,6 +333,56 @@ describe("post — systemic problems (issue #134)", () => {
     expect(decoded.systemic_problems).toHaveLength(1);
     expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
   });
+
+  it("warns to the run log when the whole-document marker degrades past the embed limit (issue #134 review)", async () => {
+    const huge: Findings = {
+      ...mkFindings([]),
+      findings: Array.from({ length: 500 }, (_, i) =>
+        mkFinding({ title: `Finding ${String(i)}`, description: "x".repeat(200) }),
+      ),
+    };
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(huge));
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+        response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    expect(stickyCall).toBeDefined();
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    // The marker is omitted entirely (no --json-url in this invocation) — the degradation must not
+    // pass silently.
+    expect(body.body).not.toContain("code-review:findings-json");
+    expect(stderrSpy.mock.calls.some((c) => String(c[0]).includes("exceeds the embed limit"))).toBe(
+      true,
+    );
+
+    stderrSpy.mockRestore();
+  });
 });
 
 describe("post — inline review", () => {

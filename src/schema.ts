@@ -38,6 +38,13 @@ const SchemaVersion = t.refinement(
   "SchemaVersion",
 );
 
+// The stable rule identifier pair, shared by findings and systemic problems so the two shapes can
+// never diverge on it.
+const FindingRuleCodec = t.partial({
+  code: t.string,
+  code_url: t.string,
+});
+
 const FindingShape = t.intersection([
   t.type({
     path: t.string,
@@ -49,10 +56,9 @@ const FindingShape = t.intersection([
     reasoning: t.string,
     confidence: Confidence,
   }),
+  FindingRuleCodec,
   t.partial({
     side: SideCodec,
-    code: t.string,
-    code_url: t.string,
     recommendation: t.string,
     patch: t.string,
   }),
@@ -67,17 +73,15 @@ const EndGeStart = t.refinement(
 export const FindingCodec = t.exact(EndGeStart);
 
 // Cross-cutting observations that tie findings together, with no required line anchor — mirrors
-// findings.schema.json's systemic_problems items exactly (a finding-style `code`/`code_url` pair for
-// rule-based dedup, plus the related finding codes and spanned paths).
+// findings.schema.json's systemic_problems items exactly, reusing the shared rule-identifier pair.
 const SystemicProblemShape = t.intersection([
   t.type({
     title: t.string,
     description: t.string,
   }),
+  FindingRuleCodec,
   t.partial({
     severity: SeverityCodec,
-    code: t.string,
-    code_url: t.string,
     finding_codes: t.array(t.string),
     paths: t.array(t.string),
   }),

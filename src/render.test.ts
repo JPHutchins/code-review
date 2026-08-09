@@ -486,13 +486,14 @@ describe("render", () => {
       expect(result).not.toContain("Systemic problems");
     });
 
-    it("escapes pipes in the title and backticks in paths (render safety, mirroring strays)", () => {
+    it("escapes pipes in the title and backticks in paths and finding_codes (render safety, mirroring strays)", () => {
       const findings = systemicFindings({
         systemic_problems: [
           {
             title: "Pipe | in title",
             description: "d",
             paths: ["src/bad`path`.ts"],
+            finding_codes: ["widened`type"],
           },
         ],
       });
@@ -500,6 +501,20 @@ describe("render", () => {
       expect(result).toContain("Pipe \\| in title");
       expect(result).toContain("src/bad-path-.ts");
       expect(result).not.toContain("bad`path`");
+      // A backtick inside a finding_code must not break out of its inline code span.
+      expect(result).toContain("widened-type");
+      expect(result).not.toContain("widened`type");
+    });
+
+    it("never claims 'clean review' beside systemic problems — a systemic-only review is not clean", () => {
+      const findings = mkFindings([], {
+        systemic_problems: [
+          { title: "Pattern only", description: "Spans the change without a single anchor." },
+        ],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("### 🔗 Systemic problems");
+      expect(result).not.toContain("clean review");
     });
   });
 

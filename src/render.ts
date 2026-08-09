@@ -32,10 +32,14 @@ const sanitizeFinding = (f: Finding): StrayView => ({
 });
 
 // The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
+// finding_codes render inside backticks too, so they get the same backtick escaping as paths.
 const sanitizeSystemic = (s: SystemicProblem): SystemicProblem => ({
   ...s,
   title: escapePipes(s.title),
   ...(s.paths !== undefined ? { paths: s.paths.map(escapeCodeBackticks) } : {}),
+  ...(s.finding_codes !== undefined
+    ? { finding_codes: s.finding_codes.map(escapeCodeBackticks) }
+    : {}),
 });
 
 const emptySeverityCounts = (): Record<Severity, number> => ({

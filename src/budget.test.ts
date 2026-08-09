@@ -8,7 +8,9 @@ import {
   spawnFloorMessage,
   forceBackgroundSpawn,
   mainHasWrittenDraft,
-  seedMarkerPath,
+  isSeedSentinel,
+  SEED_SENTINEL,
+  priorContextPath,
   lastValidPath,
   isSubagentHookInput,
   evaluateBudgetHook,
@@ -261,7 +263,7 @@ describe("evaluateBudgetHook", () => {
     wallMs: null,
     reserve: { frac: 0.15, growth: 0, flatUsd: 0, flatMs: 0 },
     draftPath: draft,
-    mainDraftWritten: true,
+    mainDraftWritten: () => true,
     ...o,
   });
   const hard = params({ spentUsd: 0.95, budgetUsd: 1 });
@@ -424,12 +426,12 @@ describe("evaluateBudgetHook", () => {
     expect(out.hookSpecificOutput.updatedInput["run_in_background"]).toBe(true);
   });
   it("PreToolUse: denies the MAIN agent's spawn until its own draft exists (seed does not count)", () => {
-    const out = spawn(params({ ...ok, mainDraftWritten: false }));
+    const out = spawn(params({ ...ok, mainDraftWritten: () => false }));
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
     expect(out.hookSpecificOutput.permissionDecisionReason).toBe(spawnFloorMessage(draft));
   });
   it("PreToolUse: a SUBAGENT's spawn is not floor-gated — rewritten to background regardless", () => {
-    const out = spawn(params({ ...ok, mainDraftWritten: false }), { agent_id: "a1b2c3" });
+    const out = spawn(params({ ...ok, mainDraftWritten: () => false }), { agent_id: "a1b2c3" });
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(out.hookSpecificOutput.updatedInput?.["run_in_background"]).toBe(true);
   });
@@ -442,7 +444,7 @@ describe("evaluateBudgetHook", () => {
     expect(
       evaluateBudgetHook(
         { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/x" } },
-        params({ ...ok, mainDraftWritten: false }),
+        params({ ...ok, mainDraftWritten: () => false }),
       ),
     ).toEqual({});
   });
@@ -456,24 +458,45 @@ describe("evaluateBudgetHook", () => {
 
 describe("mainHasWrittenDraft (fan-out floor)", () => {
   it("false while the draft does not exist", () => {
-    expect(mainHasWrittenDraft(null, null)).toBe(false);
-    expect(mainHasWrittenDraft(null, 1000)).toBe(false);
+    expect(mainHasWrittenDraft(null)).toBe(false);
   });
-  it("true for any existing draft when no seed marker exists (no seeding ran)", () => {
-    expect(mainHasWrittenDraft(1000, null)).toBe(true);
+  it("false while the draft still holds the pre-seed sentinel — the seed does not count (issue #127)", () => {
+    expect(mainHasWrittenDraft(SEED_SENTINEL)).toBe(false);
+    // A tool-added trailing newline must not flip the signal either.
+    expect(mainHasWrittenDraft(`${SEED_SENTINEL}\n`)).toBe(false);
   });
-  it("only a draft modified AFTER the marker counts — the untouched seed does not", () => {
-    // seed-draft writes the draft first, then the marker, so an untouched seed's mtime is ≤ the
-    // marker's; any later agent write moves the draft's mtime past it.
-    expect(mainHasWrittenDraft(1000, 1000)).toBe(false);
-    expect(mainHasWrittenDraft(999, 1000)).toBe(false);
-    expect(mainHasWrittenDraft(1001, 1000)).toBe(true);
+  it("false for an EMPTY draft — an emptied draft is not a first pass (issue #127 round-2)", () => {
+    expect(mainHasWrittenDraft("")).toBe(false);
+    expect(mainHasWrittenDraft("   ")).toBe(false);
+  });
+  it("true once the draft holds real content — the agent replaced the sentinel", () => {
+    expect(mainHasWrittenDraft("{}")).toBe(true);
+    expect(mainHasWrittenDraft("not even json")).toBe(true);
   });
 });
 
-describe("seedMarkerPath", () => {
-  it("derives the sidecar beside the draft (the seed-draft ↔ budget-hook convention)", () => {
-    expect(seedMarkerPath("/work/findings-draft.json")).toBe("/work/findings-draft.json.seed");
+describe("isSeedSentinel", () => {
+  it("is true only for a normalized sentinel match (a missing draft is not the sentinel — inert)", () => {
+    expect(isSeedSentinel(SEED_SENTINEL)).toBe(true);
+    expect(isSeedSentinel(null)).toBe(false);
+    expect(isSeedSentinel(undefined as unknown as string | null)).toBe(false);
+    expect(isSeedSentinel("{}")).toBe(false);
+    expect(isSeedSentinel(`${SEED_SENTINEL} extra`)).toBe(false);
+  });
+  it("tolerates a trailing newline, CRLF, or leading BOM — byte-exactness would silently invert the signal", () => {
+    expect(isSeedSentinel(`${SEED_SENTINEL}\n`)).toBe(true);
+    expect(isSeedSentinel(`${SEED_SENTINEL}\r\n`)).toBe(true);
+    expect(isSeedSentinel(`\uFEFF${SEED_SENTINEL}`)).toBe(true);
+    expect(isSeedSentinel(` ${SEED_SENTINEL} `)).toBe(true);
+  });
+});
+
+describe("priorContextPath", () => {
+  it("delivers the prior-review context beside the draft, postfix before the real extension", () => {
+    expect(priorContextPath("/work/findings-draft.json")).toBe("/work/findings-draft.prior.json");
+  });
+  it("appends the postfix when the draft has no extension", () => {
+    expect(priorContextPath("/work/findings-draft")).toBe("/work/findings-draft.prior");
   });
 });
 

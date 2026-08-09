@@ -1,5 +1,8 @@
 <!-- code-review -->
 <!-- reviewed-sha: <%= it.reviewedSha %> -->
+<% if (!it.incomplete && it.route) { -%>
+<!-- reviewed-route: <%= it.route %> -->
+<% } -%>
 <% if (!it.incomplete) { -%>
 <!-- review-complete -->
 <% } -%>

@@ -2,7 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   parseFindingsMarker,
   parseReviewedSha,
+  parseReviewedRoute,
   parseReviewComplete,
+  parseCompletedAncestor,
+  COMPLETED_ANCESTOR_MARKER,
+  isFullReviewSticky,
   findingsPointer,
   parseRounds,
   roundsMarker,
@@ -89,6 +93,60 @@ describe("parseReviewedSha", () => {
   });
 });
 
+describe("parseReviewedRoute", () => {
+  it("reads the completed review's route marker", () => {
+    expect(parseReviewedRoute("<!-- reviewed-route: full review -->\nsticky")).toBe("full review");
+    expect(parseReviewedRoute("<!-- reviewed-route: mechanic -->\nsticky")).toBe("mechanic");
+  });
+
+  it("returns null when the body carries no route marker (a notice, or an older sticky)", () => {
+    expect(parseReviewedRoute("<!-- code-review -->\nplain")).toBeNull();
+    expect(parseReviewedRoute("<!-- reviewed-route: -->\nempty")).toBeNull();
+  });
+});
+
+describe("isFullReviewSticky — post's full-review predicate (issue #127)", () => {
+  const oneRound = roundsMarker([{ critical: 0, major: 1, minor: 0, nit: 0 }]);
+
+  it("route marker 'full review' wins, even with no round history", () => {
+    expect(isFullReviewSticky("<!-- reviewed-route: full review -->")).toBe(true);
+  });
+
+  it("route marker 'mechanic' is NEVER a full review — even when it carries a full review's round history forward", () => {
+    expect(isFullReviewSticky(`<!-- reviewed-route: mechanic -->\n${oneRound}`)).toBe(false);
+  });
+
+  it("round history is the pre-route-marker fallback — only a completed full review APPENDS a round (a mechanic can only carry one)", () => {
+    expect(isFullReviewSticky(oneRound)).toBe(true);
+  });
+
+  it("no signal at all is not a full review (a notice, an in-progress placeholder, or a pre-marker mechanic)", () => {
+    expect(isFullReviewSticky("<!-- code-review -->\nplain")).toBe(false);
+  });
+});
+
+describe("completed-ancestor marker — the placeholder's completed-review ancestry (issue #127)", () => {
+  it("parseCompletedAncestor is true only when the marker is present", () => {
+    expect(parseCompletedAncestor(COMPLETED_ANCESTOR_MARKER)).toBe(true);
+    expect(parseCompletedAncestor("<!-- code-review -->\nplain")).toBe(false);
+    // review-complete itself is NOT the ancestor marker — the two are distinct signals.
+    expect(parseCompletedAncestor("<!-- review-complete -->")).toBe(false);
+  });
+
+  it("carryForwardMarkers emits the ancestor marker when the replaced sticky was a completed review — and carries it onward through chained placeholders", () => {
+    const fromCompleted = carryForwardMarkers("<!-- code-review -->\n<!-- review-complete -->\nx");
+    expect(fromCompleted).toContain(COMPLETED_ANCESTOR_MARKER);
+    const fromPlaceholder = carryForwardMarkers(
+      `<!-- code-review -->\n${COMPLETED_ANCESTOR_MARKER}\nx`,
+    );
+    expect(fromPlaceholder).toContain(COMPLETED_ANCESTOR_MARKER);
+    // A notice's sticky never carries it.
+    expect(
+      carryForwardMarkers("<!-- code-review -->\n### ⚠️ Review did not complete"),
+    ).not.toContain(COMPLETED_ANCESTOR_MARKER);
+  });
+});
+
 describe("parseReviewComplete", () => {
   it("true only when the completed-review marker is present", () => {
     expect(parseReviewComplete("<!-- code-review -->\n<!-- review-complete -->\nreal review")).toBe(
@@ -143,6 +201,14 @@ describe("rounds trajectory — issue #125", () => {
     const body = `x\n${roundsMarker([counts(0, 0, 1, 0)])}\n<!-- reviewed-sha: ${"a".repeat(40)} -->`;
     expect(carryForwardMarkers(body)).toContain("code-review:rounds;base64");
     expect(carryForwardMarkers(body)).toContain("reviewed-sha:");
+  });
+
+  it("carryForwardMarkers preserves the reviewed-route marker — the seed chain's route-awareness survives the prose swap", () => {
+    const body =
+      "x\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json;base64 YQ== -->";
+    const carried = carryForwardMarkers(body);
+    expect(carried).toContain("<!-- reviewed-route: mechanic -->");
+    expect(carried).toContain("code-review:findings-json");
   });
 
   it("rejects rounds with negative, fractional, or unsafe-integer counts", () => {

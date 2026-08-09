@@ -2,6 +2,7 @@
 // must agree on: severity→emoji, the machine-readable findings-json marker, and patch→suggestion
 // projection. Pure.
 
+import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 import type { Finding, Findings } from "./schema.js";
 import type { SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
@@ -21,8 +22,10 @@ export const severityEmoji = (s: string): string => {
   }
 };
 
-// ~30KB of JSON in base64 — well under GitHub's 65536-char comment limit.
-const EMBED_LIMIT = 40000;
+// ~30KB of JSON in base64 — well under GitHub's 65536-char comment limit. The surfaced stop signal
+// (convergence + round) adds ~100 base64 chars, budgeted so a review that previously embedded as
+// base64 still does — the link fallback would lose both the re-review seed and the stop signal.
+const EMBED_LIMIT = 40200;
 
 // Travels with the marker on every surface so a reader who sees only one comment still knows to decode it.
 const AGENTS_STOP_DIRECTIVE =
@@ -186,12 +189,23 @@ const roundChip = (c: SeverityCounts): string => {
 // round number is always the true count; the trajectory shows only the most recent chips (with a
 // leading "…" when older ones are elided) so a long-running PR's line stays readable and bounded.
 const TRAJECTORY_CHIPS = 8;
-export const roundsSummary = (rounds: readonly SeverityCounts[]): string => {
-  if (rounds.length === 0) return "";
+export const roundsSummary = (
+  rounds: readonly SeverityCounts[],
+  count: number = rounds.length,
+): string => {
+  if (count === 0) return "";
   const chips = rounds.slice(-TRAJECTORY_CHIPS).map(roundChip);
+  // Every marker entry filtered (a corrupt history) still shows the round number the carried signal
+  // claims — the label survives even with no chips to render (issue #141 review r4).
   const trajectory =
-    rounds.length > TRAJECTORY_CHIPS ? `… → ${chips.join(" → ")}` : chips.join(" → ");
-  return `**Round ${String(rounds.length)}** · ${trajectory}`;
+    chips.length === 0
+      ? ""
+      : rounds.length > TRAJECTORY_CHIPS
+        ? `… → ${chips.join(" → ")}`
+        : chips.join(" → ");
+  return trajectory === ""
+    ? `**Round ${String(count)}**`
+    : `**Round ${String(count)}** · ${trajectory}`;
 };
 
 // The severity-weighted convergence score and its advisory badge. The score is a pure function of one
@@ -210,14 +224,170 @@ export const convergenceScore = (counts: SeverityCounts): number =>
 // is a checkered flag, NOT the verdict badge's ✅, so a reader (or the author-agent this steers) can't
 // skim the line as an approval. Score and threshold print exactly (no lossy rounding) so the shown
 // inequality can never contradict the computed comparison — `toFixed` could display "1 > 1.0" for 1 > 0.95.
+// The verdict derives from convergenceSignal — the same `score <= threshold` decision the surfaced
+// blob's literal `converged` uses — so the prose badge and the machine boolean can never disagree.
 export const convergenceSummary = (
   counts: SeverityCounts,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
 ): string => {
-  const score = convergenceScore(counts);
-  return score <= threshold
+  const { score, converged } = convergenceSignal(counts, threshold);
+  return converged
     ? `**Convergence** 🏁 ${String(score)} ≤ ${String(threshold)} — converged`
     : `**Convergence** 🔄 ${String(score)} > ${String(threshold)} — iterating`;
+};
+
+// The surfaced findings document — what the sticky/review-body findings-json marker actually embeds:
+// the agent's validated findings doc, stamped with the surface version plus the stop signal for an
+// author-agent that decodes the JSON (`converged` as a literal boolean, so the agent cannot get the
+// weights wrong). The agent never writes the signal (it cannot know the score — the weights are
+// commenter-side), so the draft schema does not carry it; `stripSurfaceFields` drops it when a
+// surfaced doc feeds back into the agent channel (the re-review seed). A null signal still stamps
+// the version, so the surface shape is always the marker's contract. The surfaced axis is DISTINCT
+// from the draft axis (DEFAULT_SCHEMA_VERSION is 0.6.0 after issue #134): 0.7.0 is the surfaced
+// shape so stripSurfaceFields can always tell a surfaced doc from a draft one.
+export const SURFACE_SCHEMA_VERSION = "0.7.0";
+
+export interface ConvergenceSignal {
+  readonly score: number;
+  readonly threshold: number;
+  readonly converged: boolean;
+}
+
+// The stop signal embedded in a surfaced doc: the round number + that round's score/threshold/
+// converged. Computed once when the round completes; every later post carries it VERBATIM, never
+// re-derived — re-deriving at a changed convergence_threshold would flip a prior round's `converged`.
+export interface SurfaceSignal {
+  readonly round: number;
+  readonly convergence: ConvergenceSignal;
+}
+
+export type SurfaceFindings = Findings & Partial<SurfaceSignal>;
+
+// The pure counts→signal computation, shared by post (a completing round) and render's fallback.
+export const convergenceSignal = (
+  counts: SeverityCounts,
+  threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
+): ConvergenceSignal => {
+  const score = convergenceScore(counts);
+  return { score, threshold, converged: score <= threshold };
+};
+
+// The full {round, convergence} construction, shared by post (a completing round) and render's
+// fallback (the round-1 / last-round cases) — one helper so every site builds the same shape.
+export const signalForRound = (
+  round: number,
+  counts: SeverityCounts,
+  threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
+): SurfaceSignal => ({ round, convergence: convergenceSignal(counts, threshold) });
+
+export const surfaceFindings = (
+  findings: Findings,
+  signal: SurfaceSignal | null,
+): SurfaceFindings => {
+  // A crafted/corrupt draft carrying round/convergence must not survive the stamp: parseSurfaceSignal
+  // gates on the surface version, so such a doc would otherwise be read back as a pipeline signal.
+  const agentDoc = Object.fromEntries(
+    Object.entries(findings).filter(([key]) => key !== "round" && key !== "convergence"),
+  );
+  return {
+    ...(agentDoc as Findings),
+    schema_version: SURFACE_SCHEMA_VERSION,
+    ...(signal === null ? {} : signal),
+  };
+};
+
+// The compact signal marker: the stop signal on its own, self-describing (it declares the surface
+// version, so parseSurfaceSignal's version gate applies to it too). Embedded when the whole-doc
+// payload falls to the link form, and appended by post to a signal-less blob (a notice) so a
+// completed round's `converged` survives that write for the next post to read back.
+export const signalMarker = (signal: SurfaceSignal): string =>
+  `<!-- code-review:signal;base64 ${Buffer.from(
+    JSON.stringify({ schema_version: SURFACE_SCHEMA_VERSION, ...signal }),
+    "utf-8",
+  ).toString("base64")} -->`;
+
+// The whole-document marker, surfaced — one helper owns the construction so the sticky, the review
+// body, and the standalone render can never disagree on the embedded shape. When the whole-doc
+// payload falls to the link form (or is dropped), the compact signal marker still embeds — an
+// oversized review's stop signal stays readable and can be carried forward by later posts.
+export const surfacedFindingsPointer = (
+  findings: Findings,
+  signal: SurfaceSignal | null,
+  jsonUrl: string | undefined,
+): string => {
+  const marker = findingsPointer(surfaceFindings(findings, signal), jsonUrl);
+  // Probe the full embedded-marker prefix, never a bare substring — a link-form jsonUrl could
+  // itself contain "findings-json;base64" (issue #141 review r4).
+  if (signal === null || marker.includes("<!-- code-review:findings-json;base64 ")) return marker;
+  return marker === "" ? signalMarker(signal) : `${marker}\n${signalMarker(signal)}`;
+};
+
+const SIGNAL_RE = /<!-- code-review:signal;base64 ([A-Za-z0-9+/=]+) -->/;
+
+// The stop signal embedded on its own when the whole-doc marker fell to the link form — the
+// counter-part of parseSurfaceSignal for a body carrying the compact marker.
+export const parseSignalMarker = (body: string): SurfaceSignal | null => {
+  const b64 = SIGNAL_RE.exec(body)?.[1];
+  if (b64 === undefined) return null;
+  return parseSurfaceSignal(decodeBase64Json(b64));
+};
+
+// Best-effort like parseRounds: the carried stop signal read back from a prior sticky's surfaced
+// blob, null on any malformed shape, a pre-surface blob, or a doc that does not declare a surfaced
+// version — so a draft or foreign document carrying round/convergence keys can never be treated as
+// the commenter's stop signal (the same version gate stripSurfaceFields applies to the seed
+// channel). A non-round post then carries nothing rather than embedding a corrupted signal.
+export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return null;
+  const o = doc as Record<string, unknown>;
+  const declared = o["schema_version"];
+  if (typeof declared !== "string" || !SURFACE_SCHEMA_VERSIONS.includes(declared)) return null;
+  const round = o["round"];
+  const convergence = o["convergence"];
+  if (typeof round !== "number" || !Number.isSafeInteger(round) || round < 1) return null;
+  if (typeof convergence !== "object" || convergence === null) return null;
+  const c = convergence as Record<string, unknown>;
+  // isFinite (not just typeof): JSON.parse("1e400") yields Infinity, which typeof says is a number
+  // but JSON.stringify coerces to null — a non-finite score would survive one hop and then silently
+  // drop the whole carried signal on the next.
+  if (
+    typeof c["score"] !== "number" ||
+    !Number.isFinite(c["score"]) ||
+    typeof c["threshold"] !== "number" ||
+    !Number.isFinite(c["threshold"]) ||
+    typeof c["converged"] !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    round,
+    convergence: { score: c["score"], threshold: c["threshold"], converged: c["converged"] },
+  };
+};
+
+// Every surfaced-document version this CLI can strip back to the agent document — grows with each
+// surface version emitted, so a sticky written by an older release still seeds. A dedicated list,
+// deliberately distinct from the draft-version registry axis: only these versions declare the
+// surface shape, so a future draft bump can never be mistaken for one. Derived from the emitted
+// version so the strip path can never silently stop recognizing what surfaceFindings stamps; a
+// future surface bump appends the superseded version(s) here alongside the new one.
+export const SURFACE_SCHEMA_VERSIONS: readonly string[] = [SURFACE_SCHEMA_VERSION];
+
+// The inverse for the agent channel: the re-review seed decodes the sticky's surfaced blob, and the
+// agent must only ever see its own document. Version-gated, not key-gated: a doc declaring a known
+// SURFACE version has its pipeline-stamped convergence/round dropped and its version restored to
+// the current draft default, so the seeded draft still validates; anything else (a draft version, an
+// unknown future version, a malformed version) passes through untouched and fails or passes schema
+// validation downstream on its own merits — never silently rewritten. A non-object stays as-is.
+export const stripSurfaceFields = (doc: unknown): unknown => {
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return doc;
+  const o = doc as Record<string, unknown>;
+  const declared = o["schema_version"];
+  if (typeof declared !== "string" || !SURFACE_SCHEMA_VERSIONS.includes(declared)) return doc;
+  const rest = Object.fromEntries(
+    Object.entries(o).filter(([key]) => key !== "convergence" && key !== "round"),
+  );
+  return { ...rest, schema_version: DEFAULT_SCHEMA_VERSION };
 };
 
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must
@@ -234,6 +404,7 @@ export const carryForwardMarkers = (body: string): string => {
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
   const reviewedRoute = ROUTE_RE.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
+  const signal = SIGNAL_RE.exec(body)?.[0];
   // The replaced sticky was a completed review — the placeholder must record that ancestry even
   // though review-complete itself is never carried (it would read as a finished review).
   const completedAncestor =
@@ -241,7 +412,7 @@ export const carryForwardMarkers = (body: string): string => {
       ? COMPLETED_ANCESTOR_MARKER
       : undefined;
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, rounds]
+  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, rounds, signal]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
 };

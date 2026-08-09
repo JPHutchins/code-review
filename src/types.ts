@@ -55,6 +55,10 @@ export interface RenderInput {
   // Omitted/empty ⇒ no trajectory line. The convergence BADGE is independent of this (it reads the
   // current run's counts under `convergenceRound`), so an empty history no longer implies no badge.
   readonly rounds?: readonly SeverityCounts[];
+  // The true completed-round count for the trajectory label, when it differs from `rounds.length`
+  // (post derives it from the carried signal, which survives corrupt rounds-marker entries that
+  // parseRounds filters). Omitted ⇒ the parsed history length.
+  readonly roundCount?: number;
   // The advisory convergence tolerance — the weighted-severity score at or below which the round
   // reads as "converged" (default 1: unlimited nits plus at most one minor). Omitted ⇒ the default.
   readonly convergenceThreshold?: number;

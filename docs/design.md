@@ -196,6 +196,15 @@ this doc.
   soft about *why* it was cancelled — `result == 'cancelled'` also fires for a manual cancel — and links
   the cancelled run itself, never a "latest" run it cannot name. The same guards as the failure notice
   keep it from clobbering the superseding run's live placeholder or a completed review.
+- **The stop signal lives in the data, not the prose.** The AGENTS directive on the findings marker
+  tells a decoding agent to ignore the prose — which would leave the convergence badge (prose-only)
+  invisible to exactly the iterating author-agent it exists for. So the surfaced findings document
+  (what the marker embeds) carries the pipeline-computed `convergence`/`round` of the last completed
+  full-review round itself: `converged` is a literal boolean the commenter computes, never something
+  an agent re-derives (the weights are free to change without breaking a decoder). The fields are
+  omitted until a round completes, and — because the in-progress banner and every non-round post carry
+  the embedded marker forward — the last completed round's stop signal survives a re-review in flight
+  (issue #141).
 
 `<!-- code-review -->` is the deliberate, fixed sticky-comment marker (a product constant, never
 interpolated); trust in a prior review comes from the comment's **bot author identity**, never from the

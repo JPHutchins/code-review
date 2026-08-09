@@ -23,11 +23,11 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   check-run `neutral` (non-gating — the review is informational).
 - **`finalize` job** — reaches a terminal state for the check-run whenever `comment` won't. A
   hard-**failed** review gets an attributed "did not complete — re-request" sticky (`code-review
-  report-incomplete`) and a `failure` check; a **cancelled** review (superseded by a newer run on the
-  same branch) gets an informational "superseded by a newer run — no action needed" sticky
-  (`report-incomplete --cancelled`) and a `superseded` check (conclusion `cancelled`), *not* the
-  failure reading — a superseded run is not an operational failure ([#139](../../../issues/139)); a
-  legitimate **skip** just finalizes the check `neutral` so it never hangs `in_progress`.
+  report-incomplete`) and a `failure` check; a **cancelled** review (typically superseded by a newer
+  run on the same branch) gets an informational "superseded — no action needed" sticky
+  (`report-incomplete --cancelled`), *not* the failure reading — a superseded run is not an operational
+  failure ([#139](../../../issues/139)) — and its in-progress check is left for the superseding run to
+  settle; a legitimate **skip** just finalizes the check `neutral` so it never hangs `in_progress`.
 
 ## Two ways to consume it
 
@@ -83,7 +83,7 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   full set (tier aliases, per-route time limits + grace periods + USD caps, `extra_endpoints`,
   `egress_policy`, `scope`).
 
-  ### `scope` — tell the reviewer what the project accepts ([#139](../../../issues/139))
+### `scope` — tell the reviewer what the project accepts ([#139](../../../issues/139))
 
   Set the `scope` input (or the `SCOPE` Actions variable in the copy-paste file) to the languages the
   project accepts, e.g. `scope: C` or `scope: "C C++"`. It is spliced into the full-review prompt so
@@ -92,7 +92,8 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   finding — a project that formats C receiving C++ is out of scope, not a C++ layout regression. When
   `scope` is empty, the reviewer infers scope from the README's first paragraph instead. A malformed
   value (e.g. one containing a newline or `<`) fails the review step loudly rather than corrupting the
-  prompt.
+  prompt. (`check-scope` is release-gated, so on a pinned CLI that predates it the workflow degrades
+  to the unvalidated value rather than failing the review.)
 
 ### Check-running with the reusable workflow
 

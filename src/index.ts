@@ -1564,13 +1564,13 @@ const announceCmd = defineCommand({
 });
 
 const isCheckIntent = (s: string): s is CheckIntent =>
-  s === "in_progress" || s === "neutral" || s === "failure" || s === "superseded";
+  s === "in_progress" || s === "neutral" || s === "failure";
 
 const checkRunCmd = defineCommand({
   meta: {
     name: "check-run",
     description:
-      "Upsert the native 'Code review' check-run on the head SHA — the attribution surface that appears in the PR's own checks list and (writing to the base repo) works for fork PRs too. `in_progress` at review start, `neutral` when the review completes, `failure` when it didn't, `superseded` (conclusion `cancelled`) when a newer run on the branch cancelled this one (issue #139). Forward-only: `failure`/`superseded` never overwrite a completed review.",
+      "Upsert the native 'Code review' check-run on the head SHA — the attribution surface that appears in the PR's own checks list and (writing to the base repo) works for fork PRs too. `in_progress` at review start, `neutral` when the review completes, `failure` when it didn't. Forward-only: `failure` never overwrites a completed review.",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },
@@ -1581,7 +1581,7 @@ const checkRunCmd = defineCommand({
     },
     status: {
       type: "positional",
-      description: "One of: in_progress, neutral, failure, superseded",
+      description: "One of: in_progress, neutral, failure",
       required: true,
     },
     "run-url": {
@@ -1595,7 +1595,7 @@ const checkRunCmd = defineCommand({
       // Best-effort like `announce`: the check-run is an attribution aid, so an unknown status (version
       // skew) warns and exits 0 rather than failing the job the review otherwise proceeds through.
       process.stderr.write(
-        `::warning::code-review check-run: unrecognized status "${annotationSafe(args.status)}" — expected in_progress, neutral, failure, or superseded; skipping\n`,
+        `::warning::code-review check-run: unrecognized status "${annotationSafe(args.status)}" — expected in_progress, neutral, or failure; skipping\n`,
       );
       return;
     }
@@ -1616,7 +1616,7 @@ const reportIncompleteCmd = defineCommand({
   meta: {
     name: "report-incomplete",
     description:
-      "Post (or update) the sticky when a review job hard-failed and posted nothing — an attributed 'did not complete' notice linking the run, telling the reader to re-request; with --cancelled, the informational 'superseded by a newer run' notice instead (issue #139). Never buries a completed review, and never overwrites a superseding run's live in-progress placeholder.",
+      "Post (or update) the sticky when a review job hard-failed and posted nothing — an attributed 'did not complete' notice linking the run, telling the reader to re-request; with --cancelled, the informational 'superseded — no action needed' notice instead (issue #139). Never buries a completed review, and never overwrites a superseding run's live in-progress placeholder.",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },
@@ -1642,7 +1642,7 @@ const reportIncompleteCmd = defineCommand({
     cancelled: {
       type: "boolean",
       description:
-        "This run was CANCELLED by a newer run on the same branch — post the informational 'superseded' notice, not the failure notice (issue #139)",
+        "This run was CANCELLED before completing (typically superseded by a newer run on the same branch) — post the informational 'superseded' notice, not the failure notice (issue #139)",
     },
   },
   run: async ({ args }) => {
@@ -1655,7 +1655,7 @@ const reportIncompleteCmd = defineCommand({
       cancelled: args.cancelled,
     }).catch((err: unknown) =>
       process.stderr.write(
-        `::warning::code-review report-incomplete: could not post the failure notice (${annotationSafe(errMsg(err))}) — continuing\n`,
+        `::warning::code-review report-incomplete: could not post the notice (${annotationSafe(errMsg(err))}) — continuing\n`,
       ),
     );
   },

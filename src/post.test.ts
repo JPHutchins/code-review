@@ -2686,12 +2686,18 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
     expect(body).toContain("<!-- code-review -->");
     expect(body).toContain("Code review superseded");
-    expect(body).toContain("no action needed");
+    expect(body).toContain("No action needed");
     expect(body).toContain("abc123d");
     // A superseded run is informational — never the crash/failure reading, never a re-request.
     expect(body).not.toContain("did not complete");
     expect(body).not.toContain("Re-request");
     expect(body).not.toContain("review-complete");
+    // The wording must not over-assert: `cancelled` also fires for a manual cancel, and the run it
+    // links is this (cancelled) one, not a "latest" run it cannot name.
+    expect(body).not.toContain("latest run");
+    expect(body).not.toContain(
+      "a newer review run started on this branch and this run was cancelled",
+    );
   });
 
   it("cancelled: overwrites its OWN placeholder and carries re-review markers forward, with the superseded wording", async () => {

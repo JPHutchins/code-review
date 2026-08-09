@@ -7,7 +7,8 @@
 // structure (a newline starting a new block, a backtick closing a code span, `<`/`>` closing an HTML
 // comment, `|` breaking a markdown table) is rejected — the value is trusted consumer config, but a
 // malformed splice would silently corrupt the instruction. Everything printable and structure-safe is
-// accepted (C++, C#, C/C++, Objective-C, python 3, …).
+// accepted (C++, C#, C/C++, Objective-C). A multi-word name is not a unit here — whitespace separates
+// tokens, so spell a multi-word name with a dash (e.g. "visual-basic") or list its words separately.
 const SCOPE_UNSAFE = /[\n\r`<>|]/;
 
 export type ScopeParse =
@@ -18,6 +19,7 @@ export type ScopeParse =
   | { readonly kind: "invalid"; readonly reason: string };
 
 // Whitespace, commas, and semicolons are interchangeable separators ("C C++", "c, c++", "python; rust").
+// The separator consumes surrounding whitespace, so a split token carries none (no per-token trim).
 const SCOPE_SEPARATOR_RE = /[\s,;]+/;
 
 export const parseScope = (raw: string | undefined): ScopeParse => {
@@ -32,13 +34,6 @@ export const parseScope = (raw: string | undefined): ScopeParse => {
   }
   // De-duplicate preserving first-seen order; a value that was only separators (" , ; ") declares
   // nothing, so it reads as absent rather than an empty scope.
-  const languages = Array.from(
-    new Set(
-      trimmed
-        .split(SCOPE_SEPARATOR_RE)
-        .map((t) => t.trim())
-        .filter((t) => t !== ""),
-    ),
-  );
+  const languages = Array.from(new Set(trimmed.split(SCOPE_SEPARATOR_RE).filter((t) => t !== "")));
   return languages.length === 0 ? { kind: "absent" } : { kind: "ok", languages };
 };

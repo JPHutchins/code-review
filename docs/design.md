@@ -183,15 +183,19 @@ this doc.
   severity-bearing finding. Scope is deliberately **additive**: it changes what the reviewer classifies
   as a finding, not the findings schema, and no version bump is involved. The input is validated by a
   small `code-review check-scope` command (the same fail-loud posture as `--convergence-threshold`), so
-  a malformed value cannot corrupt the prompt it is spliced into.
+  a malformed value cannot corrupt the prompt it is spliced into. Because the CLI is release-gated, the
+  workflow probes for `check-scope` support and degrades to the unvalidated raw value on an older pinned
+  CLI rather than aborting the review.
 - **Cancelled review is informational, not a crash (issue #139).** Pushing twice within minutes cancels
   the first review (`cancel-in-progress` — correct), but the cancelled run then posted the same
   "⚠️ Review did not complete — re-request" notice as a real failure, which read as an agent crash. The
   `finalize` job now distinguishes `cancelled` from `failure`: a cancelled (superseded) run posts an
-  informational "superseded by a newer run — no action needed" sticky (`report-incomplete --cancelled`)
-  and finalizes its check `superseded` (conclusion `cancelled`), never the failure reading. The same
-  guards as the failure notice keep it from clobbering the superseding run's live placeholder or a
-  completed review.
+  informational "superseded — no action needed" sticky (`report-incomplete --cancelled`), never the
+  failure reading, and the in-progress check is deliberately left for the superseding run to settle
+  (stamping it could settle a same-head re-run's live check or mask a real failure). The wording is
+  soft about *why* it was cancelled — `result == 'cancelled'` also fires for a manual cancel — and links
+  the cancelled run itself, never a "latest" run it cannot name. The same guards as the failure notice
+  keep it from clobbering the superseding run's live placeholder or a completed review.
 
 `<!-- code-review -->` is the deliberate, fixed sticky-comment marker (a product constant, never
 interpolated); trust in a prior review comes from the comment's **bot author identity**, never from the

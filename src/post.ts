@@ -871,19 +871,22 @@ export interface AnnounceInput {
   readonly headBranch?: string;
 }
 
-// The placeholder body: the sticky marker, a "review in progress" line linking the run, and — when a
-// prior sticky exists — its machine-readable markers carried forward verbatim, so replacing the
-// summary prose never strips the re-review seed the review job reads back (embedded findings +
-// reviewed-sha). The commenter job overwrites this with the real summary when the review completes.
-const announceBody = (
-  headSha: string,
-  runUrl: string,
-  existingBody: string | undefined,
-): string => {
-  const notice = `${DEFAULT_MARKER}\n\n🔄 **Code review in progress** for \`${headSha.slice(0, 7)}\` — see the [workflow run](${runUrl}) for progress; this comment is updated with the review when it completes.`;
+// The notice bodies (announce placeholder, did-not-complete, superseded) share one shape: the sticky
+// marker, a lead line, and — when a prior sticky exists — its machine-readable markers carried forward
+// verbatim, so replacing the summary prose never strips the re-review seed the review job reads back
+// (embedded findings + reviewed-sha). Each body builds its own lead; this helper owns the shared tail.
+const noticeBody = (lead: string, existingBody: string | undefined): string => {
   const carried = existingBody ? carryForwardMarkers(existingBody) : "";
-  return carried ? `${notice}\n\n${carried}` : notice;
+  return carried ? `${lead}\n\n${carried}` : lead;
 };
+
+// The placeholder body: a "review in progress" line linking the run. The commenter job overwrites this
+// with the real summary when the review completes.
+const announceBody = (headSha: string, runUrl: string, existingBody: string | undefined): string =>
+  noticeBody(
+    `${DEFAULT_MARKER}\n\n🔄 **Code review in progress** for \`${headSha.slice(0, 7)}\` — see the [workflow run](${runUrl}) for progress; this comment is updated with the review when it completes.`,
+    existingBody,
+  );
 
 // Post (or update) the sticky the moment a review starts, so a workflow_run review — which runs from
 // the default branch and is otherwise invisible on the PR — is visibly under way. Shares post's PR
@@ -933,25 +936,23 @@ const incompleteBody = (
   headSha: string,
   runUrl: string,
   existingBody: string | undefined,
-): string => {
-  const notice = `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — the review job failed ([run](${runUrl})). Re-request the review; do not treat this round as spent.`;
-  const carried = existingBody ? carryForwardMarkers(existingBody) : "";
-  return carried ? `${notice}\n\n${carried}` : notice;
-};
+): string =>
+  noticeBody(
+    `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — the review job failed ([run](${runUrl})). Re-request the review; do not treat this round as spent.`,
+    existingBody,
+  );
 
-// A review run CANCELLED by a newer run on the same branch (concurrency cancel-in-progress) is not an
-// operational failure — issue #139. Distinct sentence, no action needed, and it must NOT read as a
-// crash: no "did not complete", no "Re-request", and it never carries the review-complete marker. The
-// superseding run's own announce (or the commenter) replaces it.
-const cancelledBody = (
-  headSha: string,
-  runUrl: string,
-  existingBody: string | undefined,
-): string => {
-  const notice = `${DEFAULT_MARKER}\n\n↩️ **Code review superseded** for \`${headSha.slice(0, 7)}\` — a newer review run started on this branch and this run was cancelled. See the [latest run](${runUrl}) — no action needed.`;
-  const carried = existingBody ? carryForwardMarkers(existingBody) : "";
-  return carried ? `${notice}\n\n${carried}` : notice;
-};
+// A review run CANCELLED is not an operational failure — issue #139. Distinct sentence, no action
+// needed, and it must NOT read as a crash: no "did not complete", no "Re-request", and it never
+// carries the review-complete marker. The wording is deliberately soft about WHY it was cancelled —
+// `needs.review.result == 'cancelled'` also fires for a manual cancel, so the sticky must not assert
+// "a newer review run started" as fact, and the run it links is this (cancelled) one, not a "latest"
+// run it cannot name. The superseding run's own announce (or the commenter) replaces it.
+const cancelledBody = (headSha: string, runUrl: string, existingBody: string | undefined): string =>
+  noticeBody(
+    `${DEFAULT_MARKER}\n\n↩️ **Code review superseded** for \`${headSha.slice(0, 7)}\` — this run was cancelled before completing, typically because a newer review run started on this branch. No action needed. [View the cancelled run](${runUrl}) for the record.`,
+    existingBody,
+  );
 
 export interface ReportIncompleteInput extends AnnounceInput {
   // Issue #139: this run was CANCELLED by a superseding run on the same branch — post the

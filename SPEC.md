@@ -145,8 +145,8 @@ the schema can evolve without amending this document. (The reference schema is
 The reviewer MUST treat **whether an input is in the change's scope** — the languages or inputs the
 change's project accepts — as a triage question answered **before** assigning severities. An input
 outside the project's scope is not a defect in the change: the reviewer MUST NOT raise a
-severity-bearing finding for it, and SHOULD instead note the out-of-scope input as a scope note (for
-example, a sentence in the overall assessment), never as a finding.
+severity-bearing finding for it. A change that is **substantially** out of scope SHOULD be noted as a
+scope note (for example, a sentence in the overall assessment), never as a finding.
 
 When a model's structured-output enforcement is imperfect, an implementation MAY recover the deliverable
 from the model's output by a **deterministic** procedure, provided that procedure accepts **exactly one**

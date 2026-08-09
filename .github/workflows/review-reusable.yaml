@@ -578,7 +578,15 @@ jobs:
           # this step loudly, exactly like the other trusted config knobs) and spliced into the
           # full-review prompt so the reviewer triages "is this input in scope?" BEFORE severities
           # (issue #139). Empty ⇒ the reviewer infers scope from the README's first paragraph.
-          NORMALIZED_SCOPE="$(code-review check-scope --scope "${SCOPE:-}")"
+          # Version-skew guard: `check-scope` is release-gated, so the PINNED CLI may predate it. Probe
+          # with a valid scope — exit 0 means the command exists (the real call then fails loudly on a
+          # malformed consumer scope), exit 1 means an older CLI (degrade to the raw value, unvalidated,
+          # rather than aborting the review the way an unknown command would under set -e).
+          if code-review check-scope --scope C >/dev/null 2>&1; then
+            NORMALIZED_SCOPE="$(code-review check-scope --scope "${SCOPE:-}")"
+          else
+            NORMALIZED_SCOPE="${SCOPE:-}"
+          fi
 
           # The PR's own description + the human discussion (issue comments, inline review-thread
           # replies, and review submissions) gather staged. UNTRUSTED (attacker-reachable), so it is
@@ -1032,11 +1040,10 @@ jobs:
   # dead review is never silent. Three outcomes land here:
   #   - result == 'failure' (the review DIED): #115's silent case — post a "did not complete,
   #     re-request" sticky and finalize the check `failure`.
-  #   - result == 'cancelled' (a superseding run on this branch cancelled the review): post the
-  #     informational "superseded by a newer run" sticky — NOT the failure notice — and finalize the
-  #     check `superseded` (conclusion `cancelled`). A superseded run is not an operational failure
-  #     (issue #139); the report-incomplete guards keep the superseded notice from clobbering the
-  #     superseding run's live placeholder or a completed review.
+  #   - result == 'cancelled' (a review cancelled before completing, typically by a superseding run on
+  #     this branch): post the informational "superseded — no action needed" sticky — NOT the failure
+  #     notice (issue #139). The in-progress check is left for the superseding run to settle —
+  #     stamping it could settle a same-head re-run's live check or mask a real failure.
   #   - result == 'success' + no findings (a legitimate gather-skip): nothing to review, so just
   #     finalize the lingering check `neutral` — no sticky.
   # The has_findings guard excludes a review that DID post (including an honest triage-error notice)
@@ -1116,15 +1123,14 @@ jobs:
               --head-sha "$HEAD_SHA" \
               --run-url "$RUN_URL"
           elif [ "$REVIEW_RESULT" = "cancelled" ]; then
-            # Superseded by a newer run on this branch — informational, not a failure (issue #139).
+            # A cancelled review is informational, not a failure (issue #139): post the "superseded"
+            # sticky. The in-progress check is deliberately left alone — a superseding run (typically a
+            # newer review on this branch) owns the head now, so stamping it could settle a same-head
+            # re-run's live check or mask a real failure; it settles the check itself when it completes.
             code-review report-incomplete --cancelled \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \
               --head-branch "$HEAD_BRANCH" \
-              --run-url "$RUN_URL"
-            code-review check-run superseded \
-              --repo "$REPO" \
-              --head-sha "$HEAD_SHA" \
               --run-url "$RUN_URL"
           else
             # gather-skip: nothing to review, so the announce check must not hang in_progress.

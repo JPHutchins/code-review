@@ -6,12 +6,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Validation } from "io-ts";
-import {
-  render,
-  computeSeverityCounts,
-  isConvergenceRound,
-  isReviewVerdict,
-} from "../src/render.js";
+import { render, computeRoundCounts, isConvergenceRound, isReviewVerdict } from "../src/render.js";
 import { buildInlineComments } from "../src/inline.js";
 import { reviewBodyPointer, signalForRound, surfacedFindingsPointer } from "../src/surface.js";
 import { formatUtc } from "../src/format.js";
@@ -90,7 +85,7 @@ const { comments, strays } = buildInlineComments(findings.findings, diff, {
 // the signal, the badge, AND the trajectory together, exactly as a real round-1 sticky would.
 const isFullReviewRound =
   isConvergenceRound("full review", false) && isReviewVerdict(findings.verdict);
-const previewCounts = computeSeverityCounts(findings.findings);
+const previewCounts = computeRoundCounts(findings);
 const previewRounds = isFullReviewRound ? [previewCounts] : [];
 const previewSignal = isFullReviewRound ? signalForRound(1, previewCounts) : null;
 

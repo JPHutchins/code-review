@@ -3167,6 +3167,27 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
   });
 
+  it("the blob's convergence uses the ROUND counts (findings + systemic), never diverging from the badge — a systemic major beside a nit-only finding reads iterating (issue #134 merge)", async () => {
+    // The round history (computeRoundCounts) folds systemic severities in; the blob signal must use
+    // the SAME counts or a doc whose systemic items cross the threshold would embed `converged: true`
+    // beside a badge that reads iterating.
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        ...mkFindings([mkFinding({ severity: "nit" })]),
+        systemic_problems: [
+          { title: "t", description: "d", severity: "major", reasoning: "r", confidence: 0.8 },
+        ],
+      }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+    await post(mkInput({ route: "full review" }), api);
+    const blob = decodedBlob(calls());
+    expect(blob.round).toBe(1);
+    // major=2 > threshold 1 → iterating, exactly what the badge would render for this round.
+    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+  });
+
   it("a mechanic pass carries the last completed round's convergence forward in its blob (issue #141 item 3)", async () => {
     // The prior round is {major: 1} → score 2 > threshold 1 → iterating; a mechanic is not a round.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));

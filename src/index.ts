@@ -9,7 +9,7 @@ import { copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
-import { render, computeSeverityCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
+import { render, computeRoundCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
 import { computeCost } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
@@ -295,7 +295,7 @@ const renderCmd = defineCommand({
     const isRound =
       isConvergenceRound(route, envelope.incomplete === true || isIncompleteFindings(findings)) &&
       isReviewVerdict(findings.verdict);
-    const counts = computeSeverityCounts(findings.findings);
+    const counts = computeRoundCounts(findings);
     const output = render({
       findings,
       envelope,

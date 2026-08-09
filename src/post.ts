@@ -793,7 +793,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const signal = isRound
     ? signalForRound(
         Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1,
-        currentCounts,
+        computeRoundCounts(findings),
         input.convergenceThreshold,
       )
     : thisIncomplete || !isReviewVerdict(findings.verdict)

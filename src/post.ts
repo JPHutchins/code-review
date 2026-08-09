@@ -5,7 +5,12 @@ import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import { render, computeSeverityCounts, isConvergenceRound } from "./render.js";
+import {
+  render,
+  computeSeverityCounts,
+  isConvergenceRound,
+  hasSystemicProblems,
+} from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
@@ -678,11 +683,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
   const effectiveRoute = input.route ?? envelope.route;
   const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
-  // A round that carried systemic problems without findings has all-zero counts but is NOT clean —
-  // flag it so the trajectory chip reads "systemic", never "clean".
-  const hasSystemic = (findings.systemic_problems?.length ?? 0) > 0;
+  // A systemic-only round (systemic problems, no findings) has all-zero counts but is NOT clean —
+  // flag it via the shared predicate (the same one render's badge gate uses) so the trajectory chip
+  // reads "systemic", never "clean", and the flag matches its documented meaning exactly.
+  const systemicOnlyRound = findings.findings.length === 0 && hasSystemicProblems(findings);
   const rounds = isRound
-    ? [...priorRounds, { ...currentCounts, ...(hasSystemic ? { systemic: true } : {}) }]
+    ? [...priorRounds, { ...currentCounts, ...(systemicOnlyRound ? { systemic: true } : {}) }]
     : priorRounds;
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {

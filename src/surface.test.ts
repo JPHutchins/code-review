@@ -224,6 +224,21 @@ describe("rounds trajectory — issue #125", () => {
     expect(roundsSummary(rounds)).toBe("**Round 2** · clean → systemic");
   });
 
+  it("rejects a round whose systemic flag is not exactly true — a crafted flag must not falsify the chip (issue #134 review)", () => {
+    const marker = (round: unknown): string =>
+      `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify([round]), "utf-8").toString("base64")} -->`;
+    // "yes" and 1 are truthy — an actually-clean round would display as "systemic".
+    expect(
+      parseRounds(marker({ critical: 0, major: 0, minor: 0, nit: 0, systemic: "yes" })),
+    ).toEqual([]);
+    expect(parseRounds(marker({ critical: 0, major: 0, minor: 0, nit: 0, systemic: 1 }))).toEqual(
+      [],
+    );
+    expect(
+      parseRounds(marker({ critical: 0, major: 0, minor: 0, nit: 0, systemic: false })),
+    ).toEqual([]);
+  });
+
   it("drops only the malformed round, keeping the valid ones — one bad entry can't erase the history", () => {
     const mixed = Buffer.from(
       JSON.stringify([counts(0, 1, 0, 0), { critical: 1 }, counts(0, 0, 2, 0)]),

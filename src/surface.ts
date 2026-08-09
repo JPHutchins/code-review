@@ -133,7 +133,13 @@ const isSeverityCounts = (u: unknown): u is SeverityCounts =>
 // round-trips through the marker.
 export type RoundEntry = SeverityCounts & { readonly systemic?: boolean };
 
-const isRoundEntry = (u: unknown): u is RoundEntry => isSeverityCounts(u);
+// The flag must be absent or exactly true — a crafted/corrupt marker carrying `systemic: "yes"` (or
+// 1) would otherwise falsify a round's chip into "systemic" when the round was actually clean.
+const isRoundEntry = (u: unknown): u is RoundEntry => {
+  if (!isSeverityCounts(u)) return false;
+  const systemic = (u as Record<string, unknown>)["systemic"];
+  return systemic === undefined || systemic === true;
+};
 
 export const parseRounds = (body: string): readonly RoundEntry[] => {
   const b64 = ROUNDS_RE.exec(body)?.[1];

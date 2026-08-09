@@ -551,10 +551,22 @@ describe("render", () => {
       expect(result).not.toContain("**Convergence**");
     });
 
-    it("still shows the convergence badge when systemic problems accompany findings", () => {
+    it("shows NO convergence badge when systemic problems accompany findings — the score is findings-only, so any systemic problem blocks the claim (issue #134 review)", () => {
       const findings = systemicFindings({
         systemic_problems: [mkSystemic()],
       });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).not.toContain("**Convergence**");
+    });
+
+    it("still shows the convergence badge for a round without systemic problems", () => {
+      const findings = systemicFindings();
       const result = render({
         findings,
         envelope: baseEnvelope,

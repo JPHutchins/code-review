@@ -75,34 +75,29 @@ export const FindingCodec = t.exact(EndGeStart);
 // Cross-cutting observations that tie findings together, with no required line anchor — mirrors
 // findings.schema.json's systemic_problems items exactly, reusing the shared rule-identifier pair.
 // severity/reasoning/confidence are required (owner direction on #134).
-const SystemicProblemShape = t.intersection([
-  t.type({
-    title: t.string,
-    description: t.string,
-    severity: SeverityCodec,
-    reasoning: t.string,
-    confidence: Confidence,
-  }),
-  FindingRuleCodec,
-  t.partial({
-    finding_codes: t.array(t.string),
-    paths: t.array(t.string),
-  }),
-]);
+const SystemicRequired = t.type({
+  title: t.string,
+  description: t.string,
+  severity: SeverityCodec,
+  reasoning: t.string,
+  confidence: Confidence,
+});
+
+const SystemicOptional = t.partial({
+  finding_codes: t.array(t.string),
+  paths: t.array(t.string),
+});
+
+const SystemicProblemShape = t.intersection([SystemicRequired, FindingRuleCodec, SystemicOptional]);
 
 // The schema declares additionalProperties: false, but t.exact only strips unknown keys on encode —
 // on decode it accepts them. The refinement closes the gap so the codec gate rejects exactly what
-// the ajv gate rejects (the extraction ladder runs both gates).
+// the ajv gate rejects (the extraction ladder runs both gates). The key set is derived from the
+// shape's own members, so it cannot drift from the declared fields.
 const SYSTEMIC_KEYS = new Set([
-  "title",
-  "description",
-  "severity",
-  "reasoning",
-  "confidence",
-  "code",
-  "code_url",
-  "finding_codes",
-  "paths",
+  ...Object.keys(SystemicRequired.props),
+  ...Object.keys(FindingRuleCodec.props),
+  ...Object.keys(SystemicOptional.props),
 ]);
 
 const SystemicProblemStrict = t.refinement(

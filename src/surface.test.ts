@@ -505,4 +505,82 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(notes["b"]).toContain("round 3");
     expect(notes["c"]).toBeUndefined();
   });
+
+  it("computeCodeCounts folds in systemic problem finding_codes so a systemic-only mechanism is visible", () => {
+    const systemic = [
+      {
+        title: "s",
+        description: "d",
+        severity: "major" as const,
+        reasoning: "r",
+        confidence: 0.8,
+        finding_codes: ["null-check-missing", "body-reconstruction"],
+      },
+    ];
+    expect(computeCodeCounts([mkFinding({ code: "null-check-missing" })], systemic)).toEqual({
+      "null-check-missing": 2,
+      "body-reconstruction": 1,
+    });
+  });
+
+  it("computeCodeCounts treats prototype-collision codes as ordinary own keys", () => {
+    expect(
+      computeCodeCounts([
+        mkFinding({ code: "constructor" }),
+        mkFinding({ code: "constructor" }),
+        mkFinding({ code: "__proto__" }),
+      ]),
+    ).toEqual(
+      Object.fromEntries([
+        ["constructor", 2],
+        ["__proto__", 1],
+      ]),
+    );
+  });
+
+  it("consecutiveCodeStreaks treats a same-head retry (identical sha) as one iteration, not new evidence", () => {
+    const rounds: RoundRecord[] = [
+      { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "abc123" },
+      { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "abc123" },
+      { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "abc123" },
+    ];
+    expect(consecutiveCodeStreaks(rounds)).toEqual({ a: { streak: 1, startRound: 1 } });
+  });
+
+  it("consecutiveCodeStreaks counts a new commit after a same-sha retry as a fresh round", () => {
+    const rounds: RoundRecord[] = [
+      { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
+      { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
+      { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha2" },
+    ];
+    expect(consecutiveCodeStreaks(rounds)).toEqual({ a: { streak: 2, startRound: 1 } });
+  });
+
+  it("roundsMarker drops the codes and sha from rounds older than the retention window", () => {
+    const rounds: RoundRecord[] = Array.from({ length: 10 }, (_, i) =>
+      i === 9
+        ? { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "last" }
+        : { ...coded(counts(0, 0, 0, 0), { [String(i)]: 1 }), sha: `sha${String(i)}` },
+    );
+    const parsed = parseRounds(roundsMarker(rounds));
+    expect(parsed).toHaveLength(10);
+    expect(parsed[0]?.codes).toBeUndefined();
+    expect(parsed[0]?.sha).toBeUndefined();
+    expect(parsed[9]?.codes).toEqual({ a: 1 });
+    expect(parsed[9]?.sha).toBe("last");
+  });
+
+  it("normalizeCodeCounts drops count-0 entries so every consumer agrees 0 is absence", () => {
+    const record = roundRecord(counts(0, 0, 0, 0), { a: 0, b: 0, c: 1 });
+    expect(record.codes).toEqual({ c: 1 });
+  });
+
+  it("the per-round cap prefers codes that recurred in the previous round", () => {
+    const nine = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`code-${String(i)}`, 1]));
+    const priorCodes = { "code-8": 1 };
+    const record = roundRecord(counts(0, 0, 0, 0), nine, priorCodes);
+    expect(record.codes).toBeDefined();
+    expect(record.codes?.["code-8"]).toBe(1);
+    expect(Object.keys(record.codes ?? {})).toHaveLength(MAX_CODES_PER_ROUND);
+  });
 });

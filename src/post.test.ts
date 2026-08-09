@@ -366,7 +366,13 @@ describe("post — systemic problems (issue #134)", () => {
     expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
     // The convergence round entry carries the systemic severity too (one minor finding + one major
     // systemic item) — a systemic-only critical round can never masquerade as "clean".
-    expect(parseRounds(body.body).at(-1)).toEqual({ critical: 0, major: 1, minor: 1, nit: 0 });
+    const lastRound = parseRounds(body.body).at(-1);
+    expect(lastRound).toMatchObject({ critical: 0, major: 1, minor: 1, nit: 0 });
+    // The systemic problem's finding_codes feed the round's mechanism map (issue #145) — a mechanism
+    // surfaced only as a systemic problem is still visible to the streak detector — and the round
+    // records the reviewed head sha so a same-head retry is recognizable as such.
+    expect(lastRound?.codes).toEqual({ "widened-type": 1 });
+    expect(lastRound?.sha).toBe("abc123def456");
   });
 
   it("warns to the run log when the whole-document marker degrades past the embed limit (issue #134 review)", async () => {

@@ -36,10 +36,12 @@ export type SeverityCounts = Readonly<Record<Severity, number>>;
 export type CodeCounts = Readonly<Record<string, number>>;
 
 // One round's cross-round mechanism record: the severity counts plus, optionally, the round's
-// code-frequency map. The enrichment is ADDITIVE — a count-only round (pre-feature, or a round with no
-// coded findings) is a valid RoundRecord with `codes` absent, so the trajectory marker stays
-// backward-compatible and a future-shaped round is never a parse failure.
-export type RoundRecord = SeverityCounts & { readonly codes?: CodeCounts };
+// code-frequency map and the reviewed head SHA (short form). The enrichment is ADDITIVE — a count-only
+// round (pre-feature, or a round with no coded findings) is a valid RoundRecord with `codes` absent,
+// so the trajectory marker stays backward-compatible and a future-shaped round is never a parse
+// failure. The sha lets the streak detector recognize a same-head CI retry (which appends an identical
+// round) as the same review iteration re-examined, not new evidence of recurrence.
+export type RoundRecord = SeverityCounts & { readonly codes?: CodeCounts; readonly sha?: string };
 
 // A code's recurrence streak ending at the last recorded round: how many consecutive rounds carried a
 // finding with that code, and the 1-indexed round number where the streak began.

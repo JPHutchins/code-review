@@ -607,6 +607,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        sameRootNotes: {},
         convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
@@ -670,6 +671,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        sameRootNotes: {},
         convergenceRound: false,
         testReport,
         inlineDisposition: { kind: "no-envelope" },
@@ -756,10 +758,18 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // stores and shows 🔴1 rather than masquerading as "clean" — plus this round's mechanism-frequency
   // map, so the carried trajectory tells a later round which mechanisms keep recurring. `isRound` was
   // computed above, where it also gates the same-root notes.
+  const currentCodes = computeCodeCounts(findings.findings, findings.systemic_problems ?? []);
+  const priorLastCodes =
+    priorRounds.length > 0 ? priorRounds[priorRounds.length - 1]?.codes : undefined;
   const rounds = isRound
     ? [
         ...priorRounds,
-        roundRecord(computeRoundCounts(findings), computeCodeCounts(findings.findings)),
+        roundRecord(
+          computeRoundCounts(findings),
+          currentCodes,
+          priorLastCodes,
+          input.headSha.slice(0, 12),
+        ),
       ]
     : priorRounds;
 

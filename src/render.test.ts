@@ -1872,4 +1872,18 @@ describe("scope metastasis + same-root notes — issue #145", () => {
     });
     expect(result).not.toContain("Scope metastasis");
   });
+
+  it("hides the notes beside a suppressed convergence badge for an error-verdict doc", () => {
+    const result = render({
+      findings: mkFindings([mkFinding({ code: "a" })], { verdict: "error" }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      rounds: [coded({ a: 1 }), coded({ a: 1 }), coded({ a: 1 })],
+      strays: [mkFinding({ code: "a" })],
+      sameRootNotes: { a: "Same mechanism as round 2 (`a`)." },
+    });
+    expect(result).not.toContain("Scope metastasis");
+    expect(result).not.toContain("Same mechanism as round 2");
+  });
 });

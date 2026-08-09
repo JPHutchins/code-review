@@ -118,6 +118,10 @@ export const render = (input: RenderInput): string => {
     (input.convergenceRound ?? isConvergenceRound(route, incomplete)) &&
     input.findings.verdict !== "error";
   const roundCounts = computeRoundCounts(input.findings);
+  // The advisory notes (same-root + scope-metastasis) are a property of a real review, gated by the
+  // same verdict guard as the badge: an error-verdict doc that still carries findings must show no
+  // badge and no advisory notes beside it.
+  const advisoryAllowed = input.findings.verdict !== "error";
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -146,8 +150,8 @@ export const render = (input: RenderInput): string => {
     findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
     roundsMarker: roundsMarker(rounds),
     roundsSummary: roundsSummary(rounds),
-    metastasisNote: metastasisNote(rounds),
-    sameRootNotes,
+    metastasisNote: advisoryAllowed ? metastasisNote(rounds) : "",
+    sameRootNotes: advisoryAllowed ? sameRootNotes : {},
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

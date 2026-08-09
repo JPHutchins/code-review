@@ -16,14 +16,12 @@ import {
   metastasisNote,
   signalForRound,
   surfacedFindingsPointer,
+  escapeCodeBackticks,
 } from "./surface.js";
 import type { PatchProjection } from "./surface.js";
 
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
-
-// backticks break inline code spans.
-const escapeCodeBackticks = (text: string): string => text.replace(/`/g, "-");
 
 type StrayView = Finding & { readonly patchProjection: PatchProjection };
 

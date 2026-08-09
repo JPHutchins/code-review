@@ -57,7 +57,12 @@ export const buildInlineComments = (
   const comments: InlineComment[] = inDiff.map((f) => {
     const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";
     const sameRootNote =
-      f.code !== undefined && f.code !== "" ? (context.sameRootNotes?.[f.code] ?? "") : "";
+      f.code !== undefined &&
+      f.code !== "" &&
+      context.sameRootNotes !== undefined &&
+      Object.prototype.hasOwnProperty.call(context.sameRootNotes, f.code)
+        ? (context.sameRootNotes[f.code] ?? "")
+        : "";
     const comment: InlineComment = {
       path: f.path,
       line: f.end_line,

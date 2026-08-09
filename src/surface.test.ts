@@ -499,7 +499,9 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(note).toContain("Scope metastasis");
     expect(note).toContain("`a`");
     expect(note).toContain("3 consecutive rounds");
-    expect(note).toContain("rounds 1–3");
+    // No round range: a retry-containing history would make any X–Y range inconsistent with the
+    // streak count (issue #145 r3).
+    expect(note).not.toContain("rounds ");
   });
 
   it("metastasisNote honors a custom minStreak", () => {
@@ -637,8 +639,29 @@ describe("mechanism frequency rounds — issue #145", () => {
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
     ];
+    // currentSha sha1 → every prior round is a retry of the current commit → nothing to name.
     expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha1")["a"]).toBeUndefined();
+    // currentSha sha2 → r2 is a retry of r1 (collapsed), so the last real prior round is round 1.
     expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha2")["a"]).toContain(
+      "round 1",
+    );
+    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha2")["a"]).not.toContain(
+      "round 2",
+    );
+  });
+
+  it("computeSameRootNotes also collapses a same-sha retry DEEPER in the history (issue #145 r3)", () => {
+    // r2 is a retry of r1 (same sha); the mechanism's last real occurrence is round 1 — the retry
+    // must not be named as "round 2" (the streak detector collapses it too, so the two advisory
+    // signals agree about whether the round is evidence).
+    const prior: RoundRecord[] = [
+      { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
+      { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
+    ];
+    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha2")["a"]).toContain(
+      "round 1",
+    );
+    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha2")["a"]).not.toContain(
       "round 2",
     );
   });

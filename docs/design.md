@@ -130,12 +130,18 @@ this doc.
   whole review, so validation is mandatory either way and the single call is simpler.
 - **Price-map SSOT.** A committed, date-stamped example price map (readers fork it) rather than a
   hard-coded table — prices drift and belong in data, not code.
-- **Incremental vs full review each run, and re-run stacking.** On a re-review the seed compares the
-  prior comment's `<!-- reviewed-sha: … -->` against the current head to steer the agent — validate the
-  seeded findings and spend the rest of the budget on new ones when the commit is unchanged, or check
-  what the new commits addressed and review the newly-changed code when it moved. The sticky *summary*
-  comment is editable (find-and-PATCH) while a fresh *review* is posted per head SHA with the prior bot
-  review dismissed.
+- **Incremental vs full review each run, and re-run stacking.** On a re-review, `seed-draft` compares
+  the prior comment's `<!-- reviewed-sha: … -->` against the current head to steer the agent — deliver
+  the prior findings as context and spend the rest of the budget on new ones when the commit is
+  unchanged, or check what the new commits addressed and review the newly-changed code when it moved.
+  The prior findings are delivered **out-of-band** (a read-only context file beside the draft), never
+  pre-seeded into `$DRAFT`: the draft starts as a **non-review sentinel** so no recovery path — the
+  live draft, the last-valid snapshot, the native envelope — can mistake the untouched seed for a
+  completed review of the current head (issue #127), and "agent produced nothing" is always an honest
+  "did not complete" notice. The seed chain is **route-aware**: a prior that never completed (an
+  error-verdict notice) or that a CI-fix mechanic pass produced is skipped, and an empty mechanic pass
+  never buries a completed full review's sticky. The sticky *summary* comment is editable
+  (find-and-PATCH) while a fresh *review* is posted per head SHA with the prior bot review dismissed.
 - **Author dispositions as untrusted context.** Alongside the seeded prior review, a re-review sees the
   PR's own description (`pr_context.json`) and the full human discussion (`pr_conversation.json` — issue
   comments, inline review-thread replies with their `path`/`line`, and review submissions; *every author
@@ -155,11 +161,12 @@ this doc.
 - **In-progress sticky at start.** A `workflow_run` review runs from the default branch and leaves no
   trace on the PR until it finishes, so a separate write-token `announce` job upserts a placeholder
   sticky ("review in progress", linking the run) the moment it starts. It runs in parallel with the
-  read-only review job, so it carries the prior sticky's `findings-json` + `reviewed-sha` markers
-  forward *verbatim* — replacing only the prose — so it never clobbers the re-review seed the review
-  job reads back from that same comment. The commenter overwrites it with the real summary at the end.
-  It also leaves the sticky untouched when it already reviewed the *current* head (a CI re-run, or the
-  pipeline racing ahead), so a finished review is never hidden behind a stale "in progress".
+  read-only review job, so it carries the prior sticky's `findings-json` + `reviewed-sha` +
+  `reviewed-route` markers forward *verbatim* — replacing only the prose — so it never clobbers the
+  re-review seed the review job reads back from that same comment, nor the route that keeps the seed
+  chain route-aware. The commenter overwrites it with the real summary at the end. It also leaves the
+  sticky untouched when it already reviewed the *current* head (a CI re-run, or the pipeline racing
+  ahead), so a finished review is never hidden behind a stale "in progress".
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
 

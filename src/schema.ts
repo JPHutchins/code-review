@@ -157,17 +157,6 @@ export type Finding = t.TypeOf<typeof FindingCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
 export type Verdict = t.TypeOf<typeof VerdictCodec>;
 
-// The initial $DRAFT scaffold: an empty, neutral findings doc the review agent is told to fill in. It
-// carries "comment" (never the pipeline-only "error"), so an agent that populates it and forgets to
-// touch the verdict still ships a valid review. A dead-agent recovery of this untouched scaffold is
-// caught by `adapt`'s seed-marker check, not by its verdict — so the verdict stays a plain template.
-export const emptyFindings = (summary: string): Findings => ({
-  schema_version: DEFAULT_SCHEMA_VERSION,
-  summary,
-  verdict: "comment",
-  findings: [],
-});
-
 // The findings shape for a run that produced no code-review verdict — an operational failure, a
 // security refusal, or an empty diff with nothing to review. `verdict: "error"` is the machine-readable
 // signal that the blob a consumer decodes is NOT a clean pass (verdict "comment", findings []), so an

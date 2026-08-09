@@ -72,6 +72,12 @@ export const parseReviewedSha = (body: string): string | null => {
   return sha && sha !== ZERO_SHA ? sha : null;
 };
 
+// The route of the COMPLETED review that stamped the sticky ("full review" | "mechanic"; absent on
+// notices and on pre-route-marker stickies). The seed chain is route-aware on it: a CI-fix mechanic
+// pass must not seed a later full review as if it were the previous full review (issue #127).
+export const parseReviewedRoute = (body: string): string | null =>
+  /<!-- reviewed-route: ([^>]*) -->/.exec(body)?.[1] || null;
+
 // A POSITIVE marker: present only in a sticky the commenter wrote for a COMPLETED review. It is
 // absent from an incomplete notice AND from an in-progress placeholder (which carries forward a prior
 // review's reviewed-sha yet is not itself a completed review) — so a precedence check can tell those
@@ -171,18 +177,20 @@ export const convergenceSummary = (
 
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must
 // survive — the "review in progress" placeholder swaps the visible summary yet must not clobber the
-// re-review seed the review job reads back from the sticky (the embedded findings + reviewed-sha), nor
-// the round-history trajectory. The findings marker is extracted verbatim so both its base64 and
-// jsonUrl-link forms survive; base64 (A–Z a–z 0–9 + / =) and URLs never contain '>', so `[^>]*` stops
-// at its closing `-->`. The STOP directive that always precedes it is re-emitted from
-// AGENTS_STOP_DIRECTIVE (its SSOT above) rather than re-matched, so a future edit to that constant
-// can't silently desync a parallel regex. Returns "" when the body carries none of them.
+// re-review seed the review job reads back from the sticky (the embedded findings + reviewed-sha),
+// the route that made the seed chain route-aware, nor the round-history trajectory. The findings
+// marker is extracted verbatim so both its base64 and jsonUrl-link forms survive; base64 (A–Z a–z
+// 0–9 + / =) and URLs never contain '>', so `[^>]*` stops at its closing `-->`. The STOP directive
+// that always precedes it is re-emitted from AGENTS_STOP_DIRECTIVE (its SSOT above) rather than
+// re-matched, so a future edit to that constant can't silently desync a parallel regex. Returns ""
+// when the body carries none of them.
 export const carryForwardMarkers = (body: string): string => {
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
+  const reviewedRoute = /<!-- reviewed-route: [^>]* -->/.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, rounds]
+  return [findingsBlock, reviewedSha, reviewedRoute, rounds]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
 };

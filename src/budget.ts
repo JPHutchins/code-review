@@ -166,28 +166,42 @@ export const writesToDraft = (toolName: string, toolInput: unknown, draftPath: s
 export const singleWriterMessage = (draftPath: string): string =>
   `Only the main agent may write ${draftPath}. When a subagent writes it too, the concurrent writers clobber each other and the review comes out empty. Do NOT write, edit, or redirect into ${draftPath} — instead, return the findings you discovered in your reply (the field names are in the schema); the main agent collects every subagent's reported findings and writes the draft itself.`;
 
-// Written AFTER the seed so its mtime bounds the seed's; the convention is shared with mainHasWrittenDraft.
-export const seedMarkerPath = (draftPath: string): string => `${draftPath}.seed`;
+// The pre-seed is a SENTINEL, never a valid findings document (issue #127): no recovery path — the
+// extraction ladder's agent-file/last-valid rungs, the budget hook's fan-out floor — can mistake it
+// for a review, so "agent produced nothing" is always an honest incomplete notice. Content, not
+// mtime: a coarse-timestamp filesystem can't misclassify a fresh draft written in the same clock
+// tick, and a missing draft is simply inert (there is no seed to recover).
+export const SEED_SENTINEL =
+  "code-review seed sentinel — not a review; replace this file with your findings review.";
+
+export const isSeedSentinel = (draftText: string | null): boolean =>
+  draftText !== null && draftText === SEED_SENTINEL;
+
+// The fan-out floor: the main agent has replaced the sentinel with its own first-pass draft.
+export const mainHasWrittenDraft = (draftText: string | null): boolean =>
+  draftText !== null && !isSeedSentinel(draftText);
+
+// The prior review's decoded findings, delivered OUT-OF-BAND beside the sentinel draft: the agent
+// may read this as re-review context, but no recovery path ever validates it as the run's
+// deliverable (only $DRAFT, its last-valid snapshot, and the native envelope are read back).
+export const priorContextPath = (draftPath: string): string => {
+  const ext = extname(draftPath);
+  return join(dirname(draftPath), `${basename(draftPath, ext)}.prior${ext}`);
+};
 
 // Holds only ever a document that passed the extraction ladder: the budget hook snapshots the draft
 // here whenever it validates, so a wall-kill that leaves the live draft truncated still recovers the
-// last valid state (down to the seed) instead of posting "did not complete". The postfix goes before
-// the extension so the snapshot keeps the draft's real type (findings-draft.last-valid.json).
+// last valid state instead of posting "did not complete". The postfix goes before the extension so
+// the snapshot keeps the draft's real type (findings-draft.last-valid.json). The sentinel never
+// validates, so it can never be checkpointed here.
 export const lastValidPath = (draftPath: string): string => {
   const ext = extname(draftPath);
   return join(dirname(draftPath), `${basename(draftPath, ext)}.last-valid${ext}`);
 };
 
-// mtime, not content: a rewrite that reproduces the seed bytes still counts as agent-written.
-export const mainHasWrittenDraft = (
-  draftMtimeMs: number | null,
-  seedMarkerMtimeMs: number | null,
-): boolean =>
-  draftMtimeMs !== null && (seedMarkerMtimeMs === null || draftMtimeMs > seedMarkerMtimeMs);
-
 // Agent-facing: no internal refs.
 export const spawnFloorMessage = (draftPath: string): string =>
-  `Write your own first-pass findings to ${draftPath} before spawning subagents — a review must never depend on subagents alone, and a pre-seeded draft does not count until you have revised it yourself this run. Write ${draftPath} from what you have read so far (preliminary findings are fine), run \`code-review validate ${draftPath} --explain\` until it passes, then fan out; your subagents run in the background, so keep refining the draft as their reports arrive.`;
+  `Write your own first-pass findings to ${draftPath} before spawning subagents — a review must never depend on subagents alone, and the pre-seeded $DRAFT is a non-review sentinel: it does not count until you have replaced it with your own review. Write ${draftPath} from what you have read so far (preliminary findings are fine), run \`code-review validate ${draftPath} --explain\` until it passes, then fan out; your subagents run in the background, so keep refining the draft as their reports arrive.`;
 
 // Background so the spawner never blocks on a batch join, where no hook can reach it to steer.
 export const forceBackgroundSpawn = (toolInput: unknown): Record<string, unknown> => ({

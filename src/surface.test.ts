@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseFindingsMarker,
   parseReviewedSha,
+  parseReviewedRoute,
   parseReviewComplete,
   findingsPointer,
   parseRounds,
@@ -89,6 +90,18 @@ describe("parseReviewedSha", () => {
   });
 });
 
+describe("parseReviewedRoute", () => {
+  it("reads the completed review's route marker", () => {
+    expect(parseReviewedRoute("<!-- reviewed-route: full review -->\nsticky")).toBe("full review");
+    expect(parseReviewedRoute("<!-- reviewed-route: mechanic -->\nsticky")).toBe("mechanic");
+  });
+
+  it("returns null when the body carries no route marker (a notice, or an older sticky)", () => {
+    expect(parseReviewedRoute("<!-- code-review -->\nplain")).toBeNull();
+    expect(parseReviewedRoute("<!-- reviewed-route: -->\nempty")).toBeNull();
+  });
+});
+
 describe("parseReviewComplete", () => {
   it("true only when the completed-review marker is present", () => {
     expect(parseReviewComplete("<!-- code-review -->\n<!-- review-complete -->\nreal review")).toBe(
@@ -143,6 +156,14 @@ describe("rounds trajectory — issue #125", () => {
     const body = `x\n${roundsMarker([counts(0, 0, 1, 0)])}\n<!-- reviewed-sha: ${"a".repeat(40)} -->`;
     expect(carryForwardMarkers(body)).toContain("code-review:rounds;base64");
     expect(carryForwardMarkers(body)).toContain("reviewed-sha:");
+  });
+
+  it("carryForwardMarkers preserves the reviewed-route marker — the seed chain's route-awareness survives the prose swap", () => {
+    const body =
+      "x\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json;base64 YQ== -->";
+    const carried = carryForwardMarkers(body);
+    expect(carried).toContain("<!-- reviewed-route: mechanic -->");
+    expect(carried).toContain("code-review:findings-json");
   });
 
   it("rejects rounds with negative, fractional, or unsafe-integer counts", () => {

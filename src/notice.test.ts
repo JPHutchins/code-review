@@ -6,12 +6,7 @@ import {
   parseAgentAllowlist,
   NOTICE_KINDS,
 } from "./notice.js";
-import {
-  ResultEnvelopeCodec,
-  emptyFindings,
-  incompleteFindings,
-  isIncompleteFindings,
-} from "./schema.js";
+import { ResultEnvelopeCodec, incompleteFindings, isIncompleteFindings } from "./schema.js";
 import type { Finding } from "./schema.js";
 
 const KINDS = NOTICE_KINDS;
@@ -37,14 +32,15 @@ describe("notice findings verdict — issue #117", () => {
     }
   });
 
-  it("incompleteFindings is an error notice; emptyFindings is a neutral comment scaffold", () => {
+  it("incompleteFindings is an error notice", () => {
     expect(incompleteFindings("x").verdict).toBe("error");
-    expect(emptyFindings("x").verdict).toBe("comment");
+    expect(incompleteFindings("x").findings).toEqual([]);
   });
 
   it("isIncompleteFindings is true ONLY for an error verdict with an empty findings array", () => {
     expect(isIncompleteFindings(incompleteFindings("x"))).toBe(true);
-    expect(isIncompleteFindings(emptyFindings("x"))).toBe(false);
+    // A clean pass (verdict "comment", no findings) is NOT incomplete.
+    expect(isIncompleteFindings({ ...incompleteFindings("x"), verdict: "comment" })).toBe(false);
     // A doc carrying findings is a real review whatever its verdict says — a spurious "error" can
     // never silently suppress real findings (issue #117 round-2 finding).
     expect(isIncompleteFindings({ ...incompleteFindings("x"), findings: [aFinding] })).toBe(false);

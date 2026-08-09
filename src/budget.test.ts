@@ -8,7 +8,9 @@ import {
   spawnFloorMessage,
   forceBackgroundSpawn,
   mainHasWrittenDraft,
-  seedMarkerPath,
+  isSeedSentinel,
+  SEED_SENTINEL,
+  priorContextPath,
   lastValidPath,
   isSubagentHookInput,
   evaluateBudgetHook,
@@ -456,24 +458,34 @@ describe("evaluateBudgetHook", () => {
 
 describe("mainHasWrittenDraft (fan-out floor)", () => {
   it("false while the draft does not exist", () => {
-    expect(mainHasWrittenDraft(null, null)).toBe(false);
-    expect(mainHasWrittenDraft(null, 1000)).toBe(false);
+    expect(mainHasWrittenDraft(null)).toBe(false);
   });
-  it("true for any existing draft when no seed marker exists (no seeding ran)", () => {
-    expect(mainHasWrittenDraft(1000, null)).toBe(true);
+  it("false while the draft still holds the pre-seed sentinel — the seed does not count (issue #127)", () => {
+    expect(mainHasWrittenDraft(SEED_SENTINEL)).toBe(false);
   });
-  it("only a draft modified AFTER the marker counts — the untouched seed does not", () => {
-    // seed-draft writes the draft first, then the marker, so an untouched seed's mtime is ≤ the
-    // marker's; any later agent write moves the draft's mtime past it.
-    expect(mainHasWrittenDraft(1000, 1000)).toBe(false);
-    expect(mainHasWrittenDraft(999, 1000)).toBe(false);
-    expect(mainHasWrittenDraft(1001, 1000)).toBe(true);
+  it("true once the draft holds ANY other content — the agent replaced the sentinel", () => {
+    expect(mainHasWrittenDraft("{}")).toBe(true);
+    expect(mainHasWrittenDraft("not even json")).toBe(true);
+    expect(mainHasWrittenDraft("")).toBe(true);
   });
 });
 
-describe("seedMarkerPath", () => {
-  it("derives the sidecar beside the draft (the seed-draft ↔ budget-hook convention)", () => {
-    expect(seedMarkerPath("/work/findings-draft.json")).toBe("/work/findings-draft.json.seed");
+describe("isSeedSentinel", () => {
+  it("is true only for an exact sentinel match (a missing draft is not the sentinel — inert)", () => {
+    expect(isSeedSentinel(SEED_SENTINEL)).toBe(true);
+    expect(isSeedSentinel(null)).toBe(false);
+    expect(isSeedSentinel(undefined as unknown as string | null)).toBe(false);
+    expect(isSeedSentinel("{}")).toBe(false);
+    expect(isSeedSentinel(`${SEED_SENTINEL} extra`)).toBe(false);
+  });
+});
+
+describe("priorContextPath", () => {
+  it("delivers the prior-review context beside the draft, postfix before the real extension", () => {
+    expect(priorContextPath("/work/findings-draft.json")).toBe("/work/findings-draft.prior.json");
+  });
+  it("appends the postfix when the draft has no extension", () => {
+    expect(priorContextPath("/work/findings-draft")).toBe("/work/findings-draft.prior");
   });
 });
 

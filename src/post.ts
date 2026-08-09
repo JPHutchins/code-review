@@ -11,6 +11,7 @@ import {
   carryForwardMarkers,
   findingsPointer,
   parseReviewComplete,
+  parseReviewedRoute,
   parseReviewedSha,
   parseRounds,
   reviewBodyPointer,
@@ -520,13 +521,19 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const existingComplete = existingSticky !== null && parseReviewComplete(existingSticky.body);
   const wouldBuryCompleted = (incomplete: boolean): boolean => incomplete && existingComplete;
 
+  // "The sticky reflects a completed FULL review": its route marker says so, or (an older sticky
+  // that predates the marker) it carries round history — only a completed full review appends a round.
+  const priorIsFullReview = (body: string): boolean =>
+    parseReviewedRoute(body) === "full review" || parseRounds(body).length > 0;
+
   // The full-review convergence history carried in the sticky's marker (it survives the announce
   // placeholder via carryForwardMarkers). A completed FULL review appends this run's counts below; a
   // CI-fix mechanic pass and every notice carry it forward unchanged so the trajectory is never lost.
   const priorRounds = existingSticky !== null ? parseRounds(existingSticky.body) : [];
-  const leaveInPlace = (): void => {
+  const leaveInPlace = (message?: string): void => {
     process.stderr.write(
-      `Review did not complete and the sticky already reflects a completed review — leaving it in place\n`,
+      message ??
+        "Review did not complete and the sticky already reflects a completed review — leaving it in place\n",
     );
     process.exit(0);
   };
@@ -627,6 +634,27 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const thisIncomplete = envelope.incomplete === true || isIncompleteFindings(findings);
   if (wouldBuryCompleted(thisIncomplete)) leaveInPlace();
 
+  // An EMPTY CI-fix mechanic pass must not bury a completed FULL review either: it completes with
+  // genuinely empty findings ({verdict: "comment", findings: []}), so it is not "incomplete" and
+  // wouldBuryCompleted can't see it — yet replacing a full review's sticky with "No findings — clean
+  // review." is the same false clean pass class (issue #127). A mechanic WITH findings still
+  // supersedes (its fixes are the actionable output on a red CI). The route lives in the envelope
+  // (the review job stamps it; `post` is not passed --route in the workflow), so read the effective
+  // route the same way render does — `input.route` first, then the envelope.
+  const effectiveRoute = input.route ?? envelope.route;
+  if (
+    effectiveRoute === "mechanic" &&
+    !thisIncomplete &&
+    findings.findings.length === 0 &&
+    existingSticky !== null &&
+    existingComplete &&
+    priorIsFullReview(existingSticky.body)
+  ) {
+    leaveInPlace(
+      "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n",
+    );
+  }
+
   // Base64-encode the whole-document marker once, reused across sticky + review body; each inline
   // comment embeds only its own finding instead.
   const findingsMarker = findingsPointer(findings, input.jsonUrl);
@@ -658,14 +686,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   const currentCounts = computeSeverityCounts(findings.findings);
 
-  // A convergence round is a COMPLETED FULL review. The route lives in the envelope (the review job
-  // stamps it; `post` is not passed --route in the workflow), so read the effective route the same way
-  // render does — `input.route` first, then the envelope — or the feature never grows a round in
-  // production. A mechanic pass or any incomplete/failed run carries the trajectory forward unchanged
-  // (it is a CI fix or a non-review, not a round). A same-head CI retry simply appends again — an
-  // identical chip reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe
-  // because a mechanic stamps a new head without adding a round, so the last round need not be its head.
-  const effectiveRoute = input.route ?? envelope.route;
+  // A convergence round is a COMPLETED FULL review. A mechanic pass or any incomplete/failed run
+  // carries the trajectory forward unchanged (it is a CI fix or a non-review, not a round). A
+  // same-head CI retry simply appends again — an identical chip reads as "no change", which is
+  // accurate; a reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without
+  // adding a round, so the last round need not be its head.
   const isRound = isConvergenceRound(effectiveRoute, thisIncomplete);
   const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
 

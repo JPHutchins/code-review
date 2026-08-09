@@ -5,12 +5,22 @@ import { readFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
-import { render, computeSeverityCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
+import {
+  render,
+  computeSeverityCounts,
+  computeRoundCounts,
+  isConvergenceRound,
+  isReviewVerdict,
+} from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
+  findingsMarkerForm,
+  isFullReviewSticky,
+  parseCompletedAncestor,
   parseFindingsMarker,
   parseReviewComplete,
+  parseReviewedRoute,
   parseReviewedSha,
   parseRounds,
   parseSignalMarker,
@@ -18,6 +28,7 @@ import {
   reviewBodyPointer,
   signalForRound,
   signalMarker,
+  surfaceFindings,
   surfacedFindingsPointer,
 } from "./surface.js";
 import type { SurfaceSignal } from "./surface.js";
@@ -61,6 +72,8 @@ export interface PostInput {
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
+const EMPTY_MECHANIC_LEAVE_MESSAGE =
+  "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n";
 const MAX_SUGGESTION_LINES = 10;
 
 const countSuggestionLines = (text: string): number => text.split("\n").length;
@@ -526,6 +539,32 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const existingComplete = existingSticky !== null && parseReviewComplete(existingSticky.body);
   const wouldBuryCompleted = (incomplete: boolean): boolean => incomplete && existingComplete;
 
+  // "The sticky reflects a completed FULL review": the isFullReviewSticky predicate (route marker
+  // wins, round history as the pre-marker fallback), plus, for a sticky with no route or round
+  // signal at all, the two completed-review signals of the pre-marker era — review-complete on the
+  // sticky itself, or the announce placeholder's carried completed-ancestor marker (a notice can
+  // never carry either). This deliberately does NOT require review-complete: the announce
+  // placeholder strips it while preserving the route and round markers, and an empty mechanic must
+  // not bury the full review the placeholder still records.
+  const priorIsFullReview = (body: string): boolean =>
+    isFullReviewSticky(body) ||
+    (parseReviewedRoute(body) === null &&
+      (parseReviewComplete(body) || parseCompletedAncestor(body)));
+
+  // An EMPTY CI-fix mechanic pass must not bury a completed FULL review either: it completes with
+  // genuinely empty findings ({verdict: "comment", findings: []}), so it is not "incomplete" and
+  // wouldBuryCompleted can't see it — yet replacing a full review's sticky with "No findings — clean
+  // review." is the same false clean pass class (issue #127). A mechanic WITH findings still
+  // supersedes (its fixes are the actionable output on a red CI). The route comes from the review
+  // job (passed through as --route; the envelope is the fallback for standalone callers), so the
+  // guard also fires when the result envelope was lost in transit.
+  const emptyMechanicWouldBury = (route: string | null | undefined, incomplete: boolean): boolean =>
+    route === "mechanic" &&
+    !incomplete &&
+    findings.findings.length === 0 &&
+    existingSticky !== null &&
+    priorIsFullReview(existingSticky.body);
+
   // The full-review convergence history carried in the sticky's marker (it survives the announce
   // placeholder via carryForwardMarkers). A completed FULL review appends this run's counts below; a
   // CI-fix mechanic pass and every notice carry it forward unchanged so the trajectory is never lost.
@@ -551,10 +590,30 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ? pointer
       : `${pointer}\n${signalMarker(priorSignal)}`;
   };
-  const leaveInPlace = (): void => {
+  const leaveInPlace = (message?: string): never => {
     process.stderr.write(
-      `Review did not complete and the sticky already reflects a completed review — leaving it in place\n`,
+      message ??
+        "Review did not complete and the sticky already reflects a completed review — leaving it in place\n",
     );
+    process.exit(0);
+  };
+
+  // When the guard fires on a real completed review, leaving it in place is right — it IS the
+  // terminal content. When it fires on the announce PLACEHOLDER (which strips review-complete), a
+  // bare leave would strand a stale "Code review in progress" as the terminal state, so post a
+  // compact honest notice instead, carrying the preserved full review's markers forward so the seed
+  // chain and trajectory survive the swap. Callers pass the sticky the guard already established
+  // exists (TS can't see the closure's narrowing).
+  const emptyMechanicLeaveOrNote = async (sticky: {
+    readonly id: number;
+    readonly body: string;
+  }): Promise<void> => {
+    if (existingComplete) leaveInPlace(EMPTY_MECHANIC_LEAVE_MESSAGE);
+    const priorSha = parseReviewedSha(sticky.body);
+    const body = formatMarkdown(
+      `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.\n\n${carryForwardMarkers(sticky.body)}`,
+    );
+    await upsertSticky(input.repo, prNumber, sticky, body, ghApi);
     process.exit(0);
   };
 
@@ -623,12 +682,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const envelope = loadEnvelope(input.envelopePath);
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
 
+  // The route the review job stamped, read the same way render does — `input.route` first, then the
+  // envelope — so the workflow's --route passthrough and standalone callers both work, and the
+  // sticky's route marker, the guard, and the rounds logic can never disagree.
+  const effectiveRoute = input.route ?? envelope?.route;
+
   if (envelope === null) {
     // The envelope carried the incomplete flag; with it lost, derive incompleteness from the verdict
     // (render does the same) so an error-verdict findings doc here still reads as a notice and — via
     // the guard below — can't bury a completed review, which this branch previously skipped.
     const envelopelessIncomplete = isIncompleteFindings(findings);
     if (wouldBuryCompleted(envelopelessIncomplete)) leaveInPlace();
+    // The route is passed through as --route, so an empty mechanic with a lost envelope still
+    // cannot bury a completed full review (issue #127).
+    if (emptyMechanicWouldBury(effectiveRoute, envelopelessIncomplete) && existingSticky !== null)
+      await emptyMechanicLeaveOrNote(existingSticky);
     const body = formatMarkdown(
       render({
         findings,
@@ -637,7 +705,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         prices: decodedPrices.right,
         pricesProvided: input.pricesProvided,
         template,
-        route: input.route,
+        route: effectiveRoute,
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
@@ -669,6 +737,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const thisIncomplete = envelope.incomplete === true || isIncompleteFindings(findings);
   if (wouldBuryCompleted(thisIncomplete)) leaveInPlace();
 
+  if (emptyMechanicWouldBury(effectiveRoute, thisIncomplete) && existingSticky !== null)
+    await emptyMechanicLeaveOrNote(existingSticky);
+
   const {
     comments: rawComments,
     strays,
@@ -696,20 +767,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   const currentCounts = computeSeverityCounts(findings.findings);
 
-  // A convergence round is a COMPLETED FULL review. The route lives in the envelope (the review job
-  // stamps it; `post` is not passed --route in the workflow), so read the effective route the same way
-  // render does — `input.route` first, then the envelope — or the feature never grows a round in
-  // production. A mechanic pass or any incomplete/failed run carries the trajectory forward unchanged
-  // (it is a CI fix or a non-review, not a round). The verdict guard (isReviewVerdict, render's badge
-  // uses the same predicate) also gates the append here, so an out-of-contract "error" verdict that
-  // somehow carries findings never counts as a round: the trajectory, the badge, and the blob's
-  // convergence stay one decision. A same-head CI retry simply appends again — an identical chip
-  // reads as "no change", which is accurate; a reviewed-sha-keyed replace is unsafe because a
-  // mechanic stamps a new head without adding a round, so the last round need not be its head.
-  const effectiveRoute = input.route ?? envelope.route;
+  // A convergence round is a COMPLETED FULL review (effectiveRoute read above — `input.route` first,
+  // then the envelope — the same way render does). A mechanic pass or any incomplete/failed run
+  // carries the trajectory forward unchanged (it is a CI fix or a non-review, not a round). The
+  // verdict guard (isReviewVerdict, render's badge uses the same predicate) also gates the append
+  // here, so an out-of-contract "error" verdict that somehow carries findings never counts as a
+  // round: the trajectory, the badge, and the blob's convergence stay one decision. A same-head CI
+  // retry simply appends again — an identical chip reads as "no change", which is accurate; a
+  // reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without adding a
+  // round, so the last round need not be its head.
   const isRound =
     isConvergenceRound(effectiveRoute, thisIncomplete) && isReviewVerdict(findings.verdict);
-  const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
+  // The round entry carries the ROUND counts (findings + systemic severities) — the same
+  // computeRoundCounts the badge scores with, so a systemic-only round with a critical systemic item
+  // stores and shows 🔴1 rather than masquerading as "clean".
+  const rounds = isRound ? [...priorRounds, computeRoundCounts(findings)] : priorRounds;
 
   // The stop signal the surfaced blob embeds: THIS round's signal when the run completes a round,
   // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived. An
@@ -732,6 +804,22 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // reused across sticky + review body; each inline comment embeds only its own finding instead.
   const findingsMarker = findingsMarkerFor(findings, signal);
 
+  // Only the embedded base64 form is decodable back by a re-review seed (parseFindingsMarker), so a
+  // degraded marker would silently drop the embedded machine channel — surface the degradation in
+  // the run log rather than letting it vanish. The link form still carries a machine-readable
+  // pointer; only the omitted form loses the channel entirely. Measured on the SURFACED marker
+  // (surfaceFindings — the agent's doc plus the stop signal), which is the form actually embedded.
+  const markerForm = findingsMarkerForm(surfaceFindings(findings, signal), input.jsonUrl);
+  if (markerForm === "link") {
+    process.stderr.write(
+      "Warning: the findings-json marker exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact instead of the embedded JSON\n",
+    );
+  } else if (markerForm === "omitted") {
+    process.stderr.write(
+      "Warning: the findings-json marker exceeds the embed limit and no --json-url was given — the machine-readable channel is omitted from the posted surfaces\n",
+    );
+  }
+
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
     envelope,
@@ -739,7 +827,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     prices: decodedPrices.right,
     pricesProvided: input.pricesProvided,
     template,
-    route: input.route,
+    route: effectiveRoute,
     reviewedSha: input.headSha,
     effort: input.effort,
     testReport,

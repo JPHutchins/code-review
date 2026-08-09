@@ -31,6 +31,11 @@ const EMBED_LIMIT = 40200;
 const AGENTS_STOP_DIRECTIVE =
   "<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->";
 
+// The base64 length of a document's JSON — the one size computation both encodeMarker and
+// findingsMarkerForm share, so the form report and the emitted marker can never disagree.
+const b64LengthOf = (document: unknown): number =>
+  Buffer.from(JSON.stringify(document), "utf-8").toString("base64").length;
+
 const encodeMarker = (document: unknown, jsonUrl: string | undefined, limit: number): string => {
   const b64 = Buffer.from(JSON.stringify(document), "utf-8").toString("base64");
   const marker =
@@ -58,6 +63,21 @@ export const findingsPointer = (
   limit = EMBED_LIMIT,
 ): string => encodeMarker(findings, jsonUrl, limit);
 
+// The form findingsPointer will emit for a whole-document marker, exposed so the IO-bound callers
+// (post) can warn when the embedded machine channel degrades instead of failing silently — only the
+// base64 form is decodable back (parseFindingsMarker), so "link"/"omitted" silently drop the seed
+// for a re-review.
+export type FindingsMarkerForm = "embedded" | "link" | "omitted";
+
+export const findingsMarkerForm = (
+  findings: Findings,
+  jsonUrl: string | undefined,
+  limit = EMBED_LIMIT,
+): FindingsMarkerForm => {
+  if (b64LengthOf(findings) <= limit) return "embedded";
+  return jsonUrl ? "link" : "omitted";
+};
+
 // Per-finding counterpart: an inline comment embeds only its own finding, so the sticky and review
 // body stay the whole-document SSOT.
 export const findingPointer = (
@@ -74,6 +94,36 @@ export const parseReviewedSha = (body: string): string | null => {
   const sha = /<!-- reviewed-sha: ([0-9a-fA-F]{40}) -->/.exec(body)?.[1]?.toLowerCase();
   return sha && sha !== ZERO_SHA ? sha : null;
 };
+
+// The route of the COMPLETED review that stamped the sticky ("full review" | "mechanic"; absent on
+// notices and on pre-route-marker stickies). The seed chain is route-aware on it: a CI-fix mechanic
+// pass must not seed a later full review as if it were the previous full review (issue #127).
+const ROUTE_RE = /<!-- reviewed-route: ([^>]*) -->/;
+export const parseReviewedRoute = (body: string): string | null => ROUTE_RE.exec(body)?.[1] || null;
+
+// Post's empty-mechanic guard predicate: "does this sticky record a completed FULL review as its
+// last completed review?" The route marker wins — a mechanic sticky carries a prior full review's
+// round history forward, so round history alone can't distinguish it — and round history is the
+// fallback for pre-route-marker stickies (only a completed full review ever APPENDS a round; a
+// mechanic can only carry one). With no signal at all the review is not classified as full here;
+// post adds its own completed-review fallbacks (review-complete, or the placeholder's
+// completed-ancestor marker) for the pre-rounds era. seed-draft deliberately does NOT use this
+// predicate: for seeding, a no-route prior is unknown (a pre-route mechanic that carried rounds
+// looks identical to a pre-route full review), and the false-prior direction is worse than one cold
+// review, so it requires the route marker outright.
+export const isFullReviewSticky = (body: string): boolean => {
+  const route = parseReviewedRoute(body);
+  return route === "full review" || (route !== "mechanic" && parseRounds(body).length > 0);
+};
+
+// Carried by the announce placeholder when the sticky it replaced was a COMPLETED review: the
+// placeholder strips review-complete (it must not read as a finished review of the new head), yet
+// the empty-mechanic guard needs to know the placeholder descends from a completed review to
+// protect a pre-route/pre-rounds full review that would otherwise lose every signal (issue #127
+// round-2). Only ever carried — never emitted by a completed render, which has review-complete.
+export const COMPLETED_ANCESTOR_MARKER = "<!-- review-complete-ancestor -->";
+export const parseCompletedAncestor = (body: string): boolean =>
+  body.includes(COMPLETED_ANCESTOR_MARKER);
 
 // A POSITIVE marker: present only in a sticky the commenter wrote for a COMPLETED review. It is
 // absent from an incomplete notice AND from an in-progress placeholder (which carries forward a prior
@@ -128,7 +178,8 @@ export const roundsMarker = (rounds: readonly SeverityCounts[]): string =>
     ? ""
     : `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->`;
 
-// One round's chip: "🔴4 🟠3" for findings, "clean" for none.
+// One round's chip: "🔴4 🟠3" for the round's severity content (findings + systemic, as stored), or
+// "clean" for none.
 const roundChip = (c: SeverityCounts): string => {
   const parts = SEVERITIES.filter((k) => c[k] > 0).map((k) => `${severityEmoji(k)}${String(c[k])}`);
   return parts.length === 0 ? "clean" : parts.join(" ");
@@ -191,8 +242,10 @@ export const convergenceSummary = (
 // weights wrong). The agent never writes the signal (it cannot know the score — the weights are
 // commenter-side), so the draft schema does not carry it; `stripSurfaceFields` drops it when a
 // surfaced doc feeds back into the agent channel (the re-review seed). A null signal still stamps
-// the version, so the surface shape is always the marker's contract.
-export const SURFACE_SCHEMA_VERSION = "0.6.0";
+// the version, so the surface shape is always the marker's contract. The surfaced axis is DISTINCT
+// from the draft axis (DEFAULT_SCHEMA_VERSION is 0.6.0 after issue #134): 0.7.0 is the surfaced
+// shape so stripSurfaceFields can always tell a surfaced doc from a draft one.
+export const SURFACE_SCHEMA_VERSION = "0.7.0";
 
 export interface ConvergenceSignal {
   readonly score: number;
@@ -332,19 +385,27 @@ export const stripSurfaceFields = (doc: unknown): unknown => {
 
 // The machine-readable markers to carry forward when a comment's PROSE is replaced but its data must
 // survive — the "review in progress" placeholder swaps the visible summary yet must not clobber the
-// re-review seed the review job reads back from the sticky (the embedded findings + reviewed-sha), nor
-// the round-history trajectory. The findings marker is extracted verbatim so both its base64 and
-// jsonUrl-link forms survive; base64 (A–Z a–z 0–9 + / =) and URLs never contain '>', so `[^>]*` stops
-// at its closing `-->`. The STOP directive that always precedes it is re-emitted from
-// AGENTS_STOP_DIRECTIVE (its SSOT above) rather than re-matched, so a future edit to that constant
-// can't silently desync a parallel regex. Returns "" when the body carries none of them.
+// re-review seed the review job reads back from the sticky (the embedded findings + reviewed-sha),
+// the route that made the seed chain route-aware, nor the round-history trajectory. The findings
+// marker is extracted verbatim so both its base64 and jsonUrl-link forms survive; base64 (A–Z a–z
+// 0–9 + / =) and URLs never contain '>', so `[^>]*` stops at its closing `-->`. The STOP directive
+// that always precedes it is re-emitted from AGENTS_STOP_DIRECTIVE (its SSOT above) rather than
+// re-matched, so a future edit to that constant can't silently desync a parallel regex. Returns ""
+// when the body carries none of them.
 export const carryForwardMarkers = (body: string): string => {
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
+  const reviewedRoute = ROUTE_RE.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
   const signal = SIGNAL_RE.exec(body)?.[0];
+  // The replaced sticky was a completed review — the placeholder must record that ancestry even
+  // though review-complete itself is never carried (it would read as a finished review).
+  const completedAncestor =
+    parseReviewComplete(body) || parseCompletedAncestor(body)
+      ? COMPLETED_ANCESTOR_MARKER
+      : undefined;
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, rounds, signal]
+  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, rounds, signal]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
 };

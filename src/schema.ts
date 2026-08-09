@@ -38,6 +38,23 @@ const SchemaVersion = t.refinement(
   "SchemaVersion",
 );
 
+// Mirrors ajv-formats' `uri` format (an absolute, RFC 3986 URI) so the codec gate and the ajv gate
+// agree on code_url — the extraction ladder runs both gates, and post's decode-only path must not
+// accept what ajv rejects. Verified against ajv-formats over the URI corpus; the whitespace check
+// closes the one divergence (URL() auto-encodes raw spaces that a URI cannot contain).
+const UriString = t.refinement(
+  t.string,
+  (s): s is string => !/\s/.test(s) && URL.canParse(s),
+  "UriString",
+);
+
+// The stable rule identifier pair, shared by findings and systemic problems so the two shapes can
+// never diverge on it.
+const FindingRuleCodec = t.partial({
+  code: t.string,
+  code_url: UriString,
+});
+
 const FindingShape = t.intersection([
   t.type({
     path: t.string,
@@ -49,10 +66,9 @@ const FindingShape = t.intersection([
     reasoning: t.string,
     confidence: Confidence,
   }),
+  FindingRuleCodec,
   t.partial({
     side: SideCodec,
-    code: t.string,
-    code_url: t.string,
     recommendation: t.string,
     patch: t.string,
   }),
@@ -66,13 +82,55 @@ const EndGeStart = t.refinement(
 
 export const FindingCodec = t.exact(EndGeStart);
 
+// Cross-cutting observations that tie findings together, with no required line anchor — mirrors
+// findings.schema.json's systemic_problems items exactly, reusing the shared rule-identifier pair.
+// severity/reasoning/confidence are required (owner direction on #134).
+const SystemicRequired = t.type({
+  title: t.string,
+  description: t.string,
+  severity: SeverityCodec,
+  reasoning: t.string,
+  confidence: Confidence,
+});
+
+const SystemicOptional = t.partial({
+  finding_codes: t.array(t.string),
+  paths: t.array(t.string),
+});
+
+const SystemicProblemShape = t.intersection([SystemicRequired, FindingRuleCodec, SystemicOptional]);
+
+// The schema declares additionalProperties: false, but t.exact only strips unknown keys on encode —
+// on decode it accepts them. The refinement closes the gap so the codec gate rejects exactly what
+// the ajv gate rejects (the extraction ladder runs both gates). The key set is derived from the
+// shape's own members, so it cannot drift from the declared fields.
+const SYSTEMIC_KEYS = new Set([
+  ...Object.keys(SystemicRequired.props),
+  ...Object.keys(FindingRuleCodec.props),
+  ...Object.keys(SystemicOptional.props),
+]);
+
+const SystemicProblemStrict = t.refinement(
+  SystemicProblemShape,
+  (s): s is t.TypeOf<typeof SystemicProblemShape> =>
+    Object.keys(s).every((k) => SYSTEMIC_KEYS.has(k)),
+  "SystemicProblemStrict",
+);
+
+export const SystemicProblemCodec = t.exact(SystemicProblemStrict);
+
 export const FindingsCodec = t.exact(
-  t.type({
-    schema_version: SchemaVersion,
-    summary: t.string,
-    verdict: VerdictCodec,
-    findings: t.array(FindingCodec),
-  }),
+  t.intersection([
+    t.type({
+      schema_version: SchemaVersion,
+      summary: t.string,
+      verdict: VerdictCodec,
+      findings: t.array(FindingCodec),
+    }),
+    t.partial({
+      systemic_problems: t.array(SystemicProblemCodec),
+    }),
+  ]),
 );
 
 export const TriageCodec = t.type({
@@ -151,22 +209,12 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.5.0";
+export const DEFAULT_SCHEMA_VERSION = "0.6.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
+export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
 export type Verdict = t.TypeOf<typeof VerdictCodec>;
-
-// The initial $DRAFT scaffold: an empty, neutral findings doc the review agent is told to fill in. It
-// carries "comment" (never the pipeline-only "error"), so an agent that populates it and forgets to
-// touch the verdict still ships a valid review. A dead-agent recovery of this untouched scaffold is
-// caught by `adapt`'s seed-marker check, not by its verdict — so the verdict stays a plain template.
-export const emptyFindings = (summary: string): Findings => ({
-  schema_version: DEFAULT_SCHEMA_VERSION,
-  summary,
-  verdict: "comment",
-  findings: [],
-});
 
 // The findings shape for a run that produced no code-review verdict — an operational failure, a
 // security refusal, or an empty diff with nothing to review. `verdict: "error"` is the machine-readable

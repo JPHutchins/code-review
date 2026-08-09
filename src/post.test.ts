@@ -5,7 +5,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
 import { post, announce, reportIncomplete } from "./post.js";
-import { parseSignalMarker } from "./surface.js";
+import { parseRounds, parseSignalMarker } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -122,6 +122,34 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   route: "full review",
   ...overrides,
 });
+
+const roundsMarkerFor = (n: number): string =>
+  `<!-- code-review:rounds;base64 ${Buffer.from(
+    JSON.stringify(Array.from({ length: n }, () => ({ critical: 0, major: 1, minor: 0, nit: 0 }))),
+    "utf-8",
+  ).toString("base64")} -->`;
+
+// Shared by the sticky-precedence describes: the bot's own prior sticky + the post call surface.
+const mkMocks = (stickyBody: string) => [
+  {
+    match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+    response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+  },
+  {
+    match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+    response: inlineDiff,
+  },
+  {
+    match: (a: readonly string[]) =>
+      a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+    response: `${JSON.stringify({ id: 999, body: stickyBody })}\n`,
+  },
+  {
+    match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+    response: "",
+  },
+  { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
+];
 
 interface RecordedCall {
   readonly args: readonly string[];
@@ -274,6 +302,124 @@ describe("post — upsert sticky comment", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
     expect(postCall).toBeDefined();
+  });
+});
+
+describe("post — systemic problems (issue #134)", () => {
+  it("renders the systemic section in the sticky and carries the array through the findings marker", async () => {
+    const withSystemic: Findings = {
+      ...mkFindings([mkFinding({ start_line: 10, end_line: 10 })]),
+      systemic_problems: [
+        {
+          title: "Retry plumbing is inconsistent",
+          description: "Three spots, three retry policies.",
+          severity: "major",
+          reasoning: "Each file implements its own policy.",
+          confidence: 0.8,
+          finding_codes: ["widened-type"],
+          paths: ["src/foo.ts"],
+        },
+      ],
+    };
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(withSystemic));
+
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+        response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+
+    await post(mkInput({}), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    expect(stickyCall).toBeDefined();
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    expect(body.body).toContain("### 🔗 Systemic problems");
+    expect(body.body).toContain("Retry plumbing is inconsistent");
+    // The machine channel carries the systemic array verbatim, not just the rendered prose.
+    const marker = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body.body);
+    expect(marker).not.toBeNull();
+    const decoded = JSON.parse(Buffer.from(marker?.[1] ?? "", "base64").toString("utf-8")) as {
+      systemic_problems?: readonly unknown[];
+    };
+    expect(decoded.systemic_problems).toHaveLength(1);
+    expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
+    // The convergence round entry carries the systemic severity too (one minor finding + one major
+    // systemic item) — a systemic-only critical round can never masquerade as "clean".
+    expect(parseRounds(body.body).at(-1)).toEqual({ critical: 0, major: 1, minor: 1, nit: 0 });
+  });
+
+  it("warns to the run log when the whole-document marker degrades past the embed limit (issue #134 review)", async () => {
+    const huge: Findings = {
+      ...mkFindings([]),
+      findings: Array.from({ length: 500 }, (_, i) =>
+        mkFinding({ title: `Finding ${String(i)}`, description: "x".repeat(200) }),
+      ),
+    };
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(huge));
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { api, calls } = mkMockGhApi([
+        {
+          match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+          response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+        },
+        {
+          match: (a) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+          response: inlineDiff,
+        },
+        {
+          match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+          response: "",
+        },
+        {
+          match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+          response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
+        },
+        {
+          match: (a) => a[0] === "repos/owner/repo/pulls/42/reviews",
+          response: "",
+        },
+      ]);
+
+      await post(mkInput({}), api);
+
+      const stickyCall = calls().find(
+        (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      );
+      expect(stickyCall).toBeDefined();
+      const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+      // The marker is omitted entirely (no --json-url in this invocation) — the degradation must not
+      // pass silently.
+      expect(body.body).not.toContain("code-review:findings-json");
+      expect(
+        stderrSpy.mock.calls.some((c) => String(c[0]).includes("exceeds the embed limit")),
+      ).toBe(true);
+    } finally {
+      // Restore even when an assertion above fails — a leaked spy swallows stderr for the rest of
+      // the suite (vitest has no restoreMocks configured).
+      stderrSpy.mockRestore();
+    }
   });
 });
 
@@ -2538,27 +2684,6 @@ describe("post — incomplete result never buries a completed review (#107)", ()
     "🔄 Code review in progress",
   ].join("\n");
 
-  const mkMocks = (stickyBody: string) => [
-    {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
-      response: inlineDiff,
-    },
-    {
-      match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-      response: `${JSON.stringify({ id: 999, body: stickyBody })}\n`,
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
-      response: "",
-    },
-    { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
-  ];
-
   const writeIncomplete = (): void => {
     writeFileSync(
       join(tmpDir, "envelope.json"),
@@ -2647,15 +2772,232 @@ describe("post — incomplete result never buries a completed review (#107)", ()
   });
 });
 
-describe("post — convergence rounds (issue #125)", () => {
-  const roundsMarkerFor = (n: number): string =>
-    `<!-- code-review:rounds;base64 ${Buffer.from(
-      JSON.stringify(
-        Array.from({ length: n }, () => ({ critical: 0, major: 1, minor: 0, nit: 0 })),
-      ),
-      "utf-8",
-    ).toString("base64")} -->`;
+describe("post — an empty CI-fix mechanic pass never buries a completed FULL review (#127)", () => {
+  const stickyFrom = (markers: readonly string[]): string =>
+    `<!-- code-review -->\n${markers.join("\n")}\n\n### 💬 comment — the prior review`;
 
+  // A completed FULL review — its route marker, and (on older stickies that predate it) its rounds
+  // history, are the two signals priorIsFullReview reads.
+  const fullReviewSticky = stickyFrom([
+    "<!-- review-complete -->",
+    "<!-- reviewed-route: full review -->",
+    roundsMarkerFor(1),
+  ]);
+  const oldCliFullReviewSticky = stickyFrom(["<!-- review-complete -->", roundsMarkerFor(1)]);
+  const markerlessFullReviewSticky = stickyFrom(["<!-- review-complete -->"]);
+  const mechanicSticky = stickyFrom([
+    "<!-- review-complete -->",
+    "<!-- reviewed-route: mechanic -->",
+  ]);
+  // A completed mechanic that carried a prior full review's round history forward — the route
+  // marker must win over the carried rounds, or same-route superseding would be blocked.
+  const mechanicWithCarriedRoundsSticky = stickyFrom([
+    "<!-- review-complete -->",
+    "<!-- reviewed-route: mechanic -->",
+    roundsMarkerFor(1),
+  ]);
+  // The announce placeholder of a review of THIS run: the prior full review's markers are carried
+  // forward verbatim, but review-complete is stripped (it is re-emitted only by a completed render).
+  const placeholderOfFullReviewSticky = [
+    "<!-- code-review -->",
+    "<!-- reviewed-route: full review -->",
+    roundsMarkerFor(1),
+    FINDINGS_MARKER,
+    "",
+    "🔄 **Code review in progress** for `abc123d` — see the [workflow run](https://github.com/owner/repo/actions/runs/12345)",
+  ].join("\n");
+  // A first-review placeholder: no prior markers at all — an empty mechanic may supersede it.
+  const firstReviewPlaceholderSticky = [
+    "<!-- code-review -->",
+    "",
+    "🔄 **Code review in progress** for `abc123d`",
+  ].join("\n");
+
+  const writeEmptyMechanic = (): void => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({ schema_version: "0.5.0", summary: "s", verdict: "comment", findings: [] }),
+    );
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, route: "mechanic" }),
+    );
+  };
+
+  const expectLeftInPlace = async (
+    api: GhApi,
+    calls: () => readonly RecordedCall[],
+  ): Promise<void> => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await expect(post(mkInput({ route: undefined }), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    // No patch, no new comment — the completed full review stays visible.
+    expect(
+      calls().some(
+        (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+      ),
+    ).toBe(false);
+    stderrSpy.mockRestore();
+    exitSpy.mockRestore();
+  };
+
+  it("leaves a completed full review in place — the empty mechanic's clean pass is not a review round (route marker)", async () => {
+    writeEmptyMechanic();
+    const { api, calls } = mkMockGhApi(mkMocks(fullReviewSticky));
+    await expectLeftInPlace(api, calls);
+  });
+
+  it("recognizes an OLD-CLI full review sticky (rounds history, no route marker) and still leaves it in place", async () => {
+    writeEmptyMechanic();
+    const { api, calls } = mkMockGhApi(mkMocks(oldCliFullReviewSticky));
+    await expectLeftInPlace(api, calls);
+  });
+
+  it("does NOT leave a completed MECHANIC sticky in place — same-route superseding is normal", async () => {
+    writeEmptyMechanic();
+    const { api, calls } = mkMockGhApi(mkMocks(mechanicSticky));
+    await post(mkInput({ route: undefined }), api);
+    const patchCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    expect(patchCall).toBeDefined();
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("**route:** mechanic");
+  });
+
+  it("the route marker WINS over carried round history — a mechanic that carried a full review's rounds is still superseded by an empty mechanic", async () => {
+    writeEmptyMechanic();
+    const { api, calls } = mkMockGhApi(mkMocks(mechanicWithCarriedRoundsSticky));
+    await post(mkInput({ route: undefined }), api);
+    const patchCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    expect(patchCall).toBeDefined();
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("**route:** mechanic");
+  });
+
+  const postExpectingExit = async (
+    api: GhApi,
+    calls: () => readonly RecordedCall[],
+  ): Promise<string> => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await expect(post(mkInput({ route: undefined }), api)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    const patchCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    expect(patchCall).toBeDefined();
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    stderrSpy.mockRestore();
+    exitSpy.mockRestore();
+    return body;
+  };
+
+  it("replaces the ANNOUNCE PLACEHOLDER with a compact honest notice instead of a clean pass or a stale 'in progress' — the full review's markers are carried forward (review-complete is stripped, route + rounds + findings carried)", async () => {
+    writeEmptyMechanic();
+    const { api, calls } = mkMockGhApi(mkMocks(placeholderOfFullReviewSticky));
+    const body = await postExpectingExit(api, calls);
+    // Honest prose — never "No findings — clean review."
+    expect(body).toContain("CI-fix pass completed with no findings");
+    expect(body).not.toContain("clean review");
+    expect(body).not.toContain("in progress");
+    // The preserved full review's machine-readable record survives the swap.
+    expect(body).toContain("reviewed-route: full review");
+    expect(body).toContain("code-review:rounds;base64");
+    expect(body).toContain("code-review:findings-json");
+  });
+
+  it("protects a PRE-ROUTE/PRE-ROUNDS full review through the placeholder via the carried completed-ancestor marker — no false clean pass", async () => {
+    writeEmptyMechanic();
+    // A markerless completed full review, then the announce placeholder replaced it: only the
+    // findings + reviewed-sha + the completed-ancestor marker survive (no route, no rounds).
+    const ancestorPlaceholderSticky = [
+      "<!-- code-review -->",
+      "<!-- reviewed-sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
+      "<!-- review-complete-ancestor -->",
+      "",
+      "🔄 **Code review in progress** for `abc123d`",
+    ].join("\n");
+    const { api, calls } = mkMockGhApi(mkMocks(ancestorPlaceholderSticky));
+    const body = await postExpectingExit(api, calls);
+    expect(body).toContain("CI-fix pass completed with no findings");
+    expect(body).not.toContain("clean review");
+  });
+
+  it("recognizes a MARKERLESS completed full review (review-complete only, predating route and rounds markers) and leaves it in place", async () => {
+    writeEmptyMechanic();
+    const { api, calls } = mkMockGhApi(mkMocks(markerlessFullReviewSticky));
+    await expectLeftInPlace(api, calls);
+  });
+
+  it("an empty mechanic MAY supersede a first-review in-progress placeholder (no prior full review to bury)", async () => {
+    writeEmptyMechanic();
+    const { api, calls } = mkMockGhApi(mkMocks(firstReviewPlaceholderSticky));
+    await post(mkInput({ route: undefined }), api);
+    const patchCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    expect(patchCall).toBeDefined();
+  });
+
+  it("an empty mechanic with a LOST result envelope still cannot bury a completed full review — the route travels as --route", async () => {
+    writeEmptyMechanic();
+    // Point the envelope at a missing file ⇒ loadEnvelope returns null ⇒ the envelope-less path.
+    const { api, calls } = mkMockGhApi(mkMocks(fullReviewSticky));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await expect(
+      post(
+        mkInput({ route: "mechanic", envelopePath: join(tmpDir, "missing-envelope.json") }),
+        api,
+      ),
+    ).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(
+      calls().some(
+        (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+      ),
+    ).toBe(false);
+    stderrSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it("a mechanic WITH findings still supersedes a completed full review (its fixes are the actionable output)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        schema_version: "0.5.0",
+        summary: "s",
+        verdict: "comment",
+        findings: [mkFinding({ start_line: 10, end_line: 10, severity: "critical" })],
+      }),
+    );
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, route: "mechanic" }),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks(fullReviewSticky));
+    await post(mkInput({ route: undefined }), api);
+    const patchCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    expect(patchCall).toBeDefined();
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("**route:** mechanic");
+    expect(body).toContain("🔴");
+  });
+});
+
+describe("post — convergence rounds (issue #125)", () => {
   // A prior sticky carrying `n` rounds; `complete` + `sha` model a re-review of an already-reviewed
   // head. Every prior round is {major: 1} — score 2 at the default threshold 1 — and the embedded
   // surfaced blob carries that round's signal (round `signalRound`, defaulting to the round count),
@@ -2676,14 +3018,14 @@ describe("post — convergence rounds (issue #125)", () => {
       convergence: { score: 2, threshold: 1, converged: false },
     };
     const priorBlob = JSON.stringify({
-      schema_version: "0.6.0",
+      schema_version: "0.7.0",
       summary: "prior review",
       verdict: "comment",
       findings: [],
       ...signal,
     });
     const findingsMarker = opts.blobLink
-      ? `<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\\n<!-- code-review:signal;base64 ${Buffer.from(JSON.stringify({ schema_version: "0.6.0", ...signal }), "utf-8").toString("base64")} -->`
+      ? `<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\\n<!-- code-review:signal;base64 ${Buffer.from(JSON.stringify({ schema_version: "0.7.0", ...signal }), "utf-8").toString("base64")} -->`
       : `<!-- code-review:findings-json;base64 ${Buffer.from(priorBlob, "utf-8").toString("base64")} -->`;
     const markers = [
       opts.complete ? "<!-- review-complete -->" : "",
@@ -2819,7 +3161,7 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.6.0");
+    expect(blob.schema_version).toBe("0.7.0");
     expect(blob.round).toBe(2);
     // The default fixture findings are one minor → score 1 at the default threshold 1 → converged.
     expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
@@ -2846,7 +3188,7 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.6.0");
+    expect(blob.schema_version).toBe("0.7.0");
     expect(blob.convergence).toBeUndefined();
     expect(blob.round).toBeUndefined();
     // The notice never claims a signal itself, but the prior round's `converged` survives on the
@@ -2886,7 +3228,7 @@ describe("post — convergence rounds (issue #125)", () => {
     ]);
     await post(mkInput({ route: "mechanic" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.6.0");
+    expect(blob.schema_version).toBe("0.7.0");
     expect(blob.convergence).toBeUndefined();
     expect(blob.round).toBeUndefined();
   });

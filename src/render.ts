@@ -1,7 +1,7 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
-import type { Finding, Severity, Verdict } from "./schema.js";
+import type { Finding, Findings, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
@@ -32,6 +32,17 @@ const sanitizeFinding = (f: Finding): StrayView => ({
   patchProjection: projectPatch(f.patch),
 });
 
+// The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
+// finding_codes render inside backticks too, so they get the same backtick escaping as paths.
+const sanitizeSystemic = (s: SystemicProblem): SystemicProblem => ({
+  ...s,
+  title: escapePipes(s.title),
+  ...(s.paths !== undefined ? { paths: s.paths.map(escapeCodeBackticks) } : {}),
+  ...(s.finding_codes !== undefined
+    ? { finding_codes: s.finding_codes.map(escapeCodeBackticks) }
+    : {}),
+});
+
 const emptySeverityCounts = (): Record<Severity, number> => ({
   critical: 0,
   major: 0,
@@ -49,6 +60,17 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
 // is the pipeline-reserved no-verdict value, so a doc that carries it — even one that somehow also
 // carries findings — never counts as a completed review and must never read as converged (#141).
 export const isReviewVerdict = (verdict: Verdict): boolean => verdict !== "error";
+
+// The severity counts a convergence round stores and scores: findings PLUS systemic problems at
+// their (now required) severities — a systemic critical weighs like a finding critical, so a review
+// carrying one can never read "converged" beside it. The sticky's "Findings:" histogram stays
+// findings-only (computeSeverityCounts); this is the convergence channel only. Single source for
+// both the badge (render) and the round append (post), so the two can never disagree.
+export const computeRoundCounts = (findings: Findings): SeverityCounts =>
+  (findings.systemic_problems ?? []).reduce<Record<Severity, number>>(
+    (acc, s) => (s.severity in acc ? { ...acc, [s.severity]: acc[s.severity] + 1 } : acc),
+    computeSeverityCounts(findings.findings),
+  );
 
 // The single decision "is THIS run a convergence-defining full-review round?" — a completed full
 // review (not a CI-fix mechanic pass, not an incomplete notice). post() calls it to decide the round
@@ -97,8 +119,10 @@ export const render = (input: RenderInput): string => {
 
   // The convergence counts the badge AND the fallback blob signal both derive from — the last
   // completed round when a history exists (post-style histories end with THIS run), else this run's
-  // own counts — one source, so the two can never disagree (issue #141 review r2).
-  const convergenceCounts = rounds[rounds.length - 1] ?? severityCounts;
+  // own counts — one source, so the two can never disagree (issue #141 review r2). The stored round
+  // entries are computeRoundCounts (findings PLUS systemic severities, issue #134), so the last
+  // round already weighs a systemic critical like a finding critical.
+  const convergenceCounts = rounds[rounds.length - 1] ?? computeRoundCounts(input.findings);
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -119,6 +143,7 @@ export const render = (input: RenderInput): string => {
       ? convergenceSummary(convergenceCounts, input.convergenceThreshold)
       : "",
     strays: (input.strays ?? []).map(sanitizeFinding),
+    systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,

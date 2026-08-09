@@ -21,7 +21,9 @@ import {
   anchoredElapsedMs,
   deadlineEpochSec,
   mainHasWrittenDraft,
-  seedMarkerPath,
+  isSeedSentinel,
+  SEED_SENTINEL,
+  priorContextPath,
   lastValidPath,
   isSubagentHookInput,
   DEFAULT_RESERVE,
@@ -34,11 +36,15 @@ import {
   FindingsCodec,
   PriceMapCodec,
   TestSummaryCodec,
-  emptyFindings,
   isIncompleteFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
-import { parseFindingsMarker, parseReviewedSha, stripSurfaceFields } from "./surface.js";
+import {
+  parseFindingsMarker,
+  parseReviewedRoute,
+  parseReviewedSha,
+  stripSurfaceFields,
+} from "./surface.js";
 import {
   buildNoticeEnvelope,
   buildUnknownNoticeEnvelope,
@@ -57,7 +63,7 @@ import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName, TranscriptTelemetry } from "./adapt.js";
 import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
-import { schemaPathFor, declaredVersion } from "./registry.js";
+import { schemaPathFor, declaredVersion, resolve as resolveRegistry } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
 import { validatePatch } from "./patch.js";
 import {
@@ -453,14 +459,6 @@ const parseConvergenceThreshold = (raw: string | undefined): number | undefined 
   return n;
 };
 
-const mtimeMsOf = (path: string): number | null => {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return null;
-  }
-};
-
 /** The `transcript_path` a hook payload carries, when present. */
 const transcriptPathOf = (input: unknown): string | undefined => {
   const tp = (
@@ -469,11 +467,36 @@ const transcriptPathOf = (input: unknown): string | undefined => {
   return typeof tp === "string" ? tp : undefined;
 };
 
+const statMtimeMsOrNull = (path: string): number | null => {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+};
+
+const statSizeOrNull = (path: string): number | null => {
+  try {
+    return statSync(path).size;
+  } catch {
+    return null;
+  }
+};
+
 /** Snapshot the draft to its last-valid sidecar when it passes the same extraction ladder `adapt`
  *  will read it back through, so `adapt`'s fallback rung only ever sees a document it accepts.
+ *  The pre-seed sentinel never validates, so the untouched seed can never be checkpointed here.
  *  Best-effort — a snapshot miss never perturbs the hook's stdout decision. */
 export const snapshotIfValid = (draftPath: string): void => {
   try {
+    // Skip the ladder when the draft is not newer than the snapshot already taken: the hook fires
+    // on every main-agent PostToolBatch, and re-validating an unchanged draft each batch is the
+    // same per-event I/O class the lazy-thunk change elsewhere eliminated.
+    const snapPath = lastValidPath(draftPath);
+    const draftMtime = statMtimeMsOrNull(draftPath);
+    if (draftMtime === null) return;
+    const snapMtime = statMtimeMsOrNull(snapPath);
+    if (snapMtime !== null && draftMtime <= snapMtime) return;
     // Validate the LIVE draft only (no agentFileFallbackPath): passing the snapshot as a fallback
     // here would let a valid snapshot rescue an invalid live draft through the ladder, then copy that
     // invalid draft over the good snapshot — corrupting the last-valid state we exist to preserve.
@@ -481,7 +504,7 @@ export const snapshotIfValid = (draftPath: string): void => {
       extractStructured({ kind: "findings", native: undefined, agentFilePath: draftPath }).kind ===
       "ok"
     )
-      copyFileSync(draftPath, lastValidPath(draftPath));
+      copyFileSync(draftPath, snapPath);
   } catch (err) {
     process.stderr.write(
       `code-review: could not snapshot the last-valid draft (${errMsg(err)}) — any prior snapshot is unchanged\n`,
@@ -570,10 +593,8 @@ const budgetHookCmd = defineCommand({
             : DEFAULT_RESERVE.flatMs,
         },
         draftPath,
-        mainDraftWritten: mainHasWrittenDraft(
-          mtimeMsOf(draftPath),
-          mtimeMsOf(seedMarkerPath(draftPath)),
-        ),
+        // Lazy: the spawn gate is the only consumer, and the hook fires on every tool event.
+        mainDraftWritten: (): boolean => mainHasWrittenDraft(readFileOrNull(draftPath)),
       });
       // Only the main agent writes the draft (single-writer), so a subagent batch never introduces a
       // new valid state to preserve — snapshot on the main agent's PostToolBatch only.
@@ -779,13 +800,13 @@ const seedDraftCmd = defineCommand({
   meta: {
     name: "seed-draft",
     description:
-      "Write a valid findings $DRAFT before the review runs: the decoded findings from a prior review when one exists and still validates (incremental re-review), else an empty-but-valid scaffold — so a valid draft exists from turn 0. Also drops a sidecar marker beside the seed so the budget hook can tell the untouched seed from a draft the agent wrote itself. Prints the mode to stdout (prior-same|prior-new when seeded, by whether the prior review examined this same commit; empty-had-prior when a prior review exists but its findings could not be loaded; empty on a first review; none when even the scaffold write failed) and always exits 0",
+      "Initialize $DRAFT before the review runs: write a NON-REVIEW SENTINEL (no recovery path can validate it as a review), and deliver the decoded findings of a prior review OUT-OF-BAND to a read-only context file beside the draft when one exists and still validates (incremental re-review). Skips a prior that never completed (an error-verdict notice) or that a CI-fix mechanic pass produced — the seed chain is route-aware. Prints the mode to stdout (prior-same|prior-new when prior context was delivered, by whether the prior review examined this same commit; empty-had-prior when a prior review exists but its findings could not be loaded; empty on a first review; none when even the sentinel write failed) and always exits 0",
   },
   args: {
     prior: {
       type: "string",
       description:
-        "Path to the prior-review JSON gather staged ({ id, body }, or the literal null); its embedded base64 findings marker is decoded and becomes the seed when it validates against the schema",
+        "Path to the prior-review JSON gather staged ({ id, body }, or the literal null); its embedded base64 findings marker is decoded and delivered as re-review context when it validates against the schema",
     },
     "head-sha": {
       type: "string",
@@ -794,7 +815,7 @@ const seedDraftCmd = defineCommand({
     },
     out: {
       type: "string",
-      description: "Path to write the seed $DRAFT to (an absolute path outside the worktree)",
+      description: "Path to write the sentinel $DRAFT to (an absolute path outside the worktree)",
       required: true,
     },
     kind: {
@@ -808,7 +829,7 @@ const seedDraftCmd = defineCommand({
     "schema-version": {
       type: "string",
       description:
-        "Schema major.minor to validate the prior findings against (default: the kind's latest — an older-shaped prior review then falls back to the empty scaffold)",
+        "Schema major.minor to validate the prior findings against (default: the kind's latest — an older-shaped prior review then delivers no context)",
     },
   },
   run: async ({ args }) => {
@@ -822,45 +843,29 @@ const seedDraftCmd = defineCommand({
     }
 
     // seed-draft is best-effort and must NEVER fail the review step (the workflow runs it under
-    // `set -e`), so every path below either seeds from the prior review or degrades to the
-    // empty-but-valid scaffold — none uses the process-exiting require* helpers. The only outcome
-    // that skips seeding is a scaffold write that itself throws (e.g. a bad --out directory), which
-    // is warned and still exits 0: the agent then writes $DRAFT itself, exactly as before seeding.
-
-    // The sidecar marker, written right AFTER the seed so its mtime bounds the seed's: the budget
-    // hook treats the draft as agent-written only once its mtime passes the marker's. Only the
-    // marker's mtime is ever consumed (budget.ts mainHasWrittenDraft never reads its content), so a
-    // one-line sentinel suffices. Best-effort like the seed itself — without the marker the fan-out
-    // gate just accepts any existing draft.
-    const writeSeedMarker = (): void => {
+    // `set -e`), so every path below either seeds or degrades — none uses the process-exiting
+    // require* helpers. The only outcome that skips seeding is a sentinel write that itself throws
+    // (e.g. a bad --out directory), which is warned and still exits 0: the agent then creates
+    // $DRAFT itself, exactly as if no seeding ran.
+    const writeSentinel = (): boolean => {
       try {
-        writeFileSync(seedMarkerPath(outPath), "code-review seed marker\n");
-      } catch (err) {
+        writeFileSync(outPath, SEED_SENTINEL);
         process.stderr.write(
-          `Warning: could not write the seed marker beside ${outPath} (${errMsg(err)}) — the seeded draft will count as agent-written\n`,
-        );
-      }
-    };
-
-    const writeScaffold = (): boolean => {
-      try {
-        writeFileSync(outPath, `${JSON.stringify(emptyFindings(""), null, 2)}\n`);
-        writeSeedMarker();
-        process.stderr.write(
-          `Seeded ${outPath} with an empty valid scaffold — no decodable prior findings to build on\n`,
+          `Seeded ${outPath} with the non-review sentinel — the agent must replace it with its review\n`,
         );
         return true;
       } catch (err) {
         process.stderr.write(
-          `Warning: could not write the seed scaffold to ${outPath} (${errMsg(err)}) — the agent will create $DRAFT itself\n`,
+          `Warning: could not write the seed sentinel to ${outPath} (${errMsg(err)}) — the agent will create $DRAFT itself\n`,
         );
         return false;
       }
     };
 
     // The whole prior comment body gather staged, tolerating a missing/absent/"null"/malformed
-    // file: it carries both the embedded findings (seeded below when they still validate) and the
-    // reviewed-sha that distinguishes a same-commit re-review from a new-commit one.
+    // file: it carries the embedded findings (delivered as context below when they still validate),
+    // the reviewed-sha that distinguishes a same-commit re-review from a new-commit one, and the
+    // route of the review that produced it.
     const priorBody = ((): string | null => {
       if (!args.prior) return null;
       const raw = ((): unknown => {
@@ -885,7 +890,9 @@ const seedDraftCmd = defineCommand({
 
     // Validate + write WITHOUT the process-exiting require* helpers: any failure (bad
     // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the
-    // scaffold so the always-exit-0 contract holds.
+    // sentinel-only seed so the always-exit-0 contract holds. The prior findings are NEVER written
+    // into $DRAFT — only the sentinel goes there; the prior travels out-of-band to
+    // priorContextPath, which no recovery path reads back (issue #127).
     const seededFromPrior =
       priorFindings === null
         ? false
@@ -895,17 +902,30 @@ const seedDraftCmd = defineCommand({
                 ? resolve(args.schema)
                 : schemaPathFor(kind, args["schema-version"]);
               if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
-              writeFileSync(outPath, `${JSON.stringify(priorFindings, null, 2)}\n`);
-              writeSeedMarker();
-              const priorList = (priorFindings as { readonly findings?: unknown }).findings;
-              const count = Array.isArray(priorList) ? priorList.length : 0;
+              // Skip a prior that never completed (verdict "error" + no findings — the notice
+              // signature, isIncompleteFindings) and a prior that is not unmistakably a completed
+              // FULL review (route-aware seed chain): a CI-fix mechanic pass must not sit in the
+              // seed chain as if it were the previous review. The route marker is the ONLY
+              // reliable signal — round history can't identify the last review (a mechanic carries
+              // a full review's rounds forward), so a no-route prior is unknown and skipped: one
+              // cold review is cheaper than a false prior (issue #127 round-2).
+              const resolution = resolveRegistry("findings", priorFindings);
+              if (resolution.kind !== "ok") return false;
+              if (isIncompleteFindings(resolution.value)) return false;
+              if (parseReviewedRoute(priorBody ?? "") !== "full review") return false;
+              writeFileSync(outPath, SEED_SENTINEL);
+              writeFileSync(
+                priorContextPath(outPath),
+                `${JSON.stringify(priorFindings, null, 2)}\n`,
+              );
+              const count = resolution.value.findings.length;
               process.stderr.write(
-                `Seeded ${outPath} from the prior review (${String(count)} finding(s))\n`,
+                `Seeded ${outPath} with the sentinel and wrote the prior review (${String(count)} finding(s)) to ${priorContextPath(outPath)} as context\n`,
               );
               return true;
             } catch (err) {
               process.stderr.write(
-                `Warning: could not seed from the prior review (${errMsg(err)}) — falling back to the empty scaffold\n`,
+                `Warning: could not seed from the prior review (${errMsg(err)}) — seeding the sentinel only\n`,
               );
               return false;
             }
@@ -915,7 +935,7 @@ const seedDraftCmd = defineCommand({
     // prior SHA (older comment, or the all-zeros placeholder) falls to prior-new so the agent
     // re-checks against the current diff rather than assuming the code is unchanged. When nothing
     // could be seeded, empty-had-prior still tells the agent a prior review exists (vs a true first
-    // review), and none marks even the scaffold write failing.
+    // review), and none marks even the sentinel write failing.
     const mode = ((): string => {
       if (seededFromPrior) {
         const priorSha = priorBody === null ? null : parseReviewedSha(priorBody);
@@ -923,7 +943,7 @@ const seedDraftCmd = defineCommand({
           ? "prior-same"
           : "prior-new";
       }
-      if (!writeScaffold()) return "none";
+      if (!writeSentinel()) return "none";
       return priorBody === null ? "empty" : "empty-had-prior";
     })();
     process.stdout.write(`${mode}\n`);
@@ -972,15 +992,19 @@ const adaptCmd = defineCommand({
     },
   },
   run: async ({ args }) => {
-    // The agent-file is the untouched pre-seed when it is no newer than its seed marker (the same
-    // mtime test the budget hook uses via the seedMarkerPath SSOT). Recovering it would post the seed
-    // — a first-review scaffold or a re-review's PRIOR verdict — as a completed review of the current
-    // head (issue #117), so adapt emits a "did not complete" notice instead. Absent a marker (any
-    // non-seeded caller) mainHasWrittenDraft returns true, so this is inert outside the review pipeline.
+    // The agent-file still holds the pre-seeded SENTINEL when the agent never wrote its own review
+    // (content check — the same isSeedSentinel test the budget hook uses via the budget.ts SSOT, so
+    // a coarse-timestamp filesystem can't misclassify a fresh draft). The sentinel never validates,
+    // so it can't be recovered as a review; the flag only refines the "did not complete" message.
+    // A missing draft is inert (there is no seed to recover), and a non-seeded caller sees nothing.
+    // Size-gated: only a sentinel-sized file (plus a trailing-newline tolerance) can be the
+    // sentinel, so a real review — the largest input read back — is never read twice per run.
     const agentFile = args["agent-file"];
-    const seedUnrevised = agentFile
-      ? !mainHasWrittenDraft(mtimeMsOf(agentFile), mtimeMsOf(seedMarkerPath(agentFile)))
-      : false;
+    const agentFileSize = agentFile ? statSizeOrNull(agentFile) : null;
+    const seedUnrevised =
+      agentFileSize !== null &&
+      agentFileSize <= Buffer.byteLength(SEED_SENTINEL) + 2 &&
+      isSeedSentinel(readFileOrNull(agentFile));
     const envelope = unwrapAdapt(
       adapt(requireAdapterName(args.adapter), readJSONOrAbsent(args.native), agentFile, {
         route: args.route,

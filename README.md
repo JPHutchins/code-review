@@ -106,12 +106,12 @@ links to:
   The embedded document is the **surfaced** findings document: the agent's findings
   (`schema_version` 0.5.0 contract, which is what the review agent is held to and what
   [`schema/findings.schema.json`](schema/findings.schema.json) validates) stamped with the
-  `0.6.0` surface version plus the pipeline-computed convergence state of the **last completed
+  `0.7.0` surface version plus the pipeline-computed convergence state of the **last completed
   full-review round**:
 
   ```json
   {
-    "schema_version": "0.6.0",
+    "schema_version": "0.7.0",
     "verdict": "comment",
     "summary": "...",
     "convergence": { "score": 1, "threshold": 1, "converged": true },
@@ -127,7 +127,7 @@ links to:
   warranted. The agent never writes these fields — the commenter computes them from the review's own
   severities at render time — and they are omitted until at least one full-review round has
   completed. They survive the "review in progress" banner: the banner replaces only the sticky's
-  prose and carries the embedded marker forward verbatim. The 0.6.0 surfaced contract applies to the
+  prose and carries the embedded marker forward verbatim. The 0.7.0 surfaced contract applies to the
   **whole-document** marker only; each inline comment embeds a per-finding fragment
   (`schema_version` + one finding) at the draft's own version, since the fragment carries no stop
   signal.

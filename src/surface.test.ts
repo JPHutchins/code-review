@@ -2,8 +2,13 @@ import { describe, it, expect } from "vitest";
 import {
   parseFindingsMarker,
   parseReviewedSha,
+  parseReviewedRoute,
   parseReviewComplete,
+  parseCompletedAncestor,
+  COMPLETED_ANCESTOR_MARKER,
+  isFullReviewSticky,
   findingsPointer,
+  findingsMarkerForm,
   parseRounds,
   roundsMarker,
   roundsSummary,
@@ -50,6 +55,29 @@ describe("parseFindingsMarker", () => {
     expect(parseFindingsMarker(body)).toEqual(findings);
   });
 
+  it("round-trips systemic_problems through the marker (issue #134 — the machine channel carries them)", () => {
+    const withSystemic = {
+      ...findings,
+      systemic_problems: [
+        {
+          title: "Retry inconsistency",
+          description: "Three policies in three spots.",
+          severity: "major",
+          reasoning: "Each file implements its own policy.",
+          confidence: 0.8,
+          finding_codes: ["widened-type"],
+          paths: ["src/a.ts"],
+        },
+      ],
+    } as unknown as Findings;
+    const body = `sticky prose\n${findingsPointer(withSystemic, undefined)}\nmore prose`;
+    const decoded = parseFindingsMarker(body) as {
+      systemic_problems?: readonly unknown[];
+    };
+    expect(decoded.systemic_problems).toHaveLength(1);
+    expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
+  });
+
   it("returns null when the body carries no findings marker", () => {
     expect(parseFindingsMarker("just a comment, nothing embedded")).toBeNull();
   });
@@ -84,6 +112,47 @@ describe("parseFindingsMarker", () => {
   });
 });
 
+describe("findingsMarkerForm", () => {
+  it("reports embedded when the document fits under the limit", () => {
+    expect(findingsMarkerForm(findings, undefined)).toBe("embedded");
+  });
+
+  it("reports link when the document exceeds the limit and a jsonUrl is given", () => {
+    const huge = {
+      ...findings,
+      findings: [
+        ...findings.findings,
+        ...Array.from({ length: 500 }, (_, i) => ({
+          ...findings.findings[0],
+          title: `F${String(i)}`,
+          description: "x".repeat(200),
+        })),
+      ],
+    } as unknown as Findings;
+    expect(findingsMarkerForm(huge, "https://example.com/findings.zip")).toBe("link");
+  });
+
+  it("reports omitted when the document exceeds the limit and no jsonUrl is given", () => {
+    const huge = {
+      ...findings,
+      findings: [
+        ...findings.findings,
+        ...Array.from({ length: 500 }, (_, i) => ({
+          ...findings.findings[0],
+          title: `F${String(i)}`,
+          description: "x".repeat(200),
+        })),
+      ],
+    } as unknown as Findings;
+    expect(findingsMarkerForm(huge, undefined)).toBe("omitted");
+  });
+
+  it("agrees with what findingsPointer actually emits (embedded form is the decodable one)", () => {
+    expect(findingsMarkerForm(findings, undefined)).toBe("embedded");
+    expect(findingsPointer(findings, undefined)).toContain("code-review:findings-json;base64");
+  });
+});
+
 describe("parseReviewedSha", () => {
   const sha = "0123456789abcdef0123456789abcdef01234567";
 
@@ -97,6 +166,60 @@ describe("parseReviewedSha", () => {
 
   it("returns null for the all-zeros placeholder (no head SHA was stamped)", () => {
     expect(parseReviewedSha(`<!-- reviewed-sha: ${"0".repeat(40)} -->`)).toBeNull();
+  });
+});
+
+describe("parseReviewedRoute", () => {
+  it("reads the completed review's route marker", () => {
+    expect(parseReviewedRoute("<!-- reviewed-route: full review -->\nsticky")).toBe("full review");
+    expect(parseReviewedRoute("<!-- reviewed-route: mechanic -->\nsticky")).toBe("mechanic");
+  });
+
+  it("returns null when the body carries no route marker (a notice, or an older sticky)", () => {
+    expect(parseReviewedRoute("<!-- code-review -->\nplain")).toBeNull();
+    expect(parseReviewedRoute("<!-- reviewed-route: -->\nempty")).toBeNull();
+  });
+});
+
+describe("isFullReviewSticky — post's full-review predicate (issue #127)", () => {
+  const oneRound = roundsMarker([{ critical: 0, major: 1, minor: 0, nit: 0 }]);
+
+  it("route marker 'full review' wins, even with no round history", () => {
+    expect(isFullReviewSticky("<!-- reviewed-route: full review -->")).toBe(true);
+  });
+
+  it("route marker 'mechanic' is NEVER a full review — even when it carries a full review's round history forward", () => {
+    expect(isFullReviewSticky(`<!-- reviewed-route: mechanic -->\n${oneRound}`)).toBe(false);
+  });
+
+  it("round history is the pre-route-marker fallback — only a completed full review APPENDS a round (a mechanic can only carry one)", () => {
+    expect(isFullReviewSticky(oneRound)).toBe(true);
+  });
+
+  it("no signal at all is not a full review (a notice, an in-progress placeholder, or a pre-marker mechanic)", () => {
+    expect(isFullReviewSticky("<!-- code-review -->\nplain")).toBe(false);
+  });
+});
+
+describe("completed-ancestor marker — the placeholder's completed-review ancestry (issue #127)", () => {
+  it("parseCompletedAncestor is true only when the marker is present", () => {
+    expect(parseCompletedAncestor(COMPLETED_ANCESTOR_MARKER)).toBe(true);
+    expect(parseCompletedAncestor("<!-- code-review -->\nplain")).toBe(false);
+    // review-complete itself is NOT the ancestor marker — the two are distinct signals.
+    expect(parseCompletedAncestor("<!-- review-complete -->")).toBe(false);
+  });
+
+  it("carryForwardMarkers emits the ancestor marker when the replaced sticky was a completed review — and carries it onward through chained placeholders", () => {
+    const fromCompleted = carryForwardMarkers("<!-- code-review -->\n<!-- review-complete -->\nx");
+    expect(fromCompleted).toContain(COMPLETED_ANCESTOR_MARKER);
+    const fromPlaceholder = carryForwardMarkers(
+      `<!-- code-review -->\n${COMPLETED_ANCESTOR_MARKER}\nx`,
+    );
+    expect(fromPlaceholder).toContain(COMPLETED_ANCESTOR_MARKER);
+    // A notice's sticky never carries it.
+    expect(
+      carryForwardMarkers("<!-- code-review -->\n### ⚠️ Review did not complete"),
+    ).not.toContain(COMPLETED_ANCESTOR_MARKER);
   });
 });
 
@@ -154,6 +277,14 @@ describe("rounds trajectory — issue #125", () => {
     const body = `x\n${roundsMarker([counts(0, 0, 1, 0)])}\n<!-- reviewed-sha: ${"a".repeat(40)} -->`;
     expect(carryForwardMarkers(body)).toContain("code-review:rounds;base64");
     expect(carryForwardMarkers(body)).toContain("reviewed-sha:");
+  });
+
+  it("carryForwardMarkers preserves the reviewed-route marker — the seed chain's route-awareness survives the prose swap", () => {
+    const body =
+      "x\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json;base64 YQ== -->";
+    const carried = carryForwardMarkers(body);
+    expect(carried).toContain("<!-- reviewed-route: mechanic -->");
+    expect(carried).toContain("code-review:findings-json");
   });
 
   it("rejects rounds with negative, fractional, or unsafe-integer counts", () => {
@@ -346,7 +477,7 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     ).toContain(";base64");
   });
 
-  it("stripSurfaceFields drops the surface fields and restores the draft version on a 0.6.0 doc", () => {
+  it("stripSurfaceFields drops the surface fields and restores the draft version on a 0.7.0 doc", () => {
     const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
     expect(stripSurfaceFields(surfaced)).toEqual({
       ...findings,
@@ -354,10 +485,10 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     });
   });
 
-  it("stripSurfaceFields passes unknown future versions (0.7.0) through untouched — the surface list grows with each emitted version", () => {
+  it("stripSurfaceFields passes unknown future versions (0.8.0) through untouched — the surface list grows with each emitted version", () => {
     const surfaced = {
       ...surfaceFindings(findings, signal(2, counts(0, 0, 1, 0))),
-      schema_version: "0.7.0",
+      schema_version: "0.8.0",
     };
     // An unknown version is not classified as surfaced (it could equally be a future draft); schema
     // validation downstream rejects it rather than silently rewriting it to a valid-looking draft.

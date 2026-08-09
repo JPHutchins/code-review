@@ -1,9 +1,43 @@
 import { describe, it, expect } from "vitest";
-import { checkRun, decideCheckAction, type ExistingCheck } from "./checkrun.js";
+import {
+  checkRun,
+  decideCheckAction,
+  decideCancelledAction,
+  runIdFromUrl,
+  type ExistingCheck,
+} from "./checkrun.js";
 
-const open: ExistingCheck = { id: 1, status: "in_progress", conclusion: null };
-const doneNeutral: ExistingCheck = { id: 2, status: "completed", conclusion: "neutral" };
-const doneFailure: ExistingCheck = { id: 3, status: "completed", conclusion: "failure" };
+const open: ExistingCheck = { id: 1, status: "in_progress", conclusion: null, detailsUrl: null };
+const doneNeutral: ExistingCheck = {
+  id: 2,
+  status: "completed",
+  conclusion: "neutral",
+  detailsUrl: null,
+};
+const doneFailure: ExistingCheck = {
+  id: 3,
+  status: "completed",
+  conclusion: "failure",
+  detailsUrl: null,
+};
+const ownedOpen: ExistingCheck = {
+  id: 4,
+  status: "in_progress",
+  conclusion: null,
+  detailsUrl: "https://github.com/o/r/actions/runs/123",
+};
+const successorOpen: ExistingCheck = {
+  id: 5,
+  status: "in_progress",
+  conclusion: null,
+  detailsUrl: "https://github.com/o/r/actions/runs/1234",
+};
+const ownedCancelled: ExistingCheck = {
+  id: 6,
+  status: "completed",
+  conclusion: "cancelled",
+  detailsUrl: "https://github.com/o/r/actions/runs/123",
+};
 
 describe("decideCheckAction", () => {
   it("in_progress creates when none exists and no-ops when one is already open", () => {
@@ -50,6 +84,55 @@ describe("decideCheckAction", () => {
     expect(decideCheckAction([doneFailure], "failure").kind).toBe("noop");
     // A settled neutral is newer (higher id) than an open check → the review completed, so no failure.
     expect(decideCheckAction([open, doneNeutral], "failure").kind).toBe("noop");
+  });
+});
+
+describe("runIdFromUrl", () => {
+  it("extracts the run id from the actions/runs URL", () => {
+    expect(runIdFromUrl("https://github.com/o/r/actions/runs/123")).toBe("123");
+    expect(runIdFromUrl("https://github.com/o/r/actions/runs/123/")).toBe("123");
+    expect(runIdFromUrl("https://github.com/o/r/actions/runs/1234")).toBe("1234");
+  });
+
+  it("returns null for a URL that carries no run id", () => {
+    expect(runIdFromUrl("")).toBeNull();
+    expect(runIdFromUrl("https://github.com/o/r")).toBeNull();
+    expect(runIdFromUrl("https://github.com/o/r/actions/runs/")).toBeNull();
+  });
+});
+
+describe("decideCancelledAction — issue #139", () => {
+  it("settles ONLY the check this run's announce created (matched by details_url run id)", () => {
+    // A successor run (1234) has already opened a NEWER in-progress check on the same head; the
+    // cancelled run (123) must settle its own check, never the live successor.
+    expect(
+      decideCancelledAction([successorOpen, ownedOpen], "https://github.com/o/r/actions/runs/123"),
+    ).toEqual({
+      kind: "patch",
+      id: 4,
+      status: "completed",
+      conclusion: "cancelled",
+    });
+  });
+
+  it("is idempotent once the owned check already records cancelled", () => {
+    expect(
+      decideCancelledAction([ownedCancelled], "https://github.com/o/r/actions/runs/123").kind,
+    ).toBe("noop");
+  });
+
+  it("no-ops when this run created no check (e.g. the announce never ran)", () => {
+    expect(
+      decideCancelledAction([successorOpen], "https://github.com/o/r/actions/runs/123").kind,
+    ).toBe("noop");
+    expect(decideCancelledAction([], "https://github.com/o/r/actions/runs/123").kind).toBe("noop");
+  });
+
+  it("does not match a successor whose run id has this run's id as a numeric prefix", () => {
+    // Run 123 must NOT settle run 1234's check (123 is a prefix of 1234).
+    expect(
+      decideCancelledAction([successorOpen], "https://github.com/o/r/actions/runs/123").kind,
+    ).toBe("noop");
   });
 });
 

@@ -2753,6 +2753,33 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     stderrSpy.mockRestore();
   });
 
+  it("cancelled: a successor whose numeric run id has this run's id as a prefix is NOT treated as this run", async () => {
+    // This run is 123; the live placeholder links run 1234 (123 is a substring of 1234). The guard
+    // must not mistake the successor's URL for this run's (issue #139 round-4 finding).
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "🔄 **Code review in progress** for `def4567` — see the [workflow run](https://github.com/owner/repo/actions/runs/1234)",
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await reportIncomplete(
+      {
+        ...mkAnnounceInput({ runUrl: "https://github.com/owner/repo/actions/runs/123" }),
+        cancelled: true,
+      },
+      api,
+    );
+
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("belongs to another run"));
+    stderrSpy.mockRestore();
+  });
+
   it("cancelled: never buries a completed review", async () => {
     const existing = [
       "<!-- code-review -->",

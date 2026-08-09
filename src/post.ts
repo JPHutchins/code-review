@@ -956,6 +956,17 @@ const noticeBody = (lead: string, existingBody: string | undefined): string => {
   return carried ? `${lead}\n\n${carried}` : lead;
 };
 
+// Whether a sticky body references THIS run's URL — matched by the run id with a non-digit boundary so
+// a successor whose numeric run id has this one as a prefix (…/runs/123 vs …/runs/1234) is not mistaken
+// for this run. Falls back to a plain substring when the run URL carries no run id.
+const bodyRefsRun = (body: string, runUrl: string): boolean => {
+  const m = /\/actions\/runs\/(\d+)\/?$/.exec(runUrl);
+  const runId = m?.[1];
+  return runId === undefined
+    ? body.includes(runUrl)
+    : new RegExp(`/actions/runs/${runId}(?!\\d)`).test(body);
+};
+
 // The placeholder body: a "review in progress" line linking the run. The commenter job overwrites this
 // with the real summary when the review completes.
 const announceBody = (headSha: string, runUrl: string, existingBody: string | undefined): string =>
@@ -1069,8 +1080,9 @@ export const reportIncomplete = async (
   // announce already posted a live "in progress" for a newer head. Overwriting it with "did not
   // complete" would be a false alarm for a review that is actively running. This run's own placeholder
   // (or a prior failure notice this run posted) embeds this run's URL, so its presence is the signal
-  // that overwriting is safe.
-  if (existing !== null && !existing.body.includes(input.runUrl)) {
+  // that overwriting is safe. The run id is matched with a non-digit boundary so a successor whose
+  // numeric run id has this one as a prefix (123 vs 1234) is not mistaken for this run.
+  if (existing !== null && !bodyRefsRun(existing.body, input.runUrl)) {
     process.stderr.write(`Sticky belongs to another run — leaving it in place\n`);
     return;
   }

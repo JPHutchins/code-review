@@ -403,7 +403,7 @@ jobs:
             NORMALIZED_SCOPE=""
             if [ -n "${SCOPE:-}" ] && code-review check-scope --scope C >/dev/null 2>&1; then
               if ! NORMALIZED_SCOPE="$(code-review check-scope --scope "${SCOPE}" 2>/dev/null)"; then
-                echo "::warning::code-review check-scope rejected the scope input '${SCOPE}' — treating scope as absent; the reviewer will infer it from the README's first paragraph"
+                echo "::warning::code-review check-scope rejected the scope input — treating scope as absent; the reviewer will infer it from the README's first paragraph"
                 NORMALIZED_SCOPE=""
               fi
             fi
@@ -817,9 +817,12 @@ jobs:
   # silent. result == 'failure' (the review DIED) → a "did not complete, re-request" sticky + `failure`
   # check; result == 'cancelled' (a review cancelled before completing, typically by a superseding run
   # on this branch) → an informational "superseded — no action needed" sticky — NOT the failure notice
-  # (issue #139), and the in-progress check is left for the superseding run to settle; result ==
+  # (issue #139) — and the check this run's announce created is settled to `cancelled`
+  # (ownership-matched by details_url, so a superseding run's live check is never touched); result ==
   # 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`. The has_findings guard
-  # excludes a review that DID post but failed a later step (comment finalized it).
+  # excludes a review that DID post but failed a later step (comment finalized it) — EXCEPT for a
+  # cancelled review, which runs finalize regardless so a cancellation racing past assemble still gets
+  # settled (issue #139).
   finalize:
     needs: review
     if: >-
@@ -827,8 +830,9 @@ jobs:
           github.event.workflow_run.event == 'pull_request' &&
           (github.event.workflow_run.conclusion == 'success' ||
            github.event.workflow_run.conclusion == 'failure') &&
-          (needs.review.result == 'failure' || needs.review.result == 'success' || needs.review.result == 'cancelled') &&
-          needs.review.outputs.has_findings != 'true' }}
+          (needs.review.result == 'cancelled' ||
+           ((needs.review.result == 'failure' || needs.review.result == 'success') &&
+            needs.review.outputs.has_findings != 'true')) }}
     # Its OWN group — NOT the review group — so a superseding run cancels the stale review but never
     # this finalization (a failed review's attribution must survive that cancellation). No
     # cancel-in-progress: finalizes for the same branch SERIALIZE (queue) instead of a newer run's
@@ -898,18 +902,21 @@ jobs:
               --run-url "$RUN_URL"
           elif [ "$REVIEW_RESULT" = "cancelled" ]; then
             # A cancelled review is informational, not a failure (issue #139): post the "superseded"
-            # sticky. The in-progress check is deliberately left alone — a superseding run (typically a
-            # newer review on this branch) owns the head now, so stamping it could settle a same-head
-            # re-run's live check or mask a real failure; it settles the check itself when it completes.
-            # Release-gated: `--cancelled` ships with the same CLI release as `check-scope`, so probe
-            # the exit-code way (the one idiom for this release); on an older pin citty would silently
-            # drop the flag and post the FAILURE notice, so skip entirely and leave the sticky to the
-            # superseding run.
+            # sticky and settle THIS run's check to `cancelled` (ownership-matched by details_url, so a
+            # superseding run's live check on the same head is never touched). Release-gated:
+            # `--cancelled`/`check-run cancelled` ship with the same CLI release as `check-scope`, so
+            # probe the exit-code way (the one idiom for this release); on an older pin citty would
+            # silently drop the flag and post the FAILURE notice, so skip entirely and leave the sticky
+            # to the superseding run.
             if code-review check-scope --scope C >/dev/null 2>&1; then
               code-review report-incomplete --cancelled \
                 --repo "$REPO" \
                 --head-sha "$HEAD_SHA" \
                 --head-branch "$HEAD_BRANCH" \
+                --run-url "$RUN_URL"
+              code-review check-run cancelled \
+                --repo "$REPO" \
+                --head-sha "$HEAD_SHA" \
                 --run-url "$RUN_URL"
             fi
           else

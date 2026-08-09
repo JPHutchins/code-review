@@ -4,8 +4,9 @@
 // is reachable in the base repo via the PR ref. The in-progress check is created at review start (the
 // announce job, in its own concurrency group) so it survives a superseding run's cancellation. A
 // completed review finalizes it `neutral` (non-gating); a hard-failed review finalizes it `failure`;
-// a cancelled review leaves its in-progress check intact, so the superseding run that took over keeps
-// the SHA attributed rather than a false failure being stamped on it.
+// a cancelled review finalizes its OWN check `cancelled` (issue #139) — matched by the details_url the
+// announce stamped with this run's URL, so it settles exactly the stale check and never a superseding
+// run's live one.
 
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -13,12 +14,13 @@ import { parseJsonl } from "./transcript.js";
 
 export const CHECK_RUN_NAME = "Code review";
 
-export type CheckIntent = "in_progress" | "neutral" | "failure";
+export type CheckIntent = "in_progress" | "neutral" | "failure" | "cancelled";
 
 export interface ExistingCheck {
   readonly id: number;
   readonly status: string;
   readonly conclusion: string | null;
+  readonly detailsUrl: string | null;
 }
 
 // Forward-only across the two writers (comment finalizes `neutral`, attribute_failure finalizes
@@ -47,6 +49,35 @@ const latest = (checks: readonly ExistingCheck[]): ExistingCheck | null =>
 const isOpen = (status: string): boolean => status === "in_progress" || status === "queued";
 const settled = new Set(["success", "neutral", "skipped"]);
 
+// The run id the announce job stamps into the check's details_url (`.../actions/runs/<run_id>`), used
+// to attribute a check to the run that created it. null when the URL doesn't carry one.
+export const runIdFromUrl = (runUrl: string): string | null => {
+  const m = /\/actions\/runs\/(\d+)\/?$/.exec(runUrl);
+  return m?.[1] ?? null;
+};
+
+// Settle ONLY the check this run's announce created — matched by its details_url carrying this run's
+// id. Ownership-aware: on a concurrency-cancelled review the superseding run's announce has already
+// opened a NEWER in-progress check on the same head, and settling that one (the "latest") would falsely
+// mark a live review cancelled — exactly the r1 reviewer's objection to the naive approach. Matching
+// the numeric run id (not a substring of the whole URL) also keeps a successor whose run id has this
+// one as a numeric prefix from being matched.
+export const decideCancelledAction = (
+  checks: readonly ExistingCheck[],
+  runUrl: string,
+): CheckAction => {
+  const runId = runIdFromUrl(runUrl);
+  if (runId === null) return { kind: "noop", reason: "run URL carries no run id to match on" };
+  const owned = checks.find(
+    (c) => c.detailsUrl !== null && c.detailsUrl.endsWith(`/runs/${runId}`),
+  );
+  if (owned === undefined)
+    return { kind: "noop", reason: "no check was created by this run to settle" };
+  if (owned.status === "completed" && owned.conclusion === "cancelled")
+    return { kind: "noop", reason: "the check already records this cancelled run" };
+  return { kind: "patch", id: owned.id, status: "completed", conclusion: "cancelled" };
+};
+
 export const decideCheckAction = (
   checks: readonly ExistingCheck[],
   intent: CheckIntent,
@@ -69,10 +100,15 @@ export const decideCheckAction = (
       return head.status === "completed" && head.conclusion === "failure"
         ? { kind: "noop", reason: "the check already records this failure" }
         : { kind: "patch", id: head.id, status: "completed", conclusion: "failure" };
+    case "cancelled":
+      // Never reached via decideCheckAction — `cancelled` needs the runUrl, so checkRun dispatches it
+      // to decideCancelledAction below. Kept exhaustive for the intent switch.
+      return { kind: "noop", reason: "cancelled is handled via decideCancelledAction" };
   }
 };
 
-const CHECK_JQ = ".check_runs[] | {id: .id, status: .status, conclusion: .conclusion}";
+const CHECK_JQ =
+  ".check_runs[] | {id: .id, status: .status, conclusion: .conclusion, details_url: .details_url}";
 
 const fetchChecks = async (
   repo: string,
@@ -105,6 +141,11 @@ const output = (intent: CheckIntent, runUrl: string): { title: string; summary: 
         title: "Code review did not complete",
         summary: `The review job failed — [see the run](${runUrl}). Re-request the review; do not treat this round as spent.`,
       };
+    case "cancelled":
+      return {
+        title: "Code review superseded",
+        summary: `This review run was cancelled — [see the run](${runUrl}). No action needed.`,
+      };
   }
 };
 
@@ -118,10 +159,11 @@ export interface CheckRunInput {
 // Resolve the current check, decide the forward-only action, then apply it. Head SHA (not the PR) is
 // the whole key — no PR resolution needed, which is why this also works for fork PRs.
 export const checkRun = async (input: CheckRunInput, ghApi: GhApi = runGhApi): Promise<void> => {
-  const action = decideCheckAction(
-    await fetchChecks(input.repo, input.headSha, ghApi),
-    input.intent,
-  );
+  const checks = await fetchChecks(input.repo, input.headSha, ghApi);
+  const action =
+    input.intent === "cancelled"
+      ? decideCancelledAction(checks, input.runUrl)
+      : decideCheckAction(checks, input.intent);
   if (action.kind === "noop") {
     process.stderr.write(`code-review check-run: ${action.reason} — leaving it\n`);
     return;

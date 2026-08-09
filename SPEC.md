@@ -156,6 +156,10 @@ own decision (the reference commenter's templates are the source of truth for it
 - **Deterministic and agentless** — a data-in, string-out transform; no model call.
 - **Advisory** — posted as a non-blocking comment, **never** as a merge-blocking "request changes,"
   and **never** wired as a required status check. The review is model output and MUST NOT gate merge.
+- **Advisory context MAY compound** — the commenter MAY surface further advisory context derived from
+  the reviewer's own structured output (for example, that the same mechanism — identified by a stable
+  rule identifier — keeps generating findings across review rounds), provided that context never
+  alters the review's verdict or any finding's severity.
 - **Truthful** — it MUST NOT claim a surface or action that did not occur (e.g. asserting inline
   annotations exist when none were posted). A finding that cannot be anchored where it belongs MUST be
   surfaced elsewhere, not silently dropped.

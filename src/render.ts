@@ -12,16 +12,16 @@ import {
   roundsMarker,
   roundsSummary,
   convergenceSummary,
+  computeSameRootNotes,
+  metastasisNote,
   signalForRound,
   surfacedFindingsPointer,
+  escapeCodeBackticks,
 } from "./surface.js";
 import type { PatchProjection } from "./surface.js";
 
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
-
-// backticks break inline code spans.
-const escapeCodeBackticks = (text: string): string => text.replace(/`/g, "-");
 
 type StrayView = Finding & { readonly patchProjection: PatchProjection };
 
@@ -100,6 +100,12 @@ export const render = (input: RenderInput): string => {
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
   const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
   const rounds = input.rounds ?? [];
+  // The same-root annotation: post passes the explicit map computed from the PRIOR-round history it
+  // parsed before appending this run's record; the standalone render command derives it from the
+  // supplied history minus its last (current) round. Keyed by code, rendered under each finding that
+  // carries it; empty when nothing recurs — no annotation.
+  const sameRootNotes =
+    input.sameRootNotes ?? computeSameRootNotes(rounds.slice(0, -1), input.findings.findings);
   // The convergence badge is a property of a completed FULL-REVIEW round: render it only then, from
   // the completed round's counts. A CI-fix mechanic pass, a lost-envelope pass, and a notice each
   // append no round and declare no convergence verdict — a badge from the current findings would sit
@@ -123,6 +129,11 @@ export const render = (input: RenderInput): string => {
   // entries are computeRoundCounts (findings PLUS systemic severities, issue #134), so the last
   // round already weighs a systemic critical like a finding critical.
   const convergenceCounts = rounds[rounds.length - 1] ?? computeRoundCounts(input.findings);
+  // The advisory notes (same-root + scope-metastasis) are a property of a real review, gated by the
+  // same decision as the badge (a completed FULL-REVIEW round): a mechanic pass or a lost-envelope
+  // completed review must not render a "still recurring" claim from carried-forward rounds beside a
+  // suppressed convergence badge.
+  const advisoryAllowed = isFullReviewRound;
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -164,6 +175,8 @@ export const render = (input: RenderInput): string => {
       ),
     roundsMarker: roundsMarker(rounds),
     roundsSummary: roundsSummary(rounds, input.roundCount),
+    metastasisNote: advisoryAllowed ? metastasisNote(rounds) : "",
+    sameRootNotes: advisoryAllowed ? sameRootNotes : {},
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

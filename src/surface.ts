@@ -3,8 +3,8 @@
 // projection. Pure.
 
 import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
-import type { Finding, Findings } from "./schema.js";
-import type { SeverityCounts } from "./types.js";
+import type { Finding, Findings, SystemicProblem } from "./schema.js";
+import type { CodeCounts, CodeStreak, RoundRecord, SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
 
 export const severityEmoji = (s: string): string => {
@@ -141,10 +141,11 @@ export const parseFindingsMarker = (body: string): unknown => {
   return decodeBase64Json(b64) ?? null;
 };
 
-// Per-full-review-round severity counts, carried in a base64 marker so each completed full review
-// appends its own and the sticky renders the convergence trajectory. A CI-fix mechanic pass carries it
-// forward unchanged (it is not a review round). Best-effort like the findings marker: any
-// non-conforming shape decodes to no history rather than throwing on this render path.
+// Per-full-review-round records (severity counts + mechanism-frequency map), carried in a base64
+// marker so each completed full review appends its own and the sticky renders the convergence
+// trajectory and the advisory scope-metastasis note. A CI-fix mechanic pass carries it forward
+// unchanged (it is not a review round). Best-effort like the findings marker: any non-conforming
+// shape decodes to no history rather than throwing on this render path.
 const ROUNDS_RE = /<!-- code-review:rounds;base64 ([A-Za-z0-9+/=]+) -->/;
 
 // The severity keys in descending weight/emphasis order, so every surface (counts validation, chips,
@@ -164,19 +165,119 @@ const isSeverityCounts = (u: unknown): u is SeverityCounts =>
     return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   });
 
-export const parseRounds = (body: string): readonly SeverityCounts[] => {
+// How many distinct mechanisms (codes) a round's marker may record — a per-round top-N by count, so a
+// finding-heavy round can't grow the carried marker without bound. Recurring mechanisms are typically
+// among a round's most-counted codes, so the streak signal survives the cap.
+export const MAX_CODES_PER_ROUND = 8;
+
+// Own-property presence of a code in a frequency map. Reviewer-supplied codes are used as plain-object
+// keys, so a code like "constructor" or "__proto__" must never read an inherited Object.prototype
+// member (which would count a function as a recurrence). Maps are built via Object.fromEntries
+// (CreateDataProperty), so the own property is what every consumer should read.
+const hasCode = (codes: CodeCounts | undefined, code: string): boolean =>
+  codes !== undefined && Object.prototype.hasOwnProperty.call(codes, code);
+
+// Codes render inside backticks in the advisory notes; a backtick inside a (reviewer-supplied) code
+// would break the span, and a newline would break out of the note's blockquote, so both are escaped
+// (newlines collapse to a space). Shared with render.ts (which escapes paths into backtick spans) so
+// the escaping rule lives in one place.
+export const escapeCodeBackticks = (code: string): string =>
+  code.replace(/`/g, "-").replace(/\r?\n/g, " ");
+
+// The codes field of a round record, validated and capped: string → positive safe-integer counts only
+// (a count-0 entry means "no findings this round" and is not recorded — every consumer agrees that 0
+// is absence), kept sorted by count descending with ties preferring codes that recurred in the
+// previous round (so the per-round top-N cap can't silently drop the exact mechanism the streak
+// detector is watching), then alphabetically for a stable order. Malformed (or absent) codes decode to
+// undefined so the round's severity counts still stand — a crafted marker can't smuggle a bad codes
+// shape into the streak/note renderers.
+const normalizeCodeCounts = (codes: unknown, priorCodes?: CodeCounts): CodeCounts | undefined => {
+  if (typeof codes !== "object" || codes === null || Array.isArray(codes)) return undefined;
+  const entries = Object.entries(codes as Record<string, unknown>)
+    .filter(
+      (e): e is [string, number] =>
+        typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
+    )
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      const aPrior = hasCode(priorCodes, a[0]) ? 1 : 0;
+      const bPrior = hasCode(priorCodes, b[0]) ? 1 : 0;
+      if (aPrior !== bPrior) return bPrior - aPrior;
+      return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+    });
+  if (entries.length === 0) return undefined;
+  const sorted = entries.sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    const aPrior = hasCode(priorCodes, a[0]) ? 1 : 0;
+    const bPrior = hasCode(priorCodes, b[0]) ? 1 : 0;
+    if (aPrior !== bPrior) return bPrior - aPrior;
+    return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+  });
+  // The base cap is the top-N by (count, prior-preference). A mechanism the streak detector is
+  // watching (it recurred in the previous round) is never dropped by a finding-heavy round even when
+  // its count is low — any such code cut by the cap is appended after the base (bounded by a second
+  // cap), so a recurrence can't silently end.
+  const base = sorted.slice(0, MAX_CODES_PER_ROUND);
+  const priorKept = sorted
+    .slice(MAX_CODES_PER_ROUND)
+    .filter(([code]) => hasCode(priorCodes, code))
+    .slice(0, MAX_CODES_PER_ROUND);
+  return Object.fromEntries([...base, ...priorKept]);
+};
+
+export const parseRounds = (body: string): readonly RoundRecord[] => {
   const b64 = ROUNDS_RE.exec(body)?.[1];
   if (b64 === undefined) return [];
   const decoded = decodeBase64Json(b64);
   // Filter, not all-or-nothing: one future-shaped or corrupted round drops only itself rather than
-  // erasing the whole trajectory (post re-serializes the parsed array on every write).
-  return Array.isArray(decoded) ? decoded.filter(isSeverityCounts) : [];
+  // erasing the whole trajectory (post re-serializes the parsed array on every write). The codes
+  // field is normalized independently — a bad codes shape strips just that field, never the round.
+  if (!Array.isArray(decoded)) return [];
+  return (decoded as readonly unknown[]).filter(isSeverityCounts).map((u) => {
+    const rec = u as Record<string, unknown>;
+    const codes = normalizeCodeCounts(rec["codes"]);
+    const sha = rec["sha"];
+    const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;
+    const round = rec["round"];
+    const roundNum =
+      typeof round === "number" && Number.isSafeInteger(round) && round >= 1 ? round : undefined;
+    const base =
+      codes === undefined
+        ? { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit }
+        : { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit, codes };
+    const kept = shaStr === undefined ? base : { ...base, sha: shaStr };
+    return roundNum === undefined ? kept : { ...kept, round: roundNum };
+  });
 };
 
-export const roundsMarker = (rounds: readonly SeverityCounts[]): string =>
-  rounds.length === 0
-    ? ""
-    : `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->`;
+// The rounds marker's base64 length cap. The severity counts (the trajectory) always survive; when a
+// very long PR's mechanism-frequency maps would push the marker past the cap, the OLDEST rounds are
+// re-serialized count-only first — so the marker stays bounded while keeping the full mechanism
+// history for typical PRs. Safe because both the streak detector and the same-root annotator read
+// from the END of the history; a code whose only occurrence is older than the degradation point loses
+// its annotation only on an extreme (cap-exceeding) PR — the accepted boundedness tradeoff.
+const ROUNDS_MARKER_LIMIT = 8000;
+export const roundsMarker = (rounds: readonly RoundRecord[]): string => {
+  if (rounds.length === 0) return "";
+  const serialize = (kept: readonly RoundRecord[]): string =>
+    `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(kept), "utf-8").toString("base64")} -->`;
+  const stripCodes = (n: number): readonly RoundRecord[] =>
+    rounds.map((r, i) =>
+      i < n ? { critical: r.critical, major: r.major, minor: r.minor, nit: r.nit } : r,
+    );
+  // Stage 1: strip the codes+sha from the oldest rounds, oldest first, until the marker fits — the
+  // severity counts (the trajectory) always survive.
+  let stripped = 0;
+  while (stripped < rounds.length && serialize(stripCodes(stripped)).length > ROUNDS_MARKER_LIMIT) {
+    stripped += 1;
+  }
+  const kept = stripCodes(stripped);
+  // Stage 2: even count-only, a very long history can still exceed the cap — keep only the most
+  // recent rounds (the trajectory label uses the true count via the carried signal, so eliding
+  // entries never falsifies the round number).
+  const bounded = serialize(kept).length > ROUNDS_MARKER_LIMIT ? kept.slice(-8) : kept;
+  return serialize(bounded);
+};
 
 // One round's chip: "🔴4 🟠3" for the round's severity content (findings + systemic, as stored), or
 // "clean" for none.
@@ -206,6 +307,166 @@ export const roundsSummary = (
   return trajectory === ""
     ? `**Round ${String(count)}**`
     : `**Round ${String(count)}** · ${trajectory}`;
+};
+
+// The per-round mechanism-frequency map: each finding carrying a `code` counts once toward that
+// mechanism, as does each code a systemic problem ties together via `finding_codes` — so a structural
+// mechanism surfaced as a systemic problem is visible to the same-root note and the streak detector,
+// not just one surfaced on a finding. Findings without a `code` are mechanism-unknown and uncounted.
+// Built via Object.fromEntries so reviewer-supplied keys like "__proto__" or "constructor" become own
+// data properties rather than mutating the map's prototype or reading inherited members.
+export const computeCodeCounts = (
+  findings: readonly Finding[],
+  systemic: readonly SystemicProblem[] = [],
+): CodeCounts => {
+  // A single Map pass — one increment per code — then Object.fromEntries so a reviewer-supplied
+  // key like "__proto__" becomes an own property, never the map's prototype.
+  const counts = new Map<string, number>();
+  for (const code of [
+    ...findings.map((f) => f.code),
+    ...systemic.flatMap((s) => [s.code, ...(s.finding_codes ?? [])]),
+  ]) {
+    if (code === undefined || code === "") continue;
+    counts.set(code, (counts.get(code) ?? 0) + 1);
+  }
+  return Object.fromEntries(counts);
+};
+
+// The enriched round entry post() appends: the severity counts plus the round's code-frequency map
+// (capped with a preference for codes that recurred in the previous round, so the cap can't drop a
+// watched mechanism) and the reviewed head SHA. Omitting the codes field entirely when no finding
+// carried a code keeps a coded-less round byte-identical to the pre-feature marker shape.
+export const roundRecord = (
+  counts: SeverityCounts,
+  codes: CodeCounts,
+  priorCodes?: CodeCounts,
+  sha?: string,
+  round?: number,
+): RoundRecord => {
+  const normalized = normalizeCodeCounts(codes, priorCodes);
+  const record: RoundRecord =
+    normalized === undefined ? { ...counts } : { ...counts, codes: normalized };
+  return {
+    ...record,
+    ...(sha !== undefined ? { sha } : {}),
+    ...(round !== undefined ? { round } : {}),
+  };
+};
+
+// Per code, how many consecutive rounds (ending at the last recorded round) carried a finding with
+// that code, and the 1-indexed round where the streak began. A round with no codes record (pre-feature
+// or a round with no coded findings) ENDS every streak — absence of data cannot evidence recurrence.
+export const consecutiveCodeStreaks = (
+  rounds: readonly RoundRecord[],
+): Readonly<Record<string, CodeStreak>> => {
+  const entries: [string, CodeStreak][] = [];
+  if (rounds.length === 0) return {};
+  const lastCodes = rounds[rounds.length - 1]?.codes;
+  if (lastCodes === undefined) return {};
+  for (const code of Object.keys(lastCodes)) {
+    let streak = 0;
+    let startIndex = rounds.length;
+    for (let i = rounds.length - 1; i >= 0; i--) {
+      const codes = rounds[i]?.codes;
+      if (codes === undefined || !hasCode(codes, code)) break;
+      // A same-head CI retry appends a round with the same sha as the round before it — the same
+      // review iteration re-examined, not new evidence of recurrence — so it neither advances nor
+      // breaks the streak. Only when the code ALSO appeared in the previous (same-sha) round is the
+      // evidence genuinely repeated; a code NEW in the retry round is fresh and counts.
+      if (
+        i > 0 &&
+        rounds[i]?.sha !== undefined &&
+        rounds[i]?.sha === rounds[i - 1]?.sha &&
+        hasCode(rounds[i - 1]?.codes, code)
+      ) {
+        continue;
+      }
+      streak += 1;
+      startIndex = i;
+    }
+    if (streak > 0) {
+      entries.push([code, { streak, startRound: rounds[startIndex]?.round ?? startIndex + 1 }]);
+    }
+  }
+  // Object.fromEntries so a reviewer-supplied code like "__proto__" becomes an own key, never the
+  // map's prototype (which would corrupt the result and render [object Object] in the note).
+  return Object.fromEntries(entries);
+};
+
+// The minimum consecutive-round recurrence that triggers the advisory scope-metastasis note.
+export const DEFAULT_METASTASIS_STREAK = 3;
+
+// The advisory scope-metastasis note for the sticky's convergence area: "" when no code has recurred
+// in `minStreak` or more consecutive rounds. Names the mechanism by its code (the pipeline cannot
+// paraphrase it — that needs the finding text) and the round range it streaked over. ADVISORY ONLY —
+// mirrors the convergence badge's posture: derives from the reviewer's own codes and never alters any
+// finding's severity or the verdict.
+export const metastasisNote = (
+  rounds: readonly RoundRecord[],
+  minStreak: number = DEFAULT_METASTASIS_STREAK,
+): string => {
+  const flagged = Object.entries(consecutiveCodeStreaks(rounds))
+    .filter(([, s]) => s.streak >= minStreak)
+    .sort((a, b) => b[1].streak - a[1].streak);
+  if (flagged.length === 0) return "";
+  // The note only fires at minStreak ≥ 3 (the default), so "consecutive rounds" is always plural.
+  // The round range is deliberately omitted: the history may contain same-sha retries that the
+  // streak detector de-duplicates, so any X–Y range would contradict the streak count.
+  const lines = flagged.map(
+    ([code, s]) =>
+      `> **\`${escapeCodeBackticks(code)}\`** — findings in ${String(s.streak)} consecutive rounds.`,
+  );
+  return [
+    "> [!WARNING]",
+    "> **Scope metastasis** — findings keep recurring in the same mechanism across consecutive rounds; each fix keeps enabling the next finding in that machinery. Consider whether a structural fix (change the shape, not the edge case) or a scope narrowing would converge this faster.",
+    ...lines,
+  ].join("\n");
+};
+
+// Code → "same mechanism as round N" for findings whose mechanism recurred in a PRIOR round: the most
+// recent prior round that carried a finding with the same code. The deterministic backstop to the
+// reviewer's own prose — the pipeline can't name the mechanism (that needs the finding text), but it
+// can name the round the code last appeared in. Empty when nothing recurs.
+export const computeSameRootNotes = (
+  priorRounds: readonly RoundRecord[],
+  findings: readonly Finding[],
+  currentSha?: string,
+): Readonly<Record<string, string>> => {
+  const codes = findings.map((f) => f.code).filter((c): c is string => c !== undefined && c !== "");
+  const entries: [string, string][] = [];
+  for (const code of codes) {
+    let lastRound = 0;
+    for (let i = priorRounds.length - 1; i >= 0; i--) {
+      // A same-sha prior round is the same commit re-reviewed (a CI retry) — its findings are the
+      // same evidence, not a prior fix that re-opened the mechanism, so it must not be named. A
+      // retry deeper in the history (a round that merely re-examines the commit before it) is
+      // collapsed the same way consecutiveCodeStreaks collapses it, so both advisory signals agree.
+      if (currentSha !== undefined && priorRounds[i]?.sha === currentSha) continue;
+      // Collapse a same-sha retry exactly like consecutiveCodeStreaks does: only when the code ALSO
+      // appeared in the retried round is the evidence genuinely repeated — a code NEW in the retry
+      // round is fresh and is named here (the two advisory signals agree).
+      if (
+        i > 0 &&
+        priorRounds[i]?.sha !== undefined &&
+        priorRounds[i]?.sha === priorRounds[i - 1]?.sha &&
+        hasCode(priorRounds[i - 1]?.codes, code)
+      )
+        continue;
+      const count = priorRounds[i]?.codes?.[code];
+      if (count !== undefined && count > 0) {
+        lastRound = priorRounds[i]?.round ?? i + 1;
+        break;
+      }
+    }
+    if (lastRound > 0) {
+      entries.push([
+        code,
+        `Same mechanism as round ${String(lastRound)} (\`${escapeCodeBackticks(code)}\`) — the prior fix in this area re-opened it; consider a structural fix or a scope narrowing.`,
+      ]);
+    }
+  }
+  // Object.fromEntries so a reviewer-supplied code like "__proto__" becomes an own key.
+  return Object.fromEntries(entries);
 };
 
 // The severity-weighted convergence score and its advisory badge. The score is a pure function of one

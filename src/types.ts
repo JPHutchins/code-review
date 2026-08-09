@@ -29,6 +29,35 @@ export interface InlineResult {
 
 export type SeverityCounts = Readonly<Record<Severity, number>>;
 
+// The per-mechanism finding counts a round records: code → number of findings carrying that code this
+// round (capped at MAX_CODES_PER_ROUND distinct codes). Absent on rounds recorded before the
+// same-root/metastasis feature, and on rounds with no coded findings — absence is "unknown", not
+// "zero", so a recurrence across an uncoded round is never counted as consecutive.
+export type CodeCounts = Readonly<Record<string, number>>;
+
+// One round's cross-round mechanism record: the severity counts plus, optionally, the round's
+// code-frequency map and the reviewed head SHA (short form). The enrichment is ADDITIVE — a count-only
+// round (pre-feature, or a round with no coded findings) is a valid RoundRecord with `codes` absent,
+// so the trajectory marker stays backward-compatible and a future-shaped round is never a parse
+// failure. The sha lets the streak detector recognize a same-head CI retry (which appends an identical
+// round) as the same review iteration re-examined, not new evidence of recurrence.
+export type RoundRecord = SeverityCounts & {
+  readonly codes?: CodeCounts;
+  readonly sha?: string;
+  // The TRUE completed-round number (1-indexed) this record represents. The rounds marker's array
+  // position can drift from it when parseRounds filters a corrupt entry, and the trajectory label
+  // (and the blob signal) number rounds by the carried count — so the same-root annotation must
+  // reference this, not the parsed index. Absent on pre-feature rounds ⇒ the parsed index + 1.
+  readonly round?: number;
+};
+
+// A code's recurrence streak ending at the last recorded round: how many consecutive rounds carried a
+// finding with that code, and the 1-indexed round number where the streak began.
+export interface CodeStreak {
+  readonly streak: number;
+  readonly startRound: number;
+}
+
 export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
@@ -50,11 +79,18 @@ export interface RenderInput {
   readonly effort?: string;
   readonly testReport?: TestSummary;
   readonly severityCounts?: SeverityCounts;
-  // Per-full-review-round severity counts (oldest first, this run's counts last when it is a full
-  // review), rendered as the convergence TRAJECTORY and re-embedded as the carried-forward marker.
-  // Omitted/empty ⇒ no trajectory line. The convergence BADGE is independent of this (it reads the
-  // current run's counts under `convergenceRound`), so an empty history no longer implies no badge.
-  readonly rounds?: readonly SeverityCounts[];
+  // Per-full-review-round records (oldest first, this run's record last when it is a full review):
+  // the severity counts plus each round's mechanism-frequency map, rendered as the convergence
+  // TRAJECTORY, the advisory scope-metastasis note, and re-embedded as the carried-forward marker.
+  // Omitted/empty ⇒ no trajectory line or metastasis note. The convergence BADGE is independent of
+  // this (it reads the current run's counts under `convergenceRound`), so an empty history no longer
+  // implies no badge.
+  readonly rounds?: readonly RoundRecord[];
+  // Code → "same mechanism as round N" note for findings whose mechanism recurred in a PRIOR round,
+  // computed at the IO boundary (post has the prior-round history; the standalone render command
+  // derives it from rounds.slice(0, -1)). Omitted ⇒ derived. Rendered as an advisory one-liner under
+  // each such finding (sticky strays + inline comments); never alters severity or verdict.
+  readonly sameRootNotes?: Readonly<Record<string, string>>;
   // The true completed-round count for the trajectory label, when it differs from `rounds.length`
   // (post derives it from the carried signal, which survives corrupt rounds-marker entries that
   // parseRounds filters). Omitted ⇒ the parsed history length.

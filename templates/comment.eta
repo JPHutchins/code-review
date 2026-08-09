@@ -23,6 +23,9 @@
 <% if (it.convergenceSummary) { -%>
 <sub><%~ it.convergenceSummary %></sub>
 <% } -%>
+<% if (it.metastasisNote) { -%>
+<%~ it.metastasisNote %>
+<% } -%>
 <% } -%>
 
 <%~ it.findings.summary %>
@@ -76,6 +79,10 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 #### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %>
 
 <%~ f.description %>
+<% if (f.code && it.sameRootNotes && Object.prototype.hasOwnProperty.call(it.sameRootNotes, f.code)) { -%>
+
+> ⚠️ <%~ it.sameRootNotes[f.code] %>
+<% } -%>
 <% if (f.recommendation) { -%>
 
 **Recommended fix:** <%~ f.recommendation %>

@@ -183,6 +183,18 @@ this doc.
   omitted until a round completes, and — because the in-progress banner and every non-round post carry
   the embedded marker forward — the last completed round's stop signal survives a re-review in flight
   (issue #141).
+- **Same-root classification + a scope-metastasis signal.** A reviewer is individually right every
+  round but has no way to say "this is the same mechanism as round N's finding," so on a long PR each
+  fix keeps enabling the next finding in the same machinery (the salix#94 pattern: fourteen rounds,
+  all in one body-`__new__` reconstruction mechanism). The reviewer is steered to tag each finding
+  with a stable `code` (the schema's optional rule identifier, which already existed for
+  dedup/suppression) and to name a same-root recurrence in its own description. The commenter then
+  does the deterministic half: each round record carries that round's code-frequency map (capped at a
+  top-N so the carried marker stays bounded), the sticky annotates a finding whose code appeared in a
+  prior round with "same mechanism as round N," and — when a code streaks across ≥ 3 consecutive
+  rounds — renders an advisory scope-metastasis note alongside the convergence trajectory, suggesting
+  a structural fix or a scope narrowing. Purely advisory: it derives from the reviewer's own codes and
+  never alters any finding's severity or the verdict, mirroring the convergence badge's posture.
 
 `<!-- code-review -->` is the deliberate, fixed sticky-comment marker (a product constant, never
 interpolated); trust in a prior review comes from the comment's **bot author identity**, never from the

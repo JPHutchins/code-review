@@ -15,6 +15,8 @@ import {
 import { formatMarkdown } from "./format.js";
 import {
   carryForwardMarkers,
+  computeCodeCounts,
+  computeSameRootNotes,
   findingsMarkerForm,
   isFullReviewSticky,
   parseCompletedAncestor,
@@ -26,6 +28,7 @@ import {
   parseSignalMarker,
   parseSurfaceSignal,
   reviewBodyPointer,
+  roundRecord,
   signalForRound,
   signalMarker,
   surfaceFindings,
@@ -639,6 +642,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        sameRootNotes: {},
         roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         runUrl: input.runUrl,
@@ -709,6 +713,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        sameRootNotes: {},
         roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         testReport,
@@ -740,6 +745,24 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   if (emptyMechanicWouldBury(effectiveRoute, thisIncomplete) && existingSticky !== null)
     await emptyMechanicLeaveOrNote(existingSticky);
 
+  // A convergence round is a COMPLETED FULL review (effectiveRoute read above — `input.route` first,
+  // then the envelope — the same way render does). A mechanic pass or any incomplete/failed run
+  // carries the trajectory forward unchanged (it is a CI fix or a non-review, not a round). The
+  // verdict guard (isReviewVerdict, render's badge uses the same predicate) also gates the append
+  // here, so an out-of-contract "error" verdict that somehow carries findings never counts as a
+  // round: the trajectory, the badge, and the blob's convergence stay one decision. A same-head CI
+  // retry simply appends again — an identical chip reads as "no change", which is accurate; a
+  // reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without adding a
+  // round, so the last round need not be its head. The same-root annotation is a property of a
+  // REVIEW round — a mechanic pass is a CI-fix pass, not a round, so it carries no notes — and names
+  // the most recent prior round (excluding a same-head retry) each of this round's recurring codes
+  // appeared in.
+  const isRound =
+    isConvergenceRound(effectiveRoute, thisIncomplete) && isReviewVerdict(findings.verdict);
+  const sameRootNotes = isRound
+    ? computeSameRootNotes(priorRounds, findings.findings, input.headSha.slice(0, 12))
+    : {};
+
   const {
     comments: rawComments,
     strays,
@@ -749,6 +772,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     models: envelope.models.map((m) => m.model),
     findings,
     jsonUrl: input.jsonUrl,
+    sameRootNotes,
   });
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
@@ -767,21 +791,31 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   const currentCounts = computeSeverityCounts(findings.findings);
 
-  // A convergence round is a COMPLETED FULL review (effectiveRoute read above — `input.route` first,
-  // then the envelope — the same way render does). A mechanic pass or any incomplete/failed run
-  // carries the trajectory forward unchanged (it is a CI fix or a non-review, not a round). The
-  // verdict guard (isReviewVerdict, render's badge uses the same predicate) also gates the append
-  // here, so an out-of-contract "error" verdict that somehow carries findings never counts as a
-  // round: the trajectory, the badge, and the blob's convergence stay one decision. A same-head CI
-  // retry simply appends again — an identical chip reads as "no change", which is accurate; a
-  // reviewed-sha-keyed replace is unsafe because a mechanic stamps a new head without adding a
-  // round, so the last round need not be its head.
-  const isRound =
-    isConvergenceRound(effectiveRoute, thisIncomplete) && isReviewVerdict(findings.verdict);
   // The round entry carries the ROUND counts (findings + systemic severities) — the same
   // computeRoundCounts the badge scores with, so a systemic-only round with a critical systemic item
-  // stores and shows 🔴1 rather than masquerading as "clean".
-  const rounds = isRound ? [...priorRounds, computeRoundCounts(findings)] : priorRounds;
+  // stores and shows 🔴1 rather than masquerading as "clean" — plus this round's mechanism-frequency
+  // map, so the carried trajectory tells a later round which mechanisms keep recurring. `isRound` was
+  // computed above, where it also gates the same-root notes.
+  const currentCodes = computeCodeCounts(findings.findings, findings.systemic_problems ?? []);
+  const priorLastCodes =
+    priorRounds.length > 0 ? priorRounds[priorRounds.length - 1]?.codes : undefined;
+  // The TRUE completed-round number of this run's round: the rounds marker is best-effort
+  // (parseRounds filters corrupt entries), so the appended record numbers itself after the carried
+  // count when it is ahead — the same value the trajectory label and the blob signal use, so the
+  // same-root annotation never drifts from them.
+  const roundNumber = Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1;
+  const rounds = isRound
+    ? [
+        ...priorRounds,
+        roundRecord(
+          computeRoundCounts(findings),
+          currentCodes,
+          priorLastCodes,
+          input.headSha.slice(0, 12),
+          roundNumber,
+        ),
+      ]
+    : priorRounds;
 
   // The stop signal the surfaced blob embeds: THIS round's signal when the run completes a round,
   // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived. An
@@ -791,11 +825,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // rounds marker is best-effort (parseRounds filters corrupt entries), so a completing round
   // numbers itself after the carried count when it is ahead.
   const signal = isRound
-    ? signalForRound(
-        Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1,
-        computeRoundCounts(findings),
-        input.convergenceThreshold,
-      )
+    ? signalForRound(roundNumber, computeRoundCounts(findings), input.convergenceThreshold)
     : thisIncomplete || !isReviewVerdict(findings.verdict)
       ? null
       : priorSignal;
@@ -833,6 +863,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     testReport,
     severityCounts: currentCounts,
     rounds,
+    sameRootNotes,
     roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,
     convergenceRound: isRound,

@@ -14,6 +14,7 @@ import type {
   ModelUsageEntry,
   TestSummary,
 } from "./schema.js";
+import type { RoundRecord } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -365,7 +366,13 @@ describe("post — systemic problems (issue #134)", () => {
     expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
     // The convergence round entry carries the systemic severity too (one minor finding + one major
     // systemic item) — a systemic-only critical round can never masquerade as "clean".
-    expect(parseRounds(body.body).at(-1)).toEqual({ critical: 0, major: 1, minor: 1, nit: 0 });
+    const lastRound = parseRounds(body.body).at(-1);
+    expect(lastRound).toMatchObject({ critical: 0, major: 1, minor: 1, nit: 0 });
+    // The systemic problem's finding_codes feed the round's mechanism map (issue #145) — a mechanism
+    // surfaced only as a systemic problem is still visible to the streak detector — and the round
+    // records the reviewed head sha so a same-head retry is recognizable as such.
+    expect(lastRound?.codes).toEqual({ "widened-type": 1 });
+    expect(lastRound?.sha).toBe("abc123def456");
   });
 
   it("warns to the run log when the whole-document marker degrades past the embed limit (issue #134 review)", async () => {
@@ -3131,6 +3138,66 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 2, complete: true, sha }));
     await post(mkInput({ route: "full review", headSha: sha }), api);
     expect(patchedBody(calls())).toContain("**Round 3**");
+  });
+
+  it("a full review APPENDS a round carrying the round's mechanism codes (#145)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(
+        mkFindings([
+          mkFinding({ code: "null-check-missing" }),
+          mkFinding({ code: "null-check-missing" }),
+        ]),
+      ),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    const b64 = /code-review:rounds;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    expect(b64).toBeDefined();
+    const rounds = JSON.parse(Buffer.from(b64!, "base64").toString("utf-8")) as RoundRecord[];
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]?.codes).toEqual({ "null-check-missing": 2 });
+  });
+
+  it("a mechanic pass carries the trajectory forward with no code append (#145)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ code: "null-check-missing" })])),
+    );
+    // A prior round that DOES carry codes — the mechanic pass must preserve it verbatim (no round,
+    // no code-map append), not degrade it to "undefined" (issue #145 r2 nit 6).
+    const codedMarker = `<!-- code-review:rounds;base64 ${Buffer.from(
+      JSON.stringify([
+        { critical: 0, major: 1, minor: 0, nit: 0, codes: { "null-check-missing": 1 } },
+      ]),
+      "utf-8",
+    ).toString("base64")} -->`;
+    const { api, calls } = mkMockGhApi(mkMocks(`<!-- code-review -->\n${codedMarker}\nold`));
+    await post(mkInput({ route: "mechanic" }), api);
+    const body = patchedBody(calls());
+    const b64 = /code-review:rounds;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    expect(b64).toBeDefined();
+    const rounds = JSON.parse(Buffer.from(b64!, "base64").toString("utf-8")) as RoundRecord[];
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]?.codes).toEqual({ "null-check-missing": 1 });
+  });
+
+  it("renders a same-root note under a stray finding whose code recurred in a prior round (#145)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ path: "src/other.ts", code: "null-check-missing" })])),
+    );
+    const codedMarker = `<!-- code-review:rounds;base64 ${Buffer.from(
+      JSON.stringify([
+        { critical: 0, major: 0, minor: 1, nit: 0, codes: { "null-check-missing": 1 } },
+      ]),
+      "utf-8",
+    ).toString("base64")} -->`;
+    const { api, calls } = mkMockGhApi(mkMocks(`<!-- code-review -->\n${codedMarker}\nold`));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    expect(body).toContain("Same mechanism as round 1");
   });
 
   interface DecodedBlob {

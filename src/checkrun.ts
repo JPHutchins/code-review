@@ -4,8 +4,9 @@
 // is reachable in the base repo via the PR ref. The in-progress check is created at review start (the
 // announce job, in its own concurrency group) so it survives a superseding run's cancellation. A
 // completed review finalizes it `neutral` (non-gating); a hard-failed review finalizes it `failure`;
-// a cancelled review leaves its in-progress check intact, so the superseding run that took over keeps
-// the SHA attributed rather than a false failure being stamped on it.
+// a review run cancelled by a newer run on the same branch finalizes it `superseded` (conclusion
+// `cancelled` — informational, not a failure), so the stale SHA's check never hangs `in_progress` and
+// never reads as a crash.
 
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -13,7 +14,7 @@ import { parseJsonl } from "./transcript.js";
 
 export const CHECK_RUN_NAME = "Code review";
 
-export type CheckIntent = "in_progress" | "neutral" | "failure";
+export type CheckIntent = "in_progress" | "neutral" | "failure" | "superseded";
 
 export interface ExistingCheck {
   readonly id: number;
@@ -69,6 +70,17 @@ export const decideCheckAction = (
       return head.status === "completed" && head.conclusion === "failure"
         ? { kind: "noop", reason: "the check already records this failure" }
         : { kind: "patch", id: head.id, status: "completed", conclusion: "failure" };
+    case "superseded":
+      // A review run cancelled by a newer run on this branch: settle the stale in-progress check to
+      // conclusion `cancelled` (GitHub's native value — a cancelled run, not a failure). Forward-only
+      // like `failure`: never overwrites a completed review on this head (`cancelled` is deliberately
+      // NOT in `settled`, so a later same-head re-run that genuinely fails can still stamp `failure`).
+      if (head === null) return { kind: "create", status: "completed", conclusion: "cancelled" };
+      if (head.status === "completed" && head.conclusion !== null && settled.has(head.conclusion))
+        return { kind: "noop", reason: "a completed review already recorded this head" };
+      return head.status === "completed" && head.conclusion === "cancelled"
+        ? { kind: "noop", reason: "the check already records this superseded run" }
+        : { kind: "patch", id: head.id, status: "completed", conclusion: "cancelled" };
   }
 };
 
@@ -104,6 +116,11 @@ const output = (intent: CheckIntent, runUrl: string): { title: string; summary: 
       return {
         title: "Code review did not complete",
         summary: `The review job failed — [see the run](${runUrl}). Re-request the review; do not treat this round as spent.`,
+      };
+    case "superseded":
+      return {
+        title: "Code review superseded",
+        summary: `This review run was superseded by a newer run on this branch — [see the run](${runUrl}). No action needed.`,
       };
   }
 };

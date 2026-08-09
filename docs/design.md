@@ -174,6 +174,24 @@ this doc.
   ahead), so a finished review is never hidden behind a stale "in progress".
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
+- **Scope triage (issue #139).** The reviewer does not know what language the project formats, so a
+  project that formats C kept re-raising a C++ layout finding round after round (the "input" looked
+  like a regression to the reviewer, but was never a program the project accepts). The fix surfaces the
+  project's scope — a `scope` workflow input, and/or the README's first paragraph — into the full-review
+  prompt, and tells the reviewer that "is this input in scope?" is a triage question answered *before*
+  severity: an out-of-scope input is a scope note (a sentence in the summary), never a
+  severity-bearing finding. Scope is deliberately **additive**: it changes what the reviewer classifies
+  as a finding, not the findings schema, and no version bump is involved. The input is validated by a
+  small `code-review check-scope` command (the same fail-loud posture as `--convergence-threshold`), so
+  a malformed value cannot corrupt the prompt it is spliced into.
+- **Cancelled review is informational, not a crash (issue #139).** Pushing twice within minutes cancels
+  the first review (`cancel-in-progress` — correct), but the cancelled run then posted the same
+  "⚠️ Review did not complete — re-request" notice as a real failure, which read as an agent crash. The
+  `finalize` job now distinguishes `cancelled` from `failure`: a cancelled (superseded) run posts an
+  informational "superseded by a newer run — no action needed" sticky (`report-incomplete --cancelled`)
+  and finalizes its check `superseded` (conclusion `cancelled`), never the failure reading. The same
+  guards as the failure notice keep it from clobbering the superseding run's live placeholder or a
+  completed review.
 
 `<!-- code-review -->` is the deliberate, fixed sticky-comment marker (a product constant, never
 interpolated); trust in a prior review comes from the comment's **bot author identity**, never from the

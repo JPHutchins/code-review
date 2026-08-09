@@ -2667,6 +2667,105 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("already reflects a completed"));
     stderrSpy.mockRestore();
   });
+
+  it("cancelled: posts a 'superseded' notice, NOT the failure wording, when no sticky exists (issue #139)", async () => {
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: "" },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: '{"id": 555, "html_url": "https://example.com/c/555"}',
+      },
+    ]);
+
+    await reportIncomplete({ ...mkAnnounceInput(), cancelled: true }, api);
+
+    const postCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+    );
+    const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("<!-- code-review -->");
+    expect(body).toContain("Code review superseded");
+    expect(body).toContain("no action needed");
+    expect(body).toContain("abc123d");
+    // A superseded run is informational — never the crash/failure reading, never a re-request.
+    expect(body).not.toContain("did not complete");
+    expect(body).not.toContain("Re-request");
+    expect(body).not.toContain("review-complete");
+  });
+
+  it("cancelled: overwrites its OWN placeholder and carries re-review markers forward, with the superseded wording", async () => {
+    const runUrl = "https://github.com/owner/repo/actions/runs/12345";
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      `🔄 **Code review in progress** for \`abc123d\` — see the [workflow run](${runUrl})`,
+      "",
+      AGENTS_DIRECTIVE,
+      FINDINGS_MARKER,
+      REVIEWED_SHA_MARKER,
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+    ]);
+
+    await reportIncomplete({ ...mkAnnounceInput({ runUrl }), cancelled: true }, api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("Code review superseded");
+    expect(body).toContain(FINDINGS_MARKER);
+    expect(body).toContain(REVIEWED_SHA_MARKER);
+    expect(body).not.toContain("did not complete");
+    expect(body).not.toContain("in progress");
+  });
+
+  it("cancelled: leaves a SUPERSEDING run's live placeholder in place (no false notice of any kind)", async () => {
+    const existing = [
+      "<!-- code-review -->",
+      "",
+      "🔄 **Code review in progress** for `def4567` — see the [workflow run](https://github.com/owner/repo/actions/runs/99999)",
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await reportIncomplete(
+      {
+        ...mkAnnounceInput({ runUrl: "https://github.com/owner/repo/actions/runs/12345" }),
+        cancelled: true,
+      },
+      api,
+    );
+
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("belongs to another run"));
+    stderrSpy.mockRestore();
+  });
+
+  it("cancelled: never buries a completed review", async () => {
+    const existing = [
+      "<!-- code-review -->",
+      "<!-- review-complete -->",
+      "",
+      "### 💬 comment — a completed review",
+    ].join("\n");
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await reportIncomplete({ ...mkAnnounceInput(), cancelled: true }, api);
+
+    expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("already reflects a completed"));
+    stderrSpy.mockRestore();
+  });
 });
 
 describe("post — incomplete result never buries a completed review (#107)", () => {

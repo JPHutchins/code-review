@@ -142,6 +142,12 @@ are required; a conforming implementation publishes its own and treats it as the
 the schema can evolve without amending this document. (The reference schema is
 [`schema/findings.schema.json`](schema/findings.schema.json); its field descriptions are its spec.)
 
+The reviewer MUST treat **whether an input is in the change's scope** — the languages or inputs the
+change's project accepts — as a triage question answered **before** assigning severities. An input
+outside the project's scope is not a defect in the change: the reviewer MUST NOT raise a
+severity-bearing finding for it, and SHOULD instead note the out-of-scope input as a scope note (for
+example, a sentence in the overall assessment), never as a finding.
+
 When a model's structured-output enforcement is imperfect, an implementation MAY recover the deliverable
 from the model's output by a **deterministic** procedure, provided that procedure accepts **exactly one**
 validating candidate and **fails closed** on ambiguity or absence (§4.2). Recovering a self-validated
@@ -158,7 +164,9 @@ own decision (the reference commenter's templates are the source of truth for it
   and **never** wired as a required status check. The review is model output and MUST NOT gate merge.
 - **Truthful** — it MUST NOT claim a surface or action that did not occur (e.g. asserting inline
   annotations exist when none were posted). A finding that cannot be anchored where it belongs MUST be
-  surfaced elsewhere, not silently dropped.
+  surfaced elsewhere, not silently dropped. A review run **superseded** by a newer run on the same
+  branch is informational: the commenter MUST NOT present it as a pipeline failure (no "review did not
+  complete", no "re-request"), and SHOULD say it was superseded and that no action is needed.
 - **Idempotent** — re-running on the same commit updates in place rather than duplicating, and it
   decides what already exists by **authenticated author identity**, never by a marker that untrusted
   parties could copy (§4.2).

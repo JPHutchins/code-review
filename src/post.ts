@@ -939,12 +939,34 @@ const incompleteBody = (
   return carried ? `${notice}\n\n${carried}` : notice;
 };
 
+// A review run CANCELLED by a newer run on the same branch (concurrency cancel-in-progress) is not an
+// operational failure — issue #139. Distinct sentence, no action needed, and it must NOT read as a
+// crash: no "did not complete", no "Re-request", and it never carries the review-complete marker. The
+// superseding run's own announce (or the commenter) replaces it.
+const cancelledBody = (
+  headSha: string,
+  runUrl: string,
+  existingBody: string | undefined,
+): string => {
+  const notice = `${DEFAULT_MARKER}\n\n↩️ **Code review superseded** for \`${headSha.slice(0, 7)}\` — a newer review run started on this branch and this run was cancelled. See the [latest run](${runUrl}) — no action needed.`;
+  const carried = existingBody ? carryForwardMarkers(existingBody) : "";
+  return carried ? `${notice}\n\n${carried}` : notice;
+};
+
+export interface ReportIncompleteInput extends AnnounceInput {
+  // Issue #139: this run was CANCELLED by a superseding run on the same branch — post the
+  // informational "superseded" sticky instead of the failure notice.
+  readonly cancelled?: boolean;
+}
+
 // The human-readable half of failure attribution (the check-run is the machine half): a review that
 // died leaves NO comment, so a separate always()-job posts this. Shares announce's PR resolution and
 // sticky upsert; the guard is stronger — it never buries a completed review OF ANY head, so a failed
-// run reporting late (after a superseding run already finished) can't clobber the real review.
+// run reporting late (after a superseding run already finished) can't clobber the real review. A
+// CANCELLED run (issue #139) posts the superseded notice instead, and the same guards keep it from
+// clobbering a newer run's live placeholder.
 export const reportIncomplete = async (
-  input: AnnounceInput,
+  input: ReportIncompleteInput,
   ghApi: GhApi = runGhApi,
 ): Promise<void> => {
   const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
@@ -979,7 +1001,9 @@ export const reportIncomplete = async (
     input.repo,
     resolution.prNumber,
     existing,
-    incompleteBody(input.headSha, input.runUrl, existing?.body),
+    input.cancelled
+      ? cancelledBody(input.headSha, input.runUrl, existing?.body)
+      : incompleteBody(input.headSha, input.runUrl, existing?.body),
     ghApi,
   );
 };

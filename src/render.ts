@@ -127,6 +127,9 @@ export const render = (input: RenderInput): string => {
         input.findings,
         // The fallback embeds a signal exactly when the badge renders — never beside a suppressed
         // badge — and from the same counts the badge reads. With no history, THIS run is round 1.
+        // The fallback assumes a post-style history (the caller appends this run's counts, as post
+        // does, and supplies the marker when the carried signal must be honored verbatim — post
+        // always does, so this path cannot disagree with it in production).
         isFullReviewRound
           ? signalForRound(
               rounds.length > 0 ? rounds.length : 1,
@@ -137,7 +140,7 @@ export const render = (input: RenderInput): string => {
         input.jsonUrl,
       ),
     roundsMarker: roundsMarker(rounds),
-    roundsSummary: roundsSummary(rounds),
+    roundsSummary: roundsSummary(rounds, input.roundCount),
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

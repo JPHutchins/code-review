@@ -5,6 +5,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
 import { post, announce, reportIncomplete } from "./post.js";
+import { parseSignalMarker } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -2682,7 +2683,7 @@ describe("post — convergence rounds (issue #125)", () => {
       ...signal,
     });
     const findingsMarker = opts.blobLink
-      ? `<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\\n<!-- code-review:signal;base64 ${Buffer.from(JSON.stringify(signal), "utf-8").toString("base64")} -->`
+      ? `<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\\n<!-- code-review:signal;base64 ${Buffer.from(JSON.stringify({ schema_version: "0.6.0", ...signal }), "utf-8").toString("base64")} -->`
       : `<!-- code-review:findings-json;base64 ${Buffer.from(priorBlob, "utf-8").toString("base64")} -->`;
     const markers = [
       opts.complete ? "<!-- review-complete -->" : "",
@@ -2833,7 +2834,7 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
 
-  it("an incomplete full review embeds NO signal in its blob — 'error' + a carried 'converged' would read as a stop signal for a run that produced none (issue #141 review r2)", async () => {
+  it("an incomplete full review embeds NO signal in its blob but preserves the prior signal in the compact marker (issue #141 review r2 + r3)", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),
       JSON.stringify({ schema_version: "0.4.0", summary: "s", verdict: "error", findings: [] }),
@@ -2848,6 +2849,14 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.schema_version).toBe("0.6.0");
     expect(blob.convergence).toBeUndefined();
     expect(blob.round).toBeUndefined();
+    // The notice never claims a signal itself, but the prior round's `converged` survives on the
+    // sticky in the compact marker — the next post still reads it back via parseSignalMarker.
+    const body = patchedBody(calls());
+    expect(body).toContain("code-review:signal;base64");
+    expect(parseSignalMarker(body)).toEqual({
+      round: 1,
+      convergence: { score: 2, threshold: 1, converged: false },
+    });
   });
 
   it("a first-run mechanic pass (no prior round) embeds no convergence — there is no stop signal yet", async () => {

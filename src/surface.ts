@@ -138,12 +138,15 @@ const roundChip = (c: SeverityCounts): string => {
 // round number is always the true count; the trajectory shows only the most recent chips (with a
 // leading "…" when older ones are elided) so a long-running PR's line stays readable and bounded.
 const TRAJECTORY_CHIPS = 8;
-export const roundsSummary = (rounds: readonly SeverityCounts[]): string => {
+export const roundsSummary = (
+  rounds: readonly SeverityCounts[],
+  count: number = rounds.length,
+): string => {
   if (rounds.length === 0) return "";
   const chips = rounds.slice(-TRAJECTORY_CHIPS).map(roundChip);
   const trajectory =
     rounds.length > TRAJECTORY_CHIPS ? `… → ${chips.join(" → ")}` : chips.join(" → ");
-  return `**Round ${String(rounds.length)}** · ${trajectory}`;
+  return `**Round ${String(count)}** · ${trajectory}`;
 };
 
 // The severity-weighted convergence score and its advisory badge. The score is a pure function of one
@@ -162,12 +165,14 @@ export const convergenceScore = (counts: SeverityCounts): number =>
 // is a checkered flag, NOT the verdict badge's ✅, so a reader (or the author-agent this steers) can't
 // skim the line as an approval. Score and threshold print exactly (no lossy rounding) so the shown
 // inequality can never contradict the computed comparison — `toFixed` could display "1 > 1.0" for 1 > 0.95.
+// The verdict derives from convergenceSignal — the same `score <= threshold` decision the surfaced
+// blob's literal `converged` uses — so the prose badge and the machine boolean can never disagree.
 export const convergenceSummary = (
   counts: SeverityCounts,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
 ): string => {
-  const score = convergenceScore(counts);
-  return score <= threshold
+  const { score, converged } = convergenceSignal(counts, threshold);
+  return converged
     ? `**Convergence** 🏁 ${String(score)} ≤ ${String(threshold)} — converged`
     : `**Convergence** 🔄 ${String(score)} > ${String(threshold)} — iterating`;
 };
@@ -223,6 +228,16 @@ export const surfaceFindings = (
   ...(signal === null ? {} : signal),
 });
 
+// The compact signal marker: the stop signal on its own, self-describing (it declares the surface
+// version, so parseSurfaceSignal's version gate applies to it too). Embedded when the whole-doc
+// payload falls to the link form, and appended by post to a signal-less blob (a notice) so a
+// completed round's `converged` survives that write for the next post to read back.
+export const signalMarker = (signal: SurfaceSignal): string =>
+  `<!-- code-review:signal;base64 ${Buffer.from(
+    JSON.stringify({ schema_version: SURFACE_SCHEMA_VERSION, ...signal }),
+    "utf-8",
+  ).toString("base64")} -->`;
+
 // The whole-document marker, surfaced — one helper owns the construction so the sticky, the review
 // body, and the standalone render can never disagree on the embedded shape. When the whole-doc
 // payload falls to the link form (or is dropped), the compact signal marker still embeds — an
@@ -234,8 +249,7 @@ export const surfacedFindingsPointer = (
 ): string => {
   const marker = findingsPointer(surfaceFindings(findings, signal), jsonUrl);
   if (signal === null || marker.includes("findings-json;base64")) return marker;
-  const signalMarker = `<!-- code-review:signal;base64 ${Buffer.from(JSON.stringify(signal), "utf-8").toString("base64")} -->`;
-  return marker === "" ? signalMarker : `${marker}\n${signalMarker}`;
+  return marker === "" ? signalMarker(signal) : `${marker}\n${signalMarker(signal)}`;
 };
 
 const SIGNAL_RE = /<!-- code-review:signal;base64 ([A-Za-z0-9+/=]+) -->/;
@@ -249,11 +263,15 @@ export const parseSignalMarker = (body: string): SurfaceSignal | null => {
 };
 
 // Best-effort like parseRounds: the carried stop signal read back from a prior sticky's surfaced
-// blob, null on any malformed shape or pre-surface blob so a non-round post carries nothing rather
-// than embedding a corrupted signal.
+// blob, null on any malformed shape, a pre-surface blob, or a doc that does not declare a surfaced
+// version — so a draft or foreign document carrying round/convergence keys can never be treated as
+// the commenter's stop signal (the same version gate stripSurfaceFields applies to the seed
+// channel). A non-round post then carries nothing rather than embedding a corrupted signal.
 export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return null;
   const o = doc as Record<string, unknown>;
+  const declared = o["schema_version"];
+  if (typeof declared !== "string" || !SURFACE_SCHEMA_VERSIONS.includes(declared)) return null;
   const round = o["round"];
   const convergence = o["convergence"];
   if (typeof round !== "number" || !Number.isSafeInteger(round) || round < 1) return null;
@@ -280,8 +298,10 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // Every surfaced-document version this CLI can strip back to the agent document — grows with each
 // surface version emitted, so a sticky written by an older release still seeds. A dedicated list,
 // deliberately distinct from the draft-version registry axis: only these versions declare the
-// surface shape, so a future draft bump can never be mistaken for one.
-export const SURFACE_SCHEMA_VERSIONS: readonly string[] = ["0.6.0"];
+// surface shape, so a future draft bump can never be mistaken for one. Derived from the emitted
+// version so the strip path can never silently stop recognizing what surfaceFindings stamps; a
+// future surface bump appends the superseded version(s) here alongside the new one.
+export const SURFACE_SCHEMA_VERSIONS: readonly string[] = [SURFACE_SCHEMA_VERSION];
 
 // The inverse for the agent channel: the re-review seed decodes the sticky's surfaced blob, and the
 // agent must only ever see its own document. Version-gated, not key-gated: a doc declaring a known

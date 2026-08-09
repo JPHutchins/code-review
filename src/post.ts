@@ -17,8 +17,10 @@ import {
   parseSurfaceSignal,
   reviewBodyPointer,
   signalForRound,
+  signalMarker,
   surfacedFindingsPointer,
 } from "./surface.js";
+import type { SurfaceSignal } from "./surface.js";
 import {
   ResultEnvelopeCodec,
   PriceMapCodec,
@@ -538,6 +540,17 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ? null
       : (parseSignalMarker(existingSticky.body) ??
         parseSurfaceSignal(parseFindingsMarker(existingSticky.body)));
+
+  // A post whose blob embeds no signal (a notice — any error-verdict doc) still preserves the prior
+  // round's stop signal on the sticky in the compact marker, so the next post reads it back via
+  // parseSignalMarker: the notice itself never claims a signal, but a completed round's `converged`
+  // is not erased by a failed run (issue #141 review r3).
+  const findingsMarkerFor = (findings: Findings, signal: SurfaceSignal | null): string => {
+    const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl);
+    return signal !== null || priorSignal === null
+      ? pointer
+      : `${pointer}\n${signalMarker(priorSignal)}`;
+  };
   const leaveInPlace = (): void => {
     process.stderr.write(
       `Review did not complete and the sticky already reflects a completed review — leaving it in place\n`,
@@ -567,13 +580,15 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
         // A notice's own blob stays clean: verdict "error" + a carried "converged" would read as a
-        // stop signal for a run that produced no verdict (issue #141 review r2). The carried-forward
+        // stop signal for a run that produced no verdict (issue #141 review r2). The prior signal
+        // survives on the sticky in the compact marker (findingsMarkerFor), and the carried-forward
         // trajectory (rounds marker) remains the historical record.
-        findingsPointer: surfacedFindingsPointer(findings, null, input.jsonUrl),
+        findingsPointer: findingsMarkerFor(findings, null),
         postedAt: input.postedAt,
       }),
     );
@@ -626,16 +641,17 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewedSha: input.headSha,
         effort: input.effort,
         rounds: priorRounds,
+        roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         testReport,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
-        // Same signal rule as the main path: only a completed-review doc carries the prior signal.
-        findingsPointer: surfacedFindingsPointer(
+        // Same signal rule as the main path: only a completed-review doc carries the prior signal
+        // in its blob; an error-verdict doc preserves it in the compact marker instead.
+        findingsPointer: findingsMarkerFor(
           findings,
           isReviewVerdict(findings.verdict) ? priorSignal : null,
-          input.jsonUrl,
         ),
         postedAt: input.postedAt,
       }),
@@ -713,7 +729,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   // Base64-encode the SURFACED whole-document marker once (the agent's doc + the stop signal),
   // reused across sticky + review body; each inline comment embeds only its own finding instead.
-  const findingsMarker = surfacedFindingsPointer(findings, signal, input.jsonUrl);
+  const findingsMarker = findingsMarkerFor(findings, signal);
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings,
@@ -728,6 +744,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     testReport,
     severityCounts: currentCounts,
     rounds,
+    roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,
     convergenceRound: isRound,
     strays,

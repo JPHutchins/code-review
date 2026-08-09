@@ -18,6 +18,7 @@ import {
   parseSurfaceSignal,
   parseSignalMarker,
   SURFACE_SCHEMA_VERSION,
+  SURFACE_SCHEMA_VERSIONS,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
 import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
@@ -182,6 +183,11 @@ describe("rounds trajectory — issue #125", () => {
     expect(summary).toContain("🔵12");
     expect(summary).not.toContain("🔵1 →");
   });
+
+  it("labels the round from an explicit count when the history lost an entry — the trajectory and the blob's round stay equal (issue #141 review r3)", () => {
+    // The marker holds 1 parseable round, but the carried signal says round 3 was completed.
+    expect(roundsSummary([counts(0, 1, 0, 0)], 3)).toBe("**Round 3** · 🟠1");
+  });
 });
 
 describe("convergence score — issue #133", () => {
@@ -259,6 +265,14 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     const doc = surfaceFindings(findings, null);
     expect(doc.schema_version).toBe(SURFACE_SCHEMA_VERSION);
     expect(doc).toEqual({ ...findings, schema_version: SURFACE_SCHEMA_VERSION });
+  });
+
+  it("every version surfaceFindings emits is one stripSurfaceFields recognizes — the emit and strip axes stay coupled (issue #141 review r3)", () => {
+    expect(SURFACE_SCHEMA_VERSIONS).toContain(SURFACE_SCHEMA_VERSION);
+    expect(stripSurfaceFields(surfaceFindings(findings, null))).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+    });
   });
 
   it("embeds the given stop signal — converged as a literal boolean", () => {
@@ -372,6 +386,24 @@ describe("parseSurfaceSignal — issue #141 (verbatim carry of the prior round's
   it("returns null when the doc carries no signal (a pre-surface blob, or no round yet)", () => {
     expect(parseSurfaceSignal(findings)).toBeNull();
     expect(parseSurfaceSignal(surfaceFindings(findings, null))).toBeNull();
+  });
+
+  it("rejects a draft-version doc carrying round/convergence keys — the carry channel is version-gated like the seed channel (issue #141 review r3)", () => {
+    expect(
+      parseSurfaceSignal({
+        ...findings,
+        round: 1,
+        convergence: { score: 0, threshold: 1, converged: true },
+      }),
+    ).toBeNull();
+    expect(
+      parseSurfaceSignal({
+        ...findings,
+        schema_version: "0.5.0",
+        round: 1,
+        convergence: { score: 0, threshold: 1, converged: true },
+      }),
+    ).toBeNull();
   });
 
   it("returns null on malformed signals rather than carrying corruption forward", () => {

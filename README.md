@@ -136,13 +136,14 @@ links to:
   **last completed round's stored signal** (round + its own threshold — never re-derived, so an
   operator changing `convergence_threshold` mid-PR cannot flip a stored `converged`) beside its own
   findings, so the signal always describes the last completed full-review round, not the findings
-  that happen to sit beside it. A notice — a post whose verdict is `error` (empty diff, corrupt
-  output, did-not-complete) — embeds **no** signal at all: its document already says no review was
-  produced this run, and a carried `converged` beside that would read as a stop signal for a run
-  that produced none. When the embedded payload is too large and the marker falls back to the
-  artifact link, a compact `<!-- code-review:signal;base64 <base64> -->` marker still carries
-  `round` + `convergence`, so an oversized review's stop signal stays readable and can be carried
-  forward.
+  that happen to sit beside it. A notice — a post whose verdict is `error` or whose run did not
+  complete (empty diff, corrupt output, did-not-complete) — embeds **no** signal in its own blob:
+  its document already says no review was produced this run, and a carried `converged` beside that
+  would read as a stop signal for a run that produced none; the last completed round's signal still
+  survives on the sticky in the compact `<!-- code-review:signal;base64 <base64> -->` marker, so
+  the next post reads it back. The same compact marker is emitted when the embedded payload is too
+  large and the whole-document marker falls back to the artifact link — an oversized review's stop
+  signal stays readable and can be carried forward.
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
   phases. This is advisory/auditability only: it is never read by the comment job and never affects
   what gets posted.

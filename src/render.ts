@@ -85,12 +85,14 @@ export const render = (input: RenderInput): string => {
   // contradict the findings beside it. Neither is a truthful stop signal, so no badge shows; the
   // carried-forward trajectory alone gives context. Prefer post's explicit signal (which also gates
   // the round append, so badge ⇔ append); fall back to the shared predicate for the standalone
-  // `render` command. The verdict guard (isReviewVerdict, shared with post's round append) closes an
-  // edge isIncompleteFindings misses (it flags an "error" verdict only when findings are also empty):
-  // an error doc that carries findings must still show no badge, never "converged" beside the "no
-  // review verdict" badge.
+  // `render` command — which additionally requires a rounds history, since without one no round has
+  // completed and neither the badge nor the blob's stop signal may appear (the README's omission
+  // semantics, issue #141 review r4). The verdict guard (isReviewVerdict, shared with post's round
+  // append) closes an edge isIncompleteFindings misses (it flags an "error" verdict only when
+  // findings are also empty): an error doc that carries findings must still show no badge, never
+  // "converged" beside the "no review verdict" badge.
   const isFullReviewRound =
-    (input.convergenceRound ?? isConvergenceRound(route, incomplete)) &&
+    (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && rounds.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
 
   // The convergence counts the badge AND the fallback blob signal both derive from — the last
@@ -126,16 +128,12 @@ export const render = (input: RenderInput): string => {
       surfacedFindingsPointer(
         input.findings,
         // The fallback embeds a signal exactly when the badge renders — never beside a suppressed
-        // badge — and from the same counts the badge reads. With no history, THIS run is round 1.
-        // The fallback assumes a post-style history (the caller appends this run's counts, as post
-        // does, and supplies the marker when the carried signal must be honored verbatim — post
-        // always does, so this path cannot disagree with it in production).
-        isFullReviewRound
-          ? signalForRound(
-              rounds.length > 0 ? rounds.length : 1,
-              convergenceCounts,
-              input.convergenceThreshold,
-            )
+        // badge, and from the same counts the badge reads. It assumes a post-style history (the
+        // caller appends this run's counts last), numbering the round exactly as the trajectory
+        // label does; post always supplies the marker, so this path cannot disagree with it in
+        // production (issue #141 review r4).
+        isFullReviewRound && rounds.length > 0
+          ? signalForRound(rounds.length, convergenceCounts, input.convergenceThreshold)
           : null,
         input.jsonUrl,
       ),

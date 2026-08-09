@@ -188,6 +188,11 @@ describe("rounds trajectory — issue #125", () => {
     // The marker holds 1 parseable round, but the carried signal says round 3 was completed.
     expect(roundsSummary([counts(0, 1, 0, 0)], 3)).toBe("**Round 3** · 🟠1");
   });
+
+  it("keeps the label when every marker entry was filtered — the carried count still claims the round (issue #141 review r4)", () => {
+    expect(roundsSummary([], 3)).toBe("**Round 3**");
+    expect(roundsSummary([])).toBe("");
+  });
 });
 
 describe("convergence score — issue #133", () => {

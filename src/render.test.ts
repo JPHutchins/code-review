@@ -246,9 +246,10 @@ describe("render", () => {
       expect(decoded.round).toBeUndefined();
     });
 
-    it("a standalone full-review render's blob and badge agree — THIS run is round 1 (#141 review)", () => {
-      // The render command passes no round history, so the fallback treats a full-review run as
-      // round 1 — the embedded stop signal and the badge can never disagree.
+    it("a standalone full-review render with no round history shows NO badge and NO stop signal — nothing has completed (issue #141 review r4)", () => {
+      // The render command passes no rounds; the fallback must not fabricate a round-1 signal the
+      // README says is omitted until a round completes — and the badge must not show either, so
+      // blob and badge agree on "no stop signal available".
       const findings = mkFindings([mkFinding({ severity: "minor" })]);
       const result = render({
         findings,
@@ -257,19 +258,13 @@ describe("render", () => {
         template,
         route: "full review",
       });
-      expect(result).toContain("**Convergence**");
+      expect(result).not.toContain("**Convergence**");
       const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
       expect(match).not.toBeNull();
       const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
         readonly round?: number;
-        readonly convergence?: {
-          readonly score: number;
-          readonly threshold: number;
-          readonly converged: boolean;
-        };
       };
-      expect(decoded.round).toBe(1);
-      expect(decoded.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+      expect(decoded.round).toBeUndefined();
     });
 
     it("a standalone mechanic render embeds no stop signal — no round has completed", () => {
@@ -1602,6 +1597,7 @@ describe("convergence score — issue #133", () => {
       prices,
       template,
       route: "full review",
+      rounds: [{ critical: 0, major: 0, minor: 0, nit: 0 }],
     });
     expect(result).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
   });
@@ -1613,6 +1609,7 @@ describe("convergence score — issue #133", () => {
       prices,
       template,
       route: "full review",
+      rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
     });
     expect(result).toContain("**Convergence** 🔄 2 > 1 — iterating");
   });
@@ -1624,6 +1621,8 @@ describe("convergence score — issue #133", () => {
       prices,
       template,
       route: "full review",
+      // The fallback badge gate needs a completed round — this run's counts, post-style.
+      rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
       convergenceThreshold: 3,
     });
     expect(result).toContain("**Convergence** 🏁 2 ≤ 3 — converged");
@@ -1668,6 +1667,8 @@ describe("convergence score — issue #133", () => {
       envelope: { ...baseEnvelope, route: "full review" },
       prices,
       template,
+      // post appends this run's counts to the history for a completed full review.
+      rounds: [{ critical: 0, major: 0, minor: 0, nit: 0 }],
     });
     expect(full).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
     const mechanic = render({

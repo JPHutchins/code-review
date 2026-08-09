@@ -712,20 +712,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const rounds = isRound ? [...priorRounds, currentCounts] : priorRounds;
 
   // The stop signal the surfaced blob embeds: THIS round's signal when the run completes a round,
-  // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived. A
-  // no-verdict doc (verdict "error") embeds NO signal: a carried "converged" beside "no review
-  // verdict" would read as a stop signal for a run that produced none (issue #141 review r2).
-  // The round number can never regress: the rounds marker is best-effort (parseRounds filters
-  // corrupt entries), so a completing round numbers itself after the carried count when it is ahead.
+  // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived. An
+  // incomplete run or a no-verdict doc embeds NO signal: a carried "converged" beside "no review
+  // verdict" (or beside a run the envelope says did not complete) would read as a stop signal for a
+  // run that produced none (issue #141 reviews r2 + r4). The round number can never regress: the
+  // rounds marker is best-effort (parseRounds filters corrupt entries), so a completing round
+  // numbers itself after the carried count when it is ahead.
   const signal = isRound
     ? signalForRound(
         Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1,
         currentCounts,
         input.convergenceThreshold,
       )
-    : isReviewVerdict(findings.verdict)
-      ? priorSignal
-      : null;
+    : thisIncomplete || !isReviewVerdict(findings.verdict)
+      ? null
+      : priorSignal;
 
   // Base64-encode the SURFACED whole-document marker once (the agent's doc + the stop signal),
   // reused across sticky + review body; each inline comment embeds only its own finding instead.

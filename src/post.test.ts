@@ -2891,6 +2891,26 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.round).toBeUndefined();
   });
 
+  it("an incomplete run whose findings carry a non-error verdict still embeds NO signal — incompleteness, not the verdict, is the gate (issue #141 review r4)", async () => {
+    // envelope.incomplete=true with a "comment" verdict: the run did not complete, so its blob must
+    // not claim a carried "converged"; the prior signal survives in the compact marker instead.
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, route: "full review", incomplete: true }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
+    await post(mkInput({ route: "full review" }), api);
+    const blob = decodedBlob(calls());
+    expect(blob.convergence).toBeUndefined();
+    expect(blob.round).toBeUndefined();
+    const body = patchedBody(calls());
+    expect(body).toContain("code-review:signal;base64");
+    expect(parseSignalMarker(body)).toEqual({
+      round: 1,
+      convergence: { score: 2, threshold: 1, converged: false },
+    });
+  });
+
   it("a mechanic pass carries the prior round's signal VERBATIM — a changed current threshold must not flip it (issue #141 review)", async () => {
     // The prior round was judged at threshold 1 (score 2 → not converged); the operator now
     // configures threshold 3. Recomputing the carried signal would flip it to converged — the blob

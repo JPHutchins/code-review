@@ -142,11 +142,19 @@ export const roundsSummary = (
   rounds: readonly SeverityCounts[],
   count: number = rounds.length,
 ): string => {
-  if (rounds.length === 0) return "";
+  if (count === 0) return "";
   const chips = rounds.slice(-TRAJECTORY_CHIPS).map(roundChip);
+  // Every marker entry filtered (a corrupt history) still shows the round number the carried signal
+  // claims — the label survives even with no chips to render (issue #141 review r4).
   const trajectory =
-    rounds.length > TRAJECTORY_CHIPS ? `… → ${chips.join(" → ")}` : chips.join(" → ");
-  return `**Round ${String(count)}** · ${trajectory}`;
+    chips.length === 0
+      ? ""
+      : rounds.length > TRAJECTORY_CHIPS
+        ? `… → ${chips.join(" → ")}`
+        : chips.join(" → ");
+  return trajectory === ""
+    ? `**Round ${String(count)}**`
+    : `**Round ${String(count)}** · ${trajectory}`;
 };
 
 // The severity-weighted convergence score and its advisory badge. The score is a pure function of one
@@ -248,7 +256,9 @@ export const surfacedFindingsPointer = (
   jsonUrl: string | undefined,
 ): string => {
   const marker = findingsPointer(surfaceFindings(findings, signal), jsonUrl);
-  if (signal === null || marker.includes("findings-json;base64")) return marker;
+  // Probe the full embedded-marker prefix, never a bare substring — a link-form jsonUrl could
+  // itself contain "findings-json;base64" (issue #141 review r4).
+  if (signal === null || marker.includes("<!-- code-review:findings-json;base64 ")) return marker;
   return marker === "" ? signalMarker(signal) : `${marker}\n${signalMarker(signal)}`;
 };
 

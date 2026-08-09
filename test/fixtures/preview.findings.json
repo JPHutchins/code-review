@@ -1,7 +1,17 @@
 {
-  "schema_version": "0.4.0",
-  "summary": "Threads a `timeout` through the upload config and adds a retry wrapper. The change is focused, but the `timeout` type was widened in a way that breaks existing callers, and a couple of smaller cleanups are worth making before merge.",
+  "schema_version": "0.6.0",
+  "summary": "The change is focused, but the verdict is `changes` because the `timeout` widening breaks existing callers at the type boundary, and the retry plumbing lands without the bounds the surrounding code already relies on.",
   "verdict": "changes",
+  "systemic_problems": [
+    {
+      "title": "Retry plumbing is inconsistent across the upload path",
+      "description": "The retry wrapper is applied in the client but not in the config layer, and the legacy path still loops unbounded — three spots, three policies. The individual findings below each touch one instance; the pattern itself is the problem.",
+      "severity": "major",
+      "code": "retry-policy-inconsistent",
+      "finding_codes": ["widened-type"],
+      "paths": ["src/upload/config.ts", "src/upload/client.ts", "src/legacy/old_code.ts"]
+    }
+  ],
   "findings": [
     {
       "path": "src/upload/config.ts",

@@ -423,6 +423,86 @@ describe("render", () => {
     });
   });
 
+  describe("systemic problems section (issue #134)", () => {
+    const systemicFindings = (overrides?: Partial<Omit<Findings, "findings">>): Findings =>
+      mkFindings([mkFinding({ severity: "major", title: "Anchored finding" })], {
+        summary: "The verdict follows from the shape of the change.",
+        ...overrides,
+      });
+
+    it("renders its own section with severity emoji, title, description, paths, and tied codes when systemic_problems is non-empty", () => {
+      const findings = systemicFindings({
+        systemic_problems: [
+          {
+            title: "Retry plumbing is inconsistent",
+            description: "Three spots, three retry policies — the pattern is the problem.",
+            severity: "major",
+            finding_codes: ["widened-type"],
+            paths: ["src/upload/config.ts", "src/upload/client.ts"],
+          },
+        ],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+
+      expect(result).toContain("### 🔗 Systemic problems");
+      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent");
+      expect(result).toContain("Three spots, three retry policies — the pattern is the problem.");
+      expect(result).toContain("_Affects: `src/upload/config.ts`, `src/upload/client.ts`");
+      expect(result).toContain("Ties together: `widened-type`");
+    });
+
+    it("renders a severity-less systemic item without an emoji label", () => {
+      const findings = systemicFindings({
+        systemic_problems: [{ title: "Pattern only", description: "Spans severities." }],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("#### Pattern only");
+      expect(result).not.toContain("(major) Pattern only");
+    });
+
+    it("omits the meta line when the item carries neither paths nor finding_codes", () => {
+      const findings = systemicFindings({
+        systemic_problems: [{ title: "Bare", description: "Just prose." }],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("#### Bare");
+      expect(result).not.toContain("_Affects:");
+      expect(result).not.toContain("Ties together:");
+    });
+
+    it("is absent when systemic_problems is empty — no placeholder noise", () => {
+      const findings = systemicFindings({ systemic_problems: [] });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("Systemic problems");
+    });
+
+    it("is absent when systemic_problems is omitted entirely", () => {
+      const result = render({
+        findings: systemicFindings(),
+        envelope: baseEnvelope,
+        prices,
+        template,
+      });
+      expect(result).not.toContain("Systemic problems");
+    });
+
+    it("escapes pipes in the title and backticks in paths (render safety, mirroring strays)", () => {
+      const findings = systemicFindings({
+        systemic_problems: [
+          {
+            title: "Pipe | in title",
+            description: "d",
+            paths: ["src/bad`path`.ts"],
+          },
+        ],
+      });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("Pipe \\| in title");
+      expect(result).toContain("src/bad-path-.ts");
+      expect(result).not.toContain("bad`path`");
+    });
+  });
+
   describe("stray confidence and reasoning fold (issue #16; both required in 0.4)", () => {
     it("shows confidence on the bullet line, outside the fold", () => {
       const findings = mkFindings([]);

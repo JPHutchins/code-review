@@ -66,13 +66,37 @@ const EndGeStart = t.refinement(
 
 export const FindingCodec = t.exact(EndGeStart);
 
-export const FindingsCodec = t.exact(
+// Cross-cutting observations that tie findings together, with no required line anchor — mirrors
+// findings.schema.json's systemic_problems items exactly (a finding-style `code`/`code_url` pair for
+// rule-based dedup, plus the related finding codes and spanned paths).
+const SystemicProblemShape = t.intersection([
   t.type({
-    schema_version: SchemaVersion,
-    summary: t.string,
-    verdict: VerdictCodec,
-    findings: t.array(FindingCodec),
+    title: t.string,
+    description: t.string,
   }),
+  t.partial({
+    severity: SeverityCodec,
+    code: t.string,
+    code_url: t.string,
+    finding_codes: t.array(t.string),
+    paths: t.array(t.string),
+  }),
+]);
+
+export const SystemicProblemCodec = t.exact(SystemicProblemShape);
+
+export const FindingsCodec = t.exact(
+  t.intersection([
+    t.type({
+      schema_version: SchemaVersion,
+      summary: t.string,
+      verdict: VerdictCodec,
+      findings: t.array(FindingCodec),
+    }),
+    t.partial({
+      systemic_problems: t.array(SystemicProblemCodec),
+    }),
+  ]),
 );
 
 export const TriageCodec = t.type({
@@ -151,9 +175,10 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.5.0";
+export const DEFAULT_SCHEMA_VERSION = "0.6.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
+export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
 export type Verdict = t.TypeOf<typeof VerdictCodec>;
 

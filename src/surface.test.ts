@@ -39,6 +39,27 @@ describe("parseFindingsMarker", () => {
     expect(parseFindingsMarker(body)).toEqual(findings);
   });
 
+  it("round-trips systemic_problems through the marker (issue #134 — the machine channel carries them)", () => {
+    const withSystemic = {
+      ...findings,
+      systemic_problems: [
+        {
+          title: "Retry inconsistency",
+          description: "Three policies in three spots.",
+          severity: "major",
+          finding_codes: ["widened-type"],
+          paths: ["src/a.ts"],
+        },
+      ],
+    } as unknown as Findings;
+    const body = `sticky prose\n${findingsPointer(withSystemic, undefined)}\nmore prose`;
+    const decoded = parseFindingsMarker(body) as {
+      systemic_problems?: readonly unknown[];
+    };
+    expect(decoded.systemic_problems).toHaveLength(1);
+    expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
+  });
+
   it("returns null when the body carries no findings marker", () => {
     expect(parseFindingsMarker("just a comment, nothing embedded")).toBeNull();
   });

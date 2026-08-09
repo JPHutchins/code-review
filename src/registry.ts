@@ -43,11 +43,12 @@ export type Resolution<K extends SchemaKind> =
 
 const identity = <A>(decoded: A): A => decoded;
 
-// 0.5 widened the verdict enum with the pipeline-only "error" value — a backwards-compatible addition,
-// so a 0.4 document is still a valid 0.5 document and resolves through the same widened codec against
-// the flat (now-0.5) schema with an identity upcast. This differs from the dropped 0.2/0.3 minors,
-// which could NOT be honestly upcast (they lacked the required reasoning/confidence). Keeping 0.4 live
-// means a prior sticky embedded by a 0.4 CLI still seeds a re-review after this ships.
+// 0.5 widened the verdict enum with the pipeline-only "error" value and 0.6 added the optional
+// systemic_problems array — both backwards-compatible additions, so a 0.4/0.5 document is still a
+// valid 0.6 document and resolves through the same widened codec against the flat (now-0.6) schema
+// with an identity upcast. This differs from the dropped 0.2/0.3 minors, which could NOT be honestly
+// upcast (they lacked the required reasoning/confidence). Keeping 0.4/0.5 live means a prior sticky
+// embedded by an older CLI still seeds a re-review after this ships.
 const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
     minor: "0.4",
@@ -59,6 +60,14 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   },
   {
     minor: "0.5",
+    defaultVersion: "0.5.0",
+    schemaFile: "findings.schema.json",
+    codec: FindingsCodec,
+    normalize: identity,
+    latest: false,
+  },
+  {
+    minor: "0.6",
     defaultVersion: DEFAULT_SCHEMA_VERSION,
     schemaFile: "findings.schema.json",
     codec: FindingsCodec,

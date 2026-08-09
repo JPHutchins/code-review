@@ -24,6 +24,18 @@
 
 <%~ it.findings.summary %>
 
+<% if (it.systemic.length > 0) { -%>
+
+### 🔗 Systemic problems
+
+<% it.systemic.forEach(function(s) { -%>
+#### <% if (s.severity) { -%><%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <% } -%><%= s.title %>
+<% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_codes && s.finding_codes.length > 0) { meta.push('Ties together: ' + s.finding_codes.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
+
+<%~ s.description %>
+<% }) -%>
+<% } -%>
+
 ---
 
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>

@@ -1,7 +1,7 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
-import type { Finding, Severity } from "./schema.js";
+import type { Finding, Severity, SystemicProblem } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
@@ -29,6 +29,13 @@ const sanitizeFinding = (f: Finding): StrayView => ({
   title: escapePipes(f.title),
   path: escapeCodeBackticks(f.path),
   patchProjection: projectPatch(f.patch),
+});
+
+// The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
+const sanitizeSystemic = (s: SystemicProblem): SystemicProblem => ({
+  ...s,
+  title: escapePipes(s.title),
+  ...(s.paths !== undefined ? { paths: s.paths.map(escapeCodeBackticks) } : {}),
 });
 
 const emptySeverityCounts = (): Record<Severity, number> => ({
@@ -105,6 +112,7 @@ export const render = (input: RenderInput): string => {
       ? convergenceSummary(severityCounts, input.convergenceThreshold)
       : "",
     strays: (input.strays ?? []).map(sanitizeFinding),
+    systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,

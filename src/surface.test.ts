@@ -15,9 +15,20 @@ import {
   carryForwardMarkers,
   convergenceScore,
   convergenceSummary,
+  convergenceSignal,
+  signalForRound,
+  surfaceFindings,
+  surfacedFindingsPointer,
+  stripSurfaceFields,
+  parseSurfaceSignal,
+  parseSignalMarker,
+  SURFACE_SCHEMA_VERSION,
+  SURFACE_SCHEMA_VERSIONS,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
+import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 import type { Findings } from "./schema.js";
+import type { SurfaceSignal } from "./surface.js";
 import type { SeverityCounts } from "./types.js";
 
 const findings = {
@@ -303,6 +314,16 @@ describe("rounds trajectory — issue #125", () => {
     expect(summary).toContain("🔵12");
     expect(summary).not.toContain("🔵1 →");
   });
+
+  it("labels the round from an explicit count when the history lost an entry — the trajectory and the blob's round stay equal (issue #141 review r3)", () => {
+    // The marker holds 1 parseable round, but the carried signal says round 3 was completed.
+    expect(roundsSummary([counts(0, 1, 0, 0)], 3)).toBe("**Round 3** · 🟠1");
+  });
+
+  it("keeps the label when every marker entry was filtered — the carried count still claims the round (issue #141 review r4)", () => {
+    expect(roundsSummary([], 3)).toBe("**Round 3**");
+    expect(roundsSummary([])).toBe("");
+  });
 });
 
 describe("convergence score — issue #133", () => {
@@ -361,5 +382,269 @@ describe("convergence score — issue #133", () => {
     expect(convergenceSummary(counts(0, 0, 1, 0), 1.04)).toBe(
       "**Convergence** 🏁 1 ≤ 1.04 — converged",
     );
+  });
+});
+
+describe("surface findings document — issue #141 (the stop signal in the blob agents read)", () => {
+  const counts = (critical: number, major: number, minor: number, nit: number): SeverityCounts => ({
+    critical,
+    major,
+    minor,
+    nit,
+  });
+  const signal = (round: number, c: SeverityCounts): SurfaceSignal => ({
+    round,
+    convergence: convergenceSignal(c),
+  });
+
+  it("stamps the 0.6.0 surface version on every surfaced document, keeping the agent's fields verbatim", () => {
+    const doc = surfaceFindings(findings, null);
+    expect(doc.schema_version).toBe(SURFACE_SCHEMA_VERSION);
+    expect(doc).toEqual({ ...findings, schema_version: SURFACE_SCHEMA_VERSION });
+  });
+
+  it("every version surfaceFindings emits is one stripSurfaceFields recognizes — the emit and strip axes stay coupled (issue #141 review r3)", () => {
+    expect(SURFACE_SCHEMA_VERSIONS).toContain(SURFACE_SCHEMA_VERSION);
+    expect(stripSurfaceFields(surfaceFindings(findings, null))).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+    });
+  });
+
+  it("embeds the given stop signal — converged as a literal boolean", () => {
+    const doc = surfaceFindings(findings, signal(2, counts(0, 0, 0, 50)));
+    expect(doc.round).toBe(2);
+    expect(doc.convergence).toEqual({ score: 0, threshold: 1, converged: true });
+  });
+
+  it("omits convergence and round when the signal is null (no round has completed)", () => {
+    const doc = surfaceFindings(findings, null);
+    expect(doc.convergence).toBeUndefined();
+    expect(doc.round).toBeUndefined();
+  });
+
+  it("drops a crafted draft's OWN round/convergence keys — only the pipeline signal may survive the stamp (issue #141 review r6)", () => {
+    // A corrupt/crafted doc declaring 0.7.0 with round/convergence keys must not be read back as a
+    // pipeline signal; surfaceFindings strips any pre-existing keys before stamping its own.
+    const crafted = {
+      ...findings,
+      schema_version: "0.7.0",
+      round: 99,
+      convergence: { score: 0, threshold: 1, converged: true },
+    };
+    const doc = surfaceFindings(crafted, signal(2, counts(0, 0, 1, 0)));
+    expect(doc.round).toBe(2);
+    expect(doc.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+  });
+
+  it("convergenceSignal computes score/threshold/converged from one round's counts", () => {
+    expect(convergenceSignal(counts(1, 0, 0, 0))).toEqual({
+      score: 4,
+      threshold: 1,
+      converged: false,
+    });
+    expect(convergenceSignal(counts(0, 0, 0, 50))).toEqual({
+      score: 0,
+      threshold: 1,
+      converged: true,
+    });
+    expect(convergenceSignal(counts(0, 1, 0, 0), 3)).toEqual({
+      score: 2,
+      threshold: 3,
+      converged: true,
+    });
+  });
+
+  it("signalForRound builds the full {round, convergence} shape from one round's counts", () => {
+    expect(signalForRound(2, counts(0, 1, 0, 0))).toEqual({
+      round: 2,
+      convergence: { score: 2, threshold: 1, converged: false },
+    });
+    expect(signalForRound(1, counts(0, 0, 0, 0), 0)).toEqual({
+      round: 1,
+      convergence: { score: 0, threshold: 0, converged: true },
+    });
+  });
+
+  it("the findings-json marker round-trips the surfaced document, signal included", () => {
+    const doc = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
+    const body = `sticky prose\n${findingsPointer(doc, undefined)}\nmore prose`;
+    expect(parseFindingsMarker(body)).toEqual(doc);
+  });
+
+  it("budgets the surfaced overhead — a doc at the old embed boundary still embeds as base64 (issue #141 review)", () => {
+    let doc = { ...findings, summary: "x".repeat(20000) };
+    const b64 = (d: Findings): number =>
+      Buffer.from(
+        JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)))),
+        "utf-8",
+      ).toString("base64").length;
+    // Grow the summary until the SURFACED marker crosses the old 40000 limit.
+    while (b64(doc) <= 40000) {
+      doc = { ...doc, summary: `${doc.summary}x` };
+    }
+    // The raised limit budgets the ~100-char stop signal, so a review that previously embedded as
+    // base64 still does — it doesn't fall to the link form and lose the seed + signal.
+    expect(b64(doc)).toBeLessThanOrEqual(40200);
+    expect(
+      findingsPointer(surfaceFindings(doc, signal(1, counts(0, 0, 1, 0))), undefined),
+    ).toContain(";base64");
+  });
+
+  it("stripSurfaceFields drops the surface fields and restores the draft version on a 0.7.0 doc", () => {
+    const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
+    expect(stripSurfaceFields(surfaced)).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+    });
+  });
+
+  it("stripSurfaceFields passes unknown future versions (0.8.0) through untouched — the surface list grows with each emitted version", () => {
+    const surfaced = {
+      ...surfaceFindings(findings, signal(2, counts(0, 0, 1, 0))),
+      schema_version: "0.8.0",
+    };
+    // An unknown version is not classified as surfaced (it could equally be a future draft); schema
+    // validation downstream rejects it rather than silently rewriting it to a valid-looking draft.
+    expect(stripSurfaceFields(surfaced)).toEqual(surfaced);
+  });
+
+  it("stripSurfaceFields leaves draft-version blobs untouched — even one carrying a 'round' key", () => {
+    expect(stripSurfaceFields(findings)).toEqual(findings);
+    expect(stripSurfaceFields({ ...findings, round: 7 })).toEqual({ ...findings, round: 7 });
+  });
+
+  it("stripSurfaceFields passes non-objects and versionless docs through for downstream validation", () => {
+    expect(stripSurfaceFields("junk")).toBe("junk");
+    expect(stripSurfaceFields([1, 2])).toEqual([1, 2]);
+    expect(stripSurfaceFields(null)).toBeNull();
+    const noVersion = { summary: "s", verdict: "comment", findings: [] };
+    expect(stripSurfaceFields(noVersion)).toEqual(noVersion);
+  });
+});
+
+describe("parseSurfaceSignal — issue #141 (verbatim carry of the prior round's signal)", () => {
+  const signal: SurfaceSignal = {
+    round: 2,
+    convergence: { score: 1, threshold: 1, converged: true },
+  };
+
+  it("parses a well-formed signal from a surfaced blob", () => {
+    expect(parseSurfaceSignal(surfaceFindings(findings, signal))).toEqual(signal);
+  });
+
+  it("returns null when the doc carries no signal (a pre-surface blob, or no round yet)", () => {
+    expect(parseSurfaceSignal(findings)).toBeNull();
+    expect(parseSurfaceSignal(surfaceFindings(findings, null))).toBeNull();
+  });
+
+  it("rejects a draft-version doc carrying round/convergence keys — the carry channel is version-gated like the seed channel (issue #141 review r3)", () => {
+    expect(
+      parseSurfaceSignal({
+        ...findings,
+        round: 1,
+        convergence: { score: 0, threshold: 1, converged: true },
+      }),
+    ).toBeNull();
+    expect(
+      parseSurfaceSignal({
+        ...findings,
+        schema_version: "0.5.0",
+        round: 1,
+        convergence: { score: 0, threshold: 1, converged: true },
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null on malformed signals rather than carrying corruption forward", () => {
+    const base = surfaceFindings(findings, signal);
+    expect(parseSurfaceSignal({ ...base, round: 1.5 })).toBeNull();
+    expect(parseSurfaceSignal({ ...base, round: 0 })).toBeNull();
+    expect(
+      parseSurfaceSignal({ ...base, convergence: { score: "0", threshold: 1, converged: true } }),
+    ).toBeNull();
+    expect(
+      parseSurfaceSignal({ ...base, convergence: { score: 0, threshold: 1, converged: "yes" } }),
+    ).toBeNull();
+    expect(parseSurfaceSignal("junk")).toBeNull();
+  });
+
+  it("rejects non-finite score/threshold (JSON.parse('1e400') is Infinity) — never carried one hop then silently dropped", () => {
+    const base = surfaceFindings(findings, signal);
+    expect(
+      parseSurfaceSignal({
+        ...base,
+        convergence: { score: Infinity, threshold: 1, converged: true },
+      }),
+    ).toBeNull();
+    expect(
+      parseSurfaceSignal({
+        ...base,
+        convergence: { score: 1, threshold: Infinity, converged: true },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("signal marker — issue #141 (the stop signal survives an oversized review)", () => {
+  const signal: SurfaceSignal = {
+    round: 1,
+    convergence: { score: 2, threshold: 1, converged: false },
+  };
+
+  it("emits ONLY the compact signal marker when the whole-doc payload is too large and no jsonUrl is given", () => {
+    let doc = { ...findings, summary: "x".repeat(20000) };
+    while (
+      Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
+        .length <= 40200
+    ) {
+      doc = { ...doc, summary: `${doc.summary}x` };
+    }
+    const pointer = surfacedFindingsPointer(doc, signal, undefined);
+    expect(pointer).not.toContain("findings-json;base64");
+    expect(pointer).toContain("code-review:signal;base64");
+    expect(parseSignalMarker(pointer)).toEqual(signal);
+  });
+
+  it("emits the link marker PLUS the compact signal marker when a jsonUrl fallback is available", () => {
+    let doc = { ...findings, summary: "x".repeat(20000) };
+    while (
+      Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
+        .length <= 40200
+    ) {
+      doc = { ...doc, summary: `${doc.summary}x` };
+    }
+    const pointer = surfacedFindingsPointer(doc, signal, "https://example.com/findings.zip");
+    expect(pointer).toContain(
+      "<!-- code-review:findings-json https://example.com/findings.zip -->",
+    );
+    expect(pointer).toContain("code-review:signal;base64");
+  });
+
+  it("embeds no signal marker when the whole-doc payload embeds as base64", () => {
+    const pointer = surfacedFindingsPointer(findings, signal, undefined);
+    expect(pointer).toContain("findings-json;base64");
+    expect(pointer).not.toContain("code-review:signal;base64");
+  });
+
+  it("parseSignalMarker returns null when the body carries no signal marker", () => {
+    expect(parseSignalMarker("just prose")).toBeNull();
+    expect(
+      parseSignalMarker(findingsPointer(surfaceFindings(findings, signal), undefined)),
+    ).toBeNull();
+  });
+
+  it("carryForwardMarkers preserves the signal marker alongside the findings marker", () => {
+    let doc = { ...findings, summary: "x".repeat(20000) };
+    while (
+      Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
+        .length <= 40200
+    ) {
+      doc = { ...doc, summary: `${doc.summary}x` };
+    }
+    const pointer = surfacedFindingsPointer(doc, signal, "https://example.com/findings.zip");
+    expect(pointer).toContain("code-review:signal;base64");
+    expect(carryForwardMarkers(pointer)).toContain("code-review:signal;base64");
+    expect(carryForwardMarkers(pointer)).toContain("findings-json");
   });
 });

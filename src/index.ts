@@ -9,7 +9,7 @@ import { copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
-import { render } from "./render.js";
+import { render, computeRoundCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
 import { computeCost } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
@@ -39,7 +39,12 @@ import {
   isIncompleteFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
-import { parseFindingsMarker, parseReviewedRoute, parseReviewedSha } from "./surface.js";
+import {
+  parseFindingsMarker,
+  parseReviewedRoute,
+  parseReviewedSha,
+  stripSurfaceFields,
+} from "./surface.js";
 import {
   buildNoticeEnvelope,
   buildUnknownNoticeEnvelope,
@@ -281,6 +286,16 @@ const renderCmd = defineCommand({
     const testReport = args["test-report"]
       ? decode(TestSummaryCodec.decode(readJSON(args["test-report"])), "test report")
       : undefined;
+    // The render command renders ONE run with no PR history, so render's fallback (which requires a
+    // completed round in the history) would show no convergence at all. A completed full-review run
+    // IS round 1 of its conversation: pass its own counts as the history — the badge, the
+    // trajectory, and the blob's stop signal all agree on it, and the shared predicates make this
+    // the same decision post makes (issue #141 reviews r2 + r4).
+    const route = args.route || envelope.route || null;
+    const isRound =
+      isConvergenceRound(route, envelope.incomplete === true || isIncompleteFindings(findings)) &&
+      isReviewVerdict(findings.verdict);
+    const counts = computeRoundCounts(findings);
     const output = render({
       findings,
       envelope,
@@ -291,6 +306,7 @@ const renderCmd = defineCommand({
       route: args.route,
       effort: args.effort,
       testReport,
+      rounds: isRound ? [counts] : [],
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
       postedAt: formatUtc(new Date()),
     });
@@ -866,7 +882,11 @@ const seedDraftCmd = defineCommand({
         ? raw.body
         : null;
     })();
-    const priorFindings = priorBody === null ? null : parseFindingsMarker(priorBody);
+    // The surfaced blob (agent doc + pipeline-stamped convergence/round) is stripped back to the
+    // agent's own document before seeding — the agent must only ever see its own fields, and only
+    // draft versions validate against the registry.
+    const priorFindings =
+      priorBody === null ? null : stripSurfaceFields(parseFindingsMarker(priorBody));
 
     // Validate + write WITHOUT the process-exiting require* helpers: any failure (bad
     // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the

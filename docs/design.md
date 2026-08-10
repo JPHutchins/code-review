@@ -174,6 +174,34 @@ this doc.
   ahead), so a finished review is never hidden behind a stale "in progress".
 - **Advisory only.** The review posts as `COMMENT`, never `REQUEST_CHANGES`, and must never be a
   required check — advisory-only is enforced by configuration, not by exit code.
+- **Scope triage (issue #139).** The reviewer does not know what language the project formats, so a
+  project that formats C kept re-raising a C++ layout finding round after round (the "input" looked
+  like a regression to the reviewer, but was never a program the project accepts). The fix surfaces the
+  project's scope — a `scope` workflow input, and/or the README's first paragraph — into the full-review
+  prompt, and tells the reviewer that "is this input in scope?" is a triage question answered *before*
+  severity: an out-of-scope input is a scope note (a sentence in the summary), never a
+  severity-bearing finding. Scope is deliberately **additive**: it changes what the reviewer classifies
+  as a finding, not the findings schema, and no version bump is involved. The input is validated by a
+  small `code-review check-scope` command (the same fail-loud posture as `--convergence-threshold`), so
+  a malformed value cannot corrupt the prompt it is spliced into. Because the CLI is release-gated, the
+  workflow probes for `check-scope` support (full-review route only, so a malformed value never aborts
+  the mechanic/CI-fix path); on an older pinned CLI the scope is treated as absent and the reviewer
+  falls back to inferring it from the README.
+- **Cancelled review is informational, not a crash (issue #139).** Pushing twice within minutes cancels
+  the first review (`cancel-in-progress` — correct), but the cancelled run then posted the same
+  "⚠️ Review did not complete — re-request" notice as a real failure, which read as an agent crash. The
+  `finalize` job now distinguishes `cancelled` from `failure`: a cancelled (superseded) run posts an
+  informational "superseded — no action needed" sticky (`report-incomplete --cancelled`), never the
+  failure reading, and it settles the check this run's announce created to `cancelled`. Every check
+  settlement (neutral, failure, cancelled) is ownership-matched by the check's details_url, which the
+  announce stamps with this run's URL — so a superseding run's live check on the same head is never
+  touched by another run's settlement. Each run owns its own check (announce always opens a fresh one,
+  idempotently per run), so ownership is unambiguous across all three writers. The wording is soft about
+  *why* it was cancelled — `result == 'cancelled'`
+  also fires for a manual cancel — and links the cancelled run itself, never a "latest" run it cannot
+  name; a cancelled run with no sticky at all (cancelled before announcing) posts nothing, because
+  nothing superseded it. The same guards as the failure notice keep it from clobbering the superseding
+  run's live placeholder or a completed review.
 - **The stop signal lives in the data, not the prose.** The AGENTS directive on the findings marker
   tells a decoding agent to ignore the prose — which would leave the convergence badge (prose-only)
   invisible to exactly the iterating author-agent it exists for. So the surfaced findings document

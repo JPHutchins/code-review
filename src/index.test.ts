@@ -1526,6 +1526,33 @@ describe("cli — render --convergence-threshold (issue #133)", () => {
   });
 });
 
+describe("cli — check-scope (issue #139)", () => {
+  it("prints the normalized language list for an empty-unset-safe single language", async () => {
+    const { stdout, exitCode } = await runCli(["check-scope", "--scope", "C"]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("C");
+  });
+
+  it("normalizes separators and de-duplicates for the prompt splice", async () => {
+    const { stdout, exitCode } = await runCli(["check-scope", "--scope", "c, c++, rust; C"]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("c c++ rust C");
+  });
+
+  it("prints nothing (exit 0) when the scope is empty — the reviewer then infers from the README", async () => {
+    const { stdout, exitCode } = await runCli(["check-scope", "--scope", ""]);
+    expect(exitCode).toBeNull();
+    expect(stdout).toBe("");
+  });
+
+  it("fails loudly on a prompt-structure-breaking scope value rather than splicing it in", async () => {
+    const { stderr, exitCode } = await runCli(["check-scope", "--scope", "C\nC++"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("check-scope");
+    expect(stderr).toContain("corrupt the review prompt");
+  });
+});
+
 describe("cli — render posted-at line (issue #28)", () => {
   it("renders '**Reviewed** `<short-sha>` at <UTC timestamp>' computed at the IO boundary", async () => {
     const { stdout, exitCode } = await runCli([

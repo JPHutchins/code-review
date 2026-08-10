@@ -51,5 +51,6 @@ jobs:
       # Optional per-repo tuning, same knobs as review.yaml — e.g. install_command, egress_policy,
       # the ceilings the comment overrides are clamped to (max_duration / max_usd), tier aliases.
       install_command: npm ci
+      scope:            ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README (#139)
     secrets:
       MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}

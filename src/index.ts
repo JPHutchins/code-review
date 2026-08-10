@@ -81,6 +81,7 @@ import {
   isKnownModelHost,
   parseExtraEndpoints,
 } from "./sandbox.js";
+import { parseScope } from "./scope.js";
 import { annotationSafe, asRecord, errMsg, readFileOrNull, tryParseJson } from "./util.js";
 
 const readJSON = (path: string): unknown => {
@@ -1583,13 +1584,13 @@ const announceCmd = defineCommand({
 });
 
 const isCheckIntent = (s: string): s is CheckIntent =>
-  s === "in_progress" || s === "neutral" || s === "failure";
+  s === "in_progress" || s === "neutral" || s === "failure" || s === "cancelled";
 
 const checkRunCmd = defineCommand({
   meta: {
     name: "check-run",
     description:
-      "Upsert the native 'Code review' check-run on the head SHA — the attribution surface that appears in the PR's own checks list and (writing to the base repo) works for fork PRs too. `in_progress` at review start, `neutral` when the review completes, `failure` when it didn't. Forward-only: `failure` never overwrites a completed review.",
+      "Upsert the native 'Code review' check-run on the head SHA — the attribution surface that appears in the PR's own checks list and (writing to the base repo) works for fork PRs too. `in_progress` at review start, `neutral` when the review completes, `failure` when it didn't, `cancelled` when a cancelled review settles its own check (matched by details_url, so it never touches a superseding run's check). Forward-only: `failure`/`cancelled` never overwrite a completed review.",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },
@@ -1600,12 +1601,13 @@ const checkRunCmd = defineCommand({
     },
     status: {
       type: "positional",
-      description: "One of: in_progress, neutral, failure",
+      description: "One of: in_progress, neutral, failure, cancelled",
       required: true,
     },
     "run-url": {
       type: "string",
-      description: "Workflow run URL the check-run's details link to",
+      description:
+        "Workflow run URL the check-run's details link to (also the ownership key for `cancelled`)",
       required: true,
     },
   },
@@ -1614,7 +1616,7 @@ const checkRunCmd = defineCommand({
       // Best-effort like `announce`: the check-run is an attribution aid, so an unknown status (version
       // skew) warns and exits 0 rather than failing the job the review otherwise proceeds through.
       process.stderr.write(
-        `::warning::code-review check-run: unrecognized status "${annotationSafe(args.status)}" — expected in_progress, neutral, or failure; skipping\n`,
+        `::warning::code-review check-run: unrecognized status "${annotationSafe(args.status)}" — expected in_progress, neutral, failure, or cancelled; skipping\n`,
       );
       return;
     }
@@ -1635,7 +1637,7 @@ const reportIncompleteCmd = defineCommand({
   meta: {
     name: "report-incomplete",
     description:
-      "Post (or update) the sticky when a review job hard-failed and posted nothing — an attributed 'did not complete' notice linking the run, telling the reader to re-request. Never buries a completed review, and never overwrites a superseding run's live in-progress placeholder. (A cancelled review is left to the superseding run that took over.)",
+      "Post (or update) the sticky when a review job hard-failed and posted nothing — an attributed 'did not complete' notice linking the run, telling the reader to re-request; with --cancelled, the informational 'superseded — no action needed' notice instead (issue #139). Never buries a completed review, and never overwrites a superseding run's live in-progress placeholder.",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },
@@ -1658,6 +1660,11 @@ const reportIncompleteCmd = defineCommand({
       type: "string",
       description: "Head branch to disambiguate the PR when multiple share a commit",
     },
+    cancelled: {
+      type: "boolean",
+      description:
+        "This run was CANCELLED before completing (typically superseded by a newer run on the same branch) — post the informational 'superseded' notice, not the failure notice (issue #139)",
+    },
   },
   run: async ({ args }) => {
     await reportIncomplete({
@@ -1666,9 +1673,10 @@ const reportIncompleteCmd = defineCommand({
       botLogin: args["bot-login"] || "github-actions[bot]",
       runUrl: args["run-url"],
       headBranch: args["head-branch"],
+      cancelled: args.cancelled,
     }).catch((err: unknown) =>
       process.stderr.write(
-        `::warning::code-review report-incomplete: could not post the failure notice (${annotationSafe(errMsg(err))}) — continuing\n`,
+        `::warning::code-review report-incomplete: could not post the notice (${annotationSafe(errMsg(err))}) — continuing\n`,
       ),
     );
   },
@@ -1854,6 +1862,32 @@ const awaitCiCmd = defineCommand({
   },
 });
 
+const checkScopeCmd = defineCommand({
+  meta: {
+    name: "check-scope",
+    description:
+      "Validate + normalize the workflow's `scope` input — the languages/inputs the project accepts (issue #139). Prints the normalized space-separated language list for splicing into the review prompt, or nothing when the scope is empty (the reviewer then infers it from the README's first paragraph). Fails loudly on a malformed value, so a config typo never silently corrupts the prompt it is spliced into.",
+  },
+  args: {
+    scope: {
+      type: "string",
+      description:
+        'The raw scope value — whitespace/comma/semicolon-separated language names (e.g. "C C++"); empty ⇒ absent',
+    },
+  },
+  run: ({ args }) => {
+    const parsed = parseScope(args.scope);
+    switch (parsed.kind) {
+      case "absent":
+        return;
+      case "invalid":
+        return fail(`check-scope: ${parsed.reason}`);
+      case "ok":
+        process.stdout.write(`${parsed.languages.join(" ")}\n`);
+    }
+  },
+});
+
 const sandboxConfigCmd = defineCommand({
   meta: {
     name: "sandbox-config",
@@ -1936,6 +1970,7 @@ export const main = defineCommand({
     post: postCmd,
     announce: announceCmd,
     "check-run": checkRunCmd,
+    "check-scope": checkScopeCmd,
     "report-incomplete": reportIncompleteCmd,
     cost: costCmd,
     "check-cost": checkCostCmd,

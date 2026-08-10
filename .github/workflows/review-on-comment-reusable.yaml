@@ -138,6 +138,14 @@ on:
         type: string
         required: false
         default: ""
+      scope:
+        description: >-
+          The project's scope — the languages/inputs it accepts (whitespace/comma/semicolon-separated
+          language names). Surfaced to the review agent so it can triage "is this input a program the
+          project accepts?" BEFORE assigning severities (issue #139). Empty ⇒ inferred from the README.
+        type: string
+        required: false
+        default: ""
       egress_policy:
         description: harden-runner egress-policy — 'block' to enforce, 'audit' for first-run discovery
         type: string
@@ -285,6 +293,7 @@ jobs:
       extra_endpoints: ${{ inputs.extra_endpoints }}
       egress_policy:   ${{ inputs.egress_policy }}
       claude_code_version: ${{ inputs.claude_code_version }}
+      scope:           ${{ inputs.scope }}
       # Per-run overrides parsed from the comment (already clamped by the gate). Empty ⇒ review-reusable
       # keeps its configured defaults, so a bare `/code-review` just runs a normal review.
       duration_override:  ${{ needs.gate.outputs.duration }}

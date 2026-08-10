@@ -48,6 +48,7 @@ import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
+import { runIdFromUrl } from "./checkrun.js";
 import { errMsg, tryParseJson, asRecord } from "./util.js";
 
 export interface PostInput {
@@ -614,7 +615,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     if (existingComplete) leaveInPlace(EMPTY_MECHANIC_LEAVE_MESSAGE);
     const priorSha = parseReviewedSha(sticky.body);
     const body = formatMarkdown(
-      `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.\n\n${carryForwardMarkers(sticky.body)}`,
+      noticeBody(
+        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.`,
+        sticky.body,
+      ),
     );
     await upsertSticky(input.repo, prNumber, sticky, body, ghApi);
     process.exit(0);
@@ -975,19 +979,33 @@ export interface AnnounceInput {
   readonly headBranch?: string;
 }
 
-// The placeholder body: the sticky marker, a "review in progress" line linking the run, and — when a
-// prior sticky exists — its machine-readable markers carried forward verbatim, so replacing the
-// summary prose never strips the re-review seed the review job reads back (embedded findings +
-// reviewed-sha). The commenter job overwrites this with the real summary when the review completes.
-const announceBody = (
-  headSha: string,
-  runUrl: string,
-  existingBody: string | undefined,
-): string => {
-  const notice = `${DEFAULT_MARKER}\n\n🔄 **Code review in progress** for \`${headSha.slice(0, 7)}\` — see the [workflow run](${runUrl}) for progress; this comment is updated with the review when it completes.`;
+// The notice bodies (announce placeholder, did-not-complete, superseded) share one shape: the sticky
+// marker, a lead line, and — when a prior sticky exists — its machine-readable markers carried forward
+// verbatim, so replacing the summary prose never strips the re-review seed the review job reads back
+// (embedded findings + reviewed-sha). Each body builds its own lead; this helper owns the shared tail.
+const noticeBody = (lead: string, existingBody: string | undefined): string => {
   const carried = existingBody ? carryForwardMarkers(existingBody) : "";
-  return carried ? `${notice}\n\n${carried}` : notice;
+  return carried ? `${lead}\n\n${carried}` : lead;
 };
+
+// Whether a sticky body references THIS run's URL — matched by the run id (shared grammar with
+// checkrun's runIdFromUrl) with a non-digit boundary so a successor whose numeric run id has this one
+// as a prefix (…/runs/123 vs …/runs/1234) is not mistaken for this run. Falls back to a plain substring
+// when the run URL carries no run id.
+const bodyRefsRun = (body: string, runUrl: string): boolean => {
+  const runId = runIdFromUrl(runUrl);
+  return runId === null
+    ? body.includes(runUrl)
+    : new RegExp(`/actions/runs/${runId}(?!\\d)`).test(body);
+};
+
+// The placeholder body: a "review in progress" line linking the run. The commenter job overwrites this
+// with the real summary when the review completes.
+const announceBody = (headSha: string, runUrl: string, existingBody: string | undefined): string =>
+  noticeBody(
+    `${DEFAULT_MARKER}\n\n🔄 **Code review in progress** for \`${headSha.slice(0, 7)}\` — see the [workflow run](${runUrl}) for progress; this comment is updated with the review when it completes.`,
+    existingBody,
+  );
 
 // Post (or update) the sticky the moment a review starts, so a workflow_run review — which runs from
 // the default branch and is otherwise invisible on the PR — is visibly under way. Shares post's PR
@@ -1037,18 +1055,38 @@ const incompleteBody = (
   headSha: string,
   runUrl: string,
   existingBody: string | undefined,
-): string => {
-  const notice = `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — the review job failed ([run](${runUrl})). Re-request the review; do not treat this round as spent.`;
-  const carried = existingBody ? carryForwardMarkers(existingBody) : "";
-  return carried ? `${notice}\n\n${carried}` : notice;
-};
+): string =>
+  noticeBody(
+    `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — the review job failed ([run](${runUrl})). Re-request the review; do not treat this round as spent.`,
+    existingBody,
+  );
+
+// A review run CANCELLED is not an operational failure — issue #139. Distinct sentence, no action
+// needed, and it must NOT read as a crash: no "did not complete", no "Re-request", and it never
+// carries the review-complete marker. The wording is deliberately soft about WHY it was cancelled —
+// `needs.review.result == 'cancelled'` also fires for a manual cancel, so the sticky must not assert
+// "a newer review run started" as fact, and the run it links is this (cancelled) one, not a "latest"
+// run it cannot name. The superseding run's own announce (or the commenter) replaces it.
+const cancelledBody = (headSha: string, runUrl: string, existingBody: string | undefined): string =>
+  noticeBody(
+    `${DEFAULT_MARKER}\n\n↩️ **Code review superseded** for \`${headSha.slice(0, 7)}\` — this run was cancelled before completing, typically because a newer review run started on this branch. No action needed. [View the cancelled run](${runUrl}) for the record.`,
+    existingBody,
+  );
+
+export interface ReportIncompleteInput extends AnnounceInput {
+  // Issue #139: this run was CANCELLED by a superseding run on the same branch — post the
+  // informational "superseded" sticky instead of the failure notice.
+  readonly cancelled?: boolean;
+}
 
 // The human-readable half of failure attribution (the check-run is the machine half): a review that
 // died leaves NO comment, so a separate always()-job posts this. Shares announce's PR resolution and
 // sticky upsert; the guard is stronger — it never buries a completed review OF ANY head, so a failed
-// run reporting late (after a superseding run already finished) can't clobber the real review.
+// run reporting late (after a superseding run already finished) can't clobber the real review. A
+// CANCELLED run (issue #139) posts the superseded notice instead, and the same guards keep it from
+// clobbering a newer run's live placeholder.
 export const reportIncomplete = async (
-  input: AnnounceInput,
+  input: ReportIncompleteInput,
   ghApi: GhApi = runGhApi,
 ): Promise<void> => {
   const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
@@ -1074,16 +1112,27 @@ export const reportIncomplete = async (
   // announce already posted a live "in progress" for a newer head. Overwriting it with "did not
   // complete" would be a false alarm for a review that is actively running. This run's own placeholder
   // (or a prior failure notice this run posted) embeds this run's URL, so its presence is the signal
-  // that overwriting is safe.
-  if (existing !== null && !existing.body.includes(input.runUrl)) {
+  // that overwriting is safe. The run id is matched with a non-digit boundary so a successor whose
+  // numeric run id has this one as a prefix (123 vs 1234) is not mistaken for this run.
+  if (existing !== null && !bodyRefsRun(existing.body, input.runUrl)) {
     process.stderr.write(`Sticky belongs to another run — leaving it in place\n`);
+    return;
+  }
+  // A CANCELLED run with NO placeholder at all (cancelled before its announce, or a manual cancel with
+  // nothing ever posted) must not CREATE a lone "superseded" sticky — nothing superseded it. Only a
+  // run that announced (or already posted its own notice) replaces its placeholder. A superseding run
+  // will post its own review, so a missing sticky is not a gap.
+  if (input.cancelled && existing === null) {
+    process.stderr.write(`Cancelled review has no sticky to supersede — leaving it absent\n`);
     return;
   }
   await upsertSticky(
     input.repo,
     resolution.prNumber,
     existing,
-    incompleteBody(input.headSha, input.runUrl, existing?.body),
+    input.cancelled
+      ? cancelledBody(input.headSha, input.runUrl, existing?.body)
+      : incompleteBody(input.headSha, input.runUrl, existing?.body),
     ghApi,
   );
 };

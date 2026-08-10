@@ -1866,7 +1866,7 @@ const checkScopeCmd = defineCommand({
   meta: {
     name: "check-scope",
     description:
-      "Validate + normalize the workflow's `scope` input — the languages/inputs the project accepts (issue #139). Prints the normalized space-separated language list for splicing into the review prompt, or nothing when the scope is empty (the reviewer then infers it from the README's first paragraph). Fails loudly on a malformed value, so a config typo never silently corrupts the prompt it is spliced into.",
+      "Validate + normalize the workflow's `scope` input — the languages/inputs the project accepts (issue #139). Prints the normalized space-separated language list for splicing into the review prompt, or nothing when the scope is empty (the reviewer then infers it from the README's first paragraph). A structurally malformed value is rejected rather than spliced in as-is.",
   },
   args: {
     scope: {

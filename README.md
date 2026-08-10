@@ -42,6 +42,7 @@ npx @jphutchins/code-review <subcommand>
 | `parse-command` | Resolve a PR's head from its number and parse a ChatOps trigger comment (`/code-review [24m] [$1.00] <instructions>`) into review overrides — the on-demand comment trigger |
 | `react` | Add/remove a GitHub comment reaction — the ChatOps acknowledgement (👀 on receipt, 🚀 on completion) |
 | `await-ci` | Wait for a PR head's CI run to conclude and emit its real conclusion + run id — so an on-demand comment review routes on the CI result (success → full, failure → mechanic) instead of reviewing blind |
+| `check-scope` | Validate + normalize the workflow's `scope` input (the languages/inputs the project accepts) and print the normalized list for the review prompt, or nothing when empty (the reviewer then infers scope from the README's first paragraph); a structurally malformed value is rejected rather than spliced in as-is |
 | `render` | Render the sticky-comment markdown from findings + usage + prices |
 | `inline` | Build the GitHub reviews `comments[]` payload from findings + diff (in-diff validation; strays demote to the summary) |
 | `adapt` | Map a native agent-CLI result envelope onto the abstract result envelope (`src/schema.ts`) |

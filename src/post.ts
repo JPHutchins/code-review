@@ -608,6 +608,17 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     process.exit(0);
   };
 
+  // The leave paths cannot write a note — the preserved sticky still surfaces each dropped finding
+  // and its reply thread — so the one place that names the drops in the run log, shared by every
+  // post-filter leave site (issue #151 review r5: previously byte-identical at three sites).
+  const logAnsweredDrops = (): void => {
+    if (verbatimReRaised.length > 0) {
+      process.stderr.write(
+        `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+      );
+    }
+  };
+
   // When the guard fires on a real completed review, leaving it in place is right — it IS the
   // terminal content. When it fires on the announce PLACEHOLDER (which strips review-complete), a
   // bare leave would strand a stale "Code review in progress" as the terminal state, so post a
@@ -619,17 +630,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     readonly body: string;
   }): Promise<void> => {
     if (existingComplete) {
-      // The completed sticky still surfaces every dropped finding and its reply thread; name the
-      // drops on stderr for the run log (issue #151 review r2 — the leave path cannot write).
-      if (verbatimReRaised.length > 0) {
-        process.stderr.write(
-          `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
-        );
-      }
+      logAnsweredDrops();
       leaveInPlace(EMPTY_MECHANIC_LEAVE_MESSAGE);
     }
     const priorSha = parseReviewedSha(sticky.body);
-    const dropNote = answeredReRaiseNote(verbatimReRaised);
+    const dropNote = answeredDropNote;
     const body = formatMarkdown(
       noticeBody(
         `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
@@ -720,6 +725,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
   const reRaisedNotes = answeredFilter.reRaisedNotes;
   const verbatimReRaised = answeredFilter.verbatimReRaised;
+  const droppedCount = answeredFilter.droppedCount;
   // Everything downstream (counts, rounds, signal, inline, the surfaced doc) reads the FILTERED
   // document — a closed verbatim re-raise is gone from the review, not just from the prose.
   // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
@@ -746,6 +752,15 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     findings: [...answeredFilter.findings],
     ...(systemic.length > 0 ? { systemic_problems: systemic } : {}),
   };
+  // The drop note, shared by every surface that renders the filtered findings: the TRUE pre-dedup
+  // count (issue #151 review r5), plus — when the drops emptied the round — a line reconciling the
+  // draft's verdict with the empty kept counts, so the sticky never reads "changes requested"
+  // beside a converged signal without the explanation (issue #151 review r5).
+  const answeredDropNote =
+    answeredReRaiseNote(verbatimReRaised, droppedCount) +
+    (verbatimReRaised.length > 0 && findings.findings.length === 0
+      ? "\n> _The stop signal reflects the kept findings — this round carries none._"
+      : "");
 
   const envelope = loadEnvelope(input.envelopePath);
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
@@ -761,13 +776,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     // the guard below — can't bury a completed review, which this branch previously skipped.
     const envelopelessIncomplete = isIncompleteFindings(findings);
     if (wouldBuryCompleted(envelopelessIncomplete)) {
-      // The leave cannot write a note; the preserved sticky still surfaces each dropped finding and
-      // its reply thread — name the drops in the run log (issue #151 review r4).
-      if (verbatimReRaised.length > 0) {
-        process.stderr.write(
-          `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
-        );
-      }
+      logAnsweredDrops();
       leaveInPlace();
     }
     // The route is passed through as --route, so an empty mechanic with a lost envelope still
@@ -793,7 +802,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         // exactly like the main path (issues #151 review r1 + r2).
         strays: findings.findings,
         answeredNotes: reRaisedNotes,
-        answeredReRaiseNote: answeredReRaiseNote(verbatimReRaised),
+        answeredReRaiseNote: answeredDropNote,
         roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         testReport,
@@ -821,13 +830,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // empty inline review over it — leave the real review in place.
   const thisIncomplete = envelope.incomplete === true || isIncompleteFindings(findings);
   if (wouldBuryCompleted(thisIncomplete)) {
-    // The leave cannot write a note; the preserved sticky still surfaces each dropped finding and
-    // its reply thread — name the drops in the run log (issue #151 review r4).
-    if (verbatimReRaised.length > 0) {
-      process.stderr.write(
-        `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
-      );
-    }
+    logAnsweredDrops();
     leaveInPlace();
   }
 
@@ -955,7 +958,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     rounds,
     sameRootNotes,
     answeredNotes: reRaisedNotes,
-    answeredReRaiseNote: answeredReRaiseNote(verbatimReRaised),
+    answeredReRaiseNote: answeredDropNote,
     roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,
     convergenceRound: isRound,

@@ -234,16 +234,19 @@ export const answeredRegistryFrom = (
   }
 
   // One entry per answered bot-rooted thread: the thread must be anchored on the BOT's comment;
-  // the answer is the first HUMAN comment in it.
+  // the answer recorded is the LAST HUMAN reply in it — the operative dismissal is the most recent
+  // answer, and a thread answered twice must not have its earlier reply win the dedup below (issue
+  // #151 review r5).
   const entries: AnsweredEntry[] = [];
   for (const [rootId, group] of threads) {
     const root = byId.get(rootId);
     if (root === undefined || root.user_login !== botLogin) continue;
     const finding = findingOf(root);
     if (finding === null) continue;
-    const reply = group.find(
+    const humanReplies = group.filter(
       (c) => c.id !== root.id && isHuman(c.user_login, c.user_type, botLogin),
     );
+    const reply = humanReplies[humanReplies.length - 1];
     if (reply === undefined) continue;
     entries.push({
       ...finding,
@@ -293,6 +296,9 @@ export interface AnsweredFilter {
   // sticky rather than silently vanishing. DEDUPED by key — two findings sharing one dropped code (a
   // code repeated within a round) list the answer once, never double-counted (issue #151 review r2).
   readonly verbatimReRaised: readonly AnsweredEntry[];
+  // The TRUE count of dropped findings (pre-dedup): the sticky's count must not understate the
+  // suppression just because several findings shared one code (issue #151 review r5).
+  readonly droppedCount: number;
 }
 
 // The deterministic backstop beneath the seed guidance: an answered finding re-raised VERBATIM
@@ -312,6 +318,7 @@ export const applyAnswered = (
   // same invariant the codebase's other code-keyed maps hold — issue #151 review r1).
   const noteEntries: [string, string][] = [];
   const droppedByKey = new Map<string, AnsweredEntry>();
+  let droppedCount = 0;
   for (const f of findings) {
     const entry = registry.find((e) => matches(f, e));
     if (entry === undefined) {
@@ -332,6 +339,7 @@ export const applyAnswered = (
       (f.patch ?? null) === entry.patch;
     if (verbatim && f.severity !== "critical") {
       droppedByKey.set(answeredNoteKey(f), entry);
+      droppedCount += 1;
     } else {
       kept.push(f);
       noteEntries.push([answeredNoteKey(f), answeredNote(entry)]);
@@ -341,11 +349,17 @@ export const applyAnswered = (
     findings: kept,
     reRaisedNotes: Object.fromEntries(noteEntries),
     verbatimReRaised: [...droppedByKey.values()],
+    droppedCount,
   };
 };
 
 // The sticky note naming what was dropped — the suppression is never silent (SPEC §3.3 truthful).
-export const answeredReRaiseNote = (entries: readonly AnsweredEntry[]): string => {
+// The COUNT is the true pre-dedup finding count (several findings sharing one code count as several
+// suppressions); the LINES stay deduped by key (issue #151 review r5).
+export const answeredReRaiseNote = (
+  entries: readonly AnsweredEntry[],
+  count: number = entries.length,
+): string => {
   if (entries.length === 0) return "";
   const label = (e: AnsweredEntry): string =>
     e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;
@@ -353,7 +367,7 @@ export const answeredReRaiseNote = (entries: readonly AnsweredEntry[]): string =
     (e) => `> - ${label(e)} — [prior answer](${e.replyUrl}) by ${e.replyAuthor}`,
   );
   return [
-    `> ↩️ **${String(entries.length)} finding(s) re-raised without new evidence — treated as answered** (each has a human reply on its prior inline thread):`,
+    `> ↩️ **${String(count)} finding(s) re-raised without new evidence — treated as answered** (each has a human reply on its prior inline thread):`,
     ...lines,
   ].join("\n");
 };

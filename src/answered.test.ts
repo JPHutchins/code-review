@@ -69,14 +69,14 @@ describe("answeredRegistryFrom — the 'already answered' state (issue #151)", (
     expect(entry.replyAuthor).toBe("alice");
   });
 
-  it("follows a reply-to-reply chain — the human answering a human's reply on a bot thread counts", () => {
+  it("follows a reply-to-reply chain — the human answering a human's reply on a bot thread counts, and the LAST human reply is the recorded answer (issue #151 review r5)", () => {
     const finding = mkFinding({});
     const registry = answeredRegistryFrom(
       [botComment(1, finding), reply(2, 1, "alice"), reply(3, 2, "bob")],
       "github-actions[bot]",
     );
     expect(registry).toHaveLength(1);
-    expect(registry[0]!.replyUrl).toContain("discussion_r2");
+    expect(registry[0]!.replyUrl).toContain("discussion_r3");
   });
 
   it("ignores a bot thread with no human reply, a human's own top-level comment, and the bot replying to itself", () => {

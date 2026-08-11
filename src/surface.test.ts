@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { validateAgainstSchema } from "./validate.js";
 import {
   parseFindingsMarker,
   parseReviewedSha,
@@ -29,13 +32,19 @@ import {
   roundRecord,
   consecutiveCodeStreaks,
   metastasisNote,
+  computeScopeMetastasis,
+  SCOPE_METASTASIS_DECISION_PROMPT,
   computeSameRootNotes,
   MAX_CODES_PER_ROUND,
+  EMBED_LIMIT,
 } from "./surface.js";
-import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
+import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./schema.js";
 import type { Finding, Findings } from "./schema.js";
 import type { SurfaceSignal } from "./surface.js";
 import type { RoundRecord, SeverityCounts } from "./types.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const bundledSchemaPath = resolve(__dirname, "..", "schema", "findings.schema.json");
 
 const findings = {
   schema_version: "0.4.0",
@@ -513,6 +522,43 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(metastasisNote(twoStreak, 3)).toBe("");
   });
 
+  it("computeScopeMetastasis derives the same flagged codes as the prose note — one computation, two surfaces (issue #150)", () => {
+    const twoStreak: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+    ];
+    expect(computeScopeMetastasis(twoStreak)).toBeNull();
+    expect(computeScopeMetastasis(twoStreak, 2)).toEqual({
+      decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
+      recurring: [{ code: "a", consecutive_rounds: 2, start_round: 1 }],
+    });
+  });
+
+  it("computeScopeMetastasis reports per-code consecutive-round counts with the streak's start round", () => {
+    // Streaks END at the last recorded round (a code absent there has no streak, like
+    // consecutiveCodeStreaks): `a` runs rounds 3-5, `b` rounds 4-5.
+    const rounds: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      counts(0, 0, 0, 0), // no codes record — ends every streak
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1, b: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1, b: 1 }),
+    ];
+    // Default threshold 3: only `a`'s 3-streak is flagged.
+    expect(computeScopeMetastasis(rounds)).toEqual({
+      decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 3 }],
+    });
+    // A lower threshold admits `b`'s 2-streak too, with its own start round.
+    expect(computeScopeMetastasis(rounds, 2)).toEqual({
+      decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
+      recurring: [
+        { code: "a", consecutive_rounds: 3, start_round: 3 },
+        { code: "b", consecutive_rounds: 2, start_round: 4 },
+      ],
+    });
+  });
+
   it("computeSameRootNotes names the most recent prior round for each recurring code", () => {
     const prior: RoundRecord[] = [
       coded(counts(0, 0, 0, 0), { a: 1 }),
@@ -695,7 +741,7 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     convergence: convergenceSignal(c),
   });
 
-  it("stamps the 0.6.0 surface version on every surfaced document, keeping the agent's fields verbatim", () => {
+  it("stamps the current surface version on every surfaced document, keeping the agent's fields verbatim", () => {
     const doc = surfaceFindings(findings, null);
     expect(doc.schema_version).toBe(SURFACE_SCHEMA_VERSION);
     expect(doc).toEqual({ ...findings, schema_version: SURFACE_SCHEMA_VERSION });
@@ -719,6 +765,82 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     const doc = surfaceFindings(findings, null);
     expect(doc.convergence).toBeUndefined();
     expect(doc.round).toBeUndefined();
+  });
+
+  it("stamps the given scope_metastasis entry and omits it when none is given (issue #150)", () => {
+    const entry = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+    };
+    expect(surfaceFindings(findings, null, entry).scope_metastasis).toEqual(entry);
+    expect(surfaceFindings(findings, null).scope_metastasis).toBeUndefined();
+  });
+
+  it("the scope_metastasis codecs and the ajv gate reject the SAME extra keys — both sides asserted (issue #150 review r2)", () => {
+    const clean = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+    };
+    expect(ScopeMetastasisCodec.decode(clean)._tag).toBe("Right");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: clean }, bundledSchemaPath).valid,
+    ).toBe(true);
+    // A seed-echoing draft smuggling extra keys into the entry (or its items) must fail BOTH gates
+    // — the codec's Strict refinements and the schema's additionalProperties:false agree.
+    const smuggledItem = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1, note: "x" }],
+    };
+    expect(ScopeMetastasisCodec.decode(smuggledItem)._tag).toBe("Left");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: smuggledItem }, bundledSchemaPath)
+        .valid,
+    ).toBe(false);
+    const smuggledTop = { decision_prompt: "decide", recurring: [], extra: 1 };
+    expect(ScopeMetastasisCodec.decode(smuggledTop)._tag).toBe("Left");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: smuggledTop }, bundledSchemaPath)
+        .valid,
+    ).toBe(false);
+    // Non-safe integers: JSON Schema's "integer" alone would accept 1e21 (a whole number), so the
+    // schema's maximum must bound it exactly where the codec's isSafeInteger does (issue #150
+    // review r3) — both gates reject it, and both accept an integer-valued 3.0.
+    const nonSafe = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 1e21, start_round: 1 }],
+    };
+    expect(ScopeMetastasisCodec.decode(nonSafe)._tag).toBe("Left");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: nonSafe }, bundledSchemaPath).valid,
+    ).toBe(false);
+    const integerValued = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3.0, start_round: 1 }],
+    };
+    expect(ScopeMetastasisCodec.decode(integerValued)._tag).toBe("Right");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: integerValued }, bundledSchemaPath)
+        .valid,
+    ).toBe(true);
+    // The tolerated draft-level field still decodes inside a findings doc (the seed-echo contract).
+    const echoed = { ...findings, scope_metastasis: clean };
+    expect(FindingsCodec.decode(echoed)._tag).toBe("Right");
+  });
+
+  it("drops a draft-carried scope_metastasis — the pipeline recomputes the entry from the rounds history, never reuses a stale echo (issue #150)", () => {
+    const crafted = {
+      ...findings,
+      scope_metastasis: {
+        decision_prompt: "stale",
+        recurring: [{ code: "stale", consecutive_rounds: 9, start_round: 1 }],
+      },
+    };
+    const entry = {
+      decision_prompt: "fresh",
+      recurring: [{ code: "fresh", consecutive_rounds: 3, start_round: 2 }],
+    };
+    const doc = surfaceFindings(crafted, null, entry);
+    expect(doc.scope_metastasis).toEqual(entry);
   });
 
   it("drops a crafted draft's OWN round/convergence keys — only the pipeline signal may survive the stamp (issue #141 review r6)", () => {
@@ -770,26 +892,49 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     expect(parseFindingsMarker(body)).toEqual(doc);
   });
 
-  it("budgets the surfaced overhead — a doc at the old embed boundary still embeds as base64 (issue #141 review)", () => {
+  it("budgets the surfaced overhead INCLUDING the worst-case scope_metastasis — a doc at the old embed boundary still embeds as base64 (issues #141 + #150 review r2)", () => {
+    // The WORST-CASE scope_metastasis payload: the real decision prompt plus 2*MAX_CODES_PER_ROUND
+    // recurring entries (the rounds marker keeps the top-8 base plus up to 8 prior-kept codes per
+    // round — the most a completing round can stamp) with 32-char codes — the budgeted assumption
+    // in EMBED_LIMIT's comment (the codebase's own longest codes run 21-28; 32 is the stated
+    // ceiling — issue #150 review r4). Measured at ~2332 base64 chars.
+    const worstCase = {
+      decision_prompt:
+        "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.",
+      recurring: Array.from({ length: 2 * MAX_CODES_PER_ROUND }, () => ({
+        code: "copy-protocol-reimplementation".padEnd(32, "x"),
+        consecutive_rounds: 18,
+        start_round: 1,
+      })),
+    };
     let doc = { ...findings, summary: "x".repeat(20000) };
-    const b64 = (d: Findings): number =>
+    const preEntryB64 = (d: Findings): number =>
       Buffer.from(
         JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)))),
         "utf-8",
       ).toString("base64").length;
-    // Grow the summary until the SURFACED marker crosses the old 40000 limit.
-    while (b64(doc) <= 40000) {
+    const withEntryB64 = (d: Findings): number =>
+      Buffer.from(
+        JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)), worstCase)),
+        "utf-8",
+      ).toString("base64").length;
+    // The intended property: a review that embedded at the OLD 40200 boundary (pre-entry form)
+    // still embeds once the worst-case entry is stamped. Grow the summary until the PRE-entry
+    // surfaced form crosses 40200 — the population the budget guarantees.
+    while (preEntryB64(doc) <= 40200) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
-    // The raised limit budgets the ~100-char stop signal, so a review that previously embedded as
-    // base64 still does — it doesn't fall to the link form and lose the seed + signal.
-    expect(b64(doc)).toBeLessThanOrEqual(40200);
+    expect(preEntryB64(doc)).toBeGreaterThan(40200);
+    // The limit budgets the stop signal AND the worst-case entry, so the with-entry form stays
+    // within EMBED_LIMIT and embeds as base64 — it doesn't fall to the link form and lose the
+    // seed + signal.
+    expect(withEntryB64(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
     expect(
-      findingsPointer(surfaceFindings(doc, signal(1, counts(0, 0, 1, 0))), undefined),
+      findingsPointer(surfaceFindings(doc, signal(1, counts(0, 0, 1, 0)), worstCase), undefined),
     ).toContain(";base64");
   });
 
-  it("stripSurfaceFields drops the surface fields and restores the draft version on a 0.7.0 doc", () => {
+  it("stripSurfaceFields drops the surface fields and restores the draft version on a surfaced doc", () => {
     const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
     expect(stripSurfaceFields(surfaced)).toEqual({
       ...findings,
@@ -797,10 +942,36 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     });
   });
 
-  it("stripSurfaceFields passes unknown future versions (0.8.0) through untouched — the surface list grows with each emitted version", () => {
+  it("stripSurfaceFields KEEPS the agent-facing scope_metastasis — the seed must deliver the recurrence data (issue #150)", () => {
+    const entry = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+    };
+    const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)), entry);
+    expect(stripSurfaceFields(surfaced)).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+      scope_metastasis: entry,
+    });
+  });
+
+  it("strips a superseded 0.7.0 surfaced blob too — the version list grows, never replaces (issue #150)", () => {
+    const oldSurface = {
+      ...findings,
+      schema_version: "0.7.0",
+      round: 1,
+      convergence: { score: 1, threshold: 1, converged: false },
+    };
+    expect(stripSurfaceFields(oldSurface)).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+    });
+  });
+
+  it("stripSurfaceFields passes unknown future versions (0.9.0) through untouched — the surface list grows with each emitted version", () => {
     const surfaced = {
       ...surfaceFindings(findings, signal(2, counts(0, 0, 1, 0))),
-      schema_version: "0.8.0",
+      schema_version: "0.9.0",
     };
     // An unknown version is not classified as surfaced (it could equally be a future draft); schema
     // validation downstream rejects it rather than silently rewriting it to a valid-looking draft.
@@ -894,7 +1065,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
       Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= 40200
+        .length <= EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
@@ -908,7 +1079,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
       Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= 40200
+        .length <= EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
@@ -936,7 +1107,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
       Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= 40200
+        .length <= EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }

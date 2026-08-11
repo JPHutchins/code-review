@@ -1200,12 +1200,12 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.findings[0]!.title).toBe("Prior finding");
   });
 
-  it("seeds from a SURFACED 0.7.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
+  it("seeds from a SURFACED 0.8.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
     // The sticky's embedded marker is the surfaced document: the agent's fields plus the
     // pipeline-stamped stop signal. Only the agent's own fields may reach $DRAFT.
     const surfaced = {
       ...priorFindings,
-      schema_version: "0.7.0",
+      schema_version: "0.8.0",
       round: 2,
       convergence: { score: 0, threshold: 1, converged: true },
     };
@@ -1222,11 +1222,322 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings;
-    // stripSurfaceFields restores the CURRENT draft version (0.6.0 after #134), not the surfaced 0.7.0.
+    // stripSurfaceFields restores the CURRENT draft version (0.6.0 after #134), not the surfaced 0.8.0.
     expect(context.schema_version).toBe("0.6.0");
     expect(context).not.toHaveProperty("convergence");
     expect(context).not.toHaveProperty("round");
     expect(context.findings).toHaveLength(1);
+  });
+
+  it("seeds a surfaced blob's scope_metastasis through to the context — the agent must see the recurrence data (issue #150)", async () => {
+    const entry = {
+      decision_prompt: "decide: commit to the expanding scope or narrow it",
+      recurring: [{ code: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
+    };
+    const surfaced = {
+      ...priorFindings,
+      schema_version: "0.8.0",
+      round: 4,
+      convergence: { score: 1, threshold: 1, converged: false },
+      scope_metastasis: entry,
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & { scope_metastasis?: unknown };
+    expect(context.schema_version).toBe("0.6.0");
+    expect(context.scope_metastasis).toEqual(entry);
+  });
+
+  it("degrades to the un-adorned prior when the in-force schema predates scope_metastasis — a custom --schema must not silently drop prior context (issue #150 review r2)", async () => {
+    // A consumer-pinned custom schema without the scope_metastasis property (additionalProperties:
+    // false) rejects the re-attached doc; the seed must fall back to the un-adorned prior rather
+    // than losing ALL prior context.
+    const customSchema = join(tmpDir, "old-findings.schema.json");
+    const bundled = JSON.parse(
+      readFileSync(resolve(repoRoot, "schema", "findings.schema.json"), "utf-8"),
+    ) as { properties: Record<string, unknown> };
+    delete bundled.properties["scope_metastasis"];
+    writeFileSync(customSchema, JSON.stringify(bundled));
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const priorBlob = {
+      ...priorFindings,
+      schema_version: "0.7.0",
+      round: 3,
+      convergence: { score: 1, threshold: 1, converged: false },
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(priorBlob as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, stderr, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--schema",
+      customSchema,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    expect(stderr).toContain("rejects the carried scope_metastasis entry");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toBeUndefined();
+    expect(context.findings).toHaveLength(1);
+  });
+
+  it("applies the same bare-fallback to a blob that NATIVELY carries scope_metastasis — the common post-#150 case against a pre-#150 schema (issue #150 review r2)", async () => {
+    // A 0.8.0 blob whose stripped doc carries the field natively (no re-attach involved): the seed
+    // must still validate it against the in-force schema and fall back to the field-stripped doc.
+    const customSchema = join(tmpDir, "old-findings.schema.json");
+    const bundled = JSON.parse(
+      readFileSync(resolve(repoRoot, "schema", "findings.schema.json"), "utf-8"),
+    ) as { properties: Record<string, unknown> };
+    delete bundled.properties["scope_metastasis"];
+    writeFileSync(customSchema, JSON.stringify(bundled));
+    const entry = {
+      decision_prompt: "decide",
+      recurring: [{ code: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
+    };
+    const surfaced = {
+      ...priorFindings,
+      schema_version: "0.8.0",
+      round: 4,
+      convergence: { score: 1, threshold: 1, converged: false },
+      scope_metastasis: entry,
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, stderr, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--schema",
+      customSchema,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    expect(stderr).toContain("rejects the carried scope_metastasis entry");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toBeUndefined();
+    expect(context.findings).toHaveLength(1);
+  });
+
+  it("recovers from a blob carrying a MALFORMED scope_metastasis (an array — typeof object but not the entry shape) — only a validating entry counts as carried (issue #150 review r4)", async () => {
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const priorBlob = {
+      ...priorFindings,
+      schema_version: "0.8.0",
+      round: 3,
+      convergence: { score: 1, threshold: 1, converged: false },
+      scope_metastasis: ["not", "an", "entry"],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(priorBlob as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toEqual({
+      decision_prompt: expect.any(String) as string,
+      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+    });
+  });
+
+  it("recovers from a blob that carries scope_metastasis: null — an explicit null (corrupt blob) falls through to the rounds-marker recovery like an absent entry (issue #150 review r3)", async () => {
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const priorBlob = {
+      ...priorFindings,
+      schema_version: "0.8.0",
+      round: 3,
+      convergence: { score: 1, threshold: 1, converged: false },
+      scope_metastasis: null,
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(priorBlob as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toEqual({
+      decision_prompt: expect.any(String) as string,
+      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+    });
+  });
+
+  it("re-attaches scope_metastasis from the rounds marker when the prior blob predates the field — a completed pre-0.8 sticky still seeds the recurrence signal (issue #150)", async () => {
+    // The prior sticky's BLOB is a COMPLETED pre-0.8 review (verdict 'changes', full-review route —
+    // seedable — but its 0.7.0 blob carries no scope_metastasis). The sticky carries the rounds
+    // marker with a 3-streak: the seed derives the entry from that history, exactly as post() would
+    // have stamped it.
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    // A completed pre-0.8 review: valid to seed, but its blob carries no scope_metastasis.
+    const noticeBlob = {
+      ...priorFindings,
+      schema_version: "0.7.0",
+      round: 3,
+      convergence: { score: 1, threshold: 1, converged: false },
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(noticeBlob as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.schema_version).toBe("0.6.0");
+    expect(context.scope_metastasis).toEqual({
+      decision_prompt: expect.any(String) as string,
+      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+    });
   });
 
   it("reports 'empty-had-prior' when a prior review comment exists but carries no decodable findings marker", async () => {

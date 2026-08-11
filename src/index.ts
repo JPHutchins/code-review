@@ -35,14 +35,17 @@ import {
   ResultEnvelopeCodec,
   FindingsCodec,
   PriceMapCodec,
+  ScopeMetastasisCodec,
   TestSummaryCodec,
   isIncompleteFindings,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
+  computeScopeMetastasis,
   parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
+  parseRounds,
   stripSurfaceFields,
 } from "./surface.js";
 import {
@@ -886,8 +889,34 @@ const seedDraftCmd = defineCommand({
     // The surfaced blob (agent doc + pipeline-stamped convergence/round) is stripped back to the
     // agent's own document before seeding — the agent must only ever see its own fields, and only
     // draft versions validate against the registry.
-    const priorFindings =
+    const strippedPrior =
       priorBody === null ? null : stripSurfaceFields(parseFindingsMarker(priorBody));
+    // The agent-facing scope_metastasis entry (issue #150) SURVIVES the strip, but a completed
+    // pre-0.8 blob lacks it. The recurrence data is then derivable from the carried rounds marker —
+    // the same computation post() stamps — so the seed re-attaches it: the next-round agent must
+    // see the recurrence signal even when the last post predates the field. The re-attach is
+    // best-effort: if the in-force schema (a consumer-pinned custom --schema predating the field)
+    // rejects the adorned doc, the un-adorned prior is seeded instead — losing the recurrence
+    // entry beats losing ALL prior context.
+    const priorFindings = ((): unknown => {
+      if (
+        strippedPrior === null ||
+        typeof strippedPrior !== "object" ||
+        Array.isArray(strippedPrior)
+      )
+        return strippedPrior;
+      // A carried entry only counts when it VALIDATES as the entry shape — an explicit null, an
+      // array, or a malformed object (all possible in a corrupt blob; genuine posts omit the key
+      // on null) falls through to the rounds-marker recovery like an absent one (issues #150
+      // review r3 + r4). The derivation is also gated on the prior's verdict exactly like post's
+      // stamp (isRound requires a review verdict): an error-verdict prior never carries a
+      // re-derived entry (issue #150 review r4).
+      const carried = (strippedPrior as Record<string, unknown>)["scope_metastasis"];
+      if (ScopeMetastasisCodec.decode(carried)._tag === "Right") return strippedPrior;
+      if ((strippedPrior as Record<string, unknown>)["verdict"] === "error") return strippedPrior;
+      const computed = computeScopeMetastasis(parseRounds(priorBody ?? ""));
+      return computed === null ? strippedPrior : { ...strippedPrior, scope_metastasis: computed };
+    })();
 
     // Validate + write WITHOUT the process-exiting require* helpers: any failure (bad
     // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the
@@ -902,7 +931,32 @@ const seedDraftCmd = defineCommand({
               const schemaPath = args.schema
                 ? resolve(args.schema)
                 : schemaPathFor(kind, args["schema-version"]);
-              if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
+              // ALWAYS validate — no short-circuit: a natively-carried 0.8.0 entry must face the
+              // in-force schema like any other doc. When that schema (or the codec) rejects the
+              // doc solely because of scope_metastasis (a consumer-pinned custom --schema
+              // predating the field, or a corrupt blob-carried entry), fall back to the
+              // field-stripped doc: losing the recurrence entry beats losing ALL prior context
+              // (issue #150 review r2). The fallback covers BOTH gates (ajv + codec) uniformly.
+              const barePrior =
+                typeof priorFindings === "object" && !Array.isArray(priorFindings)
+                  ? Object.fromEntries(
+                      Object.entries(priorFindings as Record<string, unknown>).filter(
+                        ([key]) => key !== "scope_metastasis",
+                      ),
+                    )
+                  : priorFindings;
+              const accepts = (doc: unknown): boolean =>
+                validateAgainstSchema(doc, schemaPath).valid &&
+                resolveRegistry("findings", doc).kind === "ok";
+              const seedDoc = accepts(priorFindings)
+                ? priorFindings
+                : accepts(barePrior)
+                  ? (process.stderr.write(
+                      `Note: the in-force schema rejects the carried scope_metastasis entry — seeding the prior without it (issue #150 review r2)\n`,
+                    ),
+                    barePrior)
+                  : null;
+              if (seedDoc === null) return false;
               // Skip a prior that never completed (verdict "error" + no findings — the notice
               // signature, isIncompleteFindings) and a prior that is not unmistakably a completed
               // FULL review (route-aware seed chain): a CI-fix mechanic pass must not sit in the
@@ -910,15 +964,12 @@ const seedDraftCmd = defineCommand({
               // reliable signal — round history can't identify the last review (a mechanic carries
               // a full review's rounds forward), so a no-route prior is unknown and skipped: one
               // cold review is cheaper than a false prior (issue #127 round-2).
-              const resolution = resolveRegistry("findings", priorFindings);
+              const resolution = resolveRegistry("findings", seedDoc);
               if (resolution.kind !== "ok") return false;
               if (isIncompleteFindings(resolution.value)) return false;
               if (parseReviewedRoute(priorBody ?? "") !== "full review") return false;
               writeFileSync(outPath, SEED_SENTINEL);
-              writeFileSync(
-                priorContextPath(outPath),
-                `${JSON.stringify(priorFindings, null, 2)}\n`,
-              );
+              writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
               const count = resolution.value.findings.length;
               process.stderr.write(
                 `Seeded ${outPath} with the sentinel and wrote the prior review (${String(count)} finding(s)) to ${priorContextPath(outPath)} as context\n`,

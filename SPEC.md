@@ -165,7 +165,10 @@ own decision (the reference commenter's templates are the source of truth for it
 - **Advisory context MAY compound** — the commenter MAY surface further advisory context derived from
   the reviewer's own structured output (for example, that the same mechanism — identified by a stable
   rule identifier — keeps generating findings across review rounds), provided that context never
-  alters the review's verdict or any finding's severity.
+  alters the review's verdict or any finding's severity. Such advisory context MAY be carried in the
+  review's machine-readable channel as well as its prose (e.g. per-mechanism consecutive-round counts
+  and a scope decision prompt), so an agent consuming the structured document — including the
+  next-round reviewer, via its re-review seed — sees the same signal a human reading the comment does.
 - **Truthful** — it MUST NOT claim a surface or action that did not occur (e.g. asserting inline
   annotations exist when none were posted). A finding that cannot be anchored where it belongs MUST be
   surfaced elsewhere, not silently dropped. A review run **superseded** by a newer run on the same

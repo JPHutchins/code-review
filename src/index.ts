@@ -40,9 +40,11 @@ import {
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
+  computeScopeMetastasis,
   parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
+  parseRounds,
   stripSurfaceFields,
 } from "./surface.js";
 import {
@@ -886,8 +888,24 @@ const seedDraftCmd = defineCommand({
     // The surfaced blob (agent doc + pipeline-stamped convergence/round) is stripped back to the
     // agent's own document before seeding — the agent must only ever see its own fields, and only
     // draft versions validate against the registry.
-    const priorFindings =
+    const strippedPrior =
       priorBody === null ? null : stripSurfaceFields(parseFindingsMarker(priorBody));
+    // The agent-facing scope_metastasis entry (issue #150) SURVIVES the strip, but a prior blob can
+    // lack it (a pre-0.8 sticky, or a notice that stamped no entry). The recurrence data is then
+    // derivable from the carried rounds marker — the same computation post() stamps — so the seed
+    // re-attaches it: the next-round agent must see the recurrence signal even when the last post
+    // was not a completing round.
+    const priorFindings = ((): unknown => {
+      if (
+        strippedPrior === null ||
+        typeof strippedPrior !== "object" ||
+        Array.isArray(strippedPrior)
+      )
+        return strippedPrior;
+      if ("scope_metastasis" in strippedPrior) return strippedPrior;
+      const computed = computeScopeMetastasis(parseRounds(priorBody ?? ""));
+      return computed === null ? strippedPrior : { ...strippedPrior, scope_metastasis: computed };
+    })();
 
     // Validate + write WITHOUT the process-exiting require* helpers: any failure (bad
     // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the

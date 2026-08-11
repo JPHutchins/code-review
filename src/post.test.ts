@@ -3371,10 +3371,116 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.7.0");
+    expect(blob.schema_version).toBe("0.8.0");
     expect(blob.round).toBe(2);
     // The default fixture findings are one minor → score 1 at the default threshold 1 → converged.
     expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+  });
+
+  it("a completing round stamps scope_metastasis into the blob — per-code counts from the rounds history (issue #150)", async () => {
+    // Three prior rounds each carried a finding coded `recurring-a`; this round carries one too, so
+    // the streak reaches 4 and the surfaced blob must embed the structured entry — the machine
+    // channel a decoding agent reads, exactly what the sticky's prose note renders.
+    const priorRounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const markers = [
+      "<!-- review-complete -->",
+      `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(priorRounds), "utf-8").toString("base64")} -->`,
+    ].join("\\n");
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ code: "recurring-a" })])),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks(`<!-- code-review -->\\n${markers}\\nold`));
+    await post(mkInput({ route: "full review" }), api);
+    const blob = decodedBlob(calls()) as DecodedBlob & {
+      readonly scope_metastasis?: {
+        readonly decision_prompt: string;
+        readonly recurring: readonly {
+          readonly code: string;
+          readonly consecutive_rounds: number;
+          readonly start_round: number;
+        }[];
+      };
+    };
+    expect(blob.round).toBe(4);
+    expect(blob.scope_metastasis?.recurring).toEqual([
+      { code: "recurring-a", consecutive_rounds: 4, start_round: 1 },
+    ]);
+    expect(blob.scope_metastasis?.decision_prompt.length).toBeGreaterThan(0);
+  });
+
+  it("a mechanic pass stamps NO scope_metastasis — recurrence claims are a property of review rounds (issue #150)", async () => {
+    // The prior sticky's rounds carry a 3-streak, but a mechanic is not a round: no entry in its
+    // blob, mirroring the suppressed prose note.
+    const priorRounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const markers = [
+      "<!-- review-complete -->",
+      `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(priorRounds), "utf-8").toString("base64")} -->`,
+    ].join("\\n");
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ code: "recurring-a" })])),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks(`<!-- code-review -->\\n${markers}\\nold`));
+    await post(mkInput({ route: "mechanic" }), api);
+    const blob = decodedBlob(calls()) as DecodedBlob & { readonly scope_metastasis?: unknown };
+    expect(blob.scope_metastasis).toBeUndefined();
   });
 
   it("the blob's convergence uses the ROUND counts (findings + systemic), never diverging from the badge — a systemic major beside a nit-only finding reads iterating (issue #134 merge)", async () => {
@@ -3419,7 +3525,7 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.7.0");
+    expect(blob.schema_version).toBe("0.8.0");
     expect(blob.convergence).toBeUndefined();
     expect(blob.round).toBeUndefined();
     // The notice never claims a signal itself, but the prior round's `converged` survives on the
@@ -3459,7 +3565,7 @@ describe("post — convergence rounds (issue #125)", () => {
     ]);
     await post(mkInput({ route: "mechanic" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.7.0");
+    expect(blob.schema_version).toBe("0.8.0");
     expect(blob.convergence).toBeUndefined();
     expect(blob.round).toBeUndefined();
   });

@@ -119,6 +119,30 @@ const SystemicProblemStrict = t.refinement(
 
 export const SystemicProblemCodec = t.exact(SystemicProblemStrict);
 
+const RecurringCodec = t.type({
+  code: t.string,
+  consecutive_rounds: t.refinement(
+    t.number,
+    (n): n is number => Number.isSafeInteger(n) && n >= 1,
+    "ConsecutiveRounds",
+  ),
+  start_round: t.refinement(
+    t.number,
+    (n): n is number => Number.isSafeInteger(n) && n >= 1,
+    "StartRound",
+  ),
+});
+
+// The pipeline-stamped scope-metastasis entry (issue #150): per-code consecutive-round recurrence
+// counts plus the decision prompt, computed from the rounds history and stamped into the surfaced
+// document. The agent never writes it — the pipeline recomputes it from the rounds marker at every
+// post — but the draft schema tolerates it so a seed-echoing agent's draft still validates, and the
+// re-review seed delivers it to the next-round agent.
+export const ScopeMetastasisCodec = t.type({
+  decision_prompt: t.string,
+  recurring: t.array(RecurringCodec),
+});
+
 export const FindingsCodec = t.exact(
   t.intersection([
     t.type({
@@ -129,6 +153,8 @@ export const FindingsCodec = t.exact(
     }),
     t.partial({
       systemic_problems: t.array(SystemicProblemCodec),
+      // Pipeline-stamped only (issue #150); see ScopeMetastasisCodec.
+      scope_metastasis: ScopeMetastasisCodec,
     }),
   ]),
 );
@@ -214,6 +240,7 @@ export const DEFAULT_SCHEMA_VERSION = "0.6.0";
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
+export type ScopeMetastasis = t.TypeOf<typeof ScopeMetastasisCodec>;
 export type Verdict = t.TypeOf<typeof VerdictCodec>;
 
 // The findings shape for a run that produced no code-review verdict — an operational failure, a

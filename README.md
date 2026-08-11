@@ -105,18 +105,24 @@ links to:
   [`src/surface.ts`](src/surface.ts).
 
   The embedded document is the **surfaced** findings document: the agent's findings
-  (`schema_version` 0.5.0 contract, which is what the review agent is held to and what
+  (`schema_version` 0.6.0 contract, which is what the review agent is held to and what
   [`schema/findings.schema.json`](schema/findings.schema.json) validates) stamped with the
-  `0.7.0` surface version plus the pipeline-computed convergence state of the **last completed
-  full-review round**:
+  `0.8.0` surface version, the pipeline-computed convergence state of the **last completed
+  full-review round**, and the advisory `scope_metastasis` entry (issue #150):
 
   ```json
   {
-    "schema_version": "0.7.0",
+    "schema_version": "0.8.0",
     "verdict": "comment",
     "summary": "...",
     "convergence": { "score": 1, "threshold": 1, "converged": true },
     "round": 2,
+    "scope_metastasis": {
+      "decision_prompt": "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.",
+      "recurring": [
+        { "code": "mixin-field-guard-gap", "consecutive_rounds": 4, "start_round": 3 }
+      ]
+    },
     "findings": []
   }
   ```
@@ -128,10 +134,14 @@ links to:
   warranted. The agent never writes these fields — the commenter computes them from the review's own
   severities at render time — and they are omitted until at least one full-review round has
   completed. They survive the "review in progress" banner: the banner replaces only the sticky's
-  prose and carries the embedded marker forward verbatim. The 0.7.0 surfaced contract applies to the
-  **whole-document** marker only; each inline comment embeds a per-finding fragment
-  (`schema_version` + one finding) at the draft's own version, since the fragment carries no stop
-  signal.
+  prose and carries the embedded marker forward verbatim. `scope_metastasis` is the structured
+  counterpart of the sticky's "Scope metastasis" warning — per-code consecutive-round counts plus a
+  decision prompt — computed from the same rounds history and omitted when no mechanism recurred. It
+  is deliberately NOT stripped when a surfaced blob feeds the re-review seed: a decoding agent — and
+  the next-round reviewer — must see the recurrence data to answer the scope decision. The 0.8.0
+  surfaced contract applies to the **whole-document** marker only; each inline comment embeds a
+  per-finding fragment (`schema_version` + one finding) at the draft's own version, since the
+  fragment carries no stop signal.
 
   Semantics on non-round posts: a mechanic (CI-fix) pass or an envelope-loss post embeds the
   **last completed round's stored signal** (round + its own threshold — never re-derived, so an

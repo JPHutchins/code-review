@@ -78,6 +78,42 @@
         }
       }
     },
+    "scope_metastasis": {
+      "type": "object",
+      "description": "Pipeline-stamped advisory (issue #150): the mechanisms whose findings recurred in consecutive prior full-review rounds — per-code consecutive-round counts plus a decision prompt. The review agent does NOT write this field: the commenter computes it from the carried round history and stamps it into the surfaced document. When it is present in the prior review context of a re-review, respond to the decision prompt — state in your summary whether you are committing to the expanding scope (planning the remaining facets of the recurring mechanism(s) as one unit) or narrowing the scope — so the decision is made explicitly rather than left to emerge piecemeal.",
+      "required": ["decision_prompt", "recurring"],
+      "properties": {
+        "decision_prompt": {
+          "type": "string",
+          "description": "The scope decision to make in the summary of the next review — a decision, not a directive."
+        },
+        "recurring": {
+          "type": "array",
+          "description": "The mechanisms flagged: one entry per code whose findings recurred in `consecutive_rounds` or more consecutive completed full-review rounds.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "consecutive_rounds", "start_round"],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "The finding code of the recurring mechanism."
+              },
+              "consecutive_rounds": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "How many consecutive completed full-review rounds (ending at the last completed round) carried a finding with this code."
+              },
+              "start_round": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The 1-indexed round where the consecutive streak began."
+              }
+            }
+          }
+        }
+      }
+    },
     "findings": {
       "type": "array",
       "description": "Zero or more specific findings.",

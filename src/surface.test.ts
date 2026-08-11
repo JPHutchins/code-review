@@ -29,6 +29,8 @@ import {
   roundRecord,
   consecutiveCodeStreaks,
   metastasisNote,
+  computeScopeMetastasis,
+  SCOPE_METASTASIS_DECISION_PROMPT,
   computeSameRootNotes,
   MAX_CODES_PER_ROUND,
 } from "./surface.js";
@@ -513,6 +515,43 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(metastasisNote(twoStreak, 3)).toBe("");
   });
 
+  it("computeScopeMetastasis derives the same flagged codes as the prose note — one computation, two surfaces (issue #150)", () => {
+    const twoStreak: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+    ];
+    expect(computeScopeMetastasis(twoStreak)).toBeNull();
+    expect(computeScopeMetastasis(twoStreak, 2)).toEqual({
+      decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
+      recurring: [{ code: "a", consecutive_rounds: 2, start_round: 1 }],
+    });
+  });
+
+  it("computeScopeMetastasis reports per-code consecutive-round counts with the streak's start round", () => {
+    // Streaks END at the last recorded round (a code absent there has no streak, like
+    // consecutiveCodeStreaks): `a` runs rounds 3-5, `b` rounds 4-5.
+    const rounds: RoundRecord[] = [
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      counts(0, 0, 0, 0), // no codes record — ends every streak
+      coded(counts(0, 0, 0, 0), { a: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1, b: 1 }),
+      coded(counts(0, 0, 0, 0), { a: 1, b: 1 }),
+    ];
+    // Default threshold 3: only `a`'s 3-streak is flagged.
+    expect(computeScopeMetastasis(rounds)).toEqual({
+      decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 3 }],
+    });
+    // A lower threshold admits `b`'s 2-streak too, with its own start round.
+    expect(computeScopeMetastasis(rounds, 2)).toEqual({
+      decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
+      recurring: [
+        { code: "a", consecutive_rounds: 3, start_round: 3 },
+        { code: "b", consecutive_rounds: 2, start_round: 4 },
+      ],
+    });
+  });
+
   it("computeSameRootNotes names the most recent prior round for each recurring code", () => {
     const prior: RoundRecord[] = [
       coded(counts(0, 0, 0, 0), { a: 1 }),
@@ -695,7 +734,7 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     convergence: convergenceSignal(c),
   });
 
-  it("stamps the 0.6.0 surface version on every surfaced document, keeping the agent's fields verbatim", () => {
+  it("stamps the current surface version on every surfaced document, keeping the agent's fields verbatim", () => {
     const doc = surfaceFindings(findings, null);
     expect(doc.schema_version).toBe(SURFACE_SCHEMA_VERSION);
     expect(doc).toEqual({ ...findings, schema_version: SURFACE_SCHEMA_VERSION });
@@ -719,6 +758,31 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     const doc = surfaceFindings(findings, null);
     expect(doc.convergence).toBeUndefined();
     expect(doc.round).toBeUndefined();
+  });
+
+  it("stamps the given scope_metastasis entry and omits it when none is given (issue #150)", () => {
+    const entry = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+    };
+    expect(surfaceFindings(findings, null, entry).scope_metastasis).toEqual(entry);
+    expect(surfaceFindings(findings, null).scope_metastasis).toBeUndefined();
+  });
+
+  it("drops a draft-carried scope_metastasis — the pipeline recomputes the entry from the rounds history, never reuses a stale echo (issue #150)", () => {
+    const crafted = {
+      ...findings,
+      scope_metastasis: {
+        decision_prompt: "stale",
+        recurring: [{ code: "stale", consecutive_rounds: 9, start_round: 1 }],
+      },
+    };
+    const entry = {
+      decision_prompt: "fresh",
+      recurring: [{ code: "fresh", consecutive_rounds: 3, start_round: 2 }],
+    };
+    const doc = surfaceFindings(crafted, null, entry);
+    expect(doc.scope_metastasis).toEqual(entry);
   });
 
   it("drops a crafted draft's OWN round/convergence keys — only the pipeline signal may survive the stamp (issue #141 review r6)", () => {
@@ -789,7 +853,7 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     ).toContain(";base64");
   });
 
-  it("stripSurfaceFields drops the surface fields and restores the draft version on a 0.7.0 doc", () => {
+  it("stripSurfaceFields drops the surface fields and restores the draft version on a surfaced doc", () => {
     const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
     expect(stripSurfaceFields(surfaced)).toEqual({
       ...findings,
@@ -797,10 +861,36 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     });
   });
 
-  it("stripSurfaceFields passes unknown future versions (0.8.0) through untouched — the surface list grows with each emitted version", () => {
+  it("stripSurfaceFields KEEPS the agent-facing scope_metastasis — the seed must deliver the recurrence data (issue #150)", () => {
+    const entry = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+    };
+    const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)), entry);
+    expect(stripSurfaceFields(surfaced)).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+      scope_metastasis: entry,
+    });
+  });
+
+  it("strips a superseded 0.7.0 surfaced blob too — the version list grows, never replaces (issue #150)", () => {
+    const oldSurface = {
+      ...findings,
+      schema_version: "0.7.0",
+      round: 1,
+      convergence: { score: 1, threshold: 1, converged: false },
+    };
+    expect(stripSurfaceFields(oldSurface)).toEqual({
+      ...findings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+    });
+  });
+
+  it("stripSurfaceFields passes unknown future versions (0.9.0) through untouched — the surface list grows with each emitted version", () => {
     const surfaced = {
       ...surfaceFindings(findings, signal(2, counts(0, 0, 1, 0))),
-      schema_version: "0.8.0",
+      schema_version: "0.9.0",
     };
     // An unknown version is not classified as surfaced (it could equally be a future draft); schema
     // validation downstream rejects it rather than silently rewriting it to a valid-looking draft.

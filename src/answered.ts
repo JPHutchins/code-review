@@ -1,9 +1,11 @@
 // The "already answered" state (issue #151): the deterministic registry of prior inline findings
 // whose threads a human reply answered, plus the two rules built on it — the re-review seed surfaces
-// the registry so the next-round agent does not re-raise, and post() treats a VERBATIM re-raise
-// (identical code + title + reasoning — no new evidence by definition) as closed, dropping it from
-// the surfaced review and naming the drop in the sticky; a re-raise with changed evidence is kept
-// and annotated with the prior answer's link.
+// the registry so the next-round agent does not re-raise, and post() treats a VERBATIM re-raise as
+// closed: identical match (code or title), identical claim TEXT (title + description + reasoning),
+// identical severity, and identical location/fix (path + patch — the line is deliberately excluded,
+// positional drift is not evidence), i.e. no new evidence by definition. The drop is removed from
+// the surfaced review and NAMED in the sticky; a re-raise with any changed component is kept and
+// annotated with the prior answer's link.
 
 import * as t from "io-ts";
 import { escapeCodeBackticks, parseFindingsMarker } from "./surface.js";
@@ -62,13 +64,17 @@ export interface AnsweredEntry {
   // The answered finding's severity — a re-raise ESCALATED in severity is not verbatim (the claim
   // weight changed), so it is kept and annotated rather than dropped (issue #151 review r1).
   readonly severity: Severity;
+  // The answered finding's path and proposed patch — a re-raise RELOCATED to another file, or one
+  // whose proposed fix changed, carries something new and is kept, not dropped (issue #151 review
+  // r3). patch is null when the answered finding carried none. The LINE is deliberately NOT part of
+  // the predicate: positional drift (a rebase moving the same claim) is not evidence, while a
+  // genuinely new instance changes the claim text.
+  readonly path: string;
+  readonly patch: string | null;
   readonly threadUrl: string;
   readonly replyUrl: string;
   readonly replyAuthor: string;
   readonly replyExcerpt: string;
-  readonly repliedAt: string | null;
-  readonly path: string | null;
-  readonly line: number | null;
 }
 
 // The staged-registry codec (what gather writes to answered.json and seed-draft reads back) — the
@@ -85,13 +91,12 @@ export const AnsweredEntryCodec = t.type({
     t.literal("minor"),
     t.literal("nit"),
   ]),
+  path: t.string,
+  patch: t.union([t.string, t.null]),
   thread_url: t.string,
   reply_url: t.string,
   reply_author: t.string,
   reply_excerpt: t.string,
-  replied_at: t.union([t.string, t.null]),
-  path: t.union([t.string, t.null]),
-  line: t.union([t.number, t.null]),
 });
 
 export type StagedAnsweredEntry = t.TypeOf<typeof AnsweredEntryCodec>;
@@ -102,13 +107,12 @@ export const encodeAnsweredEntry = (e: AnsweredEntry): StagedAnsweredEntry => ({
   description: e.description,
   reasoning: e.reasoning,
   severity: e.severity,
+  path: e.path,
+  patch: e.patch,
   thread_url: e.threadUrl,
   reply_url: e.replyUrl,
   reply_author: e.replyAuthor,
   reply_excerpt: e.replyExcerpt,
-  replied_at: e.repliedAt,
-  path: e.path,
-  line: e.line,
 });
 
 export const decodeAnsweredEntry = (raw: unknown): StagedAnsweredEntry | null => {
@@ -174,6 +178,8 @@ export const answeredRegistryFrom = (
     description: string;
     reasoning: string;
     severity: Severity;
+    path: string;
+    patch: string | null;
   } | null => {
     const decoded = parseFindingsMarker(root.body ?? "");
     const doc =
@@ -187,20 +193,34 @@ export const answeredRegistryFrom = (
     const reasoning = first["reasoning"];
     const code = first["code"];
     const severity = first["severity"];
+    const path = first["path"];
+    const patch = first["patch"];
     return typeof title === "string" &&
       typeof description === "string" &&
       typeof reasoning === "string" &&
+      typeof path === "string" &&
       (severity === "critical" ||
         severity === "major" ||
         severity === "minor" ||
         severity === "nit")
-      ? { code: typeof code === "string" ? code : "", title, description, reasoning, severity }
+      ? {
+          code: typeof code === "string" ? code : "",
+          title,
+          description,
+          reasoning,
+          severity,
+          path,
+          patch: typeof patch === "string" ? patch : null,
+        }
       : null;
   };
 
-  // Group every comment under its root id; the root's own id keys the group.
+  // Group every comment under its root id; the root's own id keys the group. Iterating the SORTED
+  // array feeds both selections below — the first-human-reply find() and the last-wins dedup both
+  // read group/map insertion order, so the sort must drive that order (issue #151 review r3: the
+  // original fix sorted into `byId` only, leaving the selection loops on the raw API order).
   const threads = new Map<number, ThreadComment[]>();
-  for (const c of comments) {
+  for (const c of ordered) {
     const root = rootOf(c);
     if (root === null) continue;
     const group = threads.get(root.id);
@@ -227,9 +247,6 @@ export const answeredRegistryFrom = (
       replyUrl: reply.html_url,
       replyAuthor: reply.user_login,
       replyExcerpt: clipText(reply.body ?? "", EXCERPT_LIMIT),
-      repliedAt: reply.created_at,
-      path: reply.path ?? null,
-      line: reply.line ?? null,
     };
     byCode.set(finding.code !== "" ? finding.code : `title:${finding.title}`, entry);
   }
@@ -286,11 +303,18 @@ export const applyAnswered = (
       kept.push(f);
       continue;
     }
+    // The full claim: text (title/description/reasoning), weight (severity), AND location/fix
+    // (path, patch) — a re-raise relocated to another file or proposing a different fix carries
+    // something new. The line is deliberately excluded: positional drift (a rebase moving the same
+    // claim) is not evidence (issue #151 review r3). patch is normalized (undefined → null) so an
+    // absent patch on both sides compares equal.
     const verbatim =
       f.title === entry.title &&
       f.description === entry.description &&
       f.reasoning === entry.reasoning &&
-      f.severity === entry.severity;
+      f.severity === entry.severity &&
+      f.path === entry.path &&
+      (f.patch ?? null) === entry.patch;
     if (verbatim && f.severity !== "critical") {
       droppedByKey.set(answeredNoteKey(f), entry);
     } else {

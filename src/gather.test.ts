@@ -1015,13 +1015,12 @@ describe("gather — answered-findings registry (issue #151)", () => {
         description: "d",
         reasoning: "The same reasoning.",
         severity: "minor",
+        path: "src/foo.ts",
+        patch: null,
         thread_url: "https://github.com/owner/repo/pull/42#discussion_r101",
         reply_url: "https://github.com/owner/repo/pull/42#discussion_r102",
         reply_author: "alice",
         reply_excerpt: "Measured: the claim does not hold.",
-        replied_at: "2026-07-01T01:00:00Z",
-        path: "src/foo.ts",
-        line: 42,
       },
     ]);
   });

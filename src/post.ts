@@ -533,13 +533,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   }
   const prNumber = resolution.prNumber;
 
-  // The three Phase-1 reads are independent — run them together rather than serially: the diff,
-  // the prior sticky, and the answered-thread fetch (which must not add a serialized API call to
-  // every post — issue #151 review r1).
-  const [diff, existingSticky, threadComments] = await Promise.all([
+  const [diff, existingSticky] = await Promise.all([
     fetchDiff(input.repo, prNumber, ghApi),
     findBotComment(input.repo, prNumber, input.botLogin, DEFAULT_MARKER, ghApi),
-    fetchThreadComments(ghApi, input.repo, prNumber),
   ]);
 
   // An incomplete result (a notice, not a completed review) must never overwrite a sticky that
@@ -605,6 +601,14 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       message ??
         "Review did not complete and the sticky already reflects a completed review — leaving it in place\n",
     );
+    // A leave with verbatim drops (the incomplete-main-path guard) cannot write a note — the
+    // preserved sticky still surfaces each dropped finding and its reply thread — so name the drops
+    // in the run log (issue #151 review r3).
+    if (verbatimReRaised.length > 0) {
+      process.stderr.write(
+        `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+      );
+    }
     process.exit(0);
   };
 
@@ -709,6 +713,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // annotated with the prior answer's link. A failed fetch degrades to an empty registry (the review
   // posts unfiltered); the seed already told the agent what not to re-raise.
   const loadedFindings = findingsResult.findings;
+  // The answered-thread fetch runs only when a review will actually be filtered — an empty-diff or
+  // corrupt-findings post exits above without paying for the paginated history (issue #151 review
+  // r3: the fetch was previously parallel with the diff, wasted on every early-exit path).
+  const threadComments = await fetchThreadComments(ghApi, input.repo, prNumber);
   const answeredRegistry =
     threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);

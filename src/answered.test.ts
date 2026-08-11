@@ -148,13 +148,12 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     description: "The same description.",
     reasoning: "The same reasoning.",
     severity: "minor",
+    path: "src/foo.ts",
+    patch: null,
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",
     replyExcerpt: "Measured: does not hold.",
-    repliedAt: "2026-07-01T01:00:00Z",
-    path: "src/foo.ts",
-    line: 10,
     ...overrides,
   });
 
@@ -186,12 +185,44 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes["recurring-a"]).toBeDefined();
   });
 
+  it("keeps a re-raise RELOCATED to another file, or one whose proposed fix changed — location and fix are part of the claim (issue #151 review r3)", () => {
+    const relocated = applyAnswered([mkFinding({ path: "src/other.ts" })], [entry()]);
+    expect(relocated.findings).toHaveLength(1);
+    expect(relocated.verbatimReRaised).toHaveLength(0);
+    const newFix = applyAnswered(
+      [mkFinding({ patch: "diff --git a/src/foo.ts b/src/foo.ts\n@@ -1 +1 @@\n-old\n+new\n" })],
+      [entry({ patch: "diff --git a/src/foo.ts b/src/foo.ts\n@@ -1 +1 @@\n-old\n+other\n" })],
+    );
+    expect(newFix.findings).toHaveLength(1);
+    expect(newFix.verbatimReRaised).toHaveLength(0);
+    // An absent patch on both sides compares equal (undefined vs null normalized) — still verbatim.
+    const noPatch = applyAnswered([mkFinding({})], [entry()]);
+    expect(noPatch.findings).toHaveLength(0);
+    expect(noPatch.verbatimReRaised).toHaveLength(1);
+  });
+
+  it("selection is ORDER-INDEPENDENT — a shuffled comment list yields the same first-reply and most-recent-wins (issue #151 review r3)", () => {
+    const finding = mkFinding({});
+    const sorted = [
+      botComment(1, finding),
+      reply(2, 1, "alice"),
+      botComment(3, finding),
+      reply(4, 3, "bob"),
+    ];
+    const shuffled = [sorted[3]!, sorted[0]!, sorted[2]!, sorted[1]!];
+    const a = answeredRegistryFrom(sorted, "github-actions[bot]");
+    const b = answeredRegistryFrom(shuffled, "github-actions[bot]");
+    expect(a).toEqual(b);
+    expect(a[0]!.replyUrl).toContain("discussion_r4");
+  });
+
   it("dedups the dropped entries by code — two findings sharing one dropped code name the answer once (issue #151 review r2)", () => {
     const { findings, verbatimReRaised } = applyAnswered(
       [
-        mkFinding({ path: "src/foo.ts" }),
+        mkFinding({ start_line: 10, end_line: 10 }),
         mkFinding({
-          path: "src/bar.ts",
+          start_line: 20,
+          end_line: 20,
           title: "The same claim",
           description: "The same description.",
           reasoning: "The same reasoning.",
@@ -278,13 +309,12 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
     description: "The same description.",
     reasoning: "The same reasoning.",
     severity: "minor",
+    path: "src/foo.ts",
+    patch: null,
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",
     replyExcerpt: "Measured: does not hold.",
-    repliedAt: "2026-07-01T01:00:00Z",
-    path: "src/foo.ts",
-    line: 10,
   };
 
   it("is empty when nothing was dropped", () => {

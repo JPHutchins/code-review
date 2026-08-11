@@ -1802,13 +1802,12 @@ describe("cli — seed-draft --prior-answers (issue #151: the already-answered s
         description: "The same description.",
         reasoning: "The same reasoning.",
         severity: "minor",
+        path: "src/foo.ts",
+        patch: null,
         thread_url: "https://github.com/owner/repo/pull/1#discussion_r1",
         reply_url: "https://github.com/owner/repo/pull/1#discussion_r2",
         reply_author: "alice",
         reply_excerpt: "Measured: does not hold.",
-        replied_at: "2026-07-01T01:00:00Z",
-        path: "src/foo.ts",
-        line: 10,
       },
     ]);
     const out = join(tmpDir, "draft.json");

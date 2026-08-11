@@ -1804,6 +1804,7 @@ describe("cli — seed-draft --prior-answers (issue #151: the already-answered s
         severity: "minor",
         path: "src/foo.ts",
         patch: null,
+        replied_at: "2026-07-01T01:00:00Z",
         thread_url: "https://github.com/owner/repo/pull/1#discussion_r1",
         reply_url: "https://github.com/owner/repo/pull/1#discussion_r2",
         reply_author: "alice",

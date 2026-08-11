@@ -3724,6 +3724,22 @@ describe("post — answered findings (issue #151)", () => {
     expect(blob.systemic_problems[0]!.finding_codes).toEqual(["kept-code"]);
   });
 
+  it("an empty-diff post with a completed sticky LEAVES IN PLACE without crashing — leaveInPlace never reads the late-initialized drop state (issue #151 review r4 TDZ regression)", async () => {
+    const { api } = mkMockGhApi([
+      // An EMPTY diff (first-match wins over mkMocks' non-empty one).
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mkMocks("<!-- code-review -->\n<!-- review-complete -->\nold"),
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+  });
+
   it("a failed thread fetch degrades to an empty registry — the review posts unfiltered", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),

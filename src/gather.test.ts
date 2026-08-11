@@ -1017,6 +1017,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
         severity: "minor",
         path: "src/foo.ts",
         patch: null,
+        replied_at: "2026-07-01T01:00:00Z",
         thread_url: "https://github.com/owner/repo/pull/42#discussion_r101",
         reply_url: "https://github.com/owner/repo/pull/42#discussion_r102",
         reply_author: "alice",

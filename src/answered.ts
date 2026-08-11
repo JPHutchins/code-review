@@ -71,6 +71,9 @@ export interface AnsweredEntry {
   // genuinely new instance changes the claim text.
   readonly path: string;
   readonly patch: string | null;
+  // The REPLY's timestamp — read for the dedup: "most recent answer wins" must key on the ANSWER
+  // time, not the root (review-posting) order (issue #151 review r4).
+  readonly repliedAt: string | null;
   readonly threadUrl: string;
   readonly replyUrl: string;
   readonly replyAuthor: string;
@@ -93,6 +96,7 @@ export const AnsweredEntryCodec = t.type({
   ]),
   path: t.string,
   patch: t.union([t.string, t.null]),
+  replied_at: t.union([t.string, t.null]),
   thread_url: t.string,
   reply_url: t.string,
   reply_author: t.string,
@@ -109,6 +113,7 @@ export const encodeAnsweredEntry = (e: AnsweredEntry): StagedAnsweredEntry => ({
   severity: e.severity,
   path: e.path,
   patch: e.patch,
+  replied_at: e.repliedAt,
   thread_url: e.threadUrl,
   reply_url: e.replyUrl,
   reply_author: e.replyAuthor,
@@ -228,10 +233,9 @@ export const answeredRegistryFrom = (
     else group.push(c);
   }
 
-  // One entry per answered bot-rooted thread, then dedup by code keeping the LAST (most recent)
-  // answer — the array is in API order (oldest first). The thread must be anchored on the BOT's
-  // comment; the answer is the first HUMAN comment in it.
-  const byCode = new Map<string, AnsweredEntry>();
+  // One entry per answered bot-rooted thread: the thread must be anchored on the BOT's comment;
+  // the answer is the first HUMAN comment in it.
+  const entries: AnsweredEntry[] = [];
   for (const [rootId, group] of threads) {
     const root = byId.get(rootId);
     if (root === undefined || root.user_login !== botLogin) continue;
@@ -241,16 +245,27 @@ export const answeredRegistryFrom = (
       (c) => c.id !== root.id && isHuman(c.user_login, c.user_type, botLogin),
     );
     if (reply === undefined) continue;
-    const entry: AnsweredEntry = {
+    entries.push({
       ...finding,
+      repliedAt: reply.created_at,
       threadUrl: root.html_url,
       replyUrl: reply.html_url,
       replyAuthor: reply.user_login,
       replyExcerpt: clipText(reply.body ?? "", EXCERPT_LIMIT),
-    };
-    byCode.set(finding.code !== "" ? finding.code : `title:${finding.title}`, entry);
+    });
   }
-  return [...byCode.values()];
+  // Dedup by the shared note key, keeping the entry with the MOST RECENT ANSWER — keyed on the
+  // REPLY time, never the root (review-posting) order: an older thread answered later must win over
+  // a newer thread answered earlier (issue #151 review r4).
+  const byKey = new Map<string, AnsweredEntry>();
+  for (const entry of entries) {
+    const key = answeredNoteKey(entry);
+    const prior = byKey.get(key);
+    if (prior === undefined || (entry.repliedAt ?? "") >= (prior.repliedAt ?? "")) {
+      byKey.set(key, entry);
+    }
+  }
+  return [...byKey.values()];
 };
 
 // The "code (or title)" match: codes equal when the finding carries one; two codeless findings match
@@ -259,9 +274,9 @@ const matches = (f: Finding, e: AnsweredEntry): boolean =>
   f.code !== undefined && f.code !== "" ? e.code === f.code : e.code === "" && e.title === f.title;
 
 // The ONE note-key contract: a finding's annotation key is its code when it carries one, else
-// "title:<title>" — written once here, consumed by applyAnswered and both renderers, so the key
-// can never drift between the writer and the lookups (issue #151 review r2).
-export const answeredNoteKey = (f: Finding): string =>
+// "title:<title>" — written once here, consumed by the registry builder, applyAnswered, and both
+// renderers, so the key can never drift between the writer and the lookups (issue #151 review r2).
+export const answeredNoteKey = (f: { code?: string; title: string }): string =>
   f.code !== undefined && f.code !== "" ? f.code : `title:${f.title}`;
 
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)

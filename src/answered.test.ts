@@ -128,6 +128,24 @@ describe("answeredRegistryFrom — the 'already answered' state (issue #151)", (
     expect(registry[0]!.replyUrl).toContain("discussion_r4");
   });
 
+  it("dedups by ANSWER time, not root order — an older thread answered LATER wins over a newer thread answered earlier (issue #151 review r4)", () => {
+    const finding = mkFinding({});
+    // Thread A: root posted first (id 1), answered LAST (reply 4 at 03:00).
+    // Thread B: root posted later (id 2), answered EARLIER (reply 3 at 02:00).
+    const registry = answeredRegistryFrom(
+      [
+        botComment(1, finding),
+        botComment(2, finding),
+        { ...reply(3, 2, "alice"), created_at: "2026-07-01T02:00:00Z" },
+        { ...reply(4, 1, "bob"), created_at: "2026-07-01T03:00:00Z" },
+      ],
+      "github-actions[bot]",
+    );
+    expect(registry).toHaveLength(1);
+    expect(registry[0]!.replyUrl).toContain("discussion_r4");
+    expect(registry[0]!.repliedAt).toBe("2026-07-01T03:00:00Z");
+  });
+
   it("records a codeless answered finding with a title-only match key and clips the reply excerpt", () => {
     const finding = mkFinding({ code: undefined });
     const longReply = reply(2, 1, "alice", "x".repeat(500));
@@ -150,6 +168,7 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     severity: "minor",
     path: "src/foo.ts",
     patch: null,
+    repliedAt: "2026-07-01T01:00:00Z",
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",
@@ -311,6 +330,7 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
     severity: "minor",
     path: "src/foo.ts",
     patch: null,
+    repliedAt: "2026-07-01T01:00:00Z",
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",

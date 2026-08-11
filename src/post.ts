@@ -596,19 +596,15 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ? pointer
       : `${pointer}\n${signalMarker(priorSignal)}`;
   };
+  // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
+  // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
+  // TDZ ReferenceError and crashes the post (issue #151 review r4 — a real regression in r3). The
+  // post-filter call sites log the drops themselves.
   const leaveInPlace = (message?: string): never => {
     process.stderr.write(
       message ??
         "Review did not complete and the sticky already reflects a completed review — leaving it in place\n",
     );
-    // A leave with verbatim drops (the incomplete-main-path guard) cannot write a note — the
-    // preserved sticky still surfaces each dropped finding and its reply thread — so name the drops
-    // in the run log (issue #151 review r3).
-    if (verbatimReRaised.length > 0) {
-      process.stderr.write(
-        `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
-      );
-    }
     process.exit(0);
   };
 
@@ -715,8 +711,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const loadedFindings = findingsResult.findings;
   // The answered-thread fetch runs only when a review will actually be filtered — an empty-diff or
   // corrupt-findings post exits above without paying for the paginated history (issue #151 review
-  // r3: the fetch was previously parallel with the diff, wasted on every early-exit path).
-  const threadComments = await fetchThreadComments(ghApi, input.repo, prNumber);
+  // r3), and a FIRST-EVER review (no bot sticky at all, so no bot threads can exist) provably has
+  // an empty registry (issue #151 review r4).
+  const threadComments =
+    existingSticky === null ? null : await fetchThreadComments(ghApi, input.repo, prNumber);
   const answeredRegistry =
     threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
@@ -762,7 +760,16 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     // (render does the same) so an error-verdict findings doc here still reads as a notice and — via
     // the guard below — can't bury a completed review, which this branch previously skipped.
     const envelopelessIncomplete = isIncompleteFindings(findings);
-    if (wouldBuryCompleted(envelopelessIncomplete)) leaveInPlace();
+    if (wouldBuryCompleted(envelopelessIncomplete)) {
+      // The leave cannot write a note; the preserved sticky still surfaces each dropped finding and
+      // its reply thread — name the drops in the run log (issue #151 review r4).
+      if (verbatimReRaised.length > 0) {
+        process.stderr.write(
+          `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+        );
+      }
+      leaveInPlace();
+    }
     // The route is passed through as --route, so an empty mechanic with a lost envelope still
     // cannot bury a completed full review (issue #127).
     if (emptyMechanicWouldBury(effectiveRoute, envelopelessIncomplete) && existingSticky !== null)
@@ -813,7 +820,16 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // produced only a notice. Don't let such a notice bury an existing completed review or post a stray
   // empty inline review over it — leave the real review in place.
   const thisIncomplete = envelope.incomplete === true || isIncompleteFindings(findings);
-  if (wouldBuryCompleted(thisIncomplete)) leaveInPlace();
+  if (wouldBuryCompleted(thisIncomplete)) {
+    // The leave cannot write a note; the preserved sticky still surfaces each dropped finding and
+    // its reply thread — name the drops in the run log (issue #151 review r4).
+    if (verbatimReRaised.length > 0) {
+      process.stderr.write(
+        `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+      );
+    }
+    leaveInPlace();
+  }
 
   if (emptyMechanicWouldBury(effectiveRoute, thisIncomplete) && existingSticky !== null)
     await emptyMechanicLeaveOrNote(existingSticky);

@@ -80,6 +80,7 @@
     },
     "scope_metastasis": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Pipeline-stamped advisory (issue #150): the mechanisms whose findings recurred in consecutive prior full-review rounds — per-code consecutive-round counts plus a decision prompt. The review agent does NOT write this field: the commenter computes it from the carried round history and stamps it into the surfaced document. When it is present in the prior review context of a re-review, respond to the decision prompt — state in your summary whether you are committing to the expanding scope (planning the remaining facets of the recurring mechanism(s) as one unit) or narrowing the scope — so the decision is made explicitly rather than left to emerge piecemeal.",
       "required": ["decision_prompt", "recurring"],
       "properties": {

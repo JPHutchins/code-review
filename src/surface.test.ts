@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { validateAgainstSchema } from "./validate.js";
 import {
   parseFindingsMarker,
   parseReviewedSha,
@@ -39,6 +42,9 @@ import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./s
 import type { Finding, Findings } from "./schema.js";
 import type { SurfaceSignal } from "./surface.js";
 import type { RoundRecord, SeverityCounts } from "./types.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const bundledSchemaPath = resolve(__dirname, "..", "schema", "findings.schema.json");
 
 const findings = {
   schema_version: "0.4.0",
@@ -770,20 +776,32 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     expect(surfaceFindings(findings, null).scope_metastasis).toBeUndefined();
   });
 
-  it("the scope_metastasis codecs reject extra keys exactly like the ajv gate — the two gates agree on the new field (issue #150 review r2)", () => {
+  it("the scope_metastasis codecs and the ajv gate reject the SAME extra keys — both sides asserted (issue #150 review r2)", () => {
     const clean = {
       decision_prompt: "decide",
       recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
     };
     expect(ScopeMetastasisCodec.decode(clean)._tag).toBe("Right");
-    // A seed-echoing draft smuggling extra keys into the entry (or its items) must fail the codec
-    // gate the same way the schema's additionalProperties:false fails the ajv gate.
-    const smuggled = {
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: clean }, bundledSchemaPath).valid,
+    ).toBe(true);
+    // A seed-echoing draft smuggling extra keys into the entry (or its items) must fail BOTH gates
+    // — the codec's Strict refinements and the schema's additionalProperties:false agree.
+    const smuggledItem = {
       decision_prompt: "decide",
       recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1, note: "x" }],
-      extra: 1,
     };
-    expect(ScopeMetastasisCodec.decode(smuggled)._tag).toBe("Left");
+    expect(ScopeMetastasisCodec.decode(smuggledItem)._tag).toBe("Left");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: smuggledItem }, bundledSchemaPath)
+        .valid,
+    ).toBe(false);
+    const smuggledTop = { decision_prompt: "decide", recurring: [], extra: 1 };
+    expect(ScopeMetastasisCodec.decode(smuggledTop)._tag).toBe("Left");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: smuggledTop }, bundledSchemaPath)
+        .valid,
+    ).toBe(false);
     // The tolerated draft-level field still decodes inside a findings doc (the seed-echo contract).
     const echoed = { ...findings, scope_metastasis: clean };
     expect(FindingsCodec.decode(echoed)._tag).toBe("Right");
@@ -855,32 +873,40 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
   });
 
   it("budgets the surfaced overhead INCLUDING the worst-case scope_metastasis — a doc at the old embed boundary still embeds as base64 (issues #141 + #150 review r2)", () => {
-    // The worst-case scope_metastasis payload: the decision prompt plus MAX_CODES_PER_ROUND
-    // recurring entries — the most a completing round can stamp (streaks derive from the last
-    // round's capped codes map). The budget must hold for THIS payload, not just the stop signal.
+    // The WORST-CASE scope_metastasis payload: the real decision prompt plus 2*MAX_CODES_PER_ROUND
+    // recurring entries (the rounds marker keeps the top-8 base plus up to 8 prior-kept codes per
+    // round — the most a completing round can stamp). Measured at ~2096 base64 chars.
     const worstCase = {
-      decision_prompt: "decide: commit to the expanding scope or narrow it",
-      recurring: Array.from({ length: MAX_CODES_PER_ROUND }, (_, i) => ({
+      decision_prompt:
+        "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.",
+      recurring: Array.from({ length: 2 * MAX_CODES_PER_ROUND }, (_, i) => ({
         code: `recurring-mechanism-${String(i)}`,
         consecutive_rounds: 3 + i,
         start_round: 1,
       })),
     };
     let doc = { ...findings, summary: "x".repeat(20000) };
-    const b64 = (d: Findings): number =>
+    const preEntryB64 = (d: Findings): number =>
+      Buffer.from(
+        JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)))),
+        "utf-8",
+      ).toString("base64").length;
+    const withEntryB64 = (d: Findings): number =>
       Buffer.from(
         JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)), worstCase)),
         "utf-8",
       ).toString("base64").length;
-    // Grow the summary until the SURFACED marker (with the worst-case entry) crosses the old
-    // 40000 payload budget.
-    while (b64(doc) <= 40000) {
+    // The intended property: a review that embedded at the OLD 40200 boundary (pre-entry form)
+    // still embeds once the worst-case entry is stamped. Grow the summary until the PRE-entry
+    // surfaced form crosses 40200 — the population the budget guarantees.
+    while (preEntryB64(doc) <= 40200) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
-    // The limit budgets the stop signal AND the worst-case scope_metastasis entry, so a review
-    // that previously embedded as base64 still does — it doesn't fall to the link form and lose
-    // the seed + signal.
-    expect(b64(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
+    expect(preEntryB64(doc)).toBeGreaterThan(40200);
+    // The limit budgets the stop signal AND the worst-case entry, so the with-entry form stays
+    // within EMBED_LIMIT and embeds as base64 — it doesn't fall to the link form and lose the
+    // seed + signal.
+    expect(withEntryB64(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
     expect(
       findingsPointer(surfaceFindings(doc, signal(1, counts(0, 0, 1, 0)), worstCase), undefined),
     ).toContain(";base64");

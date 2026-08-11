@@ -1315,7 +1315,52 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("prior-new");
-    expect(stderr).toContain("rejects the re-attached scope_metastasis");
+    expect(stderr).toContain("rejects the carried scope_metastasis entry");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toBeUndefined();
+    expect(context.findings).toHaveLength(1);
+  });
+
+  it("applies the same bare-fallback to a blob that NATIVELY carries scope_metastasis — the common post-#150 case against a pre-#150 schema (issue #150 review r2)", async () => {
+    // A 0.8.0 blob whose stripped doc carries the field natively (no re-attach involved): the seed
+    // must still validate it against the in-force schema and fall back to the field-stripped doc.
+    const customSchema = join(tmpDir, "old-findings.schema.json");
+    const bundled = JSON.parse(
+      readFileSync(resolve(repoRoot, "schema", "findings.schema.json"), "utf-8"),
+    ) as { properties: Record<string, unknown> };
+    delete bundled.properties["scope_metastasis"];
+    writeFileSync(customSchema, JSON.stringify(bundled));
+    const entry = {
+      decision_prompt: "decide",
+      recurring: [{ code: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
+    };
+    const surfaced = {
+      ...priorFindings,
+      schema_version: "0.8.0",
+      round: 4,
+      convergence: { score: 1, threshold: 1, converged: false },
+      scope_metastasis: entry,
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, stderr, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--schema",
+      customSchema,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    expect(stderr).toContain("rejects the carried scope_metastasis entry");
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings & {

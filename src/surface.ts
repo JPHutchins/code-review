@@ -26,9 +26,13 @@ export const severityEmoji = (s: string): string => {
 // original payload PLUS the two pipeline-stamped overheads, so a review that previously embedded as
 // base64 still does — the link fallback would lose the re-review seed and the stop signal (issue
 // #141 review). The overheads, both measured in base64 chars: the surfaced stop signal (convergence
-// + round, ~100) and the worst-case scope_metastasis entry (issue #150) — the decision prompt
-// (~280 chars) plus up to MAX_CODES_PER_ROUND recurring entries (~85 each), ~1300 total.
-export const EMBED_LIMIT = 41400;
+// + round, ~92) and the WORST-CASE scope_metastasis entry (issue #150) — the decision prompt
+// (~366 chars) plus up to 2*MAX_CODES_PER_ROUND recurring entries (the rounds marker keeps the
+// top-8 base plus up to 8 prior-kept codes per round), measured at 2096 b64 chars. The guarantee is
+// the OLD boundary: 40200 (a doc that embedded pre-#150) + 2096 (the worst-case entry) = 42296,
+// rounded to 42400 for margin. Verified by the boundary test, which crosses the old 40200 boundary
+// PRE-entry and asserts the WITH-entry form still embeds.
+export const EMBED_LIMIT = 42400;
 
 // Travels with the marker on every surface so a reader who sees only one comment still knows to decode it.
 const AGENTS_STOP_DIRECTIVE =
@@ -236,9 +240,17 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   // erasing the whole trajectory (post re-serializes the parsed array on every write). The codes
   // field is normalized independently — a bad codes shape strips just that field, never the round.
   if (!Array.isArray(decoded)) return [];
-  return (decoded as readonly unknown[]).filter(isSeverityCounts).map((u) => {
+  // SEQUENTIAL normalization: each round's codes are re-normalized with the PRECEDING round's
+  // normalized codes as priorCodes — the same prior-kept pass roundRecord performed in memory — so
+  // the up-to-8 prior-kept codes of a finding-heavy round survive the marker round-trip (without
+  // it, the re-parse collapses every round to its top-8 base and the re-attached scope_metastasis
+  // under-reports mechanisms post() would have flagged, issue #150 review r2).
+  const kept: RoundRecord[] = [];
+  let priorCodes: CodeCounts | undefined;
+  for (const u of (decoded as readonly unknown[]).filter(isSeverityCounts)) {
     const rec = u as Record<string, unknown>;
-    const codes = normalizeCodeCounts(rec["codes"]);
+    const codes = normalizeCodeCounts(rec["codes"], priorCodes);
+    priorCodes = codes;
     const sha = rec["sha"];
     const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;
     const round = rec["round"];
@@ -248,9 +260,10 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
       codes === undefined
         ? { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit }
         : { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit, codes };
-    const kept = shaStr === undefined ? base : { ...base, sha: shaStr };
-    return roundNum === undefined ? kept : { ...kept, round: roundNum };
-  });
+    const record = shaStr === undefined ? base : { ...base, sha: shaStr };
+    kept.push(roundNum === undefined ? record : { ...record, round: roundNum });
+  }
+  return kept;
 };
 
 // The rounds marker's base64 length cap. The severity counts (the trajectory) always survive; when a

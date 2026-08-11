@@ -922,19 +922,30 @@ const seedDraftCmd = defineCommand({
               const schemaPath = args.schema
                 ? resolve(args.schema)
                 : schemaPathFor(kind, args["schema-version"]);
-              // The adorned (re-attached) doc is preferred; when the in-force schema predates the
-              // scope_metastasis field, fall back to the un-adorned stripped prior so a previously
-              // seedable prior still seeds (issue #150 review r2).
-              const adorned = priorFindings !== strippedPrior;
-              const adornedValid =
-                !adorned || validateAgainstSchema(priorFindings, schemaPath).valid;
-              const seedDoc = adornedValid
+              // ALWAYS validate — no short-circuit: a natively-carried 0.8.0 entry must face the
+              // in-force schema like any other doc. When that schema (or the codec) rejects the
+              // doc solely because of scope_metastasis (a consumer-pinned custom --schema
+              // predating the field, or a corrupt blob-carried entry), fall back to the
+              // field-stripped doc: losing the recurrence entry beats losing ALL prior context
+              // (issue #150 review r2). The fallback covers BOTH gates (ajv + codec) uniformly.
+              const barePrior =
+                typeof priorFindings === "object" && !Array.isArray(priorFindings)
+                  ? Object.fromEntries(
+                      Object.entries(priorFindings as Record<string, unknown>).filter(
+                        ([key]) => key !== "scope_metastasis",
+                      ),
+                    )
+                  : priorFindings;
+              const accepts = (doc: unknown): boolean =>
+                validateAgainstSchema(doc, schemaPath).valid &&
+                resolveRegistry("findings", doc).kind === "ok";
+              const seedDoc = accepts(priorFindings)
                 ? priorFindings
-                : validateAgainstSchema(strippedPrior, schemaPath).valid
+                : accepts(barePrior)
                   ? (process.stderr.write(
-                      `Note: the in-force schema rejects the re-attached scope_metastasis entry — seeding the prior without it (issue #150 review r2)\n`,
+                      `Note: the in-force schema rejects the carried scope_metastasis entry — seeding the prior without it (issue #150 review r2)\n`,
                     ),
-                    strippedPrior)
+                    barePrior)
                   : null;
               if (seedDoc === null) return false;
               // Skip a prior that never completed (verdict "error" + no findings — the notice

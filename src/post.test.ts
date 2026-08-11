@@ -3580,6 +3580,7 @@ describe("post — answered findings (issue #151)", () => {
         id: 101,
         in_reply_to_id: null,
         user_login: "github-actions[bot]",
+        user_type: "Bot",
         body: findingPointer(finding, "0.6.0"),
         html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
         path: "src/foo.ts",
@@ -3590,6 +3591,7 @@ describe("post — answered findings (issue #151)", () => {
         id: 102,
         in_reply_to_id: 101,
         user_login: "alice",
+        user_type: "User",
         body: "Measured on the built extension: the claim does not hold.",
         html_url: "https://github.com/owner/repo/pull/42#discussion_r102",
         path: "src/foo.ts",
@@ -3687,6 +3689,39 @@ describe("post — answered findings (issue #151)", () => {
     expect(review).toBeDefined();
     const payload = JSON.parse(review!.stdin!) as ReviewBody;
     expect(payload.comments.some((c) => c.body.includes("Re-raised; prior answer at"))).toBe(true);
+  });
+
+  it("strips a DROPPED re-raise's code from systemic finding_codes — a 'ties together' list never dangles (issue #151 review r1)", async () => {
+    const answered = mkFinding({
+      code: "recurring-a",
+      title: "The same claim",
+      reasoning: "The same reasoning.",
+    });
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        ...mkFindings([answered]),
+        systemic_problems: [
+          {
+            title: "t",
+            description: "d",
+            severity: "minor",
+            reasoning: "r",
+            confidence: 0.8,
+            finding_codes: ["recurring-a", "kept-code"],
+            paths: ["src/foo.ts"],
+          },
+        ],
+      }),
+    );
+    const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    const b64 = /code-review:findings-json;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    const blob = JSON.parse(Buffer.from(b64 ?? "", "base64").toString("utf-8")) as {
+      systemic_problems: readonly { finding_codes?: readonly string[] }[];
+    };
+    expect(blob.systemic_problems[0]!.finding_codes).toEqual(["kept-code"]);
   });
 
   it("a failed thread fetch degrades to an empty registry — the review posts unfiltered", async () => {

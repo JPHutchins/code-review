@@ -59,13 +59,13 @@ export const buildInlineComments = (
   const eta = new Eta({ autoTrim: false });
   const modelsText = formatModels(models);
 
-  const noteFor = (f: Finding, notes: Readonly<Record<string, string>> | undefined): string =>
-    f.code !== undefined &&
-    f.code !== "" &&
-    notes !== undefined &&
-    Object.prototype.hasOwnProperty.call(notes, f.code)
-      ? (notes[f.code] ?? "")
-      : "";
+  const noteFor = (f: Finding, notes: Readonly<Record<string, string>> | undefined): string => {
+    if (notes === undefined) return "";
+    // Code-keyed when the finding carries a code; a codeless finding looks up its title key (the
+    // same two-key contract applyAnswered writes — issue #151 review r1).
+    const key = f.code !== undefined && f.code !== "" ? f.code : `title:${f.title}`;
+    return Object.prototype.hasOwnProperty.call(notes, key) ? (notes[key] ?? "") : "";
+  };
 
   const comments: InlineComment[] = inDiff.map((f) => {
     const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";

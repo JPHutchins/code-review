@@ -533,14 +533,14 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   }
   const prNumber = resolution.prNumber;
 
-  const diff = await fetchDiff(input.repo, prNumber, ghApi);
-  const existingSticky = await findBotComment(
-    input.repo,
-    prNumber,
-    input.botLogin,
-    DEFAULT_MARKER,
-    ghApi,
-  );
+  // The three Phase-1 reads are independent — run them together rather than serially: the diff,
+  // the prior sticky, and the answered-thread fetch (which must not add a serialized API call to
+  // every post — issue #151 review r1).
+  const [diff, existingSticky, threadComments] = await Promise.all([
+    fetchDiff(input.repo, prNumber, ghApi),
+    findBotComment(input.repo, prNumber, input.botLogin, DEFAULT_MARKER, ghApi),
+    fetchThreadComments(ghApi, input.repo, prNumber),
+  ]);
 
   // An incomplete result (a notice, not a completed review) must never overwrite a sticky that
   // already shows a completed review — else a superseded/killed/late run buries a real review under a
@@ -699,16 +699,31 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // annotated with the prior answer's link. A failed fetch degrades to an empty registry (the review
   // posts unfiltered); the seed already told the agent what not to re-raise.
   const loadedFindings = findingsResult.findings;
-  const threadComments = await fetchThreadComments(ghApi, input.repo, prNumber);
   const answeredRegistry =
     threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
-  // Everything downstream (counts, rounds, signal, inline, the surfaced doc) reads the FILTERED
-  // document — a closed verbatim re-raise is gone from the review, not just from the prose.
-  // [...spread] restores the codec's mutable array type.
-  const findings: Findings = { ...loadedFindings, findings: [...answeredFilter.findings] };
   const reRaisedNotes = answeredFilter.reRaisedNotes;
   const verbatimReRaised = answeredFilter.verbatimReRaised;
+  // Everything downstream (counts, rounds, signal, inline, the surfaced doc) reads the FILTERED
+  // document — a closed verbatim re-raise is gone from the review, not just from the prose.
+  // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
+  // stripped from any systemic problem's finding_codes — a "ties together" list must not dangle a
+  // finding that is no longer in the document. Scoped to the actual drops: a systemic whose codes
+  // were never dropped passes through untouched (issue #151 review r1).
+  const droppedCodes = new Set(verbatimReRaised.flatMap((e) => (e.code !== "" ? [e.code] : [])));
+  const systemic =
+    droppedCodes.size === 0
+      ? (loadedFindings.systemic_problems ?? [])
+      : (loadedFindings.systemic_problems ?? []).map((s) => {
+          if (s.finding_codes === undefined) return s;
+          const codes = s.finding_codes.filter((c) => !droppedCodes.has(c));
+          return codes.length === s.finding_codes.length ? s : { ...s, finding_codes: codes };
+        });
+  const findings: Findings = {
+    ...loadedFindings,
+    findings: [...answeredFilter.findings],
+    ...(systemic.length > 0 ? { systemic_problems: systemic } : {}),
+  };
 
   const envelope = loadEnvelope(input.envelopePath);
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
@@ -741,6 +756,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         effort: input.effort,
         rounds: priorRounds,
         sameRootNotes: {},
+        // The answered-state honesty rules apply on EVERY surface that renders the filtered
+        // findings — the lost-envelope branch must name the drops and annotate the kept re-raises
+        // exactly like the main path (issue #151 review r1).
+        answeredNotes: reRaisedNotes,
+        answeredReRaiseNote: answeredReRaiseNote(verbatimReRaised),
         roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         testReport,

@@ -6,12 +6,11 @@
 // and annotated with the prior answer's link.
 
 import * as t from "io-ts";
-import { parseFindingsMarker } from "./surface.js";
-import { escapeCodeBackticks } from "./surface.js";
+import { escapeCodeBackticks, parseFindingsMarker } from "./surface.js";
 import { parseJsonl } from "./transcript.js";
 import type { GhApi } from "./gh.js";
-import type { Finding } from "./schema.js";
-import { errMsg } from "./util.js";
+import type { Finding, Severity } from "./schema.js";
+import { clipText, errMsg } from "./util.js";
 
 // One flat review comment as REST `pulls/{n}/comments` returns it — enough to rebuild reply threads
 // from `in_reply_to_id` chains (a reply to a reply included) and to decode the bot comment's embedded
@@ -20,6 +19,9 @@ export interface ThreadComment {
   readonly id: number;
   readonly in_reply_to_id: number | null;
   readonly user_login: string;
+  // "User" | "Bot" — lets the registry exclude replies from OTHER bots (a CI/dependabot comment
+  // is not a human answer), not just this pipeline's own bot login.
+  readonly user_type: string | null;
   readonly body: string | null;
   readonly html_url: string;
   readonly path: string | null;
@@ -27,14 +29,20 @@ export interface ThreadComment {
   readonly created_at: string | null;
 }
 
-// The jq projection gather and post share, so both fetch the identical shape.
+// The jq projection gather and post share. It emits BOTH the flat `user_login`/`user_type` the
+// answered-registry codec reads AND the nested `user: {login}` (+ author_association) the
+// conversation codec reads — one fetch feeds two consumers, and neither may be silently starved by
+// a field rename (issue #151 review r1: the original single-shape projection emptied the
+// conversation's review_comments in production while the mocks, which bypass jq, kept the tests
+// green).
 export const THREAD_COMMENT_JQ =
-  ".[] | {id, in_reply_to_id, user_login: .user.login, body, html_url, path, line, created_at}";
+  ".[] | {id, in_reply_to_id, user: {login: .user.login}, user_login: .user.login, user_type: .user.type, body, html_url, path, line, created_at, author_association}";
 
 export const ThreadCommentCodec = t.type({
   id: t.number,
   in_reply_to_id: t.union([t.number, t.null]),
   user_login: t.string,
+  user_type: t.union([t.string, t.null]),
   body: t.union([t.string, t.null]),
   html_url: t.string,
   path: t.union([t.string, t.null]),
@@ -50,6 +58,9 @@ export interface AnsweredEntry {
   readonly code: string;
   readonly title: string;
   readonly reasoning: string;
+  // The answered finding's severity — a re-raise ESCALATED in severity is not verbatim (the claim
+  // weight changed), so it is kept and annotated rather than dropped (issue #151 review r1).
+  readonly severity: Severity;
   readonly threadUrl: string;
   readonly replyUrl: string;
   readonly replyAuthor: string;
@@ -66,6 +77,12 @@ export const AnsweredEntryCodec = t.type({
   code: t.string,
   title: t.string,
   reasoning: t.string,
+  severity: t.union([
+    t.literal("critical"),
+    t.literal("major"),
+    t.literal("minor"),
+    t.literal("nit"),
+  ]),
   thread_url: t.string,
   reply_url: t.string,
   reply_author: t.string,
@@ -81,6 +98,7 @@ export const encodeAnsweredEntry = (e: AnsweredEntry): StagedAnsweredEntry => ({
   code: e.code,
   title: e.title,
   reasoning: e.reasoning,
+  severity: e.severity,
   thread_url: e.threadUrl,
   reply_url: e.replyUrl,
   reply_author: e.replyAuthor,
@@ -95,19 +113,18 @@ export const decodeAnsweredEntry = (raw: unknown): StagedAnsweredEntry | null =>
   return decoded._tag === "Right" ? decoded.right : null;
 };
 
-// A reply is "answered" when a HUMAN (any non-bot login) commented on the thread; the bot's own
-// replies (a re-review note) are not answers.
-const isHuman = (login: string, botLogin: string): boolean => login !== botLogin;
-
-const clip = (body: string, max: number): string => {
-  if (body.length <= max) return body;
-  const cut = body.slice(0, max);
-  // Don't end on a lone high surrogate — drop it so the kept prefix stays well-formed UTF-16.
-  const safe = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
-  return `${safe}\n… [truncated]`;
-};
+// A reply is "answered" when a HUMAN commented on the thread: neither this pipeline's bot (matched
+// by login) nor any other bot account (matched by the REST user.type, so a CI/dependabot comment
+// can't masquerade as an answer — issue #151 review r1).
+const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
+  login !== botLogin && type !== "Bot";
 
 const EXCERPT_LIMIT = 400;
+
+// OUTDATED/minimized threads are deliberately NOT excluded: the pipeline minimizes superseded
+// bot comments at the end of every post, so excluding them would erase the very persistence the
+// feature exists for — an answer from round 1 must still close a verbatim re-raise in round 8
+// (issue #151 review r1 considered and rejected the stale-thread scope).
 
 // The pure thread→registry construction. A thread is anchored on the bot's comment (by login); the
 // root's embedded per-finding marker names the finding. Replies are every non-bot comment whose
@@ -138,7 +155,7 @@ export const answeredRegistryFrom = (
   // The answered finding of a bot-rooted thread, from the root comment's embedded per-finding marker.
   const findingOf = (
     root: ThreadComment,
-  ): { code: string; title: string; reasoning: string } | null => {
+  ): { code: string; title: string; reasoning: string; severity: Severity } | null => {
     const decoded = parseFindingsMarker(root.body ?? "");
     const doc =
       typeof decoded === "object" && decoded !== null
@@ -149,8 +166,14 @@ export const answeredRegistryFrom = (
     const title = first["title"];
     const reasoning = first["reasoning"];
     const code = first["code"];
-    return typeof title === "string" && typeof reasoning === "string"
-      ? { code: typeof code === "string" ? code : "", title, reasoning }
+    const severity = first["severity"];
+    return typeof title === "string" &&
+      typeof reasoning === "string" &&
+      (severity === "critical" ||
+        severity === "major" ||
+        severity === "minor" ||
+        severity === "nit")
+      ? { code: typeof code === "string" ? code : "", title, reasoning, severity }
       : null;
   };
 
@@ -173,14 +196,16 @@ export const answeredRegistryFrom = (
     if (root === undefined || root.user_login !== botLogin) continue;
     const finding = findingOf(root);
     if (finding === null) continue;
-    const reply = group.find((c) => c.id !== root.id && isHuman(c.user_login, botLogin));
+    const reply = group.find(
+      (c) => c.id !== root.id && isHuman(c.user_login, c.user_type, botLogin),
+    );
     if (reply === undefined) continue;
     const entry: AnsweredEntry = {
       ...finding,
       threadUrl: root.html_url,
       replyUrl: reply.html_url,
       replyAuthor: reply.user_login,
-      replyExcerpt: clip(reply.body ?? "", EXCERPT_LIMIT),
+      replyExcerpt: clipText(reply.body ?? "", EXCERPT_LIMIT),
       repliedAt: reply.created_at,
       path: reply.path ?? null,
       line: reply.line ?? null,
@@ -220,7 +245,10 @@ export const applyAnswered = (
   registry: readonly AnsweredEntry[],
 ): AnsweredFilter => {
   const kept: Finding[] = [];
-  const notes: Record<string, string> = {};
+  // Built via Object.fromEntries (CreateDataProperty): a reviewer-supplied code like "__proto__"
+  // must become an OWN data key, never a prototype write that silently no-ops the annotation (the
+  // same invariant the codebase's other code-keyed maps hold — issue #151 review r1).
+  const noteEntries: [string, string][] = [];
   const dropped: AnsweredEntry[] = [];
   for (const f of findings) {
     const entry = registry.find((e) => matches(f, e));
@@ -228,21 +256,33 @@ export const applyAnswered = (
       kept.push(f);
       continue;
     }
-    if (f.title === entry.title && f.reasoning === entry.reasoning && f.severity !== "critical") {
+    // Verbatim = identical code/title match AND identical claim text AND identical severity: a
+    // re-raise ESCALATED in severity changed the claim's weight, so it is kept and annotated, not
+    // dropped (issue #151 review r1). A critical is never dropped.
+    const verbatim =
+      f.title === entry.title && f.reasoning === entry.reasoning && f.severity === entry.severity;
+    if (verbatim && f.severity !== "critical") {
       dropped.push(entry);
     } else {
       kept.push(f);
-      if (f.code !== undefined && f.code !== "") notes[f.code] = answeredNote(entry);
+      // Keyed by code when the finding carries one, else by "title:<title>" so a codeless kept
+      // re-raise still gets its annotation (the renderers look up both keys — issue #151 review r1).
+      const key = f.code !== undefined && f.code !== "" ? f.code : `title:${f.title}`;
+      noteEntries.push([key, answeredNote(entry)]);
     }
   }
-  return { findings: kept, reRaisedNotes: notes, verbatimReRaised: dropped };
+  return {
+    findings: kept,
+    reRaisedNotes: Object.fromEntries(noteEntries),
+    verbatimReRaised: dropped,
+  };
 };
 
 // The sticky note naming what was dropped — the suppression is never silent (SPEC §3.3 truthful).
 export const answeredReRaiseNote = (entries: readonly AnsweredEntry[]): string => {
   if (entries.length === 0) return "";
   const label = (e: AnsweredEntry): string =>
-    e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${e.title}”`;
+    e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;
   const lines = entries.map(
     (e) => `> - ${label(e)} — [prior answer](${e.replyUrl}) by ${e.replyAuthor}`,
   );

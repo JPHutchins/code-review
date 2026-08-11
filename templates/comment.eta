@@ -86,9 +86,9 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 
 > ⚠️ <%~ it.sameRootNotes[f.code] %>
 <% } -%>
-<% if (f.code && it.answeredNotes && Object.prototype.hasOwnProperty.call(it.answeredNotes, f.code)) { -%>
+<% if (it.answeredNotes && ((f.code && Object.prototype.hasOwnProperty.call(it.answeredNotes, f.code)) || (!f.code && Object.prototype.hasOwnProperty.call(it.answeredNotes, 'title:' + f.title)))) { -%>
 
-> ↩️ <%~ it.answeredNotes[f.code] %>
+> ↩️ <%~ it.answeredNotes[f.code || ('title:' + f.title)] %>
 <% } -%>
 <% if (f.recommendation) { -%>
 

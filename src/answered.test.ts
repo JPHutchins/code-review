@@ -21,6 +21,7 @@ const botComment = (id: number, finding: Finding): ThreadComment => ({
   id,
   in_reply_to_id: null,
   user_login: "github-actions[bot]",
+  user_type: "Bot",
   // Each inline comment embeds its own finding via the per-finding marker (findingPointer).
   body: findingPointer(finding, "0.6.0"),
   html_url: `https://github.com/owner/repo/pull/1#discussion_r${String(id)}`,
@@ -38,6 +39,7 @@ const reply = (
   id,
   in_reply_to_id: to,
   user_login: author,
+  user_type: "User",
   body,
   html_url: `https://github.com/owner/repo/pull/1#discussion_r${String(id)}`,
   path: "src/foo.ts",
@@ -91,6 +93,22 @@ describe("answeredRegistryFrom — the 'already answered' state (issue #151)", (
     expect(registry).toHaveLength(0);
   });
 
+  it("excludes a reply from ANOTHER bot account (user.type Bot) — a CI/dependabot comment is not a human answer (issue #151 review r1)", () => {
+    const finding = mkFinding({});
+    const dependabot: ThreadComment = { ...reply(2, 1, "dependabot[bot]"), user_type: "Bot" };
+    const registry = answeredRegistryFrom(
+      [botComment(1, finding), dependabot],
+      "github-actions[bot]",
+    );
+    expect(registry).toHaveLength(0);
+    // The same thread WITH a human reply is answered.
+    const withHuman = answeredRegistryFrom(
+      [botComment(1, finding), dependabot, reply(3, 1, "alice")],
+      "github-actions[bot]",
+    );
+    expect(withHuman).toHaveLength(1);
+  });
+
   it("skips a thread whose bot comment carries no decodable finding marker", () => {
     const undecodable: ThreadComment = { ...botComment(1, mkFinding({})), body: "no marker here" };
     const registry = answeredRegistryFrom(
@@ -128,6 +146,7 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     code: "recurring-a",
     title: "The same claim",
     reasoning: "The same reasoning.",
+    severity: "minor",
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",
@@ -159,11 +178,45 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
   it("never drops a CRITICAL verbatim re-raise — it is kept with the annotation", () => {
     const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
       [mkFinding({ severity: "critical" })],
-      [entry()],
+      [entry({ severity: "critical" })],
     );
     expect(findings).toHaveLength(1);
     expect(verbatimReRaised).toHaveLength(0);
     expect(reRaisedNotes["recurring-a"]).toBeDefined();
+  });
+
+  it("keeps a severity-ESCALATED re-raise — a changed claim weight is not verbatim (issue #151 review r1)", () => {
+    const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
+      [mkFinding({ severity: "major" })],
+      [entry({ severity: "minor" })],
+    );
+    expect(findings).toHaveLength(1);
+    expect(verbatimReRaised).toHaveLength(0);
+    expect(reRaisedNotes["recurring-a"]).toBeDefined();
+  });
+
+  it("annotates a finding whose code is `__proto__` — the notes map is built via Object.fromEntries, never a prototype write (issue #151 review r1)", () => {
+    const { findings, reRaisedNotes, verbatimReRaised } = applyAnswered(
+      [mkFinding({ code: "__proto__", reasoning: "NEW evidence." })],
+      [entry({ code: "__proto__" })],
+    );
+    expect(findings).toHaveLength(1);
+    expect(verbatimReRaised).toHaveLength(0);
+    const own = Object.prototype.hasOwnProperty.call(reRaisedNotes, "__proto__");
+    expect(own).toBe(true);
+    expect(reRaisedNotes["__proto__"]).toContain("discussion_r2");
+  });
+
+  it("annotates a CODELESS kept re-raise under its title key — the annotation is not code-only (issue #151 review r1)", () => {
+    const uncoded = entry({ code: "" });
+    const { findings, reRaisedNotes, verbatimReRaised } = applyAnswered(
+      [mkFinding({ code: undefined, reasoning: "NEW evidence: persists on 3.14." })],
+      [uncoded],
+    );
+    expect(findings).toHaveLength(1);
+    expect(verbatimReRaised).toHaveLength(0);
+    expect(reRaisedNotes["title:The same claim"]).toContain("discussion_r2");
+    expect(reRaisedNotes["recurring-a"]).toBeUndefined();
   });
 
   it("matches codeless findings by title (the issue's 'code (or title)' rule)", () => {
@@ -195,6 +248,7 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
     code: "recurring-a",
     title: "The same claim",
     reasoning: "The same reasoning.",
+    severity: "minor",
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",

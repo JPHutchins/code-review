@@ -14,7 +14,7 @@ import {
   ThreadCommentCodec,
   THREAD_COMMENT_JQ,
 } from "./answered.js";
-import { errMsg } from "./util.js";
+import { clipText, errMsg } from "./util.js";
 
 export interface GatherInput {
   readonly repo: string;
@@ -267,14 +267,8 @@ const priorReviewFrom = (
 const MAX_CONVERSATION_COMMENTS = 50;
 const MAX_CONVERSATION_BODY_CHARS = 4000;
 
-const clip = (body: string): string => {
-  if (body.length <= MAX_CONVERSATION_BODY_CHARS) return body;
-  const cut = body.slice(0, MAX_CONVERSATION_BODY_CHARS);
-  // Don't end on a lone high surrogate (a code point split mid-pair) — drop it so the kept prefix
-  // stays well-formed UTF-16.
-  const safe = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
-  return `${safe}\n… [truncated]`;
-};
+// The shared surrogate-safe clip (util.ts) at the conversation's own length cap.
+const clip = (body: string): string => clipText(body, MAX_CONVERSATION_BODY_CHARS);
 
 // Drop the review bot and empty bodies, keep the most recent MAX (logging when it caps), then project.
 const boundedHuman = <

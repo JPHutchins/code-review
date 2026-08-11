@@ -914,6 +914,13 @@ const seedDraftCmd = defineCommand({
           const entry = decodeAnsweredEntry(row);
           return entry === null ? [] : [entry];
         });
+        // A dropped row is a gap in the answered state, not a silent no-op: the agent would read
+        // "no answers" for a thread that WAS answered (issue #151 review r1).
+        if (decoded.length < raw.length) {
+          process.stderr.write(
+            `Warning: ${String(raw.length - decoded.length)} of ${String(raw.length)} answered-registry row(s) failed to decode — the seed's answered state is incomplete\n`,
+          );
+        }
         writeFileSync(priorAnswersPath(outPath), `${JSON.stringify(decoded, null, 2)}\n`);
         process.stderr.write(
           `Seeded ${priorAnswersPath(outPath)} with ${String(decoded.length)} answered finding(s) as context\n`,

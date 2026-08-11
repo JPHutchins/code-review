@@ -987,6 +987,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
           id: 101,
           in_reply_to_id: null,
           user_login: "github-actions[bot]",
+          user_type: "Bot",
           body: botBody,
           html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
           path: "src/foo.ts",
@@ -997,6 +998,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
           id: 102,
           in_reply_to_id: 101,
           user_login: "alice",
+          user_type: "User",
           body: "Measured: the claim does not hold.",
           html_url: "https://github.com/owner/repo/pull/42#discussion_r102",
           path: "src/foo.ts",
@@ -1011,6 +1013,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
         code: "recurring-a",
         title: "The same claim",
         reasoning: "The same reasoning.",
+        severity: "minor",
         thread_url: "https://github.com/owner/repo/pull/42#discussion_r101",
         reply_url: "https://github.com/owner/repo/pull/42#discussion_r102",
         reply_author: "alice",
@@ -1020,6 +1023,77 @@ describe("gather — answered-findings registry (issue #151)", () => {
         line: 42,
       },
     ]);
+  });
+
+  it("serves BOTH consumers from the JQ-shaped rows — the conversation's review_comments survive the shared projection (issue #151 review r1)", async () => {
+    // The mocks bypass jq, so a fixture in the API shape cannot prove the projection satisfies the
+    // consumers. Feed the rows exactly as THREAD_COMMENT_JQ emits them (flat user_login/user_type +
+    // nested user + author_association): the conversation codec must still decode them (with
+    // author_association intact — the review prompt weighs claims by it) AND the registry must.
+    const botBody = `<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->\n<!-- code-review:findings-json;base64 ${Buffer.from(
+      JSON.stringify({
+        schema_version: "0.6.0",
+        findings: [
+          {
+            path: "src/foo.ts",
+            start_line: 42,
+            end_line: 42,
+            severity: "minor",
+            title: "The same claim",
+            description: "d",
+            reasoning: "The same reasoning.",
+            confidence: 0.8,
+            code: "recurring-a",
+          },
+        ],
+      }),
+      "utf-8",
+    ).toString("base64")} -->`;
+    const { api } = withThreadRows(
+      ndjson([
+        {
+          id: 101,
+          in_reply_to_id: null,
+          user: { login: "github-actions[bot]" },
+          user_login: "github-actions[bot]",
+          user_type: "Bot",
+          body: botBody,
+          html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
+          path: "src/foo.ts",
+          line: 42,
+          created_at: "2026-07-01T00:00:00Z",
+          author_association: "NONE",
+        },
+        {
+          id: 102,
+          in_reply_to_id: 101,
+          user: { login: "alice" },
+          user_login: "alice",
+          user_type: "User",
+          body: "Measured: the claim does not hold.",
+          html_url: "https://github.com/owner/repo/pull/42#discussion_r102",
+          path: "src/foo.ts",
+          line: 42,
+          created_at: "2026-07-01T01:00:00Z",
+          author_association: "OWNER",
+        },
+      ]),
+    );
+    await gather(mkInput({}), api, mkMockGit([]).git);
+    const conversation = JSON.parse(outFile("pr_conversation.json")) as {
+      review_comments: readonly {
+        readonly author: string;
+        readonly author_association: string | null;
+        readonly body: string;
+      }[];
+    };
+    expect(conversation.review_comments).toHaveLength(1);
+    expect(conversation.review_comments[0]).toMatchObject({
+      author: "alice",
+      author_association: "OWNER",
+      body: "Measured: the claim does not hold.",
+    });
+    expect(answered()).toHaveLength(1);
   });
 
   it("stages an empty registry when the threads hold no answered finding (no replies, or no bot threads)", async () => {

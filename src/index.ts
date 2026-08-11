@@ -35,6 +35,7 @@ import {
   ResultEnvelopeCodec,
   FindingsCodec,
   PriceMapCodec,
+  ScopeMetastasisCodec,
   TestSummaryCodec,
   isIncompleteFindings,
 } from "./schema.js";
@@ -904,11 +905,15 @@ const seedDraftCmd = defineCommand({
         Array.isArray(strippedPrior)
       )
         return strippedPrior;
-      // A carried entry only counts when it is a real object — an explicit NULL (JSON-legal, from
-      // a corrupt blob; genuine posts omit the key on null) falls through to the rounds-marker
-      // recovery like an absent one (issue #150 review r3).
+      // A carried entry only counts when it VALIDATES as the entry shape — an explicit null, an
+      // array, or a malformed object (all possible in a corrupt blob; genuine posts omit the key
+      // on null) falls through to the rounds-marker recovery like an absent one (issues #150
+      // review r3 + r4). The derivation is also gated on the prior's verdict exactly like post's
+      // stamp (isRound requires a review verdict): an error-verdict prior never carries a
+      // re-derived entry (issue #150 review r4).
       const carried = (strippedPrior as Record<string, unknown>)["scope_metastasis"];
-      if (typeof carried === "object" && carried !== null) return strippedPrior;
+      if (ScopeMetastasisCodec.decode(carried)._tag === "Right") return strippedPrior;
+      if ((strippedPrior as Record<string, unknown>)["verdict"] === "error") return strippedPrior;
       const computed = computeScopeMetastasis(parseRounds(priorBody ?? ""));
       return computed === null ? strippedPrior : { ...strippedPrior, scope_metastasis: computed };
     })();

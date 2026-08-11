@@ -895,15 +895,14 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
   it("budgets the surfaced overhead INCLUDING the worst-case scope_metastasis — a doc at the old embed boundary still embeds as base64 (issues #141 + #150 review r2)", () => {
     // The WORST-CASE scope_metastasis payload: the real decision prompt plus 2*MAX_CODES_PER_ROUND
     // recurring entries (the rounds marker keeps the top-8 base plus up to 8 prior-kept codes per
-    // round — the most a completing round can stamp) with repo-realistic ~28-char codes — the
-    // codebase's own longest codes (e.g. `copy-protocol-reimplementation`) run 21-28 chars, and the
-    // budget must hold for those, not just short synthetic ones (issue #150 review r3). Measured
-    // at ~2288 base64 chars.
+    // round — the most a completing round can stamp) with 32-char codes — the budgeted assumption
+    // in EMBED_LIMIT's comment (the codebase's own longest codes run 21-28; 32 is the stated
+    // ceiling — issue #150 review r4). Measured at ~2332 base64 chars.
     const worstCase = {
       decision_prompt:
         "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.",
       recurring: Array.from({ length: 2 * MAX_CODES_PER_ROUND }, () => ({
-        code: "copy-protocol-reimplementation",
+        code: "copy-protocol-reimplementation".padEnd(32, "x"),
         consecutive_rounds: 18,
         start_round: 1,
       })),

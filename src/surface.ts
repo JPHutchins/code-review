@@ -28,12 +28,14 @@ export const severityEmoji = (s: string): string => {
 // #141 review). The overheads, both measured in base64 chars: the surfaced stop signal (convergence
 // + round, ~92) and the WORST-CASE scope_metastasis entry (issue #150) — the decision prompt
 // (~366 chars) plus up to 2*MAX_CODES_PER_ROUND recurring entries (the rounds marker keeps the
-// top-8 base plus up to 8 prior-kept codes per round) with repo-realistic ~28-char codes (the
-// codebase's own longest codes run 21-28 chars). The guarantee is the OLD boundary: the boundary
-// test crosses 40200 PRE-entry and measures the WITH-entry form at 42516 b64 chars — EMBED_LIMIT
-// is set above that measured worst case (42600, margin included), so a doc that embedded pre-#150
-// still embeds once the realistic worst-case entry is stamped.
-export const EMBED_LIMIT = 42600;
+// top-8 base plus up to 8 prior-kept codes per round). The budgeted assumption: reviewer-supplied
+// codes up to 32 chars (the codebase's own longest codes run 21-28; a 32-char code measures 2332
+// b64 for the full entry — anything longer is unrepresentable in the repo's own style). The
+// guarantee is the OLD boundary: the boundary test crosses 40200 PRE-entry and measures the
+// WITH-entry form at 42560 b64 chars with 32-char codes — EMBED_LIMIT sits above that measured
+// worst case (42700, margin included), so a doc that embedded pre-#150 still embeds once the
+// worst-case entry is stamped.
+export const EMBED_LIMIT = 42700;
 
 // Travels with the marker on every surface so a reader who sees only one comment still knows to decode it.
 const AGENTS_STOP_DIRECTIVE =

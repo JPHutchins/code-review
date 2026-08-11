@@ -1370,6 +1370,61 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.findings).toHaveLength(1);
   });
 
+  it("recovers from a blob that carries scope_metastasis: null — an explicit null (corrupt blob) falls through to the rounds-marker recovery like an absent entry (issue #150 review r3)", async () => {
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const priorBlob = {
+      ...priorFindings,
+      schema_version: "0.8.0",
+      round: 3,
+      convergence: { score: 1, threshold: 1, converged: false },
+      scope_metastasis: null,
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(priorBlob as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toEqual({
+      decision_prompt: expect.any(String) as string,
+      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+    });
+  });
+
   it("re-attaches scope_metastasis from the rounds marker when the prior blob predates the field — a completed pre-0.8 sticky still seeds the recurrence signal (issue #150)", async () => {
     // The prior sticky's BLOB is a COMPLETED pre-0.8 review (verdict 'changes', full-review route —
     // seedable — but its 0.7.0 blob carries no scope_metastasis). The sticky carries the rounds

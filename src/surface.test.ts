@@ -802,6 +802,26 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
       validateAgainstSchema({ ...findings, scope_metastasis: smuggledTop }, bundledSchemaPath)
         .valid,
     ).toBe(false);
+    // Non-safe integers: JSON Schema's "integer" alone would accept 1e21 (a whole number), so the
+    // schema's maximum must bound it exactly where the codec's isSafeInteger does (issue #150
+    // review r3) — both gates reject it, and both accept an integer-valued 3.0.
+    const nonSafe = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 1e21, start_round: 1 }],
+    };
+    expect(ScopeMetastasisCodec.decode(nonSafe)._tag).toBe("Left");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: nonSafe }, bundledSchemaPath).valid,
+    ).toBe(false);
+    const integerValued = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3.0, start_round: 1 }],
+    };
+    expect(ScopeMetastasisCodec.decode(integerValued)._tag).toBe("Right");
+    expect(
+      validateAgainstSchema({ ...findings, scope_metastasis: integerValued }, bundledSchemaPath)
+        .valid,
+    ).toBe(true);
     // The tolerated draft-level field still decodes inside a findings doc (the seed-echo contract).
     const echoed = { ...findings, scope_metastasis: clean };
     expect(FindingsCodec.decode(echoed)._tag).toBe("Right");
@@ -875,13 +895,16 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
   it("budgets the surfaced overhead INCLUDING the worst-case scope_metastasis — a doc at the old embed boundary still embeds as base64 (issues #141 + #150 review r2)", () => {
     // The WORST-CASE scope_metastasis payload: the real decision prompt plus 2*MAX_CODES_PER_ROUND
     // recurring entries (the rounds marker keeps the top-8 base plus up to 8 prior-kept codes per
-    // round — the most a completing round can stamp). Measured at ~2096 base64 chars.
+    // round — the most a completing round can stamp) with repo-realistic ~28-char codes — the
+    // codebase's own longest codes (e.g. `copy-protocol-reimplementation`) run 21-28 chars, and the
+    // budget must hold for those, not just short synthetic ones (issue #150 review r3). Measured
+    // at ~2288 base64 chars.
     const worstCase = {
       decision_prompt:
         "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.",
-      recurring: Array.from({ length: 2 * MAX_CODES_PER_ROUND }, (_, i) => ({
-        code: `recurring-mechanism-${String(i)}`,
-        consecutive_rounds: 3 + i,
+      recurring: Array.from({ length: 2 * MAX_CODES_PER_ROUND }, () => ({
+        code: "copy-protocol-reimplementation",
+        consecutive_rounds: 18,
         start_round: 1,
       })),
     };

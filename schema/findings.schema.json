@@ -103,11 +103,13 @@
               "consecutive_rounds": {
                 "type": "integer",
                 "minimum": 1,
+                "maximum": 9007199254740991,
                 "description": "How many consecutive completed full-review rounds (ending at the last completed round) carried a finding with this code. Same-head CI retries are collapsed by the streak detector, so this is the de-duplicated streak, not the raw span: it may be less than `round - start_round + 1` when the history contains retries."
               },
               "start_round": {
                 "type": "integer",
                 "minimum": 1,
+                "maximum": 9007199254740991,
                 "description": "The 1-indexed round where the consecutive streak began."
               }
             }

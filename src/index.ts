@@ -904,7 +904,11 @@ const seedDraftCmd = defineCommand({
         Array.isArray(strippedPrior)
       )
         return strippedPrior;
-      if ("scope_metastasis" in strippedPrior) return strippedPrior;
+      // A carried entry only counts when it is a real object — an explicit NULL (JSON-legal, from
+      // a corrupt blob; genuine posts omit the key on null) falls through to the rounds-marker
+      // recovery like an absent one (issue #150 review r3).
+      const carried = (strippedPrior as Record<string, unknown>)["scope_metastasis"];
+      if (typeof carried === "object" && carried !== null) return strippedPrior;
       const computed = computeScopeMetastasis(parseRounds(priorBody ?? ""));
       return computed === null ? strippedPrior : { ...strippedPrior, scope_metastasis: computed };
     })();

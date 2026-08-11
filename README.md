@@ -116,11 +116,11 @@ links to:
     "verdict": "comment",
     "summary": "...",
     "convergence": { "score": 1, "threshold": 1, "converged": true },
-    "round": 2,
+    "round": 4,
     "scope_metastasis": {
       "decision_prompt": "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.",
       "recurring": [
-        { "code": "mixin-field-guard-gap", "consecutive_rounds": 4, "start_round": 3 }
+        { "code": "mixin-field-guard-gap", "consecutive_rounds": 4, "start_round": 1 }
       ]
     },
     "findings": []

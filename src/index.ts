@@ -890,11 +890,13 @@ const seedDraftCmd = defineCommand({
     // draft versions validate against the registry.
     const strippedPrior =
       priorBody === null ? null : stripSurfaceFields(parseFindingsMarker(priorBody));
-    // The agent-facing scope_metastasis entry (issue #150) SURVIVES the strip, but a prior blob can
-    // lack it (a pre-0.8 sticky, or a notice that stamped no entry). The recurrence data is then
-    // derivable from the carried rounds marker — the same computation post() stamps — so the seed
-    // re-attaches it: the next-round agent must see the recurrence signal even when the last post
-    // was not a completing round.
+    // The agent-facing scope_metastasis entry (issue #150) SURVIVES the strip, but a completed
+    // pre-0.8 blob lacks it. The recurrence data is then derivable from the carried rounds marker —
+    // the same computation post() stamps — so the seed re-attaches it: the next-round agent must
+    // see the recurrence signal even when the last post predates the field. The re-attach is
+    // best-effort: if the in-force schema (a consumer-pinned custom --schema predating the field)
+    // rejects the adorned doc, the un-adorned prior is seeded instead — losing the recurrence
+    // entry beats losing ALL prior context.
     const priorFindings = ((): unknown => {
       if (
         strippedPrior === null ||
@@ -920,7 +922,21 @@ const seedDraftCmd = defineCommand({
               const schemaPath = args.schema
                 ? resolve(args.schema)
                 : schemaPathFor(kind, args["schema-version"]);
-              if (!validateAgainstSchema(priorFindings, schemaPath).valid) return false;
+              // The adorned (re-attached) doc is preferred; when the in-force schema predates the
+              // scope_metastasis field, fall back to the un-adorned stripped prior so a previously
+              // seedable prior still seeds (issue #150 review r2).
+              const adorned = priorFindings !== strippedPrior;
+              const adornedValid =
+                !adorned || validateAgainstSchema(priorFindings, schemaPath).valid;
+              const seedDoc = adornedValid
+                ? priorFindings
+                : validateAgainstSchema(strippedPrior, schemaPath).valid
+                  ? (process.stderr.write(
+                      `Note: the in-force schema rejects the re-attached scope_metastasis entry — seeding the prior without it (issue #150 review r2)\n`,
+                    ),
+                    strippedPrior)
+                  : null;
+              if (seedDoc === null) return false;
               // Skip a prior that never completed (verdict "error" + no findings — the notice
               // signature, isIncompleteFindings) and a prior that is not unmistakably a completed
               // FULL review (route-aware seed chain): a CI-fix mechanic pass must not sit in the
@@ -928,15 +944,12 @@ const seedDraftCmd = defineCommand({
               // reliable signal — round history can't identify the last review (a mechanic carries
               // a full review's rounds forward), so a no-route prior is unknown and skipped: one
               // cold review is cheaper than a false prior (issue #127 round-2).
-              const resolution = resolveRegistry("findings", priorFindings);
+              const resolution = resolveRegistry("findings", seedDoc);
               if (resolution.kind !== "ok") return false;
               if (isIncompleteFindings(resolution.value)) return false;
               if (parseReviewedRoute(priorBody ?? "") !== "full review") return false;
               writeFileSync(outPath, SEED_SENTINEL);
-              writeFileSync(
-                priorContextPath(outPath),
-                `${JSON.stringify(priorFindings, null, 2)}\n`,
-              );
+              writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
               const count = resolution.value.findings.length;
               process.stderr.write(
                 `Seeded ${outPath} with the sentinel and wrote the prior review (${String(count)} finding(s)) to ${priorContextPath(outPath)} as context\n`,

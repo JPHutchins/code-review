@@ -1255,10 +1255,81 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.scope_metastasis).toEqual(entry);
   });
 
-  it("re-attaches scope_metastasis from the rounds marker when the prior blob lacks it — a notice in between must not blind the next agent (issue #150)", async () => {
-    // The prior sticky's BLOB is a notice (verdict error → its blob carries no scope_metastasis),
-    // but the sticky still carries the rounds marker with a 3-streak: the seed derives the entry
-    // from that history, exactly as post() would have stamped it.
+  it("degrades to the un-adorned prior when the in-force schema predates scope_metastasis — a custom --schema must not silently drop prior context (issue #150 review r2)", async () => {
+    // A consumer-pinned custom schema without the scope_metastasis property (additionalProperties:
+    // false) rejects the re-attached doc; the seed must fall back to the un-adorned prior rather
+    // than losing ALL prior context.
+    const customSchema = join(tmpDir, "old-findings.schema.json");
+    const bundled = JSON.parse(
+      readFileSync(resolve(repoRoot, "schema", "findings.schema.json"), "utf-8"),
+    ) as { properties: Record<string, unknown> };
+    delete bundled.properties["scope_metastasis"];
+    writeFileSync(customSchema, JSON.stringify(bundled));
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const priorBlob = {
+      ...priorFindings,
+      schema_version: "0.7.0",
+      round: 3,
+      convergence: { score: 1, threshold: 1, converged: false },
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(priorBlob as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, stderr, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--schema",
+      customSchema,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    expect(stderr).toContain("rejects the re-attached scope_metastasis");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toBeUndefined();
+    expect(context.findings).toHaveLength(1);
+  });
+
+  it("re-attaches scope_metastasis from the rounds marker when the prior blob predates the field — a completed pre-0.8 sticky still seeds the recurrence signal (issue #150)", async () => {
+    // The prior sticky's BLOB is a COMPLETED pre-0.8 review (verdict 'changes', full-review route —
+    // seedable — but its 0.7.0 blob carries no scope_metastasis). The sticky carries the rounds
+    // marker with a 3-streak: the seed derives the entry from that history, exactly as post() would
+    // have stamped it.
     const rounds = [
       {
         critical: 0,

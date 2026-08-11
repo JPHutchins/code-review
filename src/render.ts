@@ -136,12 +136,17 @@ export const render = (input: RenderInput): string => {
   // suppressed convergence badge.
   const advisoryAllowed = isFullReviewRound;
   // The structured scope-metastasis entry the surfaced blob embeds (issue #150): post passes the
-  // explicit value it computed from the rounds history; the standalone render command derives it
-  // here from the same rounds, under the same advisory gate as the prose note — a suppressed
-  // advisory renders no entry either. `??` is safe for post's explicit null: post only passes null
-  // when no round completed this run, which is exactly when the fallback also yields null.
+  // explicit value it computed from the rounds history — a VALUE for a completing round with a
+  // recurrence, EXPLICIT null otherwise (no recompute on the hot path); only the standalone render
+  // command leaves it undefined and derives it here from the same rounds, under the same advisory
+  // gate as the prose note — a suppressed advisory renders no entry either. A strict undefined
+  // check (not `??`) keeps post's explicit null from silently re-deriving.
   const scopeMetastasis =
-    input.scopeMetastasis ?? (advisoryAllowed ? computeScopeMetastasis(rounds) : null);
+    input.scopeMetastasis !== undefined
+      ? input.scopeMetastasis
+      : advisoryAllowed
+        ? computeScopeMetastasis(rounds)
+        : null;
 
   return eta.renderString(input.template, {
     findings: input.findings,

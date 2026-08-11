@@ -119,7 +119,7 @@ const SystemicProblemStrict = t.refinement(
 
 export const SystemicProblemCodec = t.exact(SystemicProblemStrict);
 
-const RecurringCodec = t.type({
+const RecurringShape = t.type({
   code: t.string,
   consecutive_rounds: t.refinement(
     t.number,
@@ -133,15 +133,39 @@ const RecurringCodec = t.type({
   ),
 });
 
+// The schema declares additionalProperties: false on recurring items, but t.exact only strips
+// unknown keys on encode — on decode it accepts them. The refinement closes the gap so the codec
+// gate rejects exactly what the ajv gate rejects (the same invariant SystemicProblemStrict
+// establishes — a seed-echoing draft smuggling an extra key into a recurring item must not pass one
+// gate and fail the other).
+const RECURRING_KEYS = new Set(Object.keys(RecurringShape.props));
+
+const RecurringCodec = t.refinement(
+  RecurringShape,
+  (r): r is t.TypeOf<typeof RecurringShape> => Object.keys(r).every((k) => RECURRING_KEYS.has(k)),
+  "RecurringStrict",
+);
+
 // The pipeline-stamped scope-metastasis entry (issue #150): per-code consecutive-round recurrence
 // counts plus the decision prompt, computed from the rounds history and stamped into the surfaced
 // document. The agent never writes it — the pipeline recomputes it from the rounds marker at every
 // post — but the draft schema tolerates it so a seed-echoing agent's draft still validates, and the
 // re-review seed delivers it to the next-round agent.
-export const ScopeMetastasisCodec = t.type({
+const ScopeMetastasisShape = t.type({
   decision_prompt: t.string,
   recurring: t.array(RecurringCodec),
 });
+
+const SCOPE_METASTASIS_KEYS = new Set(Object.keys(ScopeMetastasisShape.props));
+
+const ScopeMetastasisStrict = t.refinement(
+  ScopeMetastasisShape,
+  (s): s is t.TypeOf<typeof ScopeMetastasisShape> =>
+    Object.keys(s).every((k) => SCOPE_METASTASIS_KEYS.has(k)),
+  "ScopeMetastasisStrict",
+);
+
+export const ScopeMetastasisCodec = t.exact(ScopeMetastasisStrict);
 
 export const FindingsCodec = t.exact(
   t.intersection([

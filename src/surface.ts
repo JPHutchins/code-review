@@ -22,10 +22,13 @@ export const severityEmoji = (s: string): string => {
   }
 };
 
-// ~30KB of JSON in base64 — well under GitHub's 65536-char comment limit. The surfaced stop signal
-// (convergence + round) adds ~100 base64 chars, budgeted so a review that previously embedded as
-// base64 still does — the link fallback would lose both the re-review seed and the stop signal.
-const EMBED_LIMIT = 40200;
+// ~30KB of JSON in base64 — well under GitHub's 65536-char comment limit. The budget is the 40000
+// original payload PLUS the two pipeline-stamped overheads, so a review that previously embedded as
+// base64 still does — the link fallback would lose the re-review seed and the stop signal (issue
+// #141 review). The overheads, both measured in base64 chars: the surfaced stop signal (convergence
+// + round, ~100) and the worst-case scope_metastasis entry (issue #150) — the decision prompt
+// (~280 chars) plus up to MAX_CODES_PER_ROUND recurring entries (~85 each), ~1300 total.
+export const EMBED_LIMIT = 41400;
 
 // Travels with the marker on every surface so a reader who sees only one comment still knows to decode it.
 const AGENTS_STOP_DIRECTIVE =
@@ -445,7 +448,11 @@ export const metastasisNote = (
 // plus the decision prompt, stamped into the surfaced findings JSON so a decoding agent — and the
 // re-review seed, which delivers the stripped doc — sees the same recurrence signal the sticky's
 // prose carries. null when nothing is flagged: the field is then omitted from the surfaced doc, so a
-// clean history carries no signal (the same omission semantics as the prose note's "").
+// clean history carries no signal (the same omission semantics as the prose note's ""). The
+// structured entry carries the RAW reviewer-supplied code (the identifier consumers match on); the
+// prose note renders the SANITIZED form (escapeCodeBackticks) — the flagged SET is identical, only
+// the representation differs (a backtick/newline code is escaped for the markdown surface, raw in
+// the JSON).
 export const computeScopeMetastasis = (
   rounds: readonly RoundRecord[],
   minStreak: number = DEFAULT_METASTASIS_STREAK,

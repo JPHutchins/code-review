@@ -33,8 +33,9 @@ import {
   SCOPE_METASTASIS_DECISION_PROMPT,
   computeSameRootNotes,
   MAX_CODES_PER_ROUND,
+  EMBED_LIMIT,
 } from "./surface.js";
-import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
+import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./schema.js";
 import type { Finding, Findings } from "./schema.js";
 import type { SurfaceSignal } from "./surface.js";
 import type { RoundRecord, SeverityCounts } from "./types.js";
@@ -769,6 +770,25 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     expect(surfaceFindings(findings, null).scope_metastasis).toBeUndefined();
   });
 
+  it("the scope_metastasis codecs reject extra keys exactly like the ajv gate — the two gates agree on the new field (issue #150 review r2)", () => {
+    const clean = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+    };
+    expect(ScopeMetastasisCodec.decode(clean)._tag).toBe("Right");
+    // A seed-echoing draft smuggling extra keys into the entry (or its items) must fail the codec
+    // gate the same way the schema's additionalProperties:false fails the ajv gate.
+    const smuggled = {
+      decision_prompt: "decide",
+      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1, note: "x" }],
+      extra: 1,
+    };
+    expect(ScopeMetastasisCodec.decode(smuggled)._tag).toBe("Left");
+    // The tolerated draft-level field still decodes inside a findings doc (the seed-echo contract).
+    const echoed = { ...findings, scope_metastasis: clean };
+    expect(FindingsCodec.decode(echoed)._tag).toBe("Right");
+  });
+
   it("drops a draft-carried scope_metastasis — the pipeline recomputes the entry from the rounds history, never reuses a stale echo (issue #150)", () => {
     const crafted = {
       ...findings,
@@ -834,22 +854,35 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     expect(parseFindingsMarker(body)).toEqual(doc);
   });
 
-  it("budgets the surfaced overhead — a doc at the old embed boundary still embeds as base64 (issue #141 review)", () => {
+  it("budgets the surfaced overhead INCLUDING the worst-case scope_metastasis — a doc at the old embed boundary still embeds as base64 (issues #141 + #150 review r2)", () => {
+    // The worst-case scope_metastasis payload: the decision prompt plus MAX_CODES_PER_ROUND
+    // recurring entries — the most a completing round can stamp (streaks derive from the last
+    // round's capped codes map). The budget must hold for THIS payload, not just the stop signal.
+    const worstCase = {
+      decision_prompt: "decide: commit to the expanding scope or narrow it",
+      recurring: Array.from({ length: MAX_CODES_PER_ROUND }, (_, i) => ({
+        code: `recurring-mechanism-${String(i)}`,
+        consecutive_rounds: 3 + i,
+        start_round: 1,
+      })),
+    };
     let doc = { ...findings, summary: "x".repeat(20000) };
     const b64 = (d: Findings): number =>
       Buffer.from(
-        JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)))),
+        JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)), worstCase)),
         "utf-8",
       ).toString("base64").length;
-    // Grow the summary until the SURFACED marker crosses the old 40000 limit.
+    // Grow the summary until the SURFACED marker (with the worst-case entry) crosses the old
+    // 40000 payload budget.
     while (b64(doc) <= 40000) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
-    // The raised limit budgets the ~100-char stop signal, so a review that previously embedded as
-    // base64 still does — it doesn't fall to the link form and lose the seed + signal.
-    expect(b64(doc)).toBeLessThanOrEqual(40200);
+    // The limit budgets the stop signal AND the worst-case scope_metastasis entry, so a review
+    // that previously embedded as base64 still does — it doesn't fall to the link form and lose
+    // the seed + signal.
+    expect(b64(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
     expect(
-      findingsPointer(surfaceFindings(doc, signal(1, counts(0, 0, 1, 0))), undefined),
+      findingsPointer(surfaceFindings(doc, signal(1, counts(0, 0, 1, 0)), worstCase), undefined),
     ).toContain(";base64");
   });
 
@@ -984,7 +1017,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
       Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= 40200
+        .length <= EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
@@ -998,7 +1031,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
       Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= 40200
+        .length <= EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
@@ -1026,7 +1059,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
       Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= 40200
+        .length <= EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }

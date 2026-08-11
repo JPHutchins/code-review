@@ -18,19 +18,37 @@ import {
   surfacedFindingsPointer,
   escapeCodeBackticks,
 } from "./surface.js";
+import { answeredNoteKey } from "./answered.js";
 import type { PatchProjection } from "./surface.js";
 
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 
-type StrayView = Finding & { readonly patchProjection: PatchProjection };
+type StrayView = Finding & {
+  readonly patchProjection: PatchProjection;
+  readonly answeredNote: string;
+};
 
-const sanitizeFinding = (f: Finding): StrayView => ({
-  ...f,
-  title: escapePipes(f.title),
-  path: escapeCodeBackticks(f.path),
-  patchProjection: projectPatch(f.patch),
-});
+// The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
+// title is sanitized for rendering (escapePipes) but the note key was built from the raw title, so
+// a template-side lookup against the sanitized title would miss on a pipe/backtick title (issue
+// #151 review r2). The template renders the precomputed note.
+const sanitizeFinding = (
+  f: Finding,
+  answeredNotes: Readonly<Record<string, string>> | undefined,
+): StrayView => {
+  const key = answeredNoteKey(f);
+  return {
+    ...f,
+    title: escapePipes(f.title),
+    path: escapeCodeBackticks(f.path),
+    patchProjection: projectPatch(f.patch),
+    answeredNote:
+      answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
+        ? (answeredNotes[key] ?? "")
+        : "",
+  };
+};
 
 // The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
 // finding_codes render inside backticks too, so they get the same backtick escaping as paths.
@@ -153,7 +171,7 @@ export const render = (input: RenderInput): string => {
     convergenceSummary: isFullReviewRound
       ? convergenceSummary(convergenceCounts, input.convergenceThreshold)
       : "",
-    strays: (input.strays ?? []).map(sanitizeFinding),
+    strays: (input.strays ?? []).map((f) => sanitizeFinding(f, input.answeredNotes)),
     systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,

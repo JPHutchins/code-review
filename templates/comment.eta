@@ -60,7 +60,7 @@
 <% if (findingsTotal > 0) { %>
 <% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
 **Findings:** <%~ parts.join(' · ') %>
-<% } else if (!it.incomplete && it.systemic.length === 0) { %>
+<% } else if (!it.incomplete && it.systemic.length === 0 && !it.answeredReRaiseNote) { %>
 _No findings — clean review._
 <% } %>
 
@@ -73,8 +73,10 @@ _No findings — clean review._
 <% } %>
 
 <% if (it.strays.length > 0) { %>
-### <%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %>
-<% if (it.unanchoredCount && it.unanchoredCount > 0) { %>
+### <% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
+<% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>
+_Every finding is listed below — the inline review could not be built because the result envelope was missing._
+<% } else if (it.unanchoredCount && it.unanchoredCount > 0) { %>
 _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> below couldn't be posted as inline comment<%= it.unanchoredCount === 1 ? '' : 's' %> (GitHub rejected the position)<% if (it.strays.length > it.unanchoredCount) { %>; the rest are outside the diff<% } %>._
 <% } %>
 
@@ -86,9 +88,9 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 
 > ⚠️ <%~ it.sameRootNotes[f.code] %>
 <% } -%>
-<% if (it.answeredNotes && ((f.code && Object.prototype.hasOwnProperty.call(it.answeredNotes, f.code)) || (!f.code && Object.prototype.hasOwnProperty.call(it.answeredNotes, 'title:' + f.title)))) { -%>
+<% if (f.answeredNote) { -%>
 
-> ↩️ <%~ it.answeredNotes[f.code || ('title:' + f.title)] %>
+> ↩️ <%~ f.answeredNote %>
 <% } -%>
 <% if (f.recommendation) { -%>
 

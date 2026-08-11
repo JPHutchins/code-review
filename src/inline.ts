@@ -1,6 +1,7 @@
 import { Eta } from "eta";
 import { partitionFindings, indexDiff, defaultSide } from "./diff.js";
 import { severityEmoji, findingPointer, projectPatch, formatConfidence } from "./surface.js";
+import { answeredNoteKey } from "./answered.js";
 import type { Finding, Findings } from "./schema.js";
 import type { InlineComment, InlineResult } from "./types.js";
 
@@ -61,9 +62,9 @@ export const buildInlineComments = (
 
   const noteFor = (f: Finding, notes: Readonly<Record<string, string>> | undefined): string => {
     if (notes === undefined) return "";
-    // Code-keyed when the finding carries a code; a codeless finding looks up its title key (the
-    // same two-key contract applyAnswered writes — issue #151 review r1).
-    const key = f.code !== undefined && f.code !== "" ? f.code : `title:${f.title}`;
+    // The single shared note-key contract (answeredNoteKey) — never a local re-derivation that
+    // could drift from the writer (issue #151 review r2).
+    const key = answeredNoteKey(f);
     return Object.prototype.hasOwnProperty.call(notes, key) ? (notes[key] ?? "") : "";
   };
 

@@ -3729,8 +3729,13 @@ describe("post — answered findings (issue #151)", () => {
       join(tmpDir, "findings.json"),
       JSON.stringify(mkFindings([mkFinding({ code: "recurring-a" })])),
     );
-    // No mock for the thread endpoint ⇒ the fetch rejects ⇒ warning + empty registry.
-    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nold"));
+    // Remove the thread-endpoint mock so the fetch actually REJECTS (an unmatched call throws) —
+    // the failure path, not a silently-empty success (issue #151 review r2).
+    const { api, calls } = mkMockGhApi(
+      mkMocks("<!-- code-review -->\nold").filter(
+        (m) => !m.match(["repos/owner/repo/pulls/42/comments", "--paginate"]),
+      ),
+    );
     await post(mkInput({ route: "full review" }), api);
     const body = patchedBody(calls());
     expect(body).not.toContain("treated as answered");

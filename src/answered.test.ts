@@ -145,6 +145,7 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
   const entry = (overrides: Partial<AnsweredEntry> = {}): AnsweredEntry => ({
     code: "recurring-a",
     title: "The same claim",
+    description: "The same description.",
     reasoning: "The same reasoning.",
     severity: "minor",
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
@@ -173,6 +174,33 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(verbatimReRaised).toHaveLength(0);
     expect(reRaisedNotes["recurring-a"]).toContain("discussion_r2");
     expect(reRaisedNotes["recurring-a"]).toContain("new evidence");
+  });
+
+  it("keeps a re-raise whose DESCRIPTION changed — the claim text is the evidence, so a description-level change is not verbatim (issue #151 review r2)", () => {
+    const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
+      [mkFinding({ description: "Measured on 3.14: reproduces — matrix link." })],
+      [entry()],
+    );
+    expect(findings).toHaveLength(1);
+    expect(verbatimReRaised).toHaveLength(0);
+    expect(reRaisedNotes["recurring-a"]).toBeDefined();
+  });
+
+  it("dedups the dropped entries by code — two findings sharing one dropped code name the answer once (issue #151 review r2)", () => {
+    const { findings, verbatimReRaised } = applyAnswered(
+      [
+        mkFinding({ path: "src/foo.ts" }),
+        mkFinding({
+          path: "src/bar.ts",
+          title: "The same claim",
+          description: "The same description.",
+          reasoning: "The same reasoning.",
+        }),
+      ],
+      [entry()],
+    );
+    expect(findings).toHaveLength(0);
+    expect(verbatimReRaised).toHaveLength(1);
   });
 
   it("never drops a CRITICAL verbatim re-raise — it is kept with the annotation", () => {
@@ -247,6 +275,7 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
   const entry: AnsweredEntry = {
     code: "recurring-a",
     title: "The same claim",
+    description: "The same description.",
     reasoning: "The same reasoning.",
     severity: "minor",
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",

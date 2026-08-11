@@ -57,6 +57,7 @@ export interface AnsweredEntry {
   // between two codeless findings (the issue's "code (or title)" rule).
   readonly code: string;
   readonly title: string;
+  readonly description: string;
   readonly reasoning: string;
   // The answered finding's severity — a re-raise ESCALATED in severity is not verbatim (the claim
   // weight changed), so it is kept and annotated rather than dropped (issue #151 review r1).
@@ -76,6 +77,7 @@ export interface AnsweredEntry {
 export const AnsweredEntryCodec = t.type({
   code: t.string,
   title: t.string,
+  description: t.string,
   reasoning: t.string,
   severity: t.union([
     t.literal("critical"),
@@ -97,6 +99,7 @@ export type StagedAnsweredEntry = t.TypeOf<typeof AnsweredEntryCodec>;
 export const encodeAnsweredEntry = (e: AnsweredEntry): StagedAnsweredEntry => ({
   code: e.code,
   title: e.title,
+  description: e.description,
   reasoning: e.reasoning,
   severity: e.severity,
   thread_url: e.threadUrl,
@@ -115,9 +118,11 @@ export const decodeAnsweredEntry = (raw: unknown): StagedAnsweredEntry | null =>
 
 // A reply is "answered" when a HUMAN commented on the thread: neither this pipeline's bot (matched
 // by login) nor any other bot account (matched by the REST user.type, so a CI/dependabot comment
-// can't masquerade as an answer — issue #151 review r1).
+// can't masquerade as an answer — issue #151 review r1). A MISSING type (null — an unexpected API
+// shape) fails closed to "not human": an uncertain answer must not cause a finding to be dropped
+// (issue #151 review r2).
 const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
-  login !== botLogin && type !== "Bot";
+  login !== botLogin && type === "User";
 
 const EXCERPT_LIMIT = 400;
 
@@ -135,8 +140,16 @@ export const answeredRegistryFrom = (
   comments: readonly ThreadComment[],
   botLogin: string,
 ): readonly AnsweredEntry[] => {
+  // Order-independent: the REST order (ascending creation) is not a contract, so "first human
+  // reply" and "most recent answer wins" sort explicitly by (created_at, id) before processing
+  // (issue #151 review r2). Missing created_at sorts last.
+  const ordered = [...comments].sort(
+    (a, b) =>
+      (a.created_at ?? "￿").localeCompare(b.created_at ?? "￿") ||
+      (a.id > b.id ? 1 : a.id < b.id ? -1 : 0),
+  );
   const byId = new Map<number, ThreadComment>();
-  for (const c of comments) byId.set(c.id, c);
+  for (const c of ordered) byId.set(c.id, c);
 
   // The root of a comment's chain (walk in_reply_to_id up, cycle-safe); null when the chain never
   // reaches a top-level comment within the fetched set.
@@ -155,7 +168,13 @@ export const answeredRegistryFrom = (
   // The answered finding of a bot-rooted thread, from the root comment's embedded per-finding marker.
   const findingOf = (
     root: ThreadComment,
-  ): { code: string; title: string; reasoning: string; severity: Severity } | null => {
+  ): {
+    code: string;
+    title: string;
+    description: string;
+    reasoning: string;
+    severity: Severity;
+  } | null => {
     const decoded = parseFindingsMarker(root.body ?? "");
     const doc =
       typeof decoded === "object" && decoded !== null
@@ -164,16 +183,18 @@ export const answeredRegistryFrom = (
     const first = Array.isArray(doc) ? (doc[0] as Record<string, unknown> | undefined) : undefined;
     if (first === undefined) return null;
     const title = first["title"];
+    const description = first["description"];
     const reasoning = first["reasoning"];
     const code = first["code"];
     const severity = first["severity"];
     return typeof title === "string" &&
+      typeof description === "string" &&
       typeof reasoning === "string" &&
       (severity === "critical" ||
         severity === "major" ||
         severity === "minor" ||
         severity === "nit")
-      ? { code: typeof code === "string" ? code : "", title, reasoning, severity }
+      ? { code: typeof code === "string" ? code : "", title, description, reasoning, severity }
       : null;
   };
 
@@ -220,6 +241,12 @@ export const answeredRegistryFrom = (
 const matches = (f: Finding, e: AnsweredEntry): boolean =>
   f.code !== undefined && f.code !== "" ? e.code === f.code : e.code === "" && e.title === f.title;
 
+// The ONE note-key contract: a finding's annotation key is its code when it carries one, else
+// "title:<title>" — written once here, consumed by applyAnswered and both renderers, so the key
+// can never drift between the writer and the lookups (issue #151 review r2).
+export const answeredNoteKey = (f: Finding): string =>
+  f.code !== undefined && f.code !== "" ? f.code : `title:${f.title}`;
+
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
 // re-raise; the pipeline cannot judge whether the reply dismissed or acknowledged the finding, so the
 // annotation links it and demands the new evidence be named.
@@ -231,15 +258,18 @@ export interface AnsweredFilter {
   // code → note for KEPT re-raises with changed evidence; rendered under each such finding.
   readonly reRaisedNotes: Readonly<Record<string, string>>;
   // The entries whose findings were dropped: verbatim re-raises of an answered finding, named in the
-  // sticky rather than silently vanishing.
+  // sticky rather than silently vanishing. DEDUPED by key — two findings sharing one dropped code (a
+  // code repeated within a round) list the answer once, never double-counted (issue #151 review r2).
   readonly verbatimReRaised: readonly AnsweredEntry[];
 }
 
 // The deterministic backstop beneath the seed guidance: an answered finding re-raised VERBATIM
-// (identical title and reasoning — no new evidence by definition) is treated as closed and dropped
-// from this review, so the round's counts and stop signal reflect the dismissal. A critical is never
-// dropped — the pipeline must not suppress a critical from the surfaced review — it is kept with the
-// annotation instead. A re-raise with changed evidence is kept and annotated.
+// (identical title, description, and reasoning — no new evidence by definition) is treated as closed
+// and dropped from this review, so the round's counts and stop signal reflect the dismissal. The
+// claim TEXT is the evidence: a change to any of title/description/reasoning, or to the severity,
+// means the re-raise carries something new and MUST be kept + annotated (issue #151 review r2 — the
+// SPEC's "no new evidence" criterion, not just a title+reasoning byte-match). A critical is never
+// dropped — the pipeline must not suppress a critical from the surfaced review.
 export const applyAnswered = (
   findings: readonly Finding[],
   registry: readonly AnsweredEntry[],
@@ -249,32 +279,29 @@ export const applyAnswered = (
   // must become an OWN data key, never a prototype write that silently no-ops the annotation (the
   // same invariant the codebase's other code-keyed maps hold — issue #151 review r1).
   const noteEntries: [string, string][] = [];
-  const dropped: AnsweredEntry[] = [];
+  const droppedByKey = new Map<string, AnsweredEntry>();
   for (const f of findings) {
     const entry = registry.find((e) => matches(f, e));
     if (entry === undefined) {
       kept.push(f);
       continue;
     }
-    // Verbatim = identical code/title match AND identical claim text AND identical severity: a
-    // re-raise ESCALATED in severity changed the claim's weight, so it is kept and annotated, not
-    // dropped (issue #151 review r1). A critical is never dropped.
     const verbatim =
-      f.title === entry.title && f.reasoning === entry.reasoning && f.severity === entry.severity;
+      f.title === entry.title &&
+      f.description === entry.description &&
+      f.reasoning === entry.reasoning &&
+      f.severity === entry.severity;
     if (verbatim && f.severity !== "critical") {
-      dropped.push(entry);
+      droppedByKey.set(answeredNoteKey(f), entry);
     } else {
       kept.push(f);
-      // Keyed by code when the finding carries one, else by "title:<title>" so a codeless kept
-      // re-raise still gets its annotation (the renderers look up both keys — issue #151 review r1).
-      const key = f.code !== undefined && f.code !== "" ? f.code : `title:${f.title}`;
-      noteEntries.push([key, answeredNote(entry)]);
+      noteEntries.push([answeredNoteKey(f), answeredNote(entry)]);
     }
   }
   return {
     findings: kept,
     reRaisedNotes: Object.fromEntries(noteEntries),
-    verbatimReRaised: dropped,
+    verbatimReRaised: [...droppedByKey.values()],
   };
 };
 
@@ -292,8 +319,11 @@ export const answeredReRaiseNote = (entries: readonly AnsweredEntry[]): string =
   ].join("\n");
 };
 
-// Best-effort fetch of the full review-comment set (bot + human, paginated); null on any transport
-// error so a degraded channel degrades to an empty registry — never a failed post.
+// Best-effort fetch of the full review-comment set (bot + human, paginated at the API's max page
+// size so a long-lived PR's history costs the fewest requests — the FULL history is intentional,
+// persistence is the feature: an answer from round 1 must still close a round-8 verbatim re-raise);
+// null on any transport error so a degraded channel degrades to an empty registry — never a failed
+// post.
 export const fetchThreadComments = async (
   ghApi: GhApi,
   repo: string,
@@ -303,6 +333,8 @@ export const fetchThreadComments = async (
     const rows = parseJsonl(
       await ghApi([
         `repos/${repo}/pulls/${String(prNumber)}/comments`,
+        "-f",
+        "per_page=100",
         "--paginate",
         "--jq",
         THREAD_COMMENT_JQ,

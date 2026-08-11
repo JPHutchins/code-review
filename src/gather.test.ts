@@ -1012,6 +1012,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
       {
         code: "recurring-a",
         title: "The same claim",
+        description: "d",
         reasoning: "The same reasoning.",
         severity: "minor",
         thread_url: "https://github.com/owner/repo/pull/42#discussion_r101",
@@ -1103,6 +1104,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
           id: 101,
           in_reply_to_id: null,
           user_login: "github-actions[bot]",
+          user_type: "Bot",
           body: "just prose, no marker",
           html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
           path: "src/foo.ts",

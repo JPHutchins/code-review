@@ -618,11 +618,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     readonly id: number;
     readonly body: string;
   }): Promise<void> => {
-    if (existingComplete) leaveInPlace(EMPTY_MECHANIC_LEAVE_MESSAGE);
+    if (existingComplete) {
+      // The completed sticky still surfaces every dropped finding and its reply thread; name the
+      // drops on stderr for the run log (issue #151 review r2 — the leave path cannot write).
+      if (verbatimReRaised.length > 0) {
+        process.stderr.write(
+          `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+        );
+      }
+      leaveInPlace(EMPTY_MECHANIC_LEAVE_MESSAGE);
+    }
     const priorSha = parseReviewedSha(sticky.body);
+    const dropNote = answeredReRaiseNote(verbatimReRaised);
     const body = formatMarkdown(
       noticeBody(
-        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.`,
+        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
         sticky.body,
       ),
     );
@@ -711,12 +721,18 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // finding that is no longer in the document. Scoped to the actual drops: a systemic whose codes
   // were never dropped passes through untouched (issue #151 review r1).
   const droppedCodes = new Set(verbatimReRaised.flatMap((e) => (e.code !== "" ? [e.code] : [])));
+  // A dropped code is stripped only when NO KEPT finding still carries it — the drop removed one
+  // instance of a mechanism, not the mechanism itself (issue #151 review r2).
+  const keptCodes = new Set(
+    answeredFilter.findings.flatMap((f) => (f.code !== undefined && f.code !== "" ? [f.code] : [])),
+  );
+  const trulyDropped = new Set([...droppedCodes].filter((c) => !keptCodes.has(c)));
   const systemic =
-    droppedCodes.size === 0
+    trulyDropped.size === 0
       ? (loadedFindings.systemic_problems ?? [])
       : (loadedFindings.systemic_problems ?? []).map((s) => {
           if (s.finding_codes === undefined) return s;
-          const codes = s.finding_codes.filter((c) => !droppedCodes.has(c));
+          const codes = s.finding_codes.filter((c) => !trulyDropped.has(c));
           return codes.length === s.finding_codes.length ? s : { ...s, finding_codes: codes };
         });
   const findings: Findings = {
@@ -757,8 +773,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         rounds: priorRounds,
         sameRootNotes: {},
         // The answered-state honesty rules apply on EVERY surface that renders the filtered
-        // findings — the lost-envelope branch must name the drops and annotate the kept re-raises
-        // exactly like the main path (issue #151 review r1).
+        // findings — the lost-envelope branch lists every finding (no inline review exists to
+        // carry them) so the kept re-raises' annotations actually render, and names the drops
+        // exactly like the main path (issues #151 review r1 + r2).
+        strays: findings.findings,
         answeredNotes: reRaisedNotes,
         answeredReRaiseNote: answeredReRaiseNote(verbatimReRaised),
         roundCount: priorSignal?.round ?? priorRounds.length,

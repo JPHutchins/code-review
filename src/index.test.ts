@@ -1799,6 +1799,7 @@ describe("cli — seed-draft --prior-answers (issue #151: the already-answered s
       {
         code: "recurring-a",
         title: "The same claim",
+        description: "The same description.",
         reasoning: "The same reasoning.",
         severity: "minor",
         thread_url: "https://github.com/owner/repo/pull/1#discussion_r1",

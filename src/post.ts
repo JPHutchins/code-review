@@ -49,6 +49,12 @@ import { runGhApi } from "./gh.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { runIdFromUrl } from "./checkrun.js";
+import {
+  applyAnswered,
+  answeredReRaiseNote,
+  answeredRegistryFrom,
+  fetchThreadComments,
+} from "./answered.js";
 import { errMsg, tryParseJson, asRecord } from "./util.js";
 
 export interface PostInput {
@@ -685,7 +691,24 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     );
     process.exit(0);
   }
-  const findings = findingsResult.findings;
+  // The "already answered" state (issue #151): the prior inline findings whose threads a human reply
+  // answered, fetched live (the threads persist on GitHub; no carried marker needed). A verbatim
+  // re-raise of an answered finding — identical title and reasoning, no new evidence by definition —
+  // is treated as closed: dropped from this review's findings, counts, inline comments, and round
+  // signal, and NAMED in the sticky (never silently). A re-raise with changed evidence is kept and
+  // annotated with the prior answer's link. A failed fetch degrades to an empty registry (the review
+  // posts unfiltered); the seed already told the agent what not to re-raise.
+  const loadedFindings = findingsResult.findings;
+  const threadComments = await fetchThreadComments(ghApi, input.repo, prNumber);
+  const answeredRegistry =
+    threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
+  const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
+  // Everything downstream (counts, rounds, signal, inline, the surfaced doc) reads the FILTERED
+  // document — a closed verbatim re-raise is gone from the review, not just from the prose.
+  // [...spread] restores the codec's mutable array type.
+  const findings: Findings = { ...loadedFindings, findings: [...answeredFilter.findings] };
+  const reRaisedNotes = answeredFilter.reRaisedNotes;
+  const verbatimReRaised = answeredFilter.verbatimReRaised;
 
   const envelope = loadEnvelope(input.envelopePath);
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
@@ -777,6 +800,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     findings,
     jsonUrl: input.jsonUrl,
     sameRootNotes,
+    answeredNotes: reRaisedNotes,
   });
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
@@ -868,6 +892,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     severityCounts: currentCounts,
     rounds,
     sameRootNotes,
+    answeredNotes: reRaisedNotes,
+    answeredReRaiseNote: answeredReRaiseNote(verbatimReRaised),
     roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,
     convergenceRound: isRound,

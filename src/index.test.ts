@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main, snapshotIfValid } from "./index.js";
-import { lastValidPath, priorContextPath, SEED_SENTINEL } from "./budget.js";
+import { lastValidPath, priorAnswersPath, priorContextPath, SEED_SENTINEL } from "./budget.js";
 import { ResultEnvelopeCodec } from "./schema.js";
 import { findingsPointer } from "./surface.js";
 import type { Findings } from "./schema.js";
@@ -1784,5 +1784,64 @@ describe("cli — notice --sandbox-config (issue #97)", () => {
     const { stdout, stderr } = await runCli(["notice", "setup-failed", "--sandbox-config", bad]);
     expect(parseSummary(stdout)).not.toContain("egress is jailed");
     expect(stderr).toBe("");
+  });
+});
+
+describe("cli — seed-draft --prior-answers (issue #151: the already-answered state)", () => {
+  const stagedAnswers = (entries: readonly unknown[]): string => {
+    const p = join(tmpDir, "answered.json");
+    writeFileSync(p, JSON.stringify(entries));
+    return p;
+  };
+
+  it("delivers the answered registry beside the prior context — the next-round agent sees what it must not re-raise", async () => {
+    const answers = stagedAnswers([
+      {
+        code: "recurring-a",
+        title: "The same claim",
+        reasoning: "The same reasoning.",
+        thread_url: "https://github.com/owner/repo/pull/1#discussion_r1",
+        reply_url: "https://github.com/owner/repo/pull/1#discussion_r2",
+        reply_author: "alice",
+        reply_excerpt: "Measured: does not hold.",
+        replied_at: "2026-07-01T01:00:00Z",
+        path: "src/foo.ts",
+        line: 10,
+      },
+    ]);
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior-answers",
+      answers,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty");
+    const sidecar = JSON.parse(readFileSync(priorAnswersPath(out), "utf-8")) as unknown[];
+    expect(sidecar).toHaveLength(1);
+    expect((sidecar[0] as { code: string }).code).toBe("recurring-a");
+  });
+
+  it("writes an empty sidecar for an empty staged registry, and warns (no sidecar) for a malformed one", async () => {
+    const empty = stagedAnswers([]);
+    const out = join(tmpDir, "draft.json");
+    await runCli(["seed-draft", "--prior-answers", empty, "--out", out]);
+    expect(JSON.parse(readFileSync(priorAnswersPath(out), "utf-8")) as unknown[]).toEqual([]);
+
+    const malformed = join(tmpDir, "answered-bad.json");
+    writeFileSync(malformed, "not json");
+    const out2 = join(tmpDir, "draft2.json");
+    const { stderr, exitCode } = await runCli([
+      "seed-draft",
+      "--prior-answers",
+      malformed,
+      "--out",
+      out2,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stderr).toContain("answered-findings registry");
+    expect(existsSync(priorAnswersPath(out2))).toBe(false);
   });
 });

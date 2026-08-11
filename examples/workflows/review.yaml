@@ -370,8 +370,9 @@ jobs:
           # run's self-validated output.
           DRAFT="$RUNNER_TEMP/findings-draft.json"
           PRIOR_CONTEXT="${DRAFT%.json}.prior.json"
+          PRIOR_ANSWERS="${DRAFT%.json}.prior-answers.json"
           LAST_VALID="${DRAFT%.json}.last-valid.json"
-          rm -f "$DRAFT" "$DRAFT.nudges" "$PRIOR_CONTEXT" "$LAST_VALID"
+          rm -f "$DRAFT" "$DRAFT.nudges" "$PRIOR_CONTEXT" "$PRIOR_ANSWERS" "$LAST_VALID"
 
           # The PR's own description + the human discussion (issue comments, inline review-thread
           # replies, and review submissions) gather staged. UNTRUSTED (attacker-reachable), so it is
@@ -426,7 +427,7 @@ jobs:
             # (a CI-fix mechanic pass) is skipped — the seed chain is route-aware. The seed comes
             # from the bot's OWN prior output (not attacker-controlled PR content) and $DRAFT lives
             # in $RUNNER_TEMP, so a planted file can't win.
-            SEED_MODE="$(code-review seed-draft --prior prior_review.json --head-sha "$HEAD_SHA" --out "$DRAFT")"
+            SEED_MODE="$(code-review seed-draft --prior prior_review.json --prior-answers answered.json --head-sha "$HEAD_SHA" --out "$DRAFT")"
             case "$SEED_MODE" in
               prior-same)
                 SEED_NOTE=" Your previous review of THIS SAME commit is in $PRIOR_CONTEXT — read it as context; it is read-only and never your deliverable. The code under review has not changed since. Use those findings and systemic_problems to steer your investigation: reconfirm each still holds (correct any that were wrong or imprecise), then spend the remaining budget hunting for NEW issues the earlier pass missed rather than only re-checking old ones." ;;
@@ -442,6 +443,13 @@ jobs:
             # One shared sentence instead of a copy in every arm — the sentinel instruction never varies.
             if [ -n "$SEED_NOTE" ]; then
               SEED_NOTE="${SEED_NOTE} $DRAFT starts as a NON-REVIEW sentinel — replace it with your own complete review as you go."
+            fi
+            # The "already answered" state (issue #151), delivered by seed-draft beside $PRIOR_CONTEXT:
+            # the prior inline findings whose threads a human reply answered. A TRUSTED steer like
+            # CONVERGENCE_NOTE — derived from the bot's OWN prior output, never attacker content. The
+            # file may be absent or empty (no prior review, or no replies yet).
+            if [ -f "$PRIOR_ANSWERS" ]; then
+              SEED_NOTE="${SEED_NOTE} The prior review's answered findings are in $PRIOR_ANSWERS — the inline findings whose threads a human reply already answered (may be empty). Do NOT re-raise an answered finding verbatim: it stays closed unless you have NEW evidence. If you re-raise one, state \"re-raised; prior answer at <link>\" and cite what changed."
             fi
           else
             ROUTE="mechanic"; EFFORT="low"

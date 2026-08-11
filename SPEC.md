@@ -126,7 +126,11 @@ a concrete platform binding is illustrative, not part of the contract (Appendix 
   report) MUST be gathered as **data** by a step that holds only the read-only credential — never by
   checking out and running fork code, and never by granting the reviewer network access to fetch them.
   A binding that fetches the change over an API that may truncate MUST detect truncation or fall back
-  to a non-truncating source; silently reviewing a partial change is a correctness fault.
+  to a non-truncating source; silently reviewing a partial change is a correctness fault. The prior-review
+  data MAY include the deterministic **already-answered state** — the prior review's inline findings
+  whose threads a human reply answered (identified by authenticated author identity, never by content
+  markers) — so a re-review can distinguish an answered finding from a fresh one and is told not to
+  re-raise the former without new evidence.
 
 ### 3.2 The deliverable
 
@@ -168,9 +172,13 @@ own decision (the reference commenter's templates are the source of truth for it
   alters the review's verdict or any finding's severity.
 - **Truthful** — it MUST NOT claim a surface or action that did not occur (e.g. asserting inline
   annotations exist when none were posted). A finding that cannot be anchored where it belongs MUST be
-  surfaced elsewhere, not silently dropped. A review run **superseded** by a newer run on the same
-  branch is informational: the commenter MUST NOT present it as a pipeline failure (no "review did not
-  complete", no "re-request"), and SHOULD say it was superseded and that no action is needed.
+  surfaced elsewhere, not silently dropped. The commenter MAY suppress a finding that is a **verbatim
+  re-raise of an answered finding** (identical claim, no new evidence — deterministically comparable),
+  provided the suppression is **named on the surface** with the prior answer's link, never silent; a
+  re-raise with changed evidence MUST be kept, annotated with the prior answer's link. A review run
+  **superseded** by a newer run on the same branch is informational: the commenter MUST NOT present it
+  as a pipeline failure (no "review did not complete", no "re-request"), and SHOULD say it was
+  superseded and that no action is needed.
 - **Idempotent** — re-running on the same commit updates in place rather than duplicating, and it
   decides what already exists by **authenticated author identity**, never by a marker that untrusted
   parties could copy (§4.2).

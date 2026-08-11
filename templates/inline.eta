@@ -8,6 +8,10 @@
 
 > ⚠️ <%~ it.sameRootNote %>
 <% } -%>
+<% if (it.answeredNote) { -%>
+
+> ↩️ <%~ it.answeredNote %>
+<% } -%>
 <% if (it.recommendation) { -%>
 
 **Recommended fix:** <%~ it.recommendation %>

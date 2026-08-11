@@ -944,3 +944,116 @@ describe("gather — commit-message triage surface", () => {
     await expect(gather(mkInput({}), api, mkMockGit([]).git)).rejects.toThrow(/502/);
   });
 });
+
+describe("gather — answered-findings registry (issue #151)", () => {
+  const withThreadRows = (rows: string) =>
+    mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: reviewCommentsMatch(42), response: rows },
+      { match: reviewsMatch(42), response: "" },
+    ]);
+
+  const answered = (): readonly unknown[] => JSON.parse(outFile("answered.json")) as unknown[];
+
+  it("stages the answered registry: the prior bot inline finding whose thread a human reply answered", async () => {
+    const botBody = `<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->\n<!-- code-review:findings-json;base64 ${Buffer.from(
+      JSON.stringify({
+        schema_version: "0.6.0",
+        findings: [
+          {
+            path: "src/foo.ts",
+            start_line: 42,
+            end_line: 42,
+            severity: "minor",
+            title: "The same claim",
+            description: "d",
+            reasoning: "The same reasoning.",
+            confidence: 0.8,
+            code: "recurring-a",
+          },
+        ],
+      }),
+      "utf-8",
+    ).toString("base64")} -->`;
+    const { api } = withThreadRows(
+      ndjson([
+        {
+          id: 101,
+          in_reply_to_id: null,
+          user_login: "github-actions[bot]",
+          body: botBody,
+          html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
+          path: "src/foo.ts",
+          line: 42,
+          created_at: "2026-07-01T00:00:00Z",
+        },
+        {
+          id: 102,
+          in_reply_to_id: 101,
+          user_login: "alice",
+          body: "Measured: the claim does not hold.",
+          html_url: "https://github.com/owner/repo/pull/42#discussion_r102",
+          path: "src/foo.ts",
+          line: 42,
+          created_at: "2026-07-01T01:00:00Z",
+        },
+      ]),
+    );
+    await gather(mkInput({}), api, mkMockGit([]).git);
+    expect(answered()).toEqual([
+      {
+        code: "recurring-a",
+        title: "The same claim",
+        reasoning: "The same reasoning.",
+        thread_url: "https://github.com/owner/repo/pull/42#discussion_r101",
+        reply_url: "https://github.com/owner/repo/pull/42#discussion_r102",
+        reply_author: "alice",
+        reply_excerpt: "Measured: the claim does not hold.",
+        replied_at: "2026-07-01T01:00:00Z",
+        path: "src/foo.ts",
+        line: 42,
+      },
+    ]);
+  });
+
+  it("stages an empty registry when the threads hold no answered finding (no replies, or no bot threads)", async () => {
+    const { api } = withThreadRows(
+      ndjson([
+        {
+          id: 101,
+          in_reply_to_id: null,
+          user_login: "github-actions[bot]",
+          body: "just prose, no marker",
+          html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
+          path: "src/foo.ts",
+          line: 42,
+          created_at: "2026-07-01T00:00:00Z",
+        },
+      ]),
+    );
+    await gather(mkInput({}), api, mkMockGit([]).git);
+    expect(answered()).toEqual([]);
+  });
+
+  it("stages an empty registry when the thread fetch fails — the review then relies on the conversation alone", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: reviewCommentsMatch(42), response: new Error("network down") },
+      { match: reviewsMatch(42), response: "" },
+    ]);
+    await gather(mkInput({}), api, mkMockGit([]).git);
+    expect(answered()).toEqual([]);
+  });
+});

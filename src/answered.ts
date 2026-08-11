@@ -1,0 +1,281 @@
+// The "already answered" state (issue #151): the deterministic registry of prior inline findings
+// whose threads a human reply answered, plus the two rules built on it — the re-review seed surfaces
+// the registry so the next-round agent does not re-raise, and post() treats a VERBATIM re-raise
+// (identical code + title + reasoning — no new evidence by definition) as closed, dropping it from
+// the surfaced review and naming the drop in the sticky; a re-raise with changed evidence is kept
+// and annotated with the prior answer's link.
+
+import * as t from "io-ts";
+import { parseFindingsMarker } from "./surface.js";
+import { escapeCodeBackticks } from "./surface.js";
+import { parseJsonl } from "./transcript.js";
+import type { GhApi } from "./gh.js";
+import type { Finding } from "./schema.js";
+import { errMsg } from "./util.js";
+
+// One flat review comment as REST `pulls/{n}/comments` returns it — enough to rebuild reply threads
+// from `in_reply_to_id` chains (a reply to a reply included) and to decode the bot comment's embedded
+// per-finding marker.
+export interface ThreadComment {
+  readonly id: number;
+  readonly in_reply_to_id: number | null;
+  readonly user_login: string;
+  readonly body: string | null;
+  readonly html_url: string;
+  readonly path: string | null;
+  readonly line: number | null;
+  readonly created_at: string | null;
+}
+
+// The jq projection gather and post share, so both fetch the identical shape.
+export const THREAD_COMMENT_JQ =
+  ".[] | {id, in_reply_to_id, user_login: .user.login, body, html_url, path, line, created_at}";
+
+export const ThreadCommentCodec = t.type({
+  id: t.number,
+  in_reply_to_id: t.union([t.number, t.null]),
+  user_login: t.string,
+  body: t.union([t.string, t.null]),
+  html_url: t.string,
+  path: t.union([t.string, t.null]),
+  line: t.union([t.number, t.null]),
+  created_at: t.union([t.string, t.null]),
+});
+
+// The registry entry for one answered finding: the finding's identifying fields (the verbatim-match
+// targets), the thread link, and the first human reply's link + a clipped excerpt for the seed.
+export interface AnsweredEntry {
+  // "" when the answered finding carried no code — matching then falls back to title equality
+  // between two codeless findings (the issue's "code (or title)" rule).
+  readonly code: string;
+  readonly title: string;
+  readonly reasoning: string;
+  readonly threadUrl: string;
+  readonly replyUrl: string;
+  readonly replyAuthor: string;
+  readonly replyExcerpt: string;
+  readonly repliedAt: string | null;
+  readonly path: string | null;
+  readonly line: number | null;
+}
+
+// The staged-registry codec (what gather writes to answered.json and seed-draft reads back) — the
+// SNAKE_CASE wire shape, distinct from the camelCase in-process AnsweredEntry; rows that fail decode
+// are dropped like every other untrusted artifact, never fatal.
+export const AnsweredEntryCodec = t.type({
+  code: t.string,
+  title: t.string,
+  reasoning: t.string,
+  thread_url: t.string,
+  reply_url: t.string,
+  reply_author: t.string,
+  reply_excerpt: t.string,
+  replied_at: t.union([t.string, t.null]),
+  path: t.union([t.string, t.null]),
+  line: t.union([t.number, t.null]),
+});
+
+export type StagedAnsweredEntry = t.TypeOf<typeof AnsweredEntryCodec>;
+
+export const encodeAnsweredEntry = (e: AnsweredEntry): StagedAnsweredEntry => ({
+  code: e.code,
+  title: e.title,
+  reasoning: e.reasoning,
+  thread_url: e.threadUrl,
+  reply_url: e.replyUrl,
+  reply_author: e.replyAuthor,
+  reply_excerpt: e.replyExcerpt,
+  replied_at: e.repliedAt,
+  path: e.path,
+  line: e.line,
+});
+
+export const decodeAnsweredEntry = (raw: unknown): StagedAnsweredEntry | null => {
+  const decoded = AnsweredEntryCodec.decode(raw);
+  return decoded._tag === "Right" ? decoded.right : null;
+};
+
+// A reply is "answered" when a HUMAN (any non-bot login) commented on the thread; the bot's own
+// replies (a re-review note) are not answers.
+const isHuman = (login: string, botLogin: string): boolean => login !== botLogin;
+
+const clip = (body: string, max: number): string => {
+  if (body.length <= max) return body;
+  const cut = body.slice(0, max);
+  // Don't end on a lone high surrogate — drop it so the kept prefix stays well-formed UTF-16.
+  const safe = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+  return `${safe}\n… [truncated]`;
+};
+
+const EXCERPT_LIMIT = 400;
+
+// The pure thread→registry construction. A thread is anchored on the bot's comment (by login); the
+// root's embedded per-finding marker names the finding. Replies are every non-bot comment whose
+// in_reply_to chain reaches that root. The FIRST human reply per thread is recorded; when the same
+// code was answered in several threads, the most recent thread wins. Tolerant: an undecodable bot
+// comment (no marker, or a marker that fell to the link form) contributes nothing.
+export const answeredRegistryFrom = (
+  comments: readonly ThreadComment[],
+  botLogin: string,
+): readonly AnsweredEntry[] => {
+  const byId = new Map<number, ThreadComment>();
+  for (const c of comments) byId.set(c.id, c);
+
+  // The root of a comment's chain (walk in_reply_to_id up, cycle-safe); null when the chain never
+  // reaches a top-level comment within the fetched set.
+  const rootOf = (c: ThreadComment): ThreadComment | null => {
+    let current = c;
+    const seen = new Set<number>();
+    while (current.in_reply_to_id !== null && !seen.has(current.id)) {
+      seen.add(current.id);
+      const parent = byId.get(current.in_reply_to_id);
+      if (parent === undefined) return null;
+      current = parent;
+    }
+    return current.in_reply_to_id === null ? current : null;
+  };
+
+  // The answered finding of a bot-rooted thread, from the root comment's embedded per-finding marker.
+  const findingOf = (
+    root: ThreadComment,
+  ): { code: string; title: string; reasoning: string } | null => {
+    const decoded = parseFindingsMarker(root.body ?? "");
+    const doc =
+      typeof decoded === "object" && decoded !== null
+        ? (decoded as { findings?: unknown }).findings
+        : undefined;
+    const first = Array.isArray(doc) ? (doc[0] as Record<string, unknown> | undefined) : undefined;
+    if (first === undefined) return null;
+    const title = first["title"];
+    const reasoning = first["reasoning"];
+    const code = first["code"];
+    return typeof title === "string" && typeof reasoning === "string"
+      ? { code: typeof code === "string" ? code : "", title, reasoning }
+      : null;
+  };
+
+  // Group every comment under its root id; the root's own id keys the group.
+  const threads = new Map<number, ThreadComment[]>();
+  for (const c of comments) {
+    const root = rootOf(c);
+    if (root === null) continue;
+    const group = threads.get(root.id);
+    if (group === undefined) threads.set(root.id, [c]);
+    else group.push(c);
+  }
+
+  // One entry per answered bot-rooted thread, then dedup by code keeping the LAST (most recent)
+  // answer — the array is in API order (oldest first). The thread must be anchored on the BOT's
+  // comment; the answer is the first HUMAN comment in it.
+  const byCode = new Map<string, AnsweredEntry>();
+  for (const [rootId, group] of threads) {
+    const root = byId.get(rootId);
+    if (root === undefined || root.user_login !== botLogin) continue;
+    const finding = findingOf(root);
+    if (finding === null) continue;
+    const reply = group.find((c) => c.id !== root.id && isHuman(c.user_login, botLogin));
+    if (reply === undefined) continue;
+    const entry: AnsweredEntry = {
+      ...finding,
+      threadUrl: root.html_url,
+      replyUrl: reply.html_url,
+      replyAuthor: reply.user_login,
+      replyExcerpt: clip(reply.body ?? "", EXCERPT_LIMIT),
+      repliedAt: reply.created_at,
+      path: reply.path ?? null,
+      line: reply.line ?? null,
+    };
+    byCode.set(finding.code !== "" ? finding.code : `title:${finding.title}`, entry);
+  }
+  return [...byCode.values()];
+};
+
+// The "code (or title)" match: codes equal when the finding carries one; two codeless findings match
+// on equal titles. A code-bearing finding never matches a codeless answered entry (and vice versa).
+const matches = (f: Finding, e: AnsweredEntry): boolean =>
+  f.code !== undefined && f.code !== "" ? e.code === f.code : e.code === "" && e.title === f.title;
+
+// The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
+// re-raise; the pipeline cannot judge whether the reply dismissed or acknowledged the finding, so the
+// annotation links it and demands the new evidence be named.
+export const answeredNote = (e: AnsweredEntry): string =>
+  `Re-raised; prior answer at ${e.replyUrl} by ${e.replyAuthor} — cite the new evidence that invalidates it.`;
+
+export interface AnsweredFilter {
+  readonly findings: readonly Finding[];
+  // code → note for KEPT re-raises with changed evidence; rendered under each such finding.
+  readonly reRaisedNotes: Readonly<Record<string, string>>;
+  // The entries whose findings were dropped: verbatim re-raises of an answered finding, named in the
+  // sticky rather than silently vanishing.
+  readonly verbatimReRaised: readonly AnsweredEntry[];
+}
+
+// The deterministic backstop beneath the seed guidance: an answered finding re-raised VERBATIM
+// (identical title and reasoning — no new evidence by definition) is treated as closed and dropped
+// from this review, so the round's counts and stop signal reflect the dismissal. A critical is never
+// dropped — the pipeline must not suppress a critical from the surfaced review — it is kept with the
+// annotation instead. A re-raise with changed evidence is kept and annotated.
+export const applyAnswered = (
+  findings: readonly Finding[],
+  registry: readonly AnsweredEntry[],
+): AnsweredFilter => {
+  const kept: Finding[] = [];
+  const notes: Record<string, string> = {};
+  const dropped: AnsweredEntry[] = [];
+  for (const f of findings) {
+    const entry = registry.find((e) => matches(f, e));
+    if (entry === undefined) {
+      kept.push(f);
+      continue;
+    }
+    if (f.title === entry.title && f.reasoning === entry.reasoning && f.severity !== "critical") {
+      dropped.push(entry);
+    } else {
+      kept.push(f);
+      if (f.code !== undefined && f.code !== "") notes[f.code] = answeredNote(entry);
+    }
+  }
+  return { findings: kept, reRaisedNotes: notes, verbatimReRaised: dropped };
+};
+
+// The sticky note naming what was dropped — the suppression is never silent (SPEC §3.3 truthful).
+export const answeredReRaiseNote = (entries: readonly AnsweredEntry[]): string => {
+  if (entries.length === 0) return "";
+  const label = (e: AnsweredEntry): string =>
+    e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${e.title}”`;
+  const lines = entries.map(
+    (e) => `> - ${label(e)} — [prior answer](${e.replyUrl}) by ${e.replyAuthor}`,
+  );
+  return [
+    `> ↩️ **${String(entries.length)} finding(s) re-raised without new evidence — treated as answered** (each has a human reply on its prior inline thread):`,
+    ...lines,
+  ].join("\n");
+};
+
+// Best-effort fetch of the full review-comment set (bot + human, paginated); null on any transport
+// error so a degraded channel degrades to an empty registry — never a failed post.
+export const fetchThreadComments = async (
+  ghApi: GhApi,
+  repo: string,
+  prNumber: number,
+): Promise<readonly ThreadComment[] | null> => {
+  try {
+    const rows = parseJsonl(
+      await ghApi([
+        `repos/${repo}/pulls/${String(prNumber)}/comments`,
+        "--paginate",
+        "--jq",
+        THREAD_COMMENT_JQ,
+      ]),
+    );
+    return rows.flatMap((row) => {
+      const decoded = ThreadCommentCodec.decode(row);
+      return decoded._tag === "Right" ? [decoded.right] : [];
+    });
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not fetch review threads to detect answered findings (${errMsg(err)}) — no answered-finding state for this post\n`,
+    );
+    return null;
+  }
+};

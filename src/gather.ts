@@ -8,6 +8,12 @@ import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { parseJsonl } from "./transcript.js";
+import {
+  answeredRegistryFrom,
+  encodeAnsweredEntry,
+  ThreadCommentCodec,
+  THREAD_COMMENT_JQ,
+} from "./answered.js";
 import { errMsg } from "./util.js";
 
 export interface GatherInput {
@@ -182,8 +188,11 @@ const fetchCompareCommits = async (
 // reads line by line — the shape post.ts's findBotComment already uses.
 const COMMENT_JQ =
   ".[] | {id: .id, body: .body, user: {login: .user.login}, created_at: .created_at, author_association: .author_association}";
-const REVIEW_COMMENT_JQ =
-  ".[] | {body: .body, user: {login: .user.login}, created_at: .created_at, author_association: .author_association, path: .path, line: .line}";
+// The review-comments fetch feeds TWO consumers from one projection: the conversation (human
+// replies, via ReviewCommentCodec) and the answered-findings registry (thread structure + the bot's
+// own comments, via ThreadCommentCodec) — the richer THREAD_COMMENT_JQ shape serves both, the
+// conversation codec tolerating the extra fields.
+const REVIEW_COMMENT_JQ = THREAD_COMMENT_JQ;
 const REVIEW_JQ =
   ".[] | {body: .body, user: {login: .user.login}, submitted_at: .submitted_at, author_association: .author_association, state: .state}";
 
@@ -406,12 +415,23 @@ export const gather = async (
   ]);
   const issueComments = decodeArrayOrNull(IssueCommentCodec, issueRows);
   const reviewComments = decodeArrayOrNull(ReviewCommentCodec, reviewCommentRows);
+  const threadComments = decodeArrayOrNull(ThreadCommentCodec, reviewCommentRows);
   const reviews = decodeArrayOrNull(ReviewCodec, reviewRows);
 
   const prior = issueComments === null ? null : priorReviewFrom(issueComments, input.botLogin);
   writeFileSync(
     join(input.outDir, "prior_review.json"),
     prior === null ? "null" : JSON.stringify(prior),
+  );
+  // The "already answered" registry (issue #151): the prior inline findings whose threads a human
+  // reply answered — staged for seed-draft to deliver beside the prior context, so the next-round
+  // agent sees what it must not re-raise verbatim. Best-effort like the conversation: a failed fetch
+  // yields [] (the agent then relies on the conversation alone).
+  const answered =
+    threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
+  writeFileSync(
+    join(input.outDir, "answered.json"),
+    JSON.stringify(answered.map(encodeAnsweredEntry)),
   );
   writeFileSync(
     join(input.outDir, "pr_conversation.json"),

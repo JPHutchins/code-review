@@ -177,6 +177,8 @@ export const render = (input: RenderInput): string => {
     roundsSummary: roundsSummary(rounds, input.roundCount),
     metastasisNote: advisoryAllowed ? metastasisNote(rounds) : "",
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},
+    answeredNotes: input.answeredNotes ?? {},
+    answeredReRaiseNote: input.answeredReRaiseNote ?? "",
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

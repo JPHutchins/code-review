@@ -5,7 +5,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
 import { post, announce, reportIncomplete } from "./post.js";
-import { parseRounds, parseSignalMarker } from "./surface.js";
+import { findingPointer, parseRounds, parseSignalMarker } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -147,6 +147,13 @@ const mkMocks = (stickyBody: string) => [
   },
   {
     match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+    response: "",
+  },
+  // The answered-findings thread fetch (issue #151) — empty by default so existing tests exercise
+  // the no-answers path.
+  {
+    match: (a: readonly string[]) =>
+      a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
     response: "",
   },
   { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
@@ -3204,6 +3211,11 @@ describe("post — convergence rounds (issue #125)", () => {
         response: "",
       },
       {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
         match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
         response: "",
       },
@@ -3547,5 +3559,152 @@ describe("post — convergence rounds (issue #125)", () => {
     const blob = decodedBlob(calls());
     expect(blob.round).toBe(1);
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+  });
+});
+
+describe("post — answered findings (issue #151)", () => {
+  // The full post-call mock surface, with the answered-thread fetch returning the given rows. The
+  // thread mock comes FIRST so it wins over mkMocks' default empty one (first match wins).
+  const withThreads = (threads: string): ReturnType<typeof mkMocks> => [
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+      response: threads,
+    },
+    ...mkMocks("<!-- code-review -->\nold"),
+  ];
+
+  const threadRows = (finding: Finding): string =>
+    [
+      JSON.stringify({
+        id: 101,
+        in_reply_to_id: null,
+        user_login: "github-actions[bot]",
+        body: findingPointer(finding, "0.6.0"),
+        html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
+        path: "src/foo.ts",
+        line: 10,
+        created_at: "2026-07-01T00:00:00Z",
+      }),
+      JSON.stringify({
+        id: 102,
+        in_reply_to_id: 101,
+        user_login: "alice",
+        body: "Measured on the built extension: the claim does not hold.",
+        html_url: "https://github.com/owner/repo/pull/42#discussion_r102",
+        path: "src/foo.ts",
+        line: 10,
+        created_at: "2026-07-01T01:00:00Z",
+      }),
+    ].join("\n");
+
+  const patchedBody = (calls: readonly RecordedCall[]): string =>
+    (
+      JSON.parse(
+        calls.find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+      ) as CommentBody
+    ).body;
+
+  const decodedBlob = (calls: readonly RecordedCall[]): { readonly convergence?: unknown } => {
+    const sticky = calls.find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    const body = (JSON.parse(sticky?.stdin ?? "{}") as CommentBody).body;
+    const b64 = /code-review:findings-json;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    if (b64 === undefined) throw new Error("no embedded findings marker in the sticky");
+    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8")) as {
+      readonly convergence?: unknown;
+    };
+  };
+
+  it("treats a VERBATIM re-raise of an answered finding as closed — dropped from the review, the round counts, and the stop signal, named in the sticky", async () => {
+    const answered = mkFinding({
+      code: "recurring-a",
+      title: "The same claim",
+      reasoning: "The same reasoning.",
+    });
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    // The finding itself is gone from the surfaced review…
+    expect(body).not.toContain("The same claim");
+    // …but the suppression is named, with the prior answer linked.
+    expect(body).toContain("treated as answered");
+    expect(body).toContain("discussion_r102");
+    // The round counts and the stop signal reflect the dismissal: the dropped finding is a minor,
+    // so this round is clean and reads converged — it does not block convergence.
+    const blob = decodedBlob(calls()) as { readonly convergence?: { readonly score: number } };
+    expect(blob.convergence).toEqual({ score: 0, threshold: 1, converged: true });
+  });
+
+  it("keeps a re-raise with NEW evidence and annotates it with the prior answer's link — inline and sticky", async () => {
+    const answered = mkFinding({
+      code: "recurring-a",
+      title: "The same claim",
+      reasoning: "The same reasoning.",
+    });
+    const changed = mkFinding({
+      code: "recurring-a",
+      title: "The same claim",
+      reasoning: "NEW evidence: the regression persists on the built 3.14 extension.",
+    });
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([changed])));
+    const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    // The finding is in-diff, so it posts inline — the sticky shows the count, never the drop note.
+    expect(body).toContain("**Findings:** 🔵 1");
+    expect(body).not.toContain("treated as answered");
+    // The inline comment carries the finding AND the "re-raised; prior answer" annotation.
+    const review = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect(review).toBeDefined();
+    const payload = JSON.parse(review!.stdin!) as ReviewBody;
+    expect(payload.comments.some((c) => c.body.includes("The same claim"))).toBe(true);
+    expect(payload.comments.some((c) => c.body.includes("Re-raised; prior answer at"))).toBe(true);
+    expect(payload.comments.some((c) => c.body.includes("discussion_r102"))).toBe(true);
+  });
+
+  it("never drops a CRITICAL verbatim re-raise — kept with the annotation", async () => {
+    const answered = mkFinding({
+      severity: "critical",
+      code: "recurring-a",
+      title: "The same claim",
+      reasoning: "The same reasoning.",
+    });
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    expect(body).toContain("**Findings:** 🔴 1");
+    expect(body).not.toContain("treated as answered");
+    // The kept critical posts inline, annotated.
+    const review = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect(review).toBeDefined();
+    const payload = JSON.parse(review!.stdin!) as ReviewBody;
+    expect(payload.comments.some((c) => c.body.includes("Re-raised; prior answer at"))).toBe(true);
+  });
+
+  it("a failed thread fetch degrades to an empty registry — the review posts unfiltered", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ code: "recurring-a" })])),
+    );
+    // No mock for the thread endpoint ⇒ the fetch rejects ⇒ warning + empty registry.
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nold"));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    expect(body).not.toContain("treated as answered");
+    // The finding posts normally, prose inline (the sticky's in-diff finding lives in the review).
+    const review = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect(review).toBeDefined();
+    const payload = JSON.parse(review!.stdin!) as ReviewBody;
+    expect(payload.comments.some((c) => c.body.includes("Test finding"))).toBe(true);
   });
 });

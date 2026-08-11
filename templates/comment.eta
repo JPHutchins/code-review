@@ -26,6 +26,9 @@
 <% if (it.metastasisNote) { -%>
 <%~ it.metastasisNote %>
 <% } -%>
+<% if (it.answeredReRaiseNote) { -%>
+<%~ it.answeredReRaiseNote %>
+<% } -%>
 <% } -%>
 
 <%~ it.findings.summary %>
@@ -82,6 +85,10 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% if (f.code && it.sameRootNotes && Object.prototype.hasOwnProperty.call(it.sameRootNotes, f.code)) { -%>
 
 > ⚠️ <%~ it.sameRootNotes[f.code] %>
+<% } -%>
+<% if (f.code && it.answeredNotes && Object.prototype.hasOwnProperty.call(it.answeredNotes, f.code)) { -%>
+
+> ↩️ <%~ it.answeredNotes[f.code] %>
 <% } -%>
 <% if (f.recommendation) { -%>
 

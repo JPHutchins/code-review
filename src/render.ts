@@ -13,6 +13,7 @@ import {
   roundsSummary,
   convergenceSummary,
   computeSameRootNotes,
+  computeScopeMetastasis,
   metastasisNote,
   signalForRound,
   surfacedFindingsPointer,
@@ -152,6 +153,18 @@ export const render = (input: RenderInput): string => {
   // completed review must not render a "still recurring" claim from carried-forward rounds beside a
   // suppressed convergence badge.
   const advisoryAllowed = isFullReviewRound;
+  // The structured scope-metastasis entry the surfaced blob embeds (issue #150): post passes the
+  // explicit value it computed from the rounds history — a VALUE for a completing round with a
+  // recurrence, EXPLICIT null otherwise (no recompute on the hot path); only the standalone render
+  // command leaves it undefined and derives it here from the same rounds, under the same advisory
+  // gate as the prose note — a suppressed advisory renders no entry either. A strict undefined
+  // check (not `??`) keeps post's explicit null from silently re-deriving.
+  const scopeMetastasis =
+    input.scopeMetastasis !== undefined
+      ? input.scopeMetastasis
+      : advisoryAllowed
+        ? computeScopeMetastasis(rounds)
+        : null;
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -190,6 +203,7 @@ export const render = (input: RenderInput): string => {
           ? signalForRound(rounds.length, convergenceCounts, input.convergenceThreshold)
           : null,
         input.jsonUrl,
+        scopeMetastasis,
       ),
     roundsMarker: roundsMarker(rounds),
     roundsSummary: roundsSummary(rounds, input.roundCount),

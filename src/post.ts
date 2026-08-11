@@ -17,6 +17,7 @@ import {
   carryForwardMarkers,
   computeCodeCounts,
   computeSameRootNotes,
+  computeScopeMetastasis,
   findingsMarkerForm,
   isFullReviewSticky,
   parseCompletedAncestor,
@@ -42,7 +43,7 @@ import {
   incompleteFindings,
   isIncompleteFindings,
 } from "./schema.js";
-import type { Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
+import type { Finding, Findings, ResultEnvelope, ScopeMetastasis, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -590,8 +591,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // round's stop signal on the sticky in the compact marker, so the next post reads it back via
   // parseSignalMarker: the notice itself never claims a signal, but a completed round's `converged`
   // is not erased by a failed run (issue #141 review r3).
-  const findingsMarkerFor = (findings: Findings, signal: SurfaceSignal | null): string => {
-    const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl);
+  const findingsMarkerFor = (
+    findings: Findings,
+    signal: SurfaceSignal | null,
+    scopeMetastasis?: ScopeMetastasis | null,
+  ): string => {
+    const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl, scopeMetastasis);
     return signal !== null || priorSignal === null
       ? pointer
       : `${pointer}\n${signalMarker(priorSignal)}`;
@@ -923,16 +928,25 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ? null
       : priorSignal;
 
+  // The structured scope-metastasis entry the surfaced blob embeds (issue #150) — the same rounds
+  // history the prose note renders, so the machine channel and the prose can never disagree. Only a
+  // completing round stamps it (the same gate as the note: a mechanic or a notice carries no
+  // recurrence claim); null otherwise, so the field is omitted from the blob.
+  const scopeMetastasis = isRound ? computeScopeMetastasis(rounds) : null;
+
   // Base64-encode the SURFACED whole-document marker once (the agent's doc + the stop signal),
   // reused across sticky + review body; each inline comment embeds only its own finding instead.
-  const findingsMarker = findingsMarkerFor(findings, signal);
+  const findingsMarker = findingsMarkerFor(findings, signal, scopeMetastasis);
 
   // Only the embedded base64 form is decodable back by a re-review seed (parseFindingsMarker), so a
   // degraded marker would silently drop the embedded machine channel — surface the degradation in
   // the run log rather than letting it vanish. The link form still carries a machine-readable
   // pointer; only the omitted form loses the channel entirely. Measured on the SURFACED marker
   // (surfaceFindings — the agent's doc plus the stop signal), which is the form actually embedded.
-  const markerForm = findingsMarkerForm(surfaceFindings(findings, signal), input.jsonUrl);
+  const markerForm = findingsMarkerForm(
+    surfaceFindings(findings, signal, scopeMetastasis),
+    input.jsonUrl,
+  );
   if (markerForm === "link") {
     process.stderr.write(
       "Warning: the findings-json marker exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact instead of the embedded JSON\n",
@@ -959,6 +973,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     sameRootNotes,
     answeredNotes: reRaisedNotes,
     answeredReRaiseNote: answeredDropNote,
+    scopeMetastasis,
     roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,
     convergenceRound: isRound,

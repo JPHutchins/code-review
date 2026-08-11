@@ -3,7 +3,7 @@
 // projection. Pure.
 
 import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
-import type { Finding, Findings, SystemicProblem } from "./schema.js";
+import type { Finding, Findings, ScopeMetastasis, SystemicProblem } from "./schema.js";
 import type { CodeCounts, CodeStreak, RoundRecord, SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
 
@@ -22,10 +22,20 @@ export const severityEmoji = (s: string): string => {
   }
 };
 
-// ~30KB of JSON in base64 — well under GitHub's 65536-char comment limit. The surfaced stop signal
-// (convergence + round) adds ~100 base64 chars, budgeted so a review that previously embedded as
-// base64 still does — the link fallback would lose both the re-review seed and the stop signal.
-const EMBED_LIMIT = 40200;
+// ~30KB of JSON in base64 — well under GitHub's 65536-char comment limit. The budget is the 40000
+// original payload PLUS the two pipeline-stamped overheads, so a review that previously embedded as
+// base64 still does — the link fallback would lose the re-review seed and the stop signal (issue
+// #141 review). The overheads, both measured in base64 chars: the surfaced stop signal (convergence
+// + round, ~92) and the WORST-CASE scope_metastasis entry (issue #150) — the decision prompt
+// (~366 chars) plus up to 2*MAX_CODES_PER_ROUND recurring entries (the rounds marker keeps the
+// top-8 base plus up to 8 prior-kept codes per round). The budgeted assumption: reviewer-supplied
+// codes up to 32 chars (the codebase's own longest codes run 21-28; a 32-char code measures 2332
+// b64 for the full entry — anything longer is unrepresentable in the repo's own style). The
+// guarantee is the OLD boundary: the boundary test crosses 40200 PRE-entry and measures the
+// WITH-entry form at 42560 b64 chars with 32-char codes — EMBED_LIMIT sits above that measured
+// worst case (42700, margin included), so a doc that embedded pre-#150 still embeds once the
+// worst-case entry is stamped.
+export const EMBED_LIMIT = 42700;
 
 // Travels with the marker on every surface so a reader who sees only one comment still knows to decode it.
 const AGENTS_STOP_DIRECTIVE =
@@ -233,9 +243,17 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   // erasing the whole trajectory (post re-serializes the parsed array on every write). The codes
   // field is normalized independently — a bad codes shape strips just that field, never the round.
   if (!Array.isArray(decoded)) return [];
-  return (decoded as readonly unknown[]).filter(isSeverityCounts).map((u) => {
+  // SEQUENTIAL normalization: each round's codes are re-normalized with the PRECEDING round's
+  // normalized codes as priorCodes — the same prior-kept pass roundRecord performed in memory — so
+  // the up-to-8 prior-kept codes of a finding-heavy round survive the marker round-trip (without
+  // it, the re-parse collapses every round to its top-8 base and the re-attached scope_metastasis
+  // under-reports mechanisms post() would have flagged, issue #150 review r2).
+  const kept: RoundRecord[] = [];
+  let priorCodes: CodeCounts | undefined;
+  for (const u of (decoded as readonly unknown[]).filter(isSeverityCounts)) {
     const rec = u as Record<string, unknown>;
-    const codes = normalizeCodeCounts(rec["codes"]);
+    const codes = normalizeCodeCounts(rec["codes"], priorCodes);
+    priorCodes = codes;
     const sha = rec["sha"];
     const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;
     const round = rec["round"];
@@ -245,9 +263,10 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
       codes === undefined
         ? { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit }
         : { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit, codes };
-    const kept = shaStr === undefined ? base : { ...base, sha: shaStr };
-    return roundNum === undefined ? kept : { ...kept, round: roundNum };
-  });
+    const record = shaStr === undefined ? base : { ...base, sha: shaStr };
+    kept.push(roundNum === undefined ? record : { ...record, round: roundNum });
+  }
+  return kept;
 };
 
 // The rounds marker's base64 length cap. The severity counts (the trajectory) always survive; when a
@@ -396,6 +415,26 @@ export const consecutiveCodeStreaks = (
 // The minimum consecutive-round recurrence that triggers the advisory scope-metastasis note.
 export const DEFAULT_METASTASIS_STREAK = 3;
 
+// The decision prompt the structured scope-metastasis entry carries (issue #150): a DECISION, not a
+// directive — the issue's author-agent found "narrow the scope" would have been the wrong instruction
+// on salix#100 (the metastasis converged to the correct end state), so the prompt must force an
+// explicit choice, not steer one. Shared by the structured entry; the prose note paraphrases it
+// (advisory-only wording, no imperative).
+export const SCOPE_METASTASIS_DECISION_PROMPT =
+  "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.";
+
+// The codes whose consecutive-round streak meets the threshold, sorted by streak descending — the
+// single computation both the advisory prose note and the structured scope-metastasis entry derive
+// from, so the two surfaces can never disagree on what is flagged.
+const flaggedCodeStreaks = (
+  rounds: readonly RoundRecord[],
+  minStreak: number,
+): ReadonlyArray<{ readonly code: string; readonly streak: CodeStreak }> =>
+  Object.entries(consecutiveCodeStreaks(rounds))
+    .filter(([, s]) => s.streak >= minStreak)
+    .sort((a, b) => b[1].streak - a[1].streak)
+    .map(([code, streak]) => ({ code, streak }));
+
 // The advisory scope-metastasis note for the sticky's convergence area: "" when no code has recurred
 // in `minStreak` or more consecutive rounds. Names the mechanism by its code (the pipeline cannot
 // paraphrase it — that needs the finding text) and the round range it streaked over. ADVISORY ONLY —
@@ -405,22 +444,45 @@ export const metastasisNote = (
   rounds: readonly RoundRecord[],
   minStreak: number = DEFAULT_METASTASIS_STREAK,
 ): string => {
-  const flagged = Object.entries(consecutiveCodeStreaks(rounds))
-    .filter(([, s]) => s.streak >= minStreak)
-    .sort((a, b) => b[1].streak - a[1].streak);
+  const flagged = flaggedCodeStreaks(rounds, minStreak);
   if (flagged.length === 0) return "";
   // The note only fires at minStreak ≥ 3 (the default), so "consecutive rounds" is always plural.
   // The round range is deliberately omitted: the history may contain same-sha retries that the
   // streak detector de-duplicates, so any X–Y range would contradict the streak count.
   const lines = flagged.map(
-    ([code, s]) =>
-      `> **\`${escapeCodeBackticks(code)}\`** — findings in ${String(s.streak)} consecutive rounds.`,
+    ({ code, streak }) =>
+      `> **\`${escapeCodeBackticks(code)}\`** — findings in ${String(streak.streak)} consecutive rounds.`,
   );
   return [
     "> [!WARNING]",
     "> **Scope metastasis** — findings keep recurring in the same mechanism across consecutive rounds; each fix keeps enabling the next finding in that machinery. Consider whether a structural fix (change the shape, not the edge case) or a scope narrowing would converge this faster.",
     ...lines,
   ].join("\n");
+};
+
+// The structured counterpart of the prose note (issue #150): the per-code consecutive-round counts
+// plus the decision prompt, stamped into the surfaced findings JSON so a decoding agent — and the
+// re-review seed, which delivers the stripped doc — sees the same recurrence signal the sticky's
+// prose carries. null when nothing is flagged: the field is then omitted from the surfaced doc, so a
+// clean history carries no signal (the same omission semantics as the prose note's ""). The
+// structured entry carries the RAW reviewer-supplied code (the identifier consumers match on); the
+// prose note renders the SANITIZED form (escapeCodeBackticks) — the flagged SET is identical, only
+// the representation differs (a backtick/newline code is escaped for the markdown surface, raw in
+// the JSON).
+export const computeScopeMetastasis = (
+  rounds: readonly RoundRecord[],
+  minStreak: number = DEFAULT_METASTASIS_STREAK,
+): ScopeMetastasis | null => {
+  const flagged = flaggedCodeStreaks(rounds, minStreak);
+  if (flagged.length === 0) return null;
+  return {
+    decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
+    recurring: flagged.map(({ code, streak }) => ({
+      code,
+      consecutive_rounds: streak.streak,
+      start_round: streak.startRound,
+    })),
+  };
 };
 
 // Code → "same mechanism as round N" for findings whose mechanism recurred in a PRIOR round: the most
@@ -504,9 +566,12 @@ export const convergenceSummary = (
 // commenter-side), so the draft schema does not carry it; `stripSurfaceFields` drops it when a
 // surfaced doc feeds back into the agent channel (the re-review seed). A null signal still stamps
 // the version, so the surface shape is always the marker's contract. The surfaced axis is DISTINCT
-// from the draft axis (DEFAULT_SCHEMA_VERSION is 0.6.0 after issue #134): 0.7.0 is the surfaced
-// shape so stripSurfaceFields can always tell a surfaced doc from a draft one.
-export const SURFACE_SCHEMA_VERSION = "0.7.0";
+// from the draft axis (DEFAULT_SCHEMA_VERSION is 0.6.0 after issue #134): 0.8.0 is the surfaced
+// shape so stripSurfaceFields can always tell a surfaced doc from a draft one. 0.8.0 adds the
+// agent-facing `scope_metastasis` entry (issue #150) — unlike the pipeline-internal signal, it
+// SURVIVES stripSurfaceFields, because the re-review seed must deliver the recurrence data to the
+// next-round agent (the draft schema tolerates the field so a seed-echoing draft still validates).
+export const SURFACE_SCHEMA_VERSION = "0.8.0";
 
 export interface ConvergenceSignal {
   readonly score: number;
@@ -522,7 +587,9 @@ export interface SurfaceSignal {
   readonly convergence: ConvergenceSignal;
 }
 
-export type SurfaceFindings = Findings & Partial<SurfaceSignal>;
+export type SurfaceFindings = Findings &
+  Partial<SurfaceSignal> &
+  Partial<{ scope_metastasis: ScopeMetastasis }>;
 
 // The pure counts→signal computation, shared by post (a completing round) and render's fallback.
 export const convergenceSignal = (
@@ -544,16 +611,22 @@ export const signalForRound = (
 export const surfaceFindings = (
   findings: Findings,
   signal: SurfaceSignal | null,
+  scopeMetastasis: ScopeMetastasis | null = null,
 ): SurfaceFindings => {
   // A crafted/corrupt draft carrying round/convergence must not survive the stamp: parseSurfaceSignal
   // gates on the surface version, so such a doc would otherwise be read back as a pipeline signal.
+  // A draft-carried scope_metastasis is dropped the same way — the pipeline recomputes it from the
+  // rounds history (a stale echoed copy would otherwise survive the stamp as if it were this round's).
   const agentDoc = Object.fromEntries(
-    Object.entries(findings).filter(([key]) => key !== "round" && key !== "convergence"),
+    Object.entries(findings).filter(
+      ([key]) => key !== "round" && key !== "convergence" && key !== "scope_metastasis",
+    ),
   );
   return {
     ...(agentDoc as Findings),
     schema_version: SURFACE_SCHEMA_VERSION,
     ...(signal === null ? {} : signal),
+    ...(scopeMetastasis === null ? {} : { scope_metastasis: scopeMetastasis }),
   };
 };
 
@@ -575,8 +648,9 @@ export const surfacedFindingsPointer = (
   findings: Findings,
   signal: SurfaceSignal | null,
   jsonUrl: string | undefined,
+  scopeMetastasis: ScopeMetastasis | null = null,
 ): string => {
-  const marker = findingsPointer(surfaceFindings(findings, signal), jsonUrl);
+  const marker = findingsPointer(surfaceFindings(findings, signal, scopeMetastasis), jsonUrl);
   // Probe the full embedded-marker prefix, never a bare substring — a link-form jsonUrl could
   // itself contain "findings-json;base64" (issue #141 review r4).
   if (signal === null || marker.includes("<!-- code-review:findings-json;base64 ")) return marker;
@@ -632,14 +706,16 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // surface shape, so a future draft bump can never be mistaken for one. Derived from the emitted
 // version so the strip path can never silently stop recognizing what surfaceFindings stamps; a
 // future surface bump appends the superseded version(s) here alongside the new one.
-export const SURFACE_SCHEMA_VERSIONS: readonly string[] = [SURFACE_SCHEMA_VERSION];
+export const SURFACE_SCHEMA_VERSIONS: readonly string[] = ["0.7.0", SURFACE_SCHEMA_VERSION];
 
 // The inverse for the agent channel: the re-review seed decodes the sticky's surfaced blob, and the
 // agent must only ever see its own document. Version-gated, not key-gated: a doc declaring a known
 // SURFACE version has its pipeline-stamped convergence/round dropped and its version restored to
 // the current draft default, so the seeded draft still validates; anything else (a draft version, an
 // unknown future version, a malformed version) passes through untouched and fails or passes schema
-// validation downstream on its own merits — never silently rewritten. A non-object stays as-is.
+// validation downstream on its own merits — never silently rewritten. A non-object stays as-is. The
+// agent-facing `scope_metastasis` entry (issue #150) is NOT dropped: it is exactly the recurrence
+// data the next-round agent must see, and the draft schema tolerates it so the seeded doc validates.
 export const stripSurfaceFields = (doc: unknown): unknown => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return doc;
   const o = doc as Record<string, unknown>;

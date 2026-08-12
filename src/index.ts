@@ -24,11 +24,13 @@ import {
   isSeedSentinel,
   SEED_SENTINEL,
   priorContextPath,
+  priorAnswersPath,
   lastValidPath,
   isSubagentHookInput,
   DEFAULT_RESERVE,
   DEADLINE_ENV,
 } from "./budget.js";
+import { decodeAnsweredEntry } from "./answered.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { formatUtc } from "./format.js";
 import {
@@ -812,6 +814,11 @@ const seedDraftCmd = defineCommand({
       description:
         "Path to the prior-review JSON gather staged ({ id, body }, or the literal null); its embedded base64 findings marker is decoded and delivered as re-review context when it validates against the schema",
     },
+    "prior-answers": {
+      type: "string",
+      description:
+        "Path to the gather-staged answered-findings registry (answered.json) — the prior inline findings whose threads a human reply answered (issue #151). Delivered out-of-band to the .prior-answers sidecar beside the prior context so the next-round agent sees the already-answered state; best-effort, never fails the seed",
+    },
     "head-sha": {
       type: "string",
       description:
@@ -923,6 +930,37 @@ const seedDraftCmd = defineCommand({
     // sentinel-only seed so the always-exit-0 contract holds. The prior findings are NEVER written
     // into $DRAFT — only the sentinel goes there; the prior travels out-of-band to
     // priorContextPath, which no recovery path reads back (issue #127).
+    // The answered-findings registry (issue #151), delivered beside the prior context: the prior
+    // inline findings whose threads a human reply answered, so the next-round agent knows what it
+    // must not re-raise verbatim. Best-effort and independent of whether the prior findings seeded —
+    // even a prior that never completed (a notice) still has answered threads. A malformed staged
+    // file warns and writes nothing; the workflow references the sidecar as possibly absent.
+    if (args["prior-answers"]) {
+      try {
+        const raw = JSON.parse(readFileSync(resolve(args["prior-answers"]), "utf-8")) as unknown;
+        if (!Array.isArray(raw)) throw new Error("expected an array");
+        const decoded = raw.flatMap((row) => {
+          const entry = decodeAnsweredEntry(row);
+          return entry === null ? [] : [entry];
+        });
+        // A dropped row is a gap in the answered state, not a silent no-op: the agent would read
+        // "no answers" for a thread that WAS answered (issue #151 review r1).
+        if (decoded.length < raw.length) {
+          process.stderr.write(
+            `Warning: ${String(raw.length - decoded.length)} of ${String(raw.length)} answered-registry row(s) failed to decode — the seed's answered state is incomplete\n`,
+          );
+        }
+        writeFileSync(priorAnswersPath(outPath), `${JSON.stringify(decoded, null, 2)}\n`);
+        process.stderr.write(
+          `Seeded ${priorAnswersPath(outPath)} with ${String(decoded.length)} answered finding(s) as context\n`,
+        );
+      } catch (err) {
+        process.stderr.write(
+          `Warning: could not read the answered-findings registry ${args["prior-answers"]} (${errMsg(err)}) — no prior-answers sidecar\n`,
+        );
+      }
+    }
+
     const seededFromPrior =
       priorFindings === null
         ? false

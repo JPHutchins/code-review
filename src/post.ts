@@ -50,6 +50,12 @@ import { runGhApi } from "./gh.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { runIdFromUrl } from "./checkrun.js";
+import {
+  applyAnswered,
+  answeredReRaiseNote,
+  answeredRegistryFrom,
+  fetchThreadComments,
+} from "./answered.js";
 import { errMsg, tryParseJson, asRecord } from "./util.js";
 
 export interface PostInput {
@@ -528,14 +534,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   }
   const prNumber = resolution.prNumber;
 
-  const diff = await fetchDiff(input.repo, prNumber, ghApi);
-  const existingSticky = await findBotComment(
-    input.repo,
-    prNumber,
-    input.botLogin,
-    DEFAULT_MARKER,
-    ghApi,
-  );
+  const [diff, existingSticky] = await Promise.all([
+    fetchDiff(input.repo, prNumber, ghApi),
+    findBotComment(input.repo, prNumber, input.botLogin, DEFAULT_MARKER, ghApi),
+  ]);
 
   // An incomplete result (a notice, not a completed review) must never overwrite a sticky that
   // already shows a completed review — else a superseded/killed/late run buries a real review under a
@@ -599,12 +601,28 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ? pointer
       : `${pointer}\n${signalMarker(priorSignal)}`;
   };
+  // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
+  // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
+  // TDZ ReferenceError and crashes the post (issue #151 review r4 — a real regression in r3). The
+  // post-filter call sites log the drops themselves.
   const leaveInPlace = (message?: string): never => {
     process.stderr.write(
       message ??
         "Review did not complete and the sticky already reflects a completed review — leaving it in place\n",
     );
     process.exit(0);
+  };
+
+  // The leave paths cannot write a note — the preserved sticky still surfaces each dropped finding
+  // and its reply thread — so the one place that names the drops in the run log, shared by every
+  // post-filter leave site (issue #151 review r5). The count is the TRUE pre-dedup dropped-finding
+  // count, never the deduped entry list (issue #151 review r7).
+  const logAnsweredDrops = (): void => {
+    if (verbatimReRaised.length > 0) {
+      process.stderr.write(
+        `${String(droppedCount)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+      );
+    }
   };
 
   // When the guard fires on a real completed review, leaving it in place is right — it IS the
@@ -617,11 +635,15 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     readonly id: number;
     readonly body: string;
   }): Promise<void> => {
-    if (existingComplete) leaveInPlace(EMPTY_MECHANIC_LEAVE_MESSAGE);
+    if (existingComplete) {
+      logAnsweredDrops();
+      leaveInPlace(EMPTY_MECHANIC_LEAVE_MESSAGE);
+    }
     const priorSha = parseReviewedSha(sticky.body);
+    const dropNote = answeredDropNote;
     const body = formatMarkdown(
       noticeBody(
-        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.`,
+        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
         sticky.body,
       ),
     );
@@ -690,7 +712,65 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     );
     process.exit(0);
   }
-  const findings = findingsResult.findings;
+  // The "already answered" state (issue #151): the prior inline findings whose threads a human reply
+  // answered, fetched live (the threads persist on GitHub; no carried marker needed). A verbatim
+  // re-raise of an answered finding — identical title and reasoning, no new evidence by definition —
+  // is treated as closed: dropped from this review's findings, counts, inline comments, and round
+  // signal, and NAMED in the sticky (never silently). A re-raise with changed evidence is kept and
+  // annotated with the prior answer's link. A failed fetch degrades to an empty registry (the review
+  // posts unfiltered); the seed already told the agent what not to re-raise.
+  const loadedFindings = findingsResult.findings;
+  // The answered-thread fetch runs only when a review will actually be filtered — an empty-diff or
+  // corrupt-findings post exits above without paying for the paginated history (issue #151 review
+  // r3), and a FIRST-EVER review (no bot sticky at all, so no bot threads can exist) provably has
+  // an empty registry (issue #151 review r4).
+  // ALWAYS fetch on a filterable post: a missing sticky does not prove an empty thread history (a
+  // maintainer can delete the sticky while the threads remain; pre-sticky reviews leave threads
+  // with no sticky at all), so the round-4 sticky-absence skip — which could silently starve the
+  // registry — is inverted and removed (issue #151 review r7). The empty-diff/corrupt-findings
+  // early exits above still avoid the fetch entirely.
+  const threadComments = await fetchThreadComments(ghApi, input.repo, prNumber);
+  const answeredRegistry =
+    threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
+  const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
+  const reRaisedNotes = answeredFilter.reRaisedNotes;
+  const verbatimReRaised = answeredFilter.verbatimReRaised;
+  const droppedCount = answeredFilter.droppedCount;
+  // Everything downstream (counts, rounds, signal, inline, the surfaced doc) reads the FILTERED
+  // document — a closed verbatim re-raise is gone from the review, not just from the prose.
+  // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
+  // stripped from any systemic problem's finding_codes — a "ties together" list must not dangle a
+  // finding that is no longer in the document. Scoped to the actual drops: a systemic whose codes
+  // were never dropped passes through untouched (issue #151 review r1).
+  const droppedCodes = new Set(verbatimReRaised.flatMap((e) => (e.code !== "" ? [e.code] : [])));
+  // A dropped code is stripped only when NO KEPT finding still carries it — the drop removed one
+  // instance of a mechanism, not the mechanism itself (issue #151 review r2).
+  const keptCodes = new Set(
+    answeredFilter.findings.flatMap((f) => (f.code !== undefined && f.code !== "" ? [f.code] : [])),
+  );
+  const trulyDropped = new Set([...droppedCodes].filter((c) => !keptCodes.has(c)));
+  const systemic =
+    trulyDropped.size === 0
+      ? (loadedFindings.systemic_problems ?? [])
+      : (loadedFindings.systemic_problems ?? []).map((s) => {
+          if (s.finding_codes === undefined) return s;
+          const codes = s.finding_codes.filter((c) => !trulyDropped.has(c));
+          return codes.length === s.finding_codes.length ? s : { ...s, finding_codes: codes };
+        });
+  const findings: Findings = {
+    ...loadedFindings,
+    findings: [...answeredFilter.findings],
+    ...(systemic.length > 0 ? { systemic_problems: systemic } : {}),
+  };
+  // The drop note, shared by every surface that renders the filtered findings: the TRUE pre-dedup
+  // count (issue #151 review r5), plus — when the drops emptied the round — a line reconciling the
+  // draft's verdict with the empty kept counts, so the sticky never reads "changes requested"
+  // beside a converged signal without the explanation (issue #151 review r5).
+  const answeredDropNote =
+    answeredReRaiseNote(verbatimReRaised, droppedCount) +
+    (verbatimReRaised.length > 0 && findings.findings.length === 0
+      ? "\n> _The stop signal reflects the kept findings — this round carries none._"
+      : "");
 
   const envelope = loadEnvelope(input.envelopePath);
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
@@ -705,7 +785,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     // (render does the same) so an error-verdict findings doc here still reads as a notice and — via
     // the guard below — can't bury a completed review, which this branch previously skipped.
     const envelopelessIncomplete = isIncompleteFindings(findings);
-    if (wouldBuryCompleted(envelopelessIncomplete)) leaveInPlace();
+    if (wouldBuryCompleted(envelopelessIncomplete)) {
+      logAnsweredDrops();
+      leaveInPlace();
+    }
     // The route is passed through as --route, so an empty mechanic with a lost envelope still
     // cannot bury a completed full review (issue #127).
     if (emptyMechanicWouldBury(effectiveRoute, envelopelessIncomplete) && existingSticky !== null)
@@ -723,6 +806,13 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         effort: input.effort,
         rounds: priorRounds,
         sameRootNotes: {},
+        // The answered-state honesty rules apply on EVERY surface that renders the filtered
+        // findings — the lost-envelope branch lists every finding (no inline review exists to
+        // carry them) so the kept re-raises' annotations actually render, and names the drops
+        // exactly like the main path (issues #151 review r1 + r2).
+        strays: findings.findings,
+        answeredNotes: reRaisedNotes,
+        answeredReRaiseNote: answeredDropNote,
         roundCount: priorSignal?.round ?? priorRounds.length,
         convergenceRound: false,
         testReport,
@@ -749,7 +839,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // produced only a notice. Don't let such a notice bury an existing completed review or post a stray
   // empty inline review over it — leave the real review in place.
   const thisIncomplete = envelope.incomplete === true || isIncompleteFindings(findings);
-  if (wouldBuryCompleted(thisIncomplete)) leaveInPlace();
+  if (wouldBuryCompleted(thisIncomplete)) {
+    logAnsweredDrops();
+    leaveInPlace();
+  }
 
   if (emptyMechanicWouldBury(effectiveRoute, thisIncomplete) && existingSticky !== null)
     await emptyMechanicLeaveOrNote(existingSticky);
@@ -782,6 +875,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     findings,
     jsonUrl: input.jsonUrl,
     sameRootNotes,
+    answeredNotes: reRaisedNotes,
   });
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
@@ -882,6 +976,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     severityCounts: currentCounts,
     rounds,
     sameRootNotes,
+    answeredNotes: reRaisedNotes,
+    answeredReRaiseNote: answeredDropNote,
     scopeMetastasis,
     roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,

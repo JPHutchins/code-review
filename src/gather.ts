@@ -8,7 +8,13 @@ import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { parseJsonl } from "./transcript.js";
-import { errMsg } from "./util.js";
+import {
+  answeredRegistryFrom,
+  encodeAnsweredEntry,
+  ThreadCommentCodec,
+  THREAD_COMMENT_JQ,
+} from "./answered.js";
+import { clipText, errMsg } from "./util.js";
 
 export interface GatherInput {
   readonly repo: string;
@@ -182,8 +188,11 @@ const fetchCompareCommits = async (
 // reads line by line — the shape post.ts's findBotComment already uses.
 const COMMENT_JQ =
   ".[] | {id: .id, body: .body, user: {login: .user.login}, created_at: .created_at, author_association: .author_association}";
-const REVIEW_COMMENT_JQ =
-  ".[] | {body: .body, user: {login: .user.login}, created_at: .created_at, author_association: .author_association, path: .path, line: .line}";
+// The review-comments fetch feeds TWO consumers from one projection: the conversation (human
+// replies, via ReviewCommentCodec) and the answered-findings registry (thread structure + the bot's
+// own comments, via ThreadCommentCodec) — the richer THREAD_COMMENT_JQ shape serves both, the
+// conversation codec tolerating the extra fields.
+const REVIEW_COMMENT_JQ = THREAD_COMMENT_JQ;
 const REVIEW_JQ =
   ".[] | {body: .body, user: {login: .user.login}, submitted_at: .submitted_at, author_association: .author_association, state: .state}";
 
@@ -258,14 +267,8 @@ const priorReviewFrom = (
 const MAX_CONVERSATION_COMMENTS = 50;
 const MAX_CONVERSATION_BODY_CHARS = 4000;
 
-const clip = (body: string): string => {
-  if (body.length <= MAX_CONVERSATION_BODY_CHARS) return body;
-  const cut = body.slice(0, MAX_CONVERSATION_BODY_CHARS);
-  // Don't end on a lone high surrogate (a code point split mid-pair) — drop it so the kept prefix
-  // stays well-formed UTF-16.
-  const safe = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
-  return `${safe}\n… [truncated]`;
-};
+// The shared surrogate-safe clip (util.ts) at the conversation's own length cap.
+const clip = (body: string): string => clipText(body, MAX_CONVERSATION_BODY_CHARS);
 
 // Drop the review bot and empty bodies, keep the most recent MAX (logging when it caps), then project.
 const boundedHuman = <
@@ -406,12 +409,23 @@ export const gather = async (
   ]);
   const issueComments = decodeArrayOrNull(IssueCommentCodec, issueRows);
   const reviewComments = decodeArrayOrNull(ReviewCommentCodec, reviewCommentRows);
+  const threadComments = decodeArrayOrNull(ThreadCommentCodec, reviewCommentRows);
   const reviews = decodeArrayOrNull(ReviewCodec, reviewRows);
 
   const prior = issueComments === null ? null : priorReviewFrom(issueComments, input.botLogin);
   writeFileSync(
     join(input.outDir, "prior_review.json"),
     prior === null ? "null" : JSON.stringify(prior),
+  );
+  // The "already answered" registry (issue #151): the prior inline findings whose threads a human
+  // reply answered — staged for seed-draft to deliver beside the prior context, so the next-round
+  // agent sees what it must not re-raise verbatim. Best-effort like the conversation: a failed fetch
+  // yields [] (the agent then relies on the conversation alone).
+  const answered =
+    threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
+  writeFileSync(
+    join(input.outDir, "answered.json"),
+    JSON.stringify(answered.map(encodeAnsweredEntry)),
   );
   writeFileSync(
     join(input.outDir, "pr_conversation.json"),

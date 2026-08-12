@@ -202,6 +202,13 @@ const sidecarPath = (draftPath: string, postfix: string): string => {
 // deliverable (only $DRAFT, its last-valid snapshot, and the native envelope are read back).
 export const priorContextPath = (draftPath: string): string => sidecarPath(draftPath, ".prior");
 
+// The prior review's "already answered" registry (issue #151) — the prior inline findings whose
+// threads a human reply answered — delivered beside the prior context so the next-round agent sees
+// what it must not re-raise verbatim. Like $PRIOR_CONTEXT, it is read-only context, never a
+// deliverable.
+export const priorAnswersPath = (draftPath: string): string =>
+  sidecarPath(draftPath, ".prior-answers");
+
 // Holds only ever a document that passed the extraction ladder: the budget hook snapshots the draft
 // here whenever it validates, so a wall-kill that leaves the live draft truncated still recovers the
 // last valid state instead of posting "did not complete". The postfix goes before the extension so

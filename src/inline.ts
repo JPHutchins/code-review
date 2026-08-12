@@ -1,6 +1,7 @@
 import { Eta } from "eta";
 import { partitionFindings, indexDiff, defaultSide } from "./diff.js";
 import { severityEmoji, findingPointer, projectPatch, formatConfidence } from "./surface.js";
+import { answeredNoteKey } from "./answered.js";
 import type { Finding, Findings } from "./schema.js";
 import type { InlineComment, InlineResult } from "./types.js";
 
@@ -17,6 +18,7 @@ const renderCommentBody = (
   jsonUrl: string | undefined,
   pointer: string,
   sameRootNote: string,
+  answeredNote: string,
 ): string =>
   // Eta.renderString returns string | Promise<string>; with autoTrim:false it's always sync.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
@@ -29,6 +31,7 @@ const renderCommentBody = (
     jsonUrl: jsonUrl ?? null,
     findingsPointer: pointer,
     sameRootNote,
+    answeredNote,
   }) as string;
 
 export interface InlineContext {
@@ -41,6 +44,9 @@ export interface InlineContext {
   // Code → "same mechanism as round N" note, rendered under a finding whose code recurred in a prior
   // round; omitted/empty ⇒ no per-comment annotation.
   readonly sameRootNotes?: Readonly<Record<string, string>>;
+  // Code → "Re-raised; prior answer at <link>" note for a kept finding whose code an answered prior
+  // thread named (issue #151); omitted/empty ⇒ no per-comment annotation.
+  readonly answeredNotes?: Readonly<Record<string, string>>;
 }
 
 export const buildInlineComments = (
@@ -54,20 +60,32 @@ export const buildInlineComments = (
   const eta = new Eta({ autoTrim: false });
   const modelsText = formatModels(models);
 
+  const noteFor = (f: Finding, notes: Readonly<Record<string, string>> | undefined): string => {
+    if (notes === undefined) return "";
+    // The single shared note-key contract (answeredNoteKey) — never a local re-derivation that
+    // could drift from the writer (issue #151 review r2).
+    const key = answeredNoteKey(f);
+    return Object.prototype.hasOwnProperty.call(notes, key) ? (notes[key] ?? "") : "";
+  };
+
   const comments: InlineComment[] = inDiff.map((f) => {
     const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";
-    const sameRootNote =
-      f.code !== undefined &&
-      f.code !== "" &&
-      context.sameRootNotes !== undefined &&
-      Object.prototype.hasOwnProperty.call(context.sameRootNotes, f.code)
-        ? (context.sameRootNotes[f.code] ?? "")
-        : "";
+    const sameRootNote = noteFor(f, context.sameRootNotes);
+    const answeredNote = noteFor(f, context.answeredNotes);
     const comment: InlineComment = {
       path: f.path,
       line: f.end_line,
       side: defaultSide(f.side),
-      body: renderCommentBody(f, eta, inlineTemplate, modelsText, jsonUrl, pointer, sameRootNote),
+      body: renderCommentBody(
+        f,
+        eta,
+        inlineTemplate,
+        modelsText,
+        jsonUrl,
+        pointer,
+        sameRootNote,
+        answeredNote,
+      ),
     };
     if (f.start_line < f.end_line) {
       return {

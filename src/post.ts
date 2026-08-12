@@ -615,11 +615,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   // The leave paths cannot write a note — the preserved sticky still surfaces each dropped finding
   // and its reply thread — so the one place that names the drops in the run log, shared by every
-  // post-filter leave site (issue #151 review r5: previously byte-identical at three sites).
+  // post-filter leave site (issue #151 review r5). The count is the TRUE pre-dedup dropped-finding
+  // count, never the deduped entry list (issue #151 review r7).
   const logAnsweredDrops = (): void => {
     if (verbatimReRaised.length > 0) {
       process.stderr.write(
-        `${String(verbatimReRaised.length)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+        `${String(droppedCount)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
       );
     }
   };
@@ -723,8 +724,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // corrupt-findings post exits above without paying for the paginated history (issue #151 review
   // r3), and a FIRST-EVER review (no bot sticky at all, so no bot threads can exist) provably has
   // an empty registry (issue #151 review r4).
-  const threadComments =
-    existingSticky === null ? null : await fetchThreadComments(ghApi, input.repo, prNumber);
+  // ALWAYS fetch on a filterable post: a missing sticky does not prove an empty thread history (a
+  // maintainer can delete the sticky while the threads remain; pre-sticky reviews leave threads
+  // with no sticky at all), so the round-4 sticky-absence skip — which could silently starve the
+  // registry — is inverted and removed (issue #151 review r7). The empty-diff/corrupt-findings
+  // early exits above still avoid the fetch entirely.
+  const threadComments = await fetchThreadComments(ghApi, input.repo, prNumber);
   const answeredRegistry =
     threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);

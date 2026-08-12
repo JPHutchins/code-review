@@ -146,6 +146,37 @@ describe("answeredRegistryFrom — the 'already answered' state (issue #151)", (
     expect(registry[0]!.repliedAt).toBe("2026-07-01T03:00:00Z");
   });
 
+  it("an equal-timestamp tie breaks by REPLY id, not thread order — the later reply wins regardless of which thread it is in (issue #151 review r7)", () => {
+    const finding = mkFinding({});
+    const registry = answeredRegistryFrom(
+      [
+        botComment(1, finding),
+        botComment(2, finding),
+        { ...reply(3, 2, "alice"), created_at: "2026-07-01T02:00:00Z" },
+        { ...reply(4, 1, "bob"), created_at: "2026-07-01T02:00:00Z" },
+      ],
+      "github-actions[bot]",
+    );
+    expect(registry).toHaveLength(1);
+    expect(registry[0]!.replyId).toBe(4);
+    expect(registry[0]!.replyUrl).toContain("discussion_r4");
+  });
+
+  it("a NULL created_at reply never becomes the operative last answer — unknown-time replies sort first, so the last human reply is always a timed one (issue #151 review r7)", () => {
+    const finding = mkFinding({});
+    const registry = answeredRegistryFrom(
+      [
+        botComment(1, finding),
+        { ...reply(2, 1, "alice"), created_at: null },
+        { ...reply(3, 1, "bob"), created_at: "2026-07-01T02:00:00Z" },
+      ],
+      "github-actions[bot]",
+    );
+    expect(registry).toHaveLength(1);
+    expect(registry[0]!.replyId).toBe(3);
+    expect(registry[0]!.repliedAt).toBe("2026-07-01T02:00:00Z");
+  });
+
   it("records a codeless answered finding with a title-only match key and clips the reply excerpt", () => {
     const finding = mkFinding({ code: undefined });
     const longReply = reply(2, 1, "alice", "x".repeat(500));
@@ -169,6 +200,7 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     path: "src/foo.ts",
     patch: null,
     repliedAt: "2026-07-01T01:00:00Z",
+    replyId: 2,
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",
@@ -322,6 +354,13 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
 });
 
 describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => {
+  it("counts the TRUE pre-dedup dropped findings while the lines stay deduped by key (issues #151 review r5 + r7)", () => {
+    const note = answeredReRaiseNote([entry], 3);
+    expect(note).toContain("**3 finding(s) re-raised");
+    // The deduped lines still list the single entry once.
+    expect(note.match(/prior answer/g)).toHaveLength(1);
+  });
+
   const entry: AnsweredEntry = {
     code: "recurring-a",
     title: "The same claim",
@@ -331,6 +370,7 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
     path: "src/foo.ts",
     patch: null,
     repliedAt: "2026-07-01T01:00:00Z",
+    replyId: 2,
     threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",
@@ -338,11 +378,11 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
   };
 
   it("is empty when nothing was dropped", () => {
-    expect(answeredReRaiseNote([])).toBe("");
+    expect(answeredReRaiseNote([], 0)).toBe("");
   });
 
   it("names the dropped finding's code and links the prior answer", () => {
-    const note = answeredReRaiseNote([entry]);
+    const note = answeredReRaiseNote([entry], 1);
     expect(note).toContain("treated as answered");
     expect(note).toContain("`recurring-a`");
     expect(note).toContain("discussion_r2");

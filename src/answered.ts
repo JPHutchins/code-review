@@ -53,7 +53,7 @@ export const ThreadCommentCodec = t.type({
 });
 
 // The registry entry for one answered finding: the finding's identifying fields (the verbatim-match
-// targets), the thread link, and the first human reply's link + a clipped excerpt for the seed.
+// targets), the thread link, and the last human reply's link + a clipped excerpt for the seed.
 export interface AnsweredEntry {
   // "" when the answered finding carried no code — matching then falls back to title equality
   // between two codeless findings (the issue's "code (or title)" rule).
@@ -71,9 +71,12 @@ export interface AnsweredEntry {
   // genuinely new instance changes the claim text.
   readonly path: string;
   readonly patch: string | null;
-  // The REPLY's timestamp — read for the dedup: "most recent answer wins" must key on the ANSWER
-  // time, not the root (review-posting) order (issue #151 review r4).
+  // The LAST human reply's timestamp and id — both READ for the dedup: "most recent answer wins"
+  // keys on the ANSWER time, never the root (review-posting) order, and an equal-timestamp tie
+  // breaks by the reply id (monotonic with creation), not by thread order (issues #151 review r4 +
+  // r7).
   readonly repliedAt: string | null;
+  readonly replyId: number;
   readonly threadUrl: string;
   readonly replyUrl: string;
   readonly replyAuthor: string;
@@ -97,6 +100,7 @@ export const AnsweredEntryCodec = t.type({
   path: t.string,
   patch: t.union([t.string, t.null]),
   replied_at: t.union([t.string, t.null]),
+  reply_id: t.number,
   thread_url: t.string,
   reply_url: t.string,
   reply_author: t.string,
@@ -114,6 +118,7 @@ export const encodeAnsweredEntry = (e: AnsweredEntry): StagedAnsweredEntry => ({
   path: e.path,
   patch: e.patch,
   replied_at: e.repliedAt,
+  reply_id: e.replyId,
   thread_url: e.threadUrl,
   reply_url: e.replyUrl,
   reply_author: e.replyAuthor,
@@ -142,19 +147,21 @@ const EXCERPT_LIMIT = 400;
 
 // The pure thread→registry construction. A thread is anchored on the bot's comment (by login); the
 // root's embedded per-finding marker names the finding. Replies are every non-bot comment whose
-// in_reply_to chain reaches that root. The FIRST human reply per thread is recorded; when the same
+// in_reply_to chain reaches that root. The LAST human reply per thread is recorded (the operative
+// dismissal — issue #151 review r5); when the same
 // code was answered in several threads, the most recent thread wins. Tolerant: an undecodable bot
 // comment (no marker, or a marker that fell to the link form) contributes nothing.
 export const answeredRegistryFrom = (
   comments: readonly ThreadComment[],
   botLogin: string,
 ): readonly AnsweredEntry[] => {
-  // Order-independent: the REST order (ascending creation) is not a contract, so "first human
-  // reply" and "most recent answer wins" sort explicitly by (created_at, id) before processing
-  // (issue #151 review r2). Missing created_at sorts last.
+  // Order-independent: the REST order (ascending creation) is not a contract, so the reply
+  // selections sort explicitly by (created_at, id) before processing (issue #151 review r2). A
+  // MISSING created_at sorts FIRST (""), so an unknown-time reply is never picked as the
+  // operative LAST answer (issue #151 review r7).
   const ordered = [...comments].sort(
     (a, b) =>
-      (a.created_at ?? "￿").localeCompare(b.created_at ?? "￿") ||
+      (a.created_at ?? "").localeCompare(b.created_at ?? "") ||
       (a.id > b.id ? 1 : a.id < b.id ? -1 : 0),
   );
   const byId = new Map<number, ThreadComment>();
@@ -251,6 +258,7 @@ export const answeredRegistryFrom = (
     entries.push({
       ...finding,
       repliedAt: reply.created_at,
+      replyId: reply.id,
       threadUrl: root.html_url,
       replyUrl: reply.html_url,
       replyAuthor: reply.user_login,
@@ -259,14 +267,15 @@ export const answeredRegistryFrom = (
   }
   // Dedup by the shared note key, keeping the entry with the MOST RECENT ANSWER — keyed on the
   // REPLY time, never the root (review-posting) order: an older thread answered later must win over
-  // a newer thread answered earlier (issue #151 review r4).
+  // a newer thread answered earlier (issue #151 review r4). Sort DESCENDING by (repliedAt, replyId)
+  // and keep the first per key — an equal-timestamp tie breaks toward the LATER reply id
+  // (monotonic with creation), not toward any thread order (issue #151 review r7).
   const byKey = new Map<string, AnsweredEntry>();
-  for (const entry of entries) {
+  for (const entry of [...entries].sort(
+    (a, b) => (b.repliedAt ?? "").localeCompare(a.repliedAt ?? "") || b.replyId - a.replyId,
+  )) {
     const key = answeredNoteKey(entry);
-    const prior = byKey.get(key);
-    if (prior === undefined || (entry.repliedAt ?? "") >= (prior.repliedAt ?? "")) {
-      byKey.set(key, entry);
-    }
+    if (!byKey.has(key)) byKey.set(key, entry);
   }
   return [...byKey.values()];
 };
@@ -355,11 +364,10 @@ export const applyAnswered = (
 
 // The sticky note naming what was dropped — the suppression is never silent (SPEC §3.3 truthful).
 // The COUNT is the true pre-dedup finding count (several findings sharing one code count as several
-// suppressions); the LINES stay deduped by key (issue #151 review r5).
-export const answeredReRaiseNote = (
-  entries: readonly AnsweredEntry[],
-  count: number = entries.length,
-): string => {
+// suppressions); the LINES stay deduped by key (issue #151 review r5). count is REQUIRED — a
+// default would silently reintroduce the understated count for a caller that forgets it (issue
+// #151 review r7).
+export const answeredReRaiseNote = (entries: readonly AnsweredEntry[], count: number): string => {
   if (entries.length === 0) return "";
   const label = (e: AnsweredEntry): string =>
     e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;

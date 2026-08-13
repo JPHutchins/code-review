@@ -20,7 +20,6 @@ import {
   convergenceSummary,
   convergenceSignal,
   signalForRound,
-  surfaceFindings,
   surfacedFindingsPointer,
   stripSurfaceFields,
   parseSurfaceSignal,
@@ -42,6 +41,34 @@ import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./s
 import type { Finding, Findings } from "./schema.js";
 import type { SurfaceSignal } from "./surface.js";
 import type { RoundRecord, SeverityCounts } from "./types.js";
+
+// The legacy surfaced-blob shape a pre-#156 sticky embedded — agent doc with pipeline round/convergence
+// stripped, then surface version + stop signal + scope_metastasis stamped. Production no longer
+// transforms the doc (the sticky now embeds the agent's COMPLETE document verbatim, issue #156), so
+// this shape survives only in already-posted comments; the helper builds it to exercise the migration
+// readers (stripSurfaceFields / parseSurfaceSignal / parseSignalMarker) that must still decode one.
+type SurfacedTestDoc = Findings & {
+  round?: number;
+  convergence?: unknown;
+  scope_metastasis?: unknown;
+};
+const surfacedDoc = (
+  findings: Findings,
+  signal: SurfaceSignal | null,
+  scopeMetastasis?: unknown,
+): SurfacedTestDoc =>
+  ({
+    ...Object.fromEntries(
+      Object.entries(findings).filter(
+        ([k]) => k !== "round" && k !== "convergence" && k !== "scope_metastasis",
+      ),
+    ),
+    schema_version: SURFACE_SCHEMA_VERSION,
+    ...(signal === null ? {} : signal),
+    ...(scopeMetastasis === undefined || scopeMetastasis === null
+      ? {}
+      : { scope_metastasis: scopeMetastasis }),
+  }) as unknown as SurfacedTestDoc;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bundledSchemaPath = resolve(__dirname, "..", "schema", "findings.schema.json");
@@ -742,27 +769,27 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
   });
 
   it("stamps the current surface version on every surfaced document, keeping the agent's fields verbatim", () => {
-    const doc = surfaceFindings(findings, null);
+    const doc = surfacedDoc(findings, null);
     expect(doc.schema_version).toBe(SURFACE_SCHEMA_VERSION);
     expect(doc).toEqual({ ...findings, schema_version: SURFACE_SCHEMA_VERSION });
   });
 
-  it("every version surfaceFindings emits is one stripSurfaceFields recognizes — the emit and strip axes stay coupled (issue #141 review r3)", () => {
+  it("every version surfacedDoc emits is one stripSurfaceFields recognizes — the emit and strip axes stay coupled (issue #141 review r3)", () => {
     expect(SURFACE_SCHEMA_VERSIONS).toContain(SURFACE_SCHEMA_VERSION);
-    expect(stripSurfaceFields(surfaceFindings(findings, null))).toEqual({
+    expect(stripSurfaceFields(surfacedDoc(findings, null))).toEqual({
       ...findings,
       schema_version: DEFAULT_SCHEMA_VERSION,
     });
   });
 
   it("embeds the given stop signal — converged as a literal boolean", () => {
-    const doc = surfaceFindings(findings, signal(2, counts(0, 0, 0, 50)));
+    const doc = surfacedDoc(findings, signal(2, counts(0, 0, 0, 50)));
     expect(doc.round).toBe(2);
     expect(doc.convergence).toEqual({ score: 0, threshold: 1, converged: true });
   });
 
   it("omits convergence and round when the signal is null (no round has completed)", () => {
-    const doc = surfaceFindings(findings, null);
+    const doc = surfacedDoc(findings, null);
     expect(doc.convergence).toBeUndefined();
     expect(doc.round).toBeUndefined();
   });
@@ -772,8 +799,8 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
       decision_prompt: "decide",
       recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
     };
-    expect(surfaceFindings(findings, null, entry).scope_metastasis).toEqual(entry);
-    expect(surfaceFindings(findings, null).scope_metastasis).toBeUndefined();
+    expect(surfacedDoc(findings, null, entry).scope_metastasis).toEqual(entry);
+    expect(surfacedDoc(findings, null).scope_metastasis).toBeUndefined();
   });
 
   it("the scope_metastasis codecs and the ajv gate reject the SAME extra keys — both sides asserted (issue #150 review r2)", () => {
@@ -839,20 +866,20 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
       decision_prompt: "fresh",
       recurring: [{ code: "fresh", consecutive_rounds: 3, start_round: 2 }],
     };
-    const doc = surfaceFindings(crafted, null, entry);
+    const doc = surfacedDoc(crafted, null, entry);
     expect(doc.scope_metastasis).toEqual(entry);
   });
 
   it("drops a crafted draft's OWN round/convergence keys — only the pipeline signal may survive the stamp (issue #141 review r6)", () => {
     // A corrupt/crafted doc declaring 0.7.0 with round/convergence keys must not be read back as a
-    // pipeline signal; surfaceFindings strips any pre-existing keys before stamping its own.
+    // pipeline signal; surfacedDoc strips any pre-existing keys before stamping its own.
     const crafted = {
       ...findings,
       schema_version: "0.7.0",
       round: 99,
       convergence: { score: 0, threshold: 1, converged: true },
     };
-    const doc = surfaceFindings(crafted, signal(2, counts(0, 0, 1, 0)));
+    const doc = surfacedDoc(crafted, signal(2, counts(0, 0, 1, 0)));
     expect(doc.round).toBe(2);
     expect(doc.convergence).toEqual({ score: 1, threshold: 1, converged: true });
   });
@@ -887,7 +914,7 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
   });
 
   it("the findings-json marker round-trips the surfaced document, signal included", () => {
-    const doc = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
+    const doc = surfacedDoc(findings, signal(1, counts(0, 0, 1, 0)));
     const body = `sticky prose\n${findingsPointer(doc, undefined)}\nmore prose`;
     expect(parseFindingsMarker(body)).toEqual(doc);
   });
@@ -909,13 +936,12 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     };
     let doc = { ...findings, summary: "x".repeat(20000) };
     const preEntryB64 = (d: Findings): number =>
-      Buffer.from(
-        JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)))),
-        "utf-8",
-      ).toString("base64").length;
+      Buffer.from(JSON.stringify(surfacedDoc(d, signal(1, counts(0, 0, 1, 0)))), "utf-8").toString(
+        "base64",
+      ).length;
     const withEntryB64 = (d: Findings): number =>
       Buffer.from(
-        JSON.stringify(surfaceFindings(d, signal(1, counts(0, 0, 1, 0)), worstCase)),
+        JSON.stringify(surfacedDoc(d, signal(1, counts(0, 0, 1, 0)), worstCase)),
         "utf-8",
       ).toString("base64").length;
     // The intended property: a review that embedded at the OLD 40200 boundary (pre-entry form)
@@ -930,12 +956,12 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     // seed + signal.
     expect(withEntryB64(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
     expect(
-      findingsPointer(surfaceFindings(doc, signal(1, counts(0, 0, 1, 0)), worstCase), undefined),
+      findingsPointer(surfacedDoc(doc, signal(1, counts(0, 0, 1, 0)), worstCase), undefined),
     ).toContain(";base64");
   });
 
   it("stripSurfaceFields drops the surface fields and restores the draft version on a surfaced doc", () => {
-    const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)));
+    const surfaced = surfacedDoc(findings, signal(1, counts(0, 0, 1, 0)));
     expect(stripSurfaceFields(surfaced)).toEqual({
       ...findings,
       schema_version: DEFAULT_SCHEMA_VERSION,
@@ -947,7 +973,7 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
       decision_prompt: "decide",
       recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
     };
-    const surfaced = surfaceFindings(findings, signal(1, counts(0, 0, 1, 0)), entry);
+    const surfaced = surfacedDoc(findings, signal(1, counts(0, 0, 1, 0)), entry);
     expect(stripSurfaceFields(surfaced)).toEqual({
       ...findings,
       schema_version: DEFAULT_SCHEMA_VERSION,
@@ -970,7 +996,7 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
 
   it("stripSurfaceFields passes unknown future versions (0.9.0) through untouched — the surface list grows with each emitted version", () => {
     const surfaced = {
-      ...surfaceFindings(findings, signal(2, counts(0, 0, 1, 0))),
+      ...surfacedDoc(findings, signal(2, counts(0, 0, 1, 0))),
       schema_version: "0.9.0",
     };
     // An unknown version is not classified as surfaced (it could equally be a future draft); schema
@@ -999,12 +1025,12 @@ describe("parseSurfaceSignal — issue #141 (verbatim carry of the prior round's
   };
 
   it("parses a well-formed signal from a surfaced blob", () => {
-    expect(parseSurfaceSignal(surfaceFindings(findings, signal))).toEqual(signal);
+    expect(parseSurfaceSignal(surfacedDoc(findings, signal))).toEqual(signal);
   });
 
   it("returns null when the doc carries no signal (a pre-surface blob, or no round yet)", () => {
     expect(parseSurfaceSignal(findings)).toBeNull();
-    expect(parseSurfaceSignal(surfaceFindings(findings, null))).toBeNull();
+    expect(parseSurfaceSignal(surfacedDoc(findings, null))).toBeNull();
   });
 
   it("rejects a draft-version doc carrying round/convergence keys — the carry channel is version-gated like the seed channel (issue #141 review r3)", () => {
@@ -1026,7 +1052,7 @@ describe("parseSurfaceSignal — issue #141 (verbatim carry of the prior round's
   });
 
   it("returns null on malformed signals rather than carrying corruption forward", () => {
-    const base = surfaceFindings(findings, signal);
+    const base = surfacedDoc(findings, signal);
     expect(parseSurfaceSignal({ ...base, round: 1.5 })).toBeNull();
     expect(parseSurfaceSignal({ ...base, round: 0 })).toBeNull();
     expect(
@@ -1039,7 +1065,7 @@ describe("parseSurfaceSignal — issue #141 (verbatim carry of the prior round's
   });
 
   it("rejects non-finite score/threshold (JSON.parse('1e400') is Infinity) — never carried one hop then silently dropped", () => {
-    const base = surfaceFindings(findings, signal);
+    const base = surfacedDoc(findings, signal);
     expect(
       parseSurfaceSignal({
         ...base,
@@ -1064,8 +1090,8 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
   it("emits ONLY the compact signal marker when the whole-doc payload is too large and no jsonUrl is given", () => {
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
-      Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= EMBED_LIMIT
+      Buffer.from(JSON.stringify(surfacedDoc(doc, signal)), "utf-8").toString("base64").length <=
+      EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
@@ -1078,8 +1104,8 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
   it("emits the link marker PLUS the compact signal marker when a jsonUrl fallback is available", () => {
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
-      Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= EMBED_LIMIT
+      Buffer.from(JSON.stringify(surfacedDoc(doc, signal)), "utf-8").toString("base64").length <=
+      EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
@@ -1098,16 +1124,14 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
 
   it("parseSignalMarker returns null when the body carries no signal marker", () => {
     expect(parseSignalMarker("just prose")).toBeNull();
-    expect(
-      parseSignalMarker(findingsPointer(surfaceFindings(findings, signal), undefined)),
-    ).toBeNull();
+    expect(parseSignalMarker(findingsPointer(surfacedDoc(findings, signal), undefined))).toBeNull();
   });
 
   it("carryForwardMarkers preserves the signal marker alongside the findings marker", () => {
     let doc = { ...findings, summary: "x".repeat(20000) };
     while (
-      Buffer.from(JSON.stringify(surfaceFindings(doc, signal)), "utf-8").toString("base64")
-        .length <= EMBED_LIMIT
+      Buffer.from(JSON.stringify(surfacedDoc(doc, signal)), "utf-8").toString("base64").length <=
+      EMBED_LIMIT
     ) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }

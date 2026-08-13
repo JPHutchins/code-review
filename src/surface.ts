@@ -608,28 +608,6 @@ export const signalForRound = (
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
 ): SurfaceSignal => ({ round, convergence: convergenceSignal(counts, threshold) });
 
-export const surfaceFindings = (
-  findings: Findings,
-  signal: SurfaceSignal | null,
-  scopeMetastasis: ScopeMetastasis | null = null,
-): SurfaceFindings => {
-  // A crafted/corrupt draft carrying round/convergence must not survive the stamp: parseSurfaceSignal
-  // gates on the surface version, so such a doc would otherwise be read back as a pipeline signal.
-  // A draft-carried scope_metastasis is dropped the same way — the pipeline recomputes it from the
-  // rounds history (a stale echoed copy would otherwise survive the stamp as if it were this round's).
-  const agentDoc = Object.fromEntries(
-    Object.entries(findings).filter(
-      ([key]) => key !== "round" && key !== "convergence" && key !== "scope_metastasis",
-    ),
-  );
-  return {
-    ...(agentDoc as Findings),
-    schema_version: SURFACE_SCHEMA_VERSION,
-    ...(signal === null ? {} : signal),
-    ...(scopeMetastasis === null ? {} : { scope_metastasis: scopeMetastasis }),
-  };
-};
-
 // The compact signal marker: the stop signal on its own, self-describing (it declares the surface
 // version, so parseSurfaceSignal's version gate applies to it too). Embedded when the whole-doc
 // payload falls to the link form, and appended by post to a signal-less blob (a notice) so a
@@ -648,12 +626,15 @@ export const surfacedFindingsPointer = (
   findings: Findings,
   signal: SurfaceSignal | null,
   jsonUrl: string | undefined,
-  scopeMetastasis: ScopeMetastasis | null = null,
 ): string => {
-  const marker = findingsPointer(surfaceFindings(findings, signal, scopeMetastasis), jsonUrl);
-  // Probe the full embedded-marker prefix, never a bare substring — a link-form jsonUrl could
-  // itself contain "findings-json;base64" (issue #141 review r4).
-  if (signal === null || marker.includes("<!-- code-review:findings-json;base64 ")) return marker;
+  // The embedded blob is the agent's COMPLETE document — byte-for-byte the object render reads and the
+  // code-review-findings artifact holds — with NO surfacing transform to drop a field or drift from
+  // the rendered prose (issue #156: the machine channel must never carry less than the comment). The
+  // stop signal and the scope-metastasis note are round state, not the agent's document, so they ride
+  // the compact signal marker and the rounds marker rather than a second, divergeable copy of the
+  // findings; the seed re-derives scope metastasis from the carried rounds history.
+  const marker = findingsPointer(findings, jsonUrl);
+  if (signal === null) return marker;
   return marker === "" ? signalMarker(signal) : `${marker}\n${signalMarker(signal)}`;
 };
 

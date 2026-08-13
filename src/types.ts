@@ -4,7 +4,6 @@
 import type {
   Finding,
   Findings,
-  ScopeMetastasis,
   Side,
   Severity,
   ResultEnvelope,
@@ -110,12 +109,6 @@ export interface RenderInput {
   // here, using it for BOTH the round append and the badge so the two can't drift). Omitted ⇒ derived
   // from route + incompleteness, the fallback the standalone `render` command relies on.
   readonly convergenceRound?: boolean;
-  // The structured scope-metastasis entry (issue #150): per-code consecutive-round counts + the
-  // decision prompt, stamped into the surfaced findings-json blob so a decoding agent sees the same
-  // recurrence signal the prose note carries. Computed at the IO boundary (post derives it from the
-  // rounds history of a completing round); the standalone render command derives it from its own
-  // rounds. null/absent ⇒ no entry in the surfaced doc (no code recurred, or no round completed).
-  readonly scopeMetastasis?: ScopeMetastasis | null;
   readonly strays?: readonly Finding[];
   // How many of `strays` are in-diff findings GitHub rejected inline, rather than out-of-diff; > 0
   // titles the section "Findings" and notes they couldn't be posted inline. Omitted/0 ⇒ all out-of-diff.

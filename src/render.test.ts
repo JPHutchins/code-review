@@ -220,7 +220,7 @@ describe("render", () => {
       expect(signal?.convergence).toEqual({ score: 1, threshold: 1, converged: true });
     });
 
-    it("embeds NO scope_metastasis entry on a non-round render — the machine channel and the prose note share the gate (issue #150)", () => {
+    it("suppresses the Scope metastasis prose note on a non-round (mechanic) render — recurrence is a property of full-review rounds (issue #150)", () => {
       const findings = mkFindings([mkFinding({ severity: "minor" })]);
       const result = render({
         findings,
@@ -231,15 +231,9 @@ describe("render", () => {
         rounds: [{ critical: 0, major: 0, minor: 1, nit: 0, codes: { a: 1 } }],
       });
       expect(result).not.toContain("Scope metastasis");
-      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
-      expect(match).not.toBeNull();
-      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
-        readonly scope_metastasis?: unknown;
-      };
-      expect(decoded.scope_metastasis).toBeUndefined();
     });
 
-    it("a non-round render embeds NO stop signal even when a round history is supplied — no badge, no signal (issue #141 review r2)", () => {
+    it("a non-round render emits NO compact signal marker even when a round history is supplied — no badge, no signal (issue #141 review r2)", () => {
       const findings = mkFindings([mkFinding({ severity: "critical" })]);
       const result = render({
         findings,
@@ -250,18 +244,13 @@ describe("render", () => {
         rounds: [{ critical: 0, major: 0, minor: 1, nit: 0 }],
       });
       expect(result).not.toContain("**Convergence**");
-      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
-      expect(match).not.toBeNull();
-      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
-        readonly round?: number;
-      };
-      expect(decoded.round).toBeUndefined();
+      expect(parseSignalMarker(result)).toBeNull();
     });
 
     it("a standalone full-review render with no round history shows NO badge and NO stop signal — nothing has completed (issue #141 review r4)", () => {
       // The render command passes no rounds; the fallback must not fabricate a round-1 signal the
-      // README says is omitted until a round completes — and the badge must not show either, so
-      // blob and badge agree on "no stop signal available".
+      // README says is omitted until a round completes — and the badge must not show either, so the
+      // signal marker and the badge agree on "no stop signal available".
       const findings = mkFindings([mkFinding({ severity: "minor" })]);
       const result = render({
         findings,
@@ -271,15 +260,10 @@ describe("render", () => {
         route: "full review",
       });
       expect(result).not.toContain("**Convergence**");
-      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
-      expect(match).not.toBeNull();
-      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
-        readonly round?: number;
-      };
-      expect(decoded.round).toBeUndefined();
+      expect(parseSignalMarker(result)).toBeNull();
     });
 
-    it("a standalone mechanic render embeds no stop signal — no round has completed", () => {
+    it("a standalone mechanic render emits no compact signal marker — no round has completed", () => {
       const findings = mkFindings([mkFinding({ severity: "critical" })]);
       const result = render({
         findings,
@@ -289,12 +273,7 @@ describe("render", () => {
         route: "mechanic",
       });
       expect(result).not.toContain("**Convergence**");
-      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
-      expect(match).not.toBeNull();
-      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
-        readonly round?: number;
-      };
-      expect(decoded.round).toBeUndefined();
+      expect(parseSignalMarker(result)).toBeNull();
     });
 
     it("falls back to the jsonUrl link marker when the embedded payload is too large", () => {

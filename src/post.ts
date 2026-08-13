@@ -914,11 +914,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ]
     : priorRounds;
 
-  // The stop signal the surfaced blob embeds: THIS round's signal when the run completes a round,
-  // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived. An
-  // incomplete run or a no-verdict doc embeds NO signal: a carried "converged" beside "no review
-  // verdict" (or beside a run the envelope says did not complete) would read as a stop signal for a
-  // run that produced none (issue #141 reviews r2 + r4). The round number can never regress: the
+  // The stop signal that rides the compact marker beside the blob: THIS round's signal when the run
+  // completes a round, else the prior round's signal carried verbatim (see priorSignal above) — never
+  // re-derived. An incomplete run or a no-verdict doc carries NO signal: a "converged" beside "no
+  // review verdict" (or beside a run the envelope says did not complete) would read as a stop signal
+  // for a run that produced none (issue #141 reviews r2 + r4). The round number can never regress: the
   // rounds marker is best-effort (parseRounds filters corrupt entries), so a completing round
   // numbers itself after the carried count when it is ahead.
   const signal = isRound
@@ -927,25 +927,23 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ? null
       : priorSignal;
 
-  // The structured scope-metastasis entry the surfaced blob embeds (issue #150) — the same rounds
-  // history the prose note renders, so the machine channel and the prose can never disagree. Only a
-  // completing round stamps it (the same gate as the note: a mechanic or a notice carries no
-  // recurrence claim); null otherwise, so the field is omitted from the blob.
   // Encode the whole-document marker once — the agent's COMPLETE document (issue #156), reused across
-  // the sticky + review body; each inline comment embeds only its own finding instead.
+  // the sticky + review body; each inline comment embeds only its own finding instead. The stop signal
+  // rides the compact marker appended beside it, never inside the blob.
   const findingsMarker = findingsMarkerFor(findings, signal);
 
-  // The embedded base64 form is what a re-review seed decodes (parseFindingsMarker); a doc too large
-  // to embed degrades to the jsonUrl-link form, so surface that in the run log rather than letting the
-  // machine channel silently vanish. Only the omitted form (no artifact URL) loses it entirely.
+  // The embedded base64 blob is what a re-review seed decodes (parseFindingsMarker); a doc too large
+  // to embed degrades to the jsonUrl-link form, so surface that in the run log. Only the FINDINGS seed
+  // channel degrades — the stop signal always rides its own compact marker, and the rounds marker is
+  // emitted independently, so neither is lost here.
   const markerForm = findingsMarkerForm(findings, input.jsonUrl);
   if (markerForm === "link") {
     process.stderr.write(
-      "Warning: the findings-json marker exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact instead of the embedded JSON\n",
+      "Warning: the findings-json blob exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact for the findings (the stop signal still rides the compact marker)\n",
     );
   } else if (markerForm === "omitted") {
     process.stderr.write(
-      "Warning: the findings-json marker exceeds the embed limit and no --json-url was given — the machine-readable channel is omitted from the posted surfaces\n",
+      "Warning: the findings-json blob exceeds the embed limit and no --json-url was given — the embedded findings seed is dropped from the posted surfaces (the stop signal still rides the compact marker)\n",
     );
   }
 

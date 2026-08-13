@@ -3407,52 +3407,6 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
   });
 
-  it("a mechanic pass stamps NO scope_metastasis — recurrence claims are a property of review rounds (issue #150)", async () => {
-    // The prior sticky's rounds carry a 3-streak, but a mechanic is not a round: no entry in its
-    // blob, mirroring the suppressed prose note.
-    const priorRounds = [
-      {
-        critical: 0,
-        major: 0,
-        minor: 1,
-        nit: 0,
-        codes: { "recurring-a": 1 },
-        sha: "sha1",
-        round: 1,
-      },
-      {
-        critical: 0,
-        major: 0,
-        minor: 1,
-        nit: 0,
-        codes: { "recurring-a": 1 },
-        sha: "sha2",
-        round: 2,
-      },
-      {
-        critical: 0,
-        major: 0,
-        minor: 1,
-        nit: 0,
-        codes: { "recurring-a": 1 },
-        sha: "sha3",
-        round: 3,
-      },
-    ];
-    const markers = [
-      "<!-- review-complete -->",
-      `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(priorRounds), "utf-8").toString("base64")} -->`,
-    ].join("\\n");
-    writeFileSync(
-      join(tmpDir, "findings.json"),
-      JSON.stringify(mkFindings([mkFinding({ code: "recurring-a" })])),
-    );
-    const { api, calls } = mkMockGhApi(mkMocks(`<!-- code-review -->\\n${markers}\\nold`));
-    await post(mkInput({ route: "mechanic" }), api);
-    const blob = decodedBlob(calls()) as DecodedBlob & { readonly scope_metastasis?: unknown };
-    expect(blob.scope_metastasis).toBeUndefined();
-  });
-
   it("the blob's convergence uses the ROUND counts (findings + systemic), never diverging from the badge — a systemic major beside a nit-only finding reads iterating (issue #134 merge)", async () => {
     // The round history (computeRoundCounts) folds systemic severities in; the blob signal must use
     // the SAME counts or a doc whose systemic items cross the threshold would embed `converged: true`

@@ -22,19 +22,15 @@ export const severityEmoji = (s: string): string => {
   }
 };
 
-// ~30KB of JSON in base64 — well under GitHub's 65536-char comment limit. The budget is the 40000
-// original payload PLUS the two pipeline-stamped overheads, so a review that previously embedded as
-// base64 still does — the link fallback would lose the re-review seed and the stop signal (issue
-// #141 review). The overheads, both measured in base64 chars: the surfaced stop signal (convergence
-// + round, ~92) and the WORST-CASE scope_metastasis entry (issue #150) — the decision prompt
-// (~366 chars) plus up to 2*MAX_CODES_PER_ROUND recurring entries (the rounds marker keeps the
-// top-8 base plus up to 8 prior-kept codes per round). The budgeted assumption: reviewer-supplied
-// codes up to 32 chars (the codebase's own longest codes run 21-28; a 32-char code measures 2332
-// b64 for the full entry — anything longer is unrepresentable in the repo's own style). The
-// guarantee is the OLD boundary: the boundary test crosses 40200 PRE-entry and measures the
-// WITH-entry form at 42560 b64 chars with 32-char codes — EMBED_LIMIT sits above that measured
-// worst case (42700, margin included), so a doc that embedded pre-#150 still embeds once the
-// worst-case entry is stamped.
+// ~32KB of JSON in base64 — well under GitHub's 65536-char comment limit. Post-#156 the embedded blob
+// is the agent's COMPLETE document with NO pipeline overhead: the stop signal rides its own
+// ~140-char compact signal marker BESIDE the blob (never inside it), and scope_metastasis is
+// re-derived at seed time rather than carried. The value is kept at the pre-#156 boundary as a
+// deliberate backward-compat margin, so every review that embedded before the surfacing transform
+// was deleted still embeds — the payload ceiling only rose (the ~2.5KB worst-case surfaced overhead
+// is gone), and the ~140 chars that moved outside the blob grow the whole comment by ~0.2% of the
+// 65536 ceiling, well inside the headroom. The link fallback loses only the re-review findings seed —
+// never the stop signal, which survives in the compact marker.
 export const EMBED_LIMIT = 42700;
 
 // Travels with the marker on every surface so a reader who sees only one comment still knows to decode it.
@@ -559,18 +555,13 @@ export const convergenceSummary = (
     : `**Convergence** 🔄 ${String(score)} > ${String(threshold)} — iterating`;
 };
 
-// The surfaced findings document — what the sticky/review-body findings-json marker actually embeds:
-// the agent's validated findings doc, stamped with the surface version plus the stop signal for an
-// author-agent that decodes the JSON (`converged` as a literal boolean, so the agent cannot get the
-// weights wrong). The agent never writes the signal (it cannot know the score — the weights are
-// commenter-side), so the draft schema does not carry it; `stripSurfaceFields` drops it when a
-// surfaced doc feeds back into the agent channel (the re-review seed). A null signal still stamps
-// the version, so the surface shape is always the marker's contract. The surfaced axis is DISTINCT
-// from the draft axis (DEFAULT_SCHEMA_VERSION is 0.6.0 after issue #134): 0.8.0 is the surfaced
-// shape so stripSurfaceFields can always tell a surfaced doc from a draft one. 0.8.0 adds the
-// agent-facing `scope_metastasis` entry (issue #150) — unlike the pipeline-internal signal, it
-// SURVIVES stripSurfaceFields, because the re-review seed must deliver the recurrence data to the
-// next-round agent (the draft schema tolerates the field so a seed-echoing draft still validates).
+// The version the compact stop-signal marker declares (signalMarker stamps it into that marker's
+// payload) and the version a LEGACY surfaced blob declared before issue #156 deleted the surfacing
+// transform. DISTINCT from the draft axis (DEFAULT_SCHEMA_VERSION is 0.6.0 after issue #134) so the
+// surface channel can never be mistaken for the agent's own document: parseSurfaceSignal accepts a
+// signal marker only at a surface version, and stripSurfaceFields recognizes a legacy surfaced blob
+// by it to peel that blob back to a draft. Post-#156 nothing stamps a surfaced findings DOCUMENT —
+// the embedded blob is the agent's raw draft — but the signal marker still carries this version.
 export const SURFACE_SCHEMA_VERSION = "0.8.0";
 
 export interface ConvergenceSignal {
@@ -586,10 +577,6 @@ export interface SurfaceSignal {
   readonly round: number;
   readonly convergence: ConvergenceSignal;
 }
-
-export type SurfaceFindings = Findings &
-  Partial<SurfaceSignal> &
-  Partial<{ scope_metastasis: ScopeMetastasis }>;
 
 // The pure counts→signal computation, shared by post (a completing round) and render's fallback.
 export const convergenceSignal = (
@@ -609,19 +596,21 @@ export const signalForRound = (
 ): SurfaceSignal => ({ round, convergence: convergenceSignal(counts, threshold) });
 
 // The compact signal marker: the stop signal on its own, self-describing (it declares the surface
-// version, so parseSurfaceSignal's version gate applies to it too). Embedded when the whole-doc
-// payload falls to the link form, and appended by post to a signal-less blob (a notice) so a
-// completed round's `converged` survives that write for the next post to read back.
+// version, so parseSurfaceSignal's version gate applies to it too). Since issue #156 it is the SOLE
+// carrier of the stop signal — the findings blob is the agent's raw document and holds no signal — so
+// surfacedFindingsPointer emits it beside the blob whenever a completed round's signal exists,
+// including when the blob falls to the link form and when a notice carries a prior round's signal
+// forward for the next post to read back.
 export const signalMarker = (signal: SurfaceSignal): string =>
   `<!-- code-review:signal;base64 ${Buffer.from(
     JSON.stringify({ schema_version: SURFACE_SCHEMA_VERSION, ...signal }),
     "utf-8",
   ).toString("base64")} -->`;
 
-// The whole-document marker, surfaced — one helper owns the construction so the sticky, the review
-// body, and the standalone render can never disagree on the embedded shape. When the whole-doc
-// payload falls to the link form (or is dropped), the compact signal marker still embeds — an
-// oversized review's stop signal stays readable and can be carried forward by later posts.
+// The findings blob plus the stop signal — one helper so the sticky, the review body, and the
+// standalone render can never disagree on what is emitted. The blob is the agent's complete document
+// (issue #156); the stop signal always rides the compact marker beside it, so an oversized review
+// that falls to the link form (or is dropped) still surfaces its signal for later posts to carry.
 export const surfacedFindingsPointer = (
   findings: Findings,
   signal: SurfaceSignal | null,
@@ -680,29 +669,31 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   };
 };
 
-// Every surfaced-document version this CLI can strip back to the agent document — grows with each
-// surface version emitted, so a sticky written by an older release still seeds. A dedicated list,
-// deliberately distinct from the draft-version registry axis: only these versions declare the
-// surface shape, so a future draft bump can never be mistaken for one. Derived from the emitted
-// version so the strip path can never silently stop recognizing what surfaceFindings stamps; a
-// future surface bump appends the superseded version(s) here alongside the new one.
+// Every surface-channel version this CLI recognizes: the versions a LEGACY surfaced blob declared
+// (which stripSurfaceFields peels back to the agent document, so a sticky written before issue #156
+// still seeds) plus the version the compact signal marker declares today. A dedicated list,
+// deliberately distinct from the draft-version registry axis: only these versions declare the surface
+// channel, so a draft bump can never be mistaken for one. A future surface bump appends the
+// superseded version(s) here alongside the new one.
 export const SURFACE_SCHEMA_VERSIONS: readonly string[] = ["0.7.0", SURFACE_SCHEMA_VERSION];
 
-// Does a value declare one of the surfaced-document versions? The single gate the surface channel
-// applies wherever it must tell a commenter-stamped surfaced blob from the agent's own draft — the
-// stop-signal read-back (parseSurfaceSignal), the seed's peel-back (stripSurfaceFields), and the
+// Does a value declare one of the surface-channel versions? The single gate the surface channel
+// applies wherever it must tell a commenter-side surface artifact from the agent's own draft — the
+// stop-signal read-back (parseSurfaceSignal), the legacy-blob peel-back (stripSurfaceFields), and the
 // seed's authoritative-vs-echoed scope_metastasis decision all share it.
 export const isSurfaceVersion = (version: unknown): boolean =>
   typeof version === "string" && SURFACE_SCHEMA_VERSIONS.includes(version);
 
-// The inverse for the agent channel: the re-review seed decodes the sticky's surfaced blob, and the
-// agent must only ever see its own document. Version-gated, not key-gated: a doc declaring a known
-// SURFACE version has its pipeline-stamped convergence/round dropped and its version restored to
-// the current draft default, so the seeded draft still validates; anything else (a draft version, an
-// unknown future version, a malformed version) passes through untouched and fails or passes schema
-// validation downstream on its own merits — never silently rewritten. A non-object stays as-is. The
-// agent-facing `scope_metastasis` entry (issue #150) is NOT dropped: it is exactly the recurrence
-// data the next-round agent must see, and the draft schema tolerates it so the seeded doc validates.
+// Peels a LEGACY surfaced blob (pre-#156) back to the agent's own document for the re-review seed —
+// post-#156 a fresh blob is already the agent's draft and passes through untouched. Version-gated,
+// not key-gated: a doc declaring a known SURFACE version has its pipeline-stamped convergence/round
+// dropped and its version restored to the current draft default, so the seeded draft still validates;
+// anything else (a draft version, an unknown future version, a malformed version) passes through
+// untouched and fails or passes schema validation downstream on its own merits — never silently
+// rewritten. A non-object stays as-is. A legacy blob's `scope_metastasis` (issue #150) is NOT dropped
+// here: for a surfaced blob it was pipeline-stamped and authoritative, so it must reach the next-round
+// agent (the draft schema tolerates the field so the seeded doc validates); a draft blob's echoed
+// entry is dropped upstream in the seed, before this runs.
 export const stripSurfaceFields = (doc: unknown): unknown => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return doc;
   const o = doc as Record<string, unknown>;

@@ -919,45 +919,24 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     expect(parseFindingsMarker(body)).toEqual(doc);
   });
 
-  it("budgets the surfaced overhead INCLUDING the worst-case scope_metastasis — a doc at the old embed boundary still embeds as base64 (issues #141 + #150 review r2)", () => {
-    // The WORST-CASE scope_metastasis payload: the real decision prompt plus 2*MAX_CODES_PER_ROUND
-    // recurring entries (the rounds marker keeps the top-8 base plus up to 8 prior-kept codes per
-    // round — the most a completing round can stamp) with 32-char codes — the budgeted assumption
-    // in EMBED_LIMIT's comment (the codebase's own longest codes run 21-28; 32 is the stated
-    // ceiling — issue #150 review r4). Measured at ~2332 base64 chars.
-    const worstCase = {
-      decision_prompt:
-        "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.",
-      recurring: Array.from({ length: 2 * MAX_CODES_PER_ROUND }, () => ({
-        code: "copy-protocol-reimplementation".padEnd(32, "x"),
-        consecutive_rounds: 18,
-        start_round: 1,
-      })),
-    };
+  it("embeds a raw agent doc past the old boundary as base64, with the compact signal marker beside it inside the comment budget (issue #156)", () => {
+    // Post-#156 the blob is the agent's COMPLETE document with no pipeline overhead; the stop signal
+    // rides its own compact marker BESIDE the blob. Grow the raw doc until its base64 form crosses the
+    // old 40200 boundary — the population EMBED_LIMIT's backward-compat margin covers — and assert it
+    // still embeds (not the link form), the signal marker rides beside it, and the whole emitted
+    // surface stays well under GitHub's 65536-char comment ceiling.
+    const b64Len = (d: Findings): number =>
+      Buffer.from(JSON.stringify(d), "utf-8").toString("base64").length;
     let doc = { ...findings, summary: "x".repeat(20000) };
-    const preEntryB64 = (d: Findings): number =>
-      Buffer.from(JSON.stringify(surfacedDoc(d, signal(1, counts(0, 0, 1, 0)))), "utf-8").toString(
-        "base64",
-      ).length;
-    const withEntryB64 = (d: Findings): number =>
-      Buffer.from(
-        JSON.stringify(surfacedDoc(d, signal(1, counts(0, 0, 1, 0)), worstCase)),
-        "utf-8",
-      ).toString("base64").length;
-    // The intended property: a review that embedded at the OLD 40200 boundary (pre-entry form)
-    // still embeds once the worst-case entry is stamped. Grow the summary until the PRE-entry
-    // surfaced form crosses 40200 — the population the budget guarantees.
-    while (preEntryB64(doc) <= 40200) {
+    while (b64Len(doc) <= 40200) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
-    expect(preEntryB64(doc)).toBeGreaterThan(40200);
-    // The limit budgets the stop signal AND the worst-case entry, so the with-entry form stays
-    // within EMBED_LIMIT and embeds as base64 — it doesn't fall to the link form and lose the
-    // seed + signal.
-    expect(withEntryB64(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
-    expect(
-      findingsPointer(surfacedDoc(doc, signal(1, counts(0, 0, 1, 0)), worstCase), undefined),
-    ).toContain(";base64");
+    expect(b64Len(doc)).toBeGreaterThan(40200);
+    expect(b64Len(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
+    const surface = surfacedFindingsPointer(doc, signal(1, counts(0, 0, 1, 0)), undefined);
+    expect(surface).toContain("code-review:findings-json;base64");
+    expect(parseSignalMarker(surface)).not.toBeNull();
+    expect(surface.length).toBeLessThan(65536);
   });
 
   it("stripSurfaceFields drops the surface fields and restores the draft version on a surfaced doc", () => {

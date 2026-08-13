@@ -91,6 +91,21 @@ on:
         type: string
         required: false
         default: ""
+      full_review_effort:
+        description: Reasoning effort for the full (CI-success) route (CLAUDE_CODE_EFFORT_LEVEL); forwarded to review-reusable.
+        type: string
+        required: false
+        default: max
+      mechanic_effort:
+        description: Reasoning effort for the fast fix (CI-failure) route.
+        type: string
+        required: false
+        default: low
+      triage_effort:
+        description: Reasoning effort for the phase-1 security triage.
+        type: string
+        required: false
+        default: max
       use_setup_action:
         description: Run the consumer's local composite at ./.github/actions/code-review-setup
         type: boolean
@@ -282,6 +297,9 @@ jobs:
       opus_model:      ${{ inputs.opus_model }}
       sonnet_model:    ${{ inputs.sonnet_model }}
       haiku_model:     ${{ inputs.haiku_model }}
+      full_review_effort: ${{ inputs.full_review_effort }}
+      mechanic_effort:    ${{ inputs.mechanic_effort }}
+      triage_effort:      ${{ inputs.triage_effort }}
       use_setup_action: ${{ inputs.use_setup_action }}
       install_command:  ${{ inputs.install_command }}
       full_review_time_limit:   ${{ inputs.full_review_time_limit }}

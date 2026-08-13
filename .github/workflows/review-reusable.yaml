@@ -68,6 +68,25 @@ on:
         type: string
         required: false
         default: ""
+      full_review_effort:
+        description: >-
+          Reasoning effort for the full (CI-success) route, passed to the agent CLI as
+          CLAUDE_CODE_EFFORT_LEVEL. Trusted caller config, like model_full — the pinned agent CLI
+          (claude_code_version) owns the valid set, so this is passed through unvalidated rather than
+          checked against an enum this workflow would have to keep in sync with the CLI.
+        type: string
+        required: false
+        default: max
+      mechanic_effort:
+        description: Reasoning effort for the fast fix (CI-failure) route, as CLAUDE_CODE_EFFORT_LEVEL.
+        type: string
+        required: false
+        default: low
+      triage_effort:
+        description: Reasoning effort for the phase-1 security triage, as CLAUDE_CODE_EFFORT_LEVEL.
+        type: string
+        required: false
+        default: max
       use_setup_action:
         description: Run the consumer's local composite at ./.github/actions/code-review-setup (for uses:-based toolchain/cache setup this workflow can't and shouldn't own).
         type: boolean
@@ -462,7 +481,7 @@ jobs:
           ANTHROPIC_BASE_URL: ${{ inputs.api_base_url }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
           ANTHROPIC_MODEL: ${{ inputs.model_full }}
-          CLAUDE_CODE_EFFORT_LEVEL: max
+          CLAUDE_CODE_EFFORT_LEVEL: ${{ inputs.triage_effort }}
         run: |
           set -euo pipefail
 
@@ -557,6 +576,8 @@ jobs:
           MECHANIC_TIME_LIMIT: ${{ inputs.mechanic_time_limit }}
           MECHANIC_GRACE: ${{ inputs.mechanic_grace_period }}
           MECHANIC_USD: ${{ inputs.mechanic_usd_limit }}
+          FULL_REVIEW_EFFORT: ${{ inputs.full_review_effort }}
+          MECHANIC_EFFORT: ${{ inputs.mechanic_effort }}
           DURATION_OVERRIDE: ${{ inputs.duration_override }}
           USD_OVERRIDE: ${{ inputs.usd_override }}
           EXTRA_INSTRUCTIONS: ${{ inputs.extra_instructions }}
@@ -584,7 +605,7 @@ jobs:
           # Route + effort are decided once here and stamped into the envelope by `adapt` below,
           # so the comment footer reflects the run instead of re-deriving and risking drift.
           if [ "$CONCLUSION" = "success" ]; then
-            ROUTE="full review"; EFFORT="max"
+            ROUTE="full review"; EFFORT="$FULL_REVIEW_EFFORT"
             PROMPT="/code-review"
             ROUTE_NOTE=""
             # A TRUSTED, first-class convergence steer — its OWN variable, spliced into the prompt
@@ -663,7 +684,7 @@ jobs:
                 fi ;;
             esac
           else
-            ROUTE="mechanic"; EFFORT="low"
+            ROUTE="mechanic"; EFFORT="$MECHANIC_EFFORT"
             PROMPT="CI failed on this PR. The diff at pr.diff and the failing job logs at job_*.log show what broke. Propose minimal, targeted fixes ONLY for the failures — no comprehensive review. Do not fix unrelated issues."
             # Mechanic = CI-fix pass, not a review. Seed the sentinel WITHOUT prior context (no
             # --prior) so a prior full review's non-CI findings are never decoded, written, or left

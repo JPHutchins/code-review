@@ -3365,7 +3365,10 @@ describe("post — convergence rounds (issue #125)", () => {
     };
   }
 
-  // The surfaced findings blob embedded in whichever sticky write this run made (patch or post).
+  // The machine channel embedded in whichever sticky write this run made (patch or post). Since
+  // issue #156 the findings blob is the agent's COMPLETE document (no surfaced round/convergence), and
+  // the stop signal rides its own standalone compact marker — so this merges the two the way a reader
+  // does: the raw findings doc plus the round/convergence the signal marker carries.
   const decodedBlob = (calls: readonly RecordedCall[]): DecodedBlob => {
     const sticky = calls.find(
       (c) =>
@@ -3379,74 +3382,29 @@ describe("post — convergence rounds (issue #125)", () => {
     return JSON.parse(Buffer.from(b64, "base64").toString("utf-8")) as DecodedBlob;
   };
 
+  // The stop signal the sticky carries — since issue #156 it always rides the standalone compact
+  // marker (a completing round's own signal, or a notice's carried-forward prior), never the blob.
+  // Throws when absent so a round/convergence assertion reads it directly, like decodedBlob.
+  const stickySignal = (calls: readonly RecordedCall[]): DecodedBlob => {
+    const sticky = calls.find(
+      (c) =>
+        (c.args[0] === "repos/owner/repo/issues/comments/999" ||
+          c.args[0] === "repos/owner/repo/issues/42/comments") &&
+        c.stdin !== undefined,
+    );
+    const body = (JSON.parse(sticky?.stdin ?? "{}") as CommentBody).body;
+    const signal = parseSignalMarker(body);
+    if (signal === null) throw new Error("no compact signal marker in the sticky");
+    return signal as DecodedBlob;
+  };
+
   it("a full review's blob carries round + convergence from the round just appended (issue #141)", async () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
-    const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.8.0");
+    const blob = stickySignal(calls());
     expect(blob.round).toBe(2);
     // The default fixture findings are one minor → score 1 at the default threshold 1 → converged.
     expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
-  });
-
-  it("a completing round stamps scope_metastasis into the blob — per-code counts from the rounds history (issue #150)", async () => {
-    // Three prior rounds each carried a finding coded `recurring-a`; this round carries one too, so
-    // the streak reaches 4 and the surfaced blob must embed the structured entry — the machine
-    // channel a decoding agent reads, exactly what the sticky's prose note renders.
-    const priorRounds = [
-      {
-        critical: 0,
-        major: 0,
-        minor: 1,
-        nit: 0,
-        codes: { "recurring-a": 1 },
-        sha: "sha1",
-        round: 1,
-      },
-      {
-        critical: 0,
-        major: 0,
-        minor: 1,
-        nit: 0,
-        codes: { "recurring-a": 1 },
-        sha: "sha2",
-        round: 2,
-      },
-      {
-        critical: 0,
-        major: 0,
-        minor: 1,
-        nit: 0,
-        codes: { "recurring-a": 1 },
-        sha: "sha3",
-        round: 3,
-      },
-    ];
-    const markers = [
-      "<!-- review-complete -->",
-      `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(priorRounds), "utf-8").toString("base64")} -->`,
-    ].join("\\n");
-    writeFileSync(
-      join(tmpDir, "findings.json"),
-      JSON.stringify(mkFindings([mkFinding({ code: "recurring-a" })])),
-    );
-    const { api, calls } = mkMockGhApi(mkMocks(`<!-- code-review -->\\n${markers}\\nold`));
-    await post(mkInput({ route: "full review" }), api);
-    const blob = decodedBlob(calls()) as DecodedBlob & {
-      readonly scope_metastasis?: {
-        readonly decision_prompt: string;
-        readonly recurring: readonly {
-          readonly code: string;
-          readonly consecutive_rounds: number;
-          readonly start_round: number;
-        }[];
-      };
-    };
-    expect(blob.round).toBe(4);
-    expect(blob.scope_metastasis?.recurring).toEqual([
-      { code: "recurring-a", consecutive_rounds: 4, start_round: 1 },
-    ]);
-    expect(blob.scope_metastasis?.decision_prompt.length).toBeGreaterThan(0);
   });
 
   it("a mechanic pass stamps NO scope_metastasis — recurrence claims are a property of review rounds (issue #150)", async () => {
@@ -3510,7 +3468,7 @@ describe("post — convergence rounds (issue #125)", () => {
     );
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
     await post(mkInput({ route: "full review" }), api);
-    const blob = decodedBlob(calls());
+    const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
     // major=2 > threshold 1 → iterating, exactly what the badge would render for this round.
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
@@ -3520,7 +3478,7 @@ describe("post — convergence rounds (issue #125)", () => {
     // The prior round is {major: 1} → score 2 > threshold 1 → iterating; a mechanic is not a round.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "mechanic" }), api);
-    const blob = decodedBlob(calls());
+    const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
@@ -3537,7 +3495,6 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.8.0");
     expect(blob.convergence).toBeUndefined();
     expect(blob.round).toBeUndefined();
     // The notice never claims a signal itself, but the prior round's `converged` survives on the
@@ -3577,7 +3534,6 @@ describe("post — convergence rounds (issue #125)", () => {
     ]);
     await post(mkInput({ route: "mechanic" }), api);
     const blob = decodedBlob(calls());
-    expect(blob.schema_version).toBe("0.8.0");
     expect(blob.convergence).toBeUndefined();
     expect(blob.round).toBeUndefined();
   });
@@ -3608,7 +3564,7 @@ describe("post — convergence rounds (issue #125)", () => {
     // must keep the round's own threshold and verdict.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "mechanic", convergenceThreshold: 3 }), api);
-    const blob = decodedBlob(calls());
+    const blob = stickySignal(calls());
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
 
@@ -3642,7 +3598,7 @@ describe("post — convergence rounds (issue #125)", () => {
       post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
     ).rejects.toThrow("exit");
     exitSpy.mockRestore();
-    const blob = decodedBlob(calls());
+    const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
@@ -3652,7 +3608,7 @@ describe("post — convergence rounds (issue #125)", () => {
     // corrupt round was filtered by parseRounds) — the new round must be 3, never 2 again.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1, signalRound: 2 }));
     await post(mkInput({ route: "full review" }), api);
-    const blob = decodedBlob(calls());
+    const blob = stickySignal(calls());
     expect(blob.round).toBe(3);
     expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
   });
@@ -3662,7 +3618,7 @@ describe("post — convergence rounds (issue #125)", () => {
     // compact signal marker remains, and the carry must still find it.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1, blobLink: true }));
     await post(mkInput({ route: "mechanic" }), api);
-    const blob = decodedBlob(calls());
+    const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
@@ -3713,16 +3669,16 @@ describe("post — answered findings (issue #151)", () => {
       ) as CommentBody
     ).body;
 
-  const decodedBlob = (calls: readonly RecordedCall[]): { readonly convergence?: unknown } => {
+  // The stop signal the sticky carries — since issue #156 it rides the standalone compact marker,
+  // not the findings blob (which is now the agent's complete document verbatim).
+  const stickySignal = (calls: readonly RecordedCall[]): { readonly convergence?: unknown } => {
     const sticky = calls.find(
       (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
     );
     const body = (JSON.parse(sticky?.stdin ?? "{}") as CommentBody).body;
-    const b64 = /code-review:findings-json;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
-    if (b64 === undefined) throw new Error("no embedded findings marker in the sticky");
-    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8")) as {
-      readonly convergence?: unknown;
-    };
+    const signal = parseSignalMarker(body);
+    if (signal === null) throw new Error("no compact signal marker in the sticky");
+    return signal;
   };
 
   it("treats a VERBATIM re-raise of an answered finding as closed — dropped from the review, the round counts, and the stop signal, named in the sticky", async () => {
@@ -3742,7 +3698,7 @@ describe("post — answered findings (issue #151)", () => {
     expect(body).toContain("discussion_r102");
     // The round counts and the stop signal reflect the dismissal: the dropped finding is a minor,
     // so this round is clean and reads converged — it does not block convergence.
-    const blob = decodedBlob(calls()) as { readonly convergence?: { readonly score: number } };
+    const blob = stickySignal(calls()) as { readonly convergence?: { readonly score: number } };
     expect(blob.convergence).toEqual({ score: 0, threshold: 1, converged: true });
   });
 

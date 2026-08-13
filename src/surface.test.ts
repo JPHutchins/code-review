@@ -1089,10 +1089,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
 
   it("emits ONLY the compact signal marker when the whole-doc payload is too large and no jsonUrl is given", () => {
     let doc = { ...findings, summary: "x".repeat(20000) };
-    while (
-      Buffer.from(JSON.stringify(surfacedDoc(doc, signal)), "utf-8").toString("base64").length <=
-      EMBED_LIMIT
-    ) {
+    while (Buffer.from(JSON.stringify(doc), "utf-8").toString("base64").length <= EMBED_LIMIT) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
     const pointer = surfacedFindingsPointer(doc, signal, undefined);
@@ -1103,10 +1100,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
 
   it("emits the link marker PLUS the compact signal marker when a jsonUrl fallback is available", () => {
     let doc = { ...findings, summary: "x".repeat(20000) };
-    while (
-      Buffer.from(JSON.stringify(surfacedDoc(doc, signal)), "utf-8").toString("base64").length <=
-      EMBED_LIMIT
-    ) {
+    while (Buffer.from(JSON.stringify(doc), "utf-8").toString("base64").length <= EMBED_LIMIT) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
     const pointer = surfacedFindingsPointer(doc, signal, "https://example.com/findings.zip");
@@ -1116,10 +1110,11 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     expect(pointer).toContain("code-review:signal;base64");
   });
 
-  it("embeds no signal marker when the whole-doc payload embeds as base64", () => {
+  it("carries the compact signal marker alongside the base64 blob — the signal always rides its own marker now (issue #156)", () => {
     const pointer = surfacedFindingsPointer(findings, signal, undefined);
     expect(pointer).toContain("findings-json;base64");
-    expect(pointer).not.toContain("code-review:signal;base64");
+    expect(pointer).toContain("code-review:signal;base64");
+    expect(parseSignalMarker(pointer)).toEqual(signal);
   });
 
   it("parseSignalMarker returns null when the body carries no signal marker", () => {
@@ -1129,10 +1124,7 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
 
   it("carryForwardMarkers preserves the signal marker alongside the findings marker", () => {
     let doc = { ...findings, summary: "x".repeat(20000) };
-    while (
-      Buffer.from(JSON.stringify(surfacedDoc(doc, signal)), "utf-8").toString("base64").length <=
-      EMBED_LIMIT
-    ) {
+    while (Buffer.from(JSON.stringify(doc), "utf-8").toString("base64").length <= EMBED_LIMIT) {
       doc = { ...doc, summary: `${doc.summary}x` };
     }
     const pointer = surfacedFindingsPointer(doc, signal, "https://example.com/findings.zip");

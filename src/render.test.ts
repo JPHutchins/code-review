@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
-import { formatConfidence } from "./surface.js";
+import { formatConfidence, parseSignalMarker } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -189,7 +189,7 @@ describe("render", () => {
       expect(result).not.toContain("Reviewing agents: fetch");
     });
 
-    it("embeds the SURFACED findings document — the agent's fields plus the current surface version (issue #141)", () => {
+    it("embeds the agent's COMPLETE document verbatim — no surfacing transform to drift from it (issue #156)", () => {
       const findings = mkFindings([
         mkFinding({ severity: "critical", title: "Round-trip me", description: "detail here" }),
       ]);
@@ -199,11 +199,12 @@ describe("render", () => {
       const decoded: unknown = JSON.parse(
         Buffer.from(match?.[1] ?? "", "base64").toString("utf-8"),
       );
-      // No round history is supplied, so the surfaced doc carries no convergence — only the stamp.
-      expect(decoded).toEqual({ ...findings, schema_version: "0.8.0" });
+      // The blob is byte-identical to the agent's document — the round state (signal, scope
+      // metastasis) rides its own markers, not a second, divergeable copy of the findings.
+      expect(decoded).toEqual(findings);
     });
 
-    it("embeds the convergence stop signal (score/threshold/converged + round) when round history is supplied (#141)", () => {
+    it("carries the convergence stop signal (score/threshold/converged + round) in the compact marker when round history is supplied (#141)", () => {
       const findings = mkFindings([mkFinding({ severity: "minor" })]);
       const result = render({
         findings,
@@ -213,82 +214,10 @@ describe("render", () => {
         route: "full review",
         rounds: [{ critical: 0, major: 0, minor: 1, nit: 0 }],
       });
-      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
-      expect(match).not.toBeNull();
-      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
-        readonly schema_version: string;
-        readonly round?: number;
-        readonly convergence?: {
-          readonly score: number;
-          readonly threshold: number;
-          readonly converged: boolean;
-        };
-      };
-      expect(decoded.schema_version).toBe("0.8.0");
-      expect(decoded.round).toBe(1);
-      expect(decoded.convergence).toEqual({ score: 1, threshold: 1, converged: true });
-    });
-
-    it("embeds the structured scope_metastasis entry when a recurring mechanism completed a round — the machine channel carries what the prose note says (issue #150)", () => {
-      const findings = mkFindings([
-        mkFinding({ severity: "minor", code: "recurring-a" }),
-        mkFinding({ severity: "minor", code: "recurring-a" }),
-      ]);
-      const rounds = [
-        {
-          critical: 0,
-          major: 0,
-          minor: 1,
-          nit: 0,
-          codes: { "recurring-a": 1 },
-          sha: "sha1",
-          round: 1,
-        },
-        {
-          critical: 0,
-          major: 0,
-          minor: 1,
-          nit: 0,
-          codes: { "recurring-a": 2 },
-          sha: "sha2",
-          round: 2,
-        },
-        {
-          critical: 0,
-          major: 0,
-          minor: 1,
-          nit: 0,
-          codes: { "recurring-a": 2 },
-          sha: "sha3",
-          round: 3,
-        },
-      ];
-      const result = render({
-        findings,
-        envelope: baseEnvelope,
-        prices,
-        template,
-        route: "full review",
-        rounds,
-      });
-      expect(result).toContain("Scope metastasis");
-      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
-      expect(match).not.toBeNull();
-      const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
-        readonly schema_version: string;
-        readonly scope_metastasis?: {
-          readonly decision_prompt: string;
-          readonly recurring: readonly {
-            readonly code: string;
-            readonly consecutive_rounds: number;
-          }[];
-        };
-      };
-      expect(decoded.schema_version).toBe("0.8.0");
-      expect(decoded.scope_metastasis?.recurring).toEqual([
-        { code: "recurring-a", consecutive_rounds: 3, start_round: 1 },
-      ]);
-      expect(decoded.scope_metastasis?.decision_prompt.length).toBeGreaterThan(0);
+      // Since issue #156 the stop signal rides the standalone compact marker, not the findings blob.
+      const signal = parseSignalMarker(result);
+      expect(signal?.round).toBe(1);
+      expect(signal?.convergence).toEqual({ score: 1, threshold: 1, converged: true });
     });
 
     it("embeds NO scope_metastasis entry on a non-round render — the machine channel and the prose note share the gate (issue #150)", () => {

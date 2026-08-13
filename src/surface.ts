@@ -656,8 +656,7 @@ export const parseSignalMarker = (body: string): SurfaceSignal | null => {
 export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return null;
   const o = doc as Record<string, unknown>;
-  const declared = o["schema_version"];
-  if (typeof declared !== "string" || !SURFACE_SCHEMA_VERSIONS.includes(declared)) return null;
+  if (!isSurfaceVersion(o["schema_version"])) return null;
   const round = o["round"];
   const convergence = o["convergence"];
   if (typeof round !== "number" || !Number.isSafeInteger(round) || round < 1) return null;
@@ -689,6 +688,13 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // future surface bump appends the superseded version(s) here alongside the new one.
 export const SURFACE_SCHEMA_VERSIONS: readonly string[] = ["0.7.0", SURFACE_SCHEMA_VERSION];
 
+// Does a value declare one of the surfaced-document versions? The single gate the surface channel
+// applies wherever it must tell a commenter-stamped surfaced blob from the agent's own draft — the
+// stop-signal read-back (parseSurfaceSignal), the seed's peel-back (stripSurfaceFields), and the
+// seed's authoritative-vs-echoed scope_metastasis decision all share it.
+export const isSurfaceVersion = (version: unknown): boolean =>
+  typeof version === "string" && SURFACE_SCHEMA_VERSIONS.includes(version);
+
 // The inverse for the agent channel: the re-review seed decodes the sticky's surfaced blob, and the
 // agent must only ever see its own document. Version-gated, not key-gated: a doc declaring a known
 // SURFACE version has its pipeline-stamped convergence/round dropped and its version restored to
@@ -700,8 +706,7 @@ export const SURFACE_SCHEMA_VERSIONS: readonly string[] = ["0.7.0", SURFACE_SCHE
 export const stripSurfaceFields = (doc: unknown): unknown => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return doc;
   const o = doc as Record<string, unknown>;
-  const declared = o["schema_version"];
-  if (typeof declared !== "string" || !SURFACE_SCHEMA_VERSIONS.includes(declared)) return doc;
+  if (!isSurfaceVersion(o["schema_version"])) return doc;
   const rest = Object.fromEntries(
     Object.entries(o).filter(([key]) => key !== "convergence" && key !== "round"),
   );

@@ -44,6 +44,7 @@ import {
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
   computeScopeMetastasis,
+  isSurfaceVersion,
   parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
@@ -802,6 +803,21 @@ const validateCmd = defineCommand({
   },
 });
 
+// A decoded prior blob that declares a surfaced version — its scope_metastasis was pipeline-stamped
+// and is authoritative; a draft blob's is at most an agent echo. Guards non-objects.
+const isSurfaceStampedDoc = (doc: unknown): boolean =>
+  typeof doc === "object" &&
+  doc !== null &&
+  !Array.isArray(doc) &&
+  isSurfaceVersion((doc as Record<string, unknown>)["schema_version"]);
+
+// The prior document with any scope_metastasis entry removed — a no-op on a non-object. Mirrors the
+// stripSurfaceFields filter idiom.
+const withoutScopeMetastasis = (doc: unknown): unknown =>
+  typeof doc === "object" && doc !== null && !Array.isArray(doc)
+    ? Object.fromEntries(Object.entries(doc).filter(([key]) => key !== "scope_metastasis"))
+    : doc;
+
 const seedDraftCmd = defineCommand({
   meta: {
     name: "seed-draft",
@@ -893,18 +909,26 @@ const seedDraftCmd = defineCommand({
         ? raw.body
         : null;
     })();
-    // The surfaced blob (agent doc + pipeline-stamped convergence/round) is stripped back to the
-    // agent's own document before seeding — the agent must only ever see its own fields, and only
-    // draft versions validate against the registry.
+    const parsedPrior = priorBody === null ? null : parseFindingsMarker(priorBody);
+    // A legacy surfaced blob (0.7/0.8) had its scope_metastasis PIPELINE-stamped fresh every round,
+    // so a carried entry is authoritative that round; the post-#156 blob is the agent's own document
+    // (a draft version) and carries no pipeline stamp, so any scope_metastasis in it is the agent
+    // ECHOING the entry the prior seed attached to its context — stale the moment the recurrence
+    // changes. Drop that echo up front (the surface peel-back keeps a legacy blob's authoritative
+    // entry) so the recurrence signal comes solely from the rounds-marker re-derivation below, never
+    // a carried copy that can outlive the streak it claims.
     const strippedPrior =
-      priorBody === null ? null : stripSurfaceFields(parseFindingsMarker(priorBody));
-    // The agent-facing scope_metastasis entry (issue #150) SURVIVES the strip, but a completed
-    // pre-0.8 blob lacks it. The recurrence data is then derivable from the carried rounds marker —
-    // the same computation post() stamps — so the seed re-attaches it: the next-round agent must
-    // see the recurrence signal even when the last post predates the field. The re-attach is
-    // best-effort: if the in-force schema (a consumer-pinned custom --schema predating the field)
-    // rejects the adorned doc, the un-adorned prior is seeded instead — losing the recurrence
-    // entry beats losing ALL prior context.
+      parsedPrior === null
+        ? null
+        : stripSurfaceFields(
+            isSurfaceStampedDoc(parsedPrior) ? parsedPrior : withoutScopeMetastasis(parsedPrior),
+          );
+    // The agent-facing scope_metastasis entry is derivable from the carried rounds marker — the same
+    // computation post() ran when it stamped it — so the seed re-attaches it: the next-round agent
+    // must see the recurrence signal. A legacy blob whose stripped doc still carries the authoritative
+    // pipeline stamp keeps it. The re-attach is best-effort: if the in-force schema (a consumer-pinned
+    // custom --schema predating the field) rejects the adorned doc, the un-adorned prior is seeded
+    // instead — losing the recurrence entry beats losing ALL prior context.
     const priorFindings = ((): unknown => {
       if (
         strippedPrior === null ||
@@ -912,9 +936,10 @@ const seedDraftCmd = defineCommand({
         Array.isArray(strippedPrior)
       )
         return strippedPrior;
-      // A carried entry only counts when it VALIDATES as the entry shape — an explicit null, an
-      // array, or a malformed object (all possible in a corrupt blob; genuine posts omit the key
-      // on null) falls through to the rounds-marker recovery like an absent one (issues #150
+      // A carried entry only counts when it VALIDATES as the entry shape — for a draft blob it is
+      // already dropped (only a legacy pipeline-stamped blob reaches here with one), and an explicit
+      // null, an array, or a malformed object (all possible in a corrupt blob; genuine posts omit the
+      // key on null) falls through to the rounds-marker recovery like an absent one (issues #150
       // review r3 + r4). The derivation is also gated on the prior's verdict exactly like post's
       // stamp (isRound requires a review verdict): an error-verdict prior never carries a
       // re-derived entry (issue #150 review r4).

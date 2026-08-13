@@ -1255,6 +1255,132 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.scope_metastasis).toEqual(entry);
   });
 
+  it("re-derives scope_metastasis from the rounds marker for a draft blob, overriding a STALE agent echo — a draft blob's entry is never authoritative (issue #156)", async () => {
+    // A 0.6.0 draft blob is the agent's own document: any scope_metastasis in it is the agent echoing
+    // what the prior seed attached, not a fresh pipeline stamp. The seed must re-derive from the
+    // carried rounds history and ignore the echo, so a next-round agent never sees a stale claim.
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "fresh-code": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "fresh-code": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "fresh-code": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const draftBlob = {
+      ...priorFindings,
+      schema_version: "0.6.0",
+      scope_metastasis: {
+        decision_prompt: "stale echo",
+        recurring: [{ code: "stale-code", consecutive_rounds: 9, start_round: 1 }],
+      },
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(draftBlob as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: {
+        recurring: { code: string; consecutive_rounds: number; start_round: number }[];
+      };
+    };
+    expect(context.scope_metastasis?.recurring).toEqual([
+      { code: "fresh-code", consecutive_rounds: 3, start_round: 1 },
+    ]);
+  });
+
+  it("drops a draft blob's echoed scope_metastasis when the rounds history shows the streak ENDED — no stale recurrence claim reaches the next round (issue #156)", async () => {
+    // recurring-a streaked rounds 1–3 but is absent from round 4 (the latest): the streak is broken,
+    // so re-derivation yields nothing. The agent's echoed 3-round claim must NOT survive to seed the
+    // next round — the pre-#156 pipeline stamp made a carried entry always fresh; the seed now owns
+    // that freshness.
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "recurring-a": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "other-code": 1 },
+        sha: "sha4",
+        round: 4,
+      },
+    ];
+    const draftBlob = {
+      ...priorFindings,
+      schema_version: "0.6.0",
+      scope_metastasis: {
+        decision_prompt: "stale echo",
+        recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+      },
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(draftBlob as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toBeUndefined();
+  });
+
   it("degrades to the un-adorned prior when the in-force schema predates scope_metastasis — a custom --schema must not silently drop prior context (issue #150 review r2)", async () => {
     // A consumer-pinned custom schema without the scope_metastasis property (additionalProperties:
     // false) rejects the re-attached doc; the seed must fall back to the un-adorned prior rather

@@ -584,7 +584,7 @@ jobs:
           # Route + effort are decided once here and stamped into the envelope by `adapt` below,
           # so the comment footer reflects the run instead of re-deriving and risking drift.
           if [ "$CONCLUSION" = "success" ]; then
-            ROUTE="full review"; EFFORT="xhigh"
+            ROUTE="full review"; EFFORT="max"
             PROMPT="/code-review"
             ROUTE_NOTE=""
             # A TRUSTED, first-class convergence steer — its OWN variable, spliced into the prompt

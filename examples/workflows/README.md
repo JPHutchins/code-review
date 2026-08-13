@@ -75,8 +75,8 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
         conclusion:    ${{ github.event.workflow_run.conclusion }}
         trigger_event: ${{ github.event.workflow_run.event }}
         api_base_url:  ${{ vars.API_BASE_URL }}
-        model_full:    deepseek-v4-flash     # required — pick alongside api_base_url
-        model_mechanic: deepseek-v4-flash    # required
+        model_full:    deepseek-v4-pro     # required — pick alongside api_base_url
+        model_mechanic: deepseek-v4-pro    # required
       secrets:
         MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
   ```

@@ -271,7 +271,7 @@ jobs:
         env:
           ANTHROPIC_BASE_URL: ${{ vars.API_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
-          ANTHROPIC_MODEL: deepseek-v4-flash
+          ANTHROPIC_MODEL: deepseek-v4-pro
           CLAUDE_CODE_EFFORT_LEVEL: max
         run: |
           set -euo pipefail
@@ -346,11 +346,11 @@ jobs:
         env:
           ANTHROPIC_BASE_URL: ${{ vars.API_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
-          ANTHROPIC_MODEL: ${{ steps.gather.outputs.conclusion == 'success' && 'deepseek-v4-flash' || 'deepseek-v4-flash' }}
-          # CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-flash # optionally override subagent
-          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-flash # tier aliases — what the agent's
-          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-flash # internal model picks resolve to
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
+          ANTHROPIC_MODEL: ${{ steps.gather.outputs.conclusion == 'success' && 'deepseek-v4-pro' || 'deepseek-v4-pro' }}
+          # CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-pro # optionally override subagent
+          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro # tier aliases — what the agent's
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro # internal model picks resolve to
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-pro
           # This review fans subagents into the BACKGROUND (the single-writer rule below). By default
           # `claude -p` kills still-running background tasks 600s after the MAIN turn ends — far short
           # of our wall+grace, silently cutting a mid-flight fan-out. 0 ⇒ wait indefinitely, so the
@@ -383,7 +383,7 @@ jobs:
           # Route + effort are decided once here and stamped into the envelope by `adapt` below,
           # so the comment footer reflects the run instead of re-deriving and risking drift.
           if [ "$CONCLUSION" = "success" ]; then
-            ROUTE="full review"; EFFORT="xhigh"
+            ROUTE="full review"; EFFORT="max"
             PROMPT="/code-review"
             ROUTE_NOTE=""
             # A TRUSTED, first-class convergence steer — its OWN variable, spliced into the prompt

@@ -83,7 +83,10 @@ on:
         required: false
         default: low
       triage_effort:
-        description: Reasoning effort for the phase-1 security triage, as CLAUDE_CODE_EFFORT_LEVEL.
+        description: >-
+          Reasoning effort for the phase-1 security triage — the prompt-injection screen on untrusted
+          PR code. Empty coerces to max at consumption, so an unset var can never silently weaken the
+          gate; a consumer can still lower it explicitly, at their own risk.
         type: string
         required: false
         default: max
@@ -481,7 +484,7 @@ jobs:
           ANTHROPIC_BASE_URL: ${{ inputs.api_base_url }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
           ANTHROPIC_MODEL: ${{ inputs.model_full }}
-          CLAUDE_CODE_EFFORT_LEVEL: ${{ inputs.triage_effort }}
+          CLAUDE_CODE_EFFORT_LEVEL: ${{ inputs.triage_effort != '' && inputs.triage_effort || 'max' }}
         run: |
           set -euo pipefail
 
@@ -576,8 +579,12 @@ jobs:
           MECHANIC_TIME_LIMIT: ${{ inputs.mechanic_time_limit }}
           MECHANIC_GRACE: ${{ inputs.mechanic_grace_period }}
           MECHANIC_USD: ${{ inputs.mechanic_usd_limit }}
-          FULL_REVIEW_EFFORT: ${{ inputs.full_review_effort }}
-          MECHANIC_EFFORT: ${{ inputs.mechanic_effort }}
+          # Coerce an explicit empty string to the default — a workflow_call default applies only when
+          # the key is OMITTED, but a consumer wiring `full_review_effort: ${{ vars.X }}` with X unset
+          # passes "", which would otherwise reach the agent as an empty effort. Same idiom as the model
+          # tier aliases above. The triage gate is coerced identically so an unset var can't weaken it.
+          FULL_EFFORT: ${{ inputs.full_review_effort != '' && inputs.full_review_effort || 'max' }}
+          MECHANIC_EFFORT: ${{ inputs.mechanic_effort != '' && inputs.mechanic_effort || 'low' }}
           DURATION_OVERRIDE: ${{ inputs.duration_override }}
           USD_OVERRIDE: ${{ inputs.usd_override }}
           EXTRA_INSTRUCTIONS: ${{ inputs.extra_instructions }}
@@ -605,7 +612,7 @@ jobs:
           # Route + effort are decided once here and stamped into the envelope by `adapt` below,
           # so the comment footer reflects the run instead of re-deriving and risking drift.
           if [ "$CONCLUSION" = "success" ]; then
-            ROUTE="full review"; EFFORT="$FULL_REVIEW_EFFORT"
+            ROUTE="full review"; EFFORT="$FULL_EFFORT"
             PROMPT="/code-review"
             ROUTE_NOTE=""
             # A TRUSTED, first-class convergence steer — its OWN variable, spliced into the prompt
@@ -705,7 +712,9 @@ jobs:
           # Only override the subagent model when the consumer set one; otherwise subagents inherit
           # the route model, matching the single-file workflow's default (env-unset) behavior.
           if [ -n "${SUBAGENT_MODEL:-}" ]; then export CLAUDE_CODE_SUBAGENT_MODEL="$SUBAGENT_MODEL"; fi
-          echo "::group::Route: $CONCLUSION → $ROUTE (effort: $EFFORT)"
+          # Strip newlines from the caller-tunable effort before the group echo — a block-scalar value
+          # could otherwise inject workflow commands (::endgroup::/::error::) into the run log.
+          echo "::group::Route: $CONCLUSION → $ROUTE (effort: ${EFFORT//[$'\n\r']/})"
 
           # Triage passed — NOW check out the PR head. This exposes exactly the surface triage scanned
           # (./full.diff over the trusted base, plus the ./commits.json messages a `git log` reveals),

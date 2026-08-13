@@ -164,7 +164,7 @@ on:
 # code-review is pinned here, not exposed as an input — the CLI and this workflow are one system
 # released together. Kept in step with review-reusable's pin; both are bumped in the release commit.
 env:
-  CODE_REVIEW_VERSION: 0.1.0-alpha.41
+  CODE_REVIEW_VERSION: 0.1.0-alpha.42
 
 jobs:
   # Trusted gate: parse the in-comment args, resolve the PR head from its NUMBER via the API, and ack.

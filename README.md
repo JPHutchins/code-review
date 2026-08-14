@@ -100,61 +100,45 @@ links to:
   downstream tool) SHOULD base64-decode and parse that marker rather than parse the comment's prose.
   Embedding in the comment (rather than only linking the artifact) keeps the pointer from expiring
   with artifact retention; when the encoded findings are too large to embed, the sticky falls back to
-  a `<!-- code-review:findings-json <url> -->` link marker instead (the linked `findings.json` is the
-  agent's draft and lacks the surfaced fields below) — the shared serializer is
+  a `<!-- code-review:findings-json <url> -->` link marker instead. The shared serializer is
   [`src/surface.ts`](src/surface.ts).
 
-  The embedded document is the **surfaced** findings document: the agent's findings
-  (`schema_version` 0.6.0 contract, which is what the review agent is held to and what
-  [`schema/findings.schema.json`](schema/findings.schema.json) validates) stamped with the
-  `0.8.0` surface version, the pipeline-computed convergence state of the **last completed
-  full-review round**, and the advisory `scope_metastasis` entry (issue #150):
+  The embedded document is the agent's **complete** findings document — the same `schema_version`
+  0.6.0 contract the review agent is held to and
+  [`schema/findings.schema.json`](schema/findings.schema.json) validates, and the same object the
+  comment is rendered from. It is embedded verbatim: no field is added or dropped, so the machine
+  channel can never carry less than, or drift from, the rendered prose.
 
   ```json
   {
-    "schema_version": "0.8.0",
+    "schema_version": "0.6.0",
     "verdict": "comment",
     "summary": "...",
-    "convergence": { "score": 1, "threshold": 1, "converged": true },
-    "round": 4,
-    "scope_metastasis": {
-      "decision_prompt": "Findings keep recurring in the same mechanism across consecutive rounds — each fix keeps enabling the next finding in that machinery. This is a decision, not a directive: state in your summary whether you are committing to the expanding scope (plan the remaining facets of the recurring mechanism(s) above as one unit) or narrowing the scope so the recurrence stops.",
-      "recurring": [
-        { "code": "mixin-field-guard-gap", "consecutive_rounds": 4, "start_round": 1 }
-      ]
-    },
     "findings": []
   }
   ```
 
-  `convergence` (`score` = critical·4 + major·2 + minor·1 + nit·0, `threshold` default 1, `converged`
-  = score ≤ threshold, as a literal boolean) and `round` (the count of completed full-review rounds)
-  are the deterministic **stop signal** for an iterating author-agent: `converged: true` means the
-  last completed round is at or below the convergence tolerance, so another iteration round is not
-  warranted. The agent never writes these fields — the commenter computes them from the review's own
-  severities at render time — and they are omitted until at least one full-review round has
-  completed. They survive the "review in progress" banner: the banner replaces only the sticky's
-  prose and carries the embedded marker forward verbatim. `scope_metastasis` is the structured
-  counterpart of the sticky's "Scope metastasis" warning — per-code consecutive-round counts plus a
-  decision prompt — computed from the same rounds history and omitted when no mechanism recurred. It
-  is deliberately NOT stripped when a surfaced blob feeds the re-review seed: a decoding agent — and
-  the next-round reviewer — must see the recurrence data to answer the scope decision. The 0.8.0
-  surfaced contract applies to the **whole-document** marker only; each inline comment embeds a
-  per-finding fragment (`schema_version` + one finding) at the draft's own version, since the
-  fragment carries no stop signal.
+  The deterministic **stop signal** for an iterating author-agent rides its own compact marker beside
+  the findings blob, `<!-- code-review:signal;base64 <base64> -->`, whose decoded payload is
+  `{ "schema_version": "0.8.0", "round": <n>, "convergence": { "score": <s>, "threshold": <t>, "converged": <bool> } }`.
+  `round` is the count of completed full-review rounds; `convergence.score` = critical·4 + major·2 +
+  minor·1 + nit·0, `threshold` defaults to 1, and `converged` = score ≤ threshold as a literal
+  boolean — `converged: true` means the last completed round is at or below the tolerance, so another
+  iteration round is not warranted. The commenter computes the signal from the review's own severities
+  (the agent never writes it); it appears once at least one full-review round has completed and is
+  carried verbatim afterward — a mechanic (CI-fix) pass or an envelope-loss notice re-emits the last
+  completed round's signal rather than re-deriving it, so an operator changing `convergence_threshold`
+  mid-PR cannot flip a stored `converged`, and a notice never fabricates a stop signal for a run that
+  produced no review. Both markers survive the "review in progress" banner, which replaces only the
+  sticky's prose and carries them forward verbatim.
 
-  Semantics on non-round posts: a mechanic (CI-fix) pass or an envelope-loss post embeds the
-  **last completed round's stored signal** (round + its own threshold — never re-derived, so an
-  operator changing `convergence_threshold` mid-PR cannot flip a stored `converged`) beside its own
-  findings, so the signal always describes the last completed full-review round, not the findings
-  that happen to sit beside it. A notice — a post whose verdict is `error` or whose run did not
-  complete (empty diff, corrupt output, did-not-complete) — embeds **no** signal in its own blob:
-  its document already says no review was produced this run, and a carried `converged` beside that
-  would read as a stop signal for a run that produced none; the last completed round's signal still
-  survives on the sticky in the compact `<!-- code-review:signal;base64 <base64> -->` marker, so
-  the next post reads it back. The same compact marker is emitted when the embedded payload is too
-  large and the whole-document marker falls back to the artifact link — an oversized review's stop
-  signal stays readable and can be carried forward.
+  Cross-round recurrence (the sticky's "Scope metastasis" warning) is carried structurally in the
+  `<!-- code-review:rounds;base64 <base64> -->` marker — per-round severity counts and mechanism
+  frequencies — from which the re-review seed re-derives the advisory `scope_metastasis` entry it
+  hands the next-round agent. It is deliberately NOT embedded in the findings blob: the blob is the
+  agent's own document, and a recurrence claim is round state the commenter owns. Each inline review
+  comment embeds only its own finding (a `schema_version` + one-finding fragment), so the sticky and
+  review-body markers remain the whole-document source of truth.
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
   phases. This is advisory/auditability only: it is never read by the comment job and never affects
   what gets posted.

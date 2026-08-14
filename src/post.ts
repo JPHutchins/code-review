@@ -17,7 +17,6 @@ import {
   carryForwardMarkers,
   computeCodeCounts,
   computeSameRootNotes,
-  computeScopeMetastasis,
   findingsMarkerForm,
   isFullReviewSticky,
   parseCompletedAncestor,
@@ -32,7 +31,7 @@ import {
   roundRecord,
   signalForRound,
   signalMarker,
-  surfaceFindings,
+  joinSignalMarker,
   surfacedFindingsPointer,
 } from "./surface.js";
 import type { SurfaceSignal } from "./surface.js";
@@ -43,7 +42,7 @@ import {
   incompleteFindings,
   isIncompleteFindings,
 } from "./schema.js";
-import type { Finding, Findings, ResultEnvelope, ScopeMetastasis, TestSummary } from "./schema.js";
+import type { Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -587,19 +586,17 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       : (parseSignalMarker(existingSticky.body) ??
         parseSurfaceSignal(parseFindingsMarker(existingSticky.body)));
 
-  // A post whose blob embeds no signal (a notice — any error-verdict doc) still preserves the prior
-  // round's stop signal on the sticky in the compact marker, so the next post reads it back via
-  // parseSignalMarker: the notice itself never claims a signal, but a completed round's `converged`
-  // is not erased by a failed run (issue #141 review r3).
-  const findingsMarkerFor = (
-    findings: Findings,
-    signal: SurfaceSignal | null,
-    scopeMetastasis?: ScopeMetastasis | null,
-  ): string => {
-    const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl, scopeMetastasis);
+  // A notice (any error-verdict doc) emits no signal of its own, yet still preserves the prior round's
+  // stop signal on the sticky's compact marker, so the next post reads it back via parseSignalMarker:
+  // the notice never claims a signal, but a completed round's `converged` is not erased by a failed
+  // run (issue #141 review r3).
+  const findingsMarkerFor = (findings: Findings, signal: SurfaceSignal | null): string => {
+    const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl);
+    // On a notice, carry the prior round's signal forward so a completed round's stop signal survives;
+    // joinSignalMarker keeps it standing alone when the blob is omitted rather than after a blank line.
     return signal !== null || priorSignal === null
       ? pointer
-      : `${pointer}\n${signalMarker(priorSignal)}`;
+      : joinSignalMarker(pointer, signalMarker(priorSignal));
   };
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
@@ -736,7 +733,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const reRaisedNotes = answeredFilter.reRaisedNotes;
   const verbatimReRaised = answeredFilter.verbatimReRaised;
   const droppedCount = answeredFilter.droppedCount;
-  // Everything downstream (counts, rounds, signal, inline, the surfaced doc) reads the FILTERED
+  // Everything downstream (counts, rounds, signal, inline, the embedded blob) reads the FILTERED
   // document — a closed verbatim re-raise is gone from the review, not just from the prose.
   // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
   // stripped from any systemic problem's finding_codes — a "ties together" list must not dangle a
@@ -819,8 +816,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
-        // Same signal rule as the main path: only a completed-review doc carries the prior signal
-        // in its blob; an error-verdict doc preserves it in the compact marker instead.
+        // Same signal rule as the main path: a completed-review doc and an error-verdict doc alike
+        // ride the prior signal on the compact marker, never inside the blob.
         findingsPointer: findingsMarkerFor(
           findings,
           isReviewVerdict(findings.verdict) ? priorSignal : null,
@@ -904,8 +901,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     priorRounds.length > 0 ? priorRounds[priorRounds.length - 1]?.codes : undefined;
   // The TRUE completed-round number of this run's round: the rounds marker is best-effort
   // (parseRounds filters corrupt entries), so the appended record numbers itself after the carried
-  // count when it is ahead — the same value the trajectory label and the blob signal use, so the
-  // same-root annotation never drifts from them.
+  // count when it is ahead — the same value the trajectory label and the compact signal marker use, so
+  // the same-root annotation never drifts from them.
   const roundNumber = Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1;
   const rounds = isRound
     ? [
@@ -920,11 +917,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ]
     : priorRounds;
 
-  // The stop signal the surfaced blob embeds: THIS round's signal when the run completes a round,
-  // else the prior round's signal carried verbatim (see priorSignal above) — never re-derived. An
-  // incomplete run or a no-verdict doc embeds NO signal: a carried "converged" beside "no review
-  // verdict" (or beside a run the envelope says did not complete) would read as a stop signal for a
-  // run that produced none (issue #141 reviews r2 + r4). The round number can never regress: the
+  // The stop signal that rides the compact marker beside the blob: THIS round's signal when the run
+  // completes a round, else the prior round's signal carried verbatim (see priorSignal above) — never
+  // re-derived. An incomplete run or a no-verdict doc carries NO signal: a "converged" beside "no
+  // review verdict" (or beside a run the envelope says did not complete) would read as a stop signal
+  // for a run that produced none (issue #141 reviews r2 + r4). The round number can never regress: the
   // rounds marker is best-effort (parseRounds filters corrupt entries), so a completing round
   // numbers itself after the carried count when it is ahead.
   const signal = isRound
@@ -933,32 +930,29 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ? null
       : priorSignal;
 
-  // The structured scope-metastasis entry the surfaced blob embeds (issue #150) — the same rounds
-  // history the prose note renders, so the machine channel and the prose can never disagree. Only a
-  // completing round stamps it (the same gate as the note: a mechanic or a notice carries no
-  // recurrence claim); null otherwise, so the field is omitted from the blob.
-  const scopeMetastasis = isRound ? computeScopeMetastasis(rounds) : null;
+  // Encode the whole-document marker once — the agent's COMPLETE document (issue #156), reused across
+  // the sticky + review body; each inline comment embeds only its own finding instead. The stop signal
+  // rides the compact marker appended beside it, never inside the blob.
+  const findingsMarker = findingsMarkerFor(findings, signal);
 
-  // Base64-encode the SURFACED whole-document marker once (the agent's doc + the stop signal),
-  // reused across sticky + review body; each inline comment embeds only its own finding instead.
-  const findingsMarker = findingsMarkerFor(findings, signal, scopeMetastasis);
-
-  // Only the embedded base64 form is decodable back by a re-review seed (parseFindingsMarker), so a
-  // degraded marker would silently drop the embedded machine channel — surface the degradation in
-  // the run log rather than letting it vanish. The link form still carries a machine-readable
-  // pointer; only the omitted form loses the channel entirely. Measured on the SURFACED marker
-  // (surfaceFindings — the agent's doc plus the stop signal), which is the form actually embedded.
-  const markerForm = findingsMarkerForm(
-    surfaceFindings(findings, signal, scopeMetastasis),
-    input.jsonUrl,
-  );
+  // The embedded base64 blob is what a re-review seed decodes (parseFindingsMarker); a doc too large
+  // to embed degrades to the jsonUrl-link form, so surface that in the run log. Only the FINDINGS seed
+  // channel degrades — whenever a signal exists it rides its own compact marker, and the rounds marker
+  // is emitted independently, so neither is lost here.
+  const markerForm = findingsMarkerForm(findings, input.jsonUrl);
+  // Honest only when a signal actually rides: a first-run oversized mechanic pass has neither this
+  // round's signal nor a prior one, so no compact marker is emitted.
+  const signalNote =
+    signal !== null || priorSignal !== null
+      ? " (the stop signal still rides the compact marker)"
+      : "";
   if (markerForm === "link") {
     process.stderr.write(
-      "Warning: the findings-json marker exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact instead of the embedded JSON\n",
+      `Warning: the findings-json blob exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact for the findings${signalNote}\n`,
     );
   } else if (markerForm === "omitted") {
     process.stderr.write(
-      "Warning: the findings-json marker exceeds the embed limit and no --json-url was given — the machine-readable channel is omitted from the posted surfaces\n",
+      `Warning: the findings-json blob exceeds the embed limit and no --json-url was given — the embedded findings seed is dropped from the posted surfaces${signalNote}\n`,
     );
   }
 
@@ -978,7 +972,6 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     sameRootNotes,
     answeredNotes: reRaisedNotes,
     answeredReRaiseNote: answeredDropNote,
-    scopeMetastasis,
     roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,
     convergenceRound: isRound,

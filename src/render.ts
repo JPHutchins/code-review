@@ -13,7 +13,6 @@ import {
   roundsSummary,
   convergenceSummary,
   computeSameRootNotes,
-  computeScopeMetastasis,
   metastasisNote,
   signalForRound,
   surfacedFindingsPointer,
@@ -142,7 +141,7 @@ export const render = (input: RenderInput): string => {
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && rounds.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
 
-  // The convergence counts the badge AND the fallback blob signal both derive from — the last
+  // The convergence counts the badge AND the compact signal marker both derive from — the last
   // completed round when a history exists (post-style histories end with THIS run), else this run's
   // own counts — one source, so the two can never disagree (issue #141 review r2). The stored round
   // entries are computeRoundCounts (findings PLUS systemic severities, issue #134), so the last
@@ -153,18 +152,6 @@ export const render = (input: RenderInput): string => {
   // completed review must not render a "still recurring" claim from carried-forward rounds beside a
   // suppressed convergence badge.
   const advisoryAllowed = isFullReviewRound;
-  // The structured scope-metastasis entry the surfaced blob embeds (issue #150): post passes the
-  // explicit value it computed from the rounds history — a VALUE for a completing round with a
-  // recurrence, EXPLICIT null otherwise (no recompute on the hot path); only the standalone render
-  // command leaves it undefined and derives it here from the same rounds, under the same advisory
-  // gate as the prose note — a suppressed advisory renders no entry either. A strict undefined
-  // check (not `??`) keeps post's explicit null from silently re-deriving.
-  const scopeMetastasis =
-    input.scopeMetastasis !== undefined
-      ? input.scopeMetastasis
-      : advisoryAllowed
-        ? computeScopeMetastasis(rounds)
-        : null;
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -203,7 +190,6 @@ export const render = (input: RenderInput): string => {
           ? signalForRound(rounds.length, convergenceCounts, input.convergenceThreshold)
           : null,
         input.jsonUrl,
-        scopeMetastasis,
       ),
     roundsMarker: roundsMarker(rounds),
     roundsSummary: roundsSummary(rounds, input.roundCount),

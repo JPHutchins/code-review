@@ -4,7 +4,6 @@
 import type {
   Finding,
   Findings,
-  ScopeMetastasis,
   Side,
   Severity,
   ResultEnvelope,
@@ -47,7 +46,7 @@ export type RoundRecord = SeverityCounts & {
   readonly sha?: string;
   // The TRUE completed-round number (1-indexed) this record represents. The rounds marker's array
   // position can drift from it when parseRounds filters a corrupt entry, and the trajectory label
-  // (and the blob signal) number rounds by the carried count — so the same-root annotation must
+  // (and the compact signal marker) number rounds by the carried count — so the same-root annotation must
   // reference this, not the parsed index. Absent on pre-feature rounds ⇒ the parsed index + 1.
   readonly round?: number;
 };
@@ -110,12 +109,6 @@ export interface RenderInput {
   // here, using it for BOTH the round append and the badge so the two can't drift). Omitted ⇒ derived
   // from route + incompleteness, the fallback the standalone `render` command relies on.
   readonly convergenceRound?: boolean;
-  // The structured scope-metastasis entry (issue #150): per-code consecutive-round counts + the
-  // decision prompt, stamped into the surfaced findings-json blob so a decoding agent sees the same
-  // recurrence signal the prose note carries. Computed at the IO boundary (post derives it from the
-  // rounds history of a completing round); the standalone render command derives it from its own
-  // rounds. null/absent ⇒ no entry in the surfaced doc (no code recurred, or no round completed).
-  readonly scopeMetastasis?: ScopeMetastasis | null;
   readonly strays?: readonly Finding[];
   // How many of `strays` are in-diff findings GitHub rejected inline, rather than out-of-diff; > 0
   // titles the section "Findings" and notes they couldn't be posted inline. Omitted/0 ⇒ all out-of-diff.

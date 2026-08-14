@@ -141,7 +141,7 @@ export const render = (input: RenderInput): string => {
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && rounds.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
 
-  // The convergence counts the badge AND the fallback blob signal both derive from — the last
+  // The convergence counts the badge AND the compact signal marker both derive from — the last
   // completed round when a history exists (post-style histories end with THIS run), else this run's
   // own counts — one source, so the two can never disagree (issue #141 review r2). The stored round
   // entries are computeRoundCounts (findings PLUS systemic severities, issue #134), so the last

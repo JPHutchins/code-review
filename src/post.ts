@@ -586,10 +586,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       : (parseSignalMarker(existingSticky.body) ??
         parseSurfaceSignal(parseFindingsMarker(existingSticky.body)));
 
-  // A post whose blob embeds no signal (a notice — any error-verdict doc) still preserves the prior
-  // round's stop signal on the sticky in the compact marker, so the next post reads it back via
-  // parseSignalMarker: the notice itself never claims a signal, but a completed round's `converged`
-  // is not erased by a failed run (issue #141 review r3).
+  // A notice (any error-verdict doc) emits no signal of its own, yet still preserves the prior round's
+  // stop signal on the sticky's compact marker, so the next post reads it back via parseSignalMarker:
+  // the notice never claims a signal, but a completed round's `converged` is not erased by a failed
+  // run (issue #141 review r3).
   const findingsMarkerFor = (findings: Findings, signal: SurfaceSignal | null): string => {
     const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl);
     // On a notice, carry the prior round's signal forward so a completed round's stop signal survives;
@@ -733,7 +733,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const reRaisedNotes = answeredFilter.reRaisedNotes;
   const verbatimReRaised = answeredFilter.verbatimReRaised;
   const droppedCount = answeredFilter.droppedCount;
-  // Everything downstream (counts, rounds, signal, inline, the surfaced doc) reads the FILTERED
+  // Everything downstream (counts, rounds, signal, inline, the embedded blob) reads the FILTERED
   // document — a closed verbatim re-raise is gone from the review, not just from the prose.
   // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
   // stripped from any systemic problem's finding_codes — a "ties together" list must not dangle a
@@ -816,8 +816,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
-        // Same signal rule as the main path: only a completed-review doc carries the prior signal
-        // in its blob; an error-verdict doc preserves it in the compact marker instead.
+        // Same signal rule as the main path: a completed-review doc and an error-verdict doc alike
+        // ride the prior signal on the compact marker, never inside the blob.
         findingsPointer: findingsMarkerFor(
           findings,
           isReviewVerdict(findings.verdict) ? priorSignal : null,
@@ -901,8 +901,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     priorRounds.length > 0 ? priorRounds[priorRounds.length - 1]?.codes : undefined;
   // The TRUE completed-round number of this run's round: the rounds marker is best-effort
   // (parseRounds filters corrupt entries), so the appended record numbers itself after the carried
-  // count when it is ahead — the same value the trajectory label and the blob signal use, so the
-  // same-root annotation never drifts from them.
+  // count when it is ahead — the same value the trajectory label and the compact signal marker use, so
+  // the same-root annotation never drifts from them.
   const roundNumber = Math.max(priorSignal?.round ?? priorRounds.length, priorRounds.length) + 1;
   const rounds = isRound
     ? [
@@ -937,8 +937,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   // The embedded base64 blob is what a re-review seed decodes (parseFindingsMarker); a doc too large
   // to embed degrades to the jsonUrl-link form, so surface that in the run log. Only the FINDINGS seed
-  // channel degrades — the stop signal always rides its own compact marker, and the rounds marker is
-  // emitted independently, so neither is lost here.
+  // channel degrades — whenever a signal exists it rides its own compact marker, and the rounds marker
+  // is emitted independently, so neither is lost here.
   const markerForm = findingsMarkerForm(findings, input.jsonUrl);
   // Honest only when a signal actually rides: a first-run oversized mechanic pass has neither this
   // round's signal nor a prior one, so no compact marker is emitted.

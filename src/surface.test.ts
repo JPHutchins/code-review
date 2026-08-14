@@ -756,7 +756,7 @@ describe("mechanism frequency rounds — issue #145", () => {
   });
 });
 
-describe("surface findings document — issue #141 (the stop signal in the blob agents read)", () => {
+describe("surface findings document — issue #141 (the legacy surfaced-blob shape the migration readers decode)", () => {
   const counts = (critical: number, major: number, minor: number, nit: number): SeverityCounts => ({
     critical,
     major,

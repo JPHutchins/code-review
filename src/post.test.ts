@@ -3398,7 +3398,7 @@ describe("post — convergence rounds (issue #125)", () => {
     return signal as DecodedBlob;
   };
 
-  it("a full review's blob carries round + convergence from the round just appended (issue #141)", async () => {
+  it("a full review's compact signal marker carries round + convergence from the round just appended (issue #141)", async () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "full review" }), api);
     const blob = stickySignal(calls());
@@ -3407,9 +3407,9 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
   });
 
-  it("the blob's convergence uses the ROUND counts (findings + systemic), never diverging from the badge — a systemic major beside a nit-only finding reads iterating (issue #134 merge)", async () => {
-    // The round history (computeRoundCounts) folds systemic severities in; the blob signal must use
-    // the SAME counts or a doc whose systemic items cross the threshold would embed `converged: true`
+  it("the signal marker's convergence uses the ROUND counts (findings + systemic), never diverging from the badge — a systemic major beside a nit-only finding reads iterating (issue #134 merge)", async () => {
+    // The round history (computeRoundCounts) folds systemic severities in; the signal marker must use
+    // the SAME counts or a doc whose systemic items cross the threshold would carry `converged: true`
     // beside a badge that reads iterating.
     writeFileSync(
       join(tmpDir, "findings.json"),
@@ -3428,7 +3428,7 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
 
-  it("a mechanic pass carries the last completed round's convergence forward in its blob (issue #141 item 3)", async () => {
+  it("a mechanic pass carries the last completed round's convergence forward in the compact marker (issue #141 item 3)", async () => {
     // The prior round is {major: 1} → score 2 > threshold 1 → iterating; a mechanic is not a round.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "mechanic" }), api);
@@ -3522,7 +3522,7 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
 
-  it("an envelope-loss NOTICE embeds no signal in its blob (same rule as every error-verdict post)", async () => {
+  it("an envelope-loss NOTICE emits no signal of its own (same rule as every error-verdict post)", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),
       JSON.stringify({ schema_version: "0.4.0", summary: "s", verdict: "error", findings: [] }),
@@ -3542,7 +3542,7 @@ describe("post — convergence rounds (issue #125)", () => {
 
   it("an envelope-loss post of a REAL review carries the prior signal — the run is a review, its round history is the last completed round (issue #141 review r2)", async () => {
     // The default fixture findings (verdict comment, one minor) with the envelope missing: the
-    // envelope-null branch renders a real review, and its blob carries the prior round's signal
+    // envelope-null branch renders a real review, and the compact marker carries the prior round's signal
     // verbatim — never re-derived, never dropped.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {

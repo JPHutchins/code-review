@@ -44,7 +44,7 @@ import {
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
   computeScopeMetastasis,
-  isSurfaceVersion,
+  SURFACE_SCHEMA_VERSION,
   parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
@@ -803,13 +803,16 @@ const validateCmd = defineCommand({
   },
 });
 
-// A decoded prior blob that declares a surfaced version — its scope_metastasis was pipeline-stamped
-// and is authoritative; a draft blob's is at most an agent echo. Guards non-objects.
+// A decoded prior blob the pipeline stamped (surface version 0.8.0) — its scope_metastasis was
+// pipeline-stamped and is authoritative. Only 0.8.0 ever stamped the field: issue #150 added
+// scope_metastasis in the same commit that bumped the surface version 0.7.0 → 0.8.0, so a 0.7.0 blob
+// predates the field and any entry it carries is an echo, not a stamp; a draft blob's is likewise at
+// most an agent echo. Guards non-objects.
 const isSurfaceStampedDoc = (doc: unknown): boolean =>
   typeof doc === "object" &&
   doc !== null &&
   !Array.isArray(doc) &&
-  isSurfaceVersion((doc as Record<string, unknown>)["schema_version"]);
+  (doc as Record<string, unknown>)["schema_version"] === SURFACE_SCHEMA_VERSION;
 
 // The prior document with any scope_metastasis entry removed — a no-op on a non-object. Mirrors the
 // stripSurfaceFields filter idiom.
@@ -910,9 +913,10 @@ const seedDraftCmd = defineCommand({
         : null;
     })();
     const parsedPrior = priorBody === null ? null : parseFindingsMarker(priorBody);
-    // A legacy surfaced blob (0.7/0.8) had its scope_metastasis PIPELINE-stamped fresh every round,
-    // so a carried entry is authoritative that round; the post-#156 blob is the agent's own document
-    // (a draft version) and carries no pipeline stamp, so any scope_metastasis in it is the agent
+    // A legacy 0.8.0 surfaced blob had its scope_metastasis PIPELINE-stamped fresh every round, so a
+    // carried entry is authoritative that round (a 0.7.0 blob predates the field, so its entry is not
+    // a stamp — isSurfaceStampedDoc gates on 0.8.0 alone); the post-#156 blob is the agent's own
+    // document (a draft version) and carries no pipeline stamp, so any scope_metastasis in it is the agent
     // ECHOING the entry the prior seed attached to its context — stale the moment the recurrence
     // changes. Drop that echo up front (the surface peel-back keeps a legacy blob's authoritative
     // entry) so the recurrence signal comes solely from the rounds-marker re-derivation below, never

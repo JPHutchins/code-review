@@ -46,7 +46,7 @@ export type RoundRecord = SeverityCounts & {
   readonly sha?: string;
   // The TRUE completed-round number (1-indexed) this record represents. The rounds marker's array
   // position can drift from it when parseRounds filters a corrupt entry, and the trajectory label
-  // (and the blob signal) number rounds by the carried count — so the same-root annotation must
+  // (and the compact signal marker) number rounds by the carried count — so the same-root annotation must
   // reference this, not the parsed index. Absent on pre-feature rounds ⇒ the parsed index + 1.
   readonly round?: number;
 };

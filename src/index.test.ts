@@ -1201,8 +1201,8 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
   });
 
   it("seeds from a SURFACED 0.8.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
-    // The sticky's embedded marker is the surfaced document: the agent's fields plus the
-    // pipeline-stamped stop signal. Only the agent's own fields may reach $DRAFT.
+    // The sticky's embedded marker is a LEGACY (pre-#156) surfaced document: the agent's fields plus
+    // the pipeline-stamped stop signal. Only the agent's own fields may reach $DRAFT.
     const surfaced = {
       ...priorFindings,
       schema_version: "0.8.0",

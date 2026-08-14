@@ -697,9 +697,9 @@ export const isSurfaceVersion = (version: unknown): boolean =>
 // anything else (a draft version, an unknown future version, a malformed version) passes through
 // untouched and fails or passes schema validation downstream on its own merits — never silently
 // rewritten. A non-object stays as-is. A legacy blob's `scope_metastasis` (issue #150) is NOT dropped
-// here: for a surfaced blob it was pipeline-stamped and authoritative, so it must reach the next-round
-// agent (the draft schema tolerates the field so the seeded doc validates); a draft blob's echoed
-// entry is dropped upstream in the seed, before this runs.
+// here: on a 0.8.0 surfaced blob it was pipeline-stamped and authoritative, so it must reach the
+// next-round agent (a 0.7.0 blob predates the field; the draft schema tolerates it so the seeded doc
+// validates); a draft blob's echoed entry is dropped upstream in the seed, before this runs.
 export const stripSurfaceFields = (doc: unknown): unknown => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return doc;
   const o = doc as Record<string, unknown>;

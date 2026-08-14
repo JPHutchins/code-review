@@ -927,9 +927,10 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     // surface stays well under GitHub's 65536-char comment ceiling.
     const b64Len = (d: Findings): number =>
       Buffer.from(JSON.stringify(d), "utf-8").toString("base64").length;
-    let doc = { ...findings, summary: "x".repeat(20000) };
+    // Grow the summary in coarse steps (not one char at a time) so the probe stays linear.
+    let doc = { ...findings, summary: "x".repeat(29000) };
     while (b64Len(doc) <= 40200) {
-      doc = { ...doc, summary: `${doc.summary}x` };
+      doc = { ...doc, summary: `${doc.summary}${"x".repeat(500)}` };
     }
     expect(b64Len(doc)).toBeGreaterThan(40200);
     expect(b64Len(doc)).toBeLessThanOrEqual(EMBED_LIMIT);

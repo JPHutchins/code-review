@@ -591,9 +591,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // is not erased by a failed run (issue #141 review r3).
   const findingsMarkerFor = (findings: Findings, signal: SurfaceSignal | null): string => {
     const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl);
-    return signal !== null || priorSignal === null
-      ? pointer
-      : `${pointer}\n${signalMarker(priorSignal)}`;
+    if (signal !== null || priorSignal === null) return pointer;
+    // Carry the prior round's signal forward. When the blob is omitted (oversized, no jsonUrl) the
+    // pointer is empty, so the carried marker stands alone rather than following a blank line.
+    const carried = signalMarker(priorSignal);
+    return pointer === "" ? carried : `${pointer}\n${carried}`;
   };
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a

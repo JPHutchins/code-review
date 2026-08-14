@@ -1381,6 +1381,65 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.scope_metastasis).toBeUndefined();
   });
 
+  it("PREFERS a legacy surfaced blob's carried scope_metastasis over re-derivation — the pipeline stamp was authoritative that round (issue #156)", async () => {
+    // The mirror of the draft-blob case: a legacy 0.7/0.8 blob carried a PIPELINE-stamped entry, so
+    // it is authoritative for that round and wins even when the rounds marker would re-derive a
+    // different one — only a draft blob's entry is a droppable echo.
+    const carried = {
+      decision_prompt: "authoritative legacy stamp",
+      recurring: [{ code: "legacy-code", consecutive_rounds: 5, start_round: 1 }],
+    };
+    const rounds = [
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "fresh-code": 1 },
+        sha: "sha1",
+        round: 1,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "fresh-code": 1 },
+        sha: "sha2",
+        round: 2,
+      },
+      {
+        critical: 0,
+        major: 0,
+        minor: 1,
+        nit: 0,
+        codes: { "fresh-code": 1 },
+        sha: "sha3",
+        round: 3,
+      },
+    ];
+    const surfaced = {
+      ...priorFindings,
+      schema_version: "0.8.0",
+      round: 4,
+      convergence: { score: 1, threshold: 1, converged: false },
+      scope_metastasis: carried,
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      scope_metastasis?: unknown;
+    };
+    expect(context.scope_metastasis).toEqual(carried);
+  });
+
   it("degrades to the un-adorned prior when the in-force schema predates scope_metastasis — a custom --schema must not silently drop prior context (issue #150 review r2)", async () => {
     // A consumer-pinned custom schema without the scope_metastasis property (additionalProperties:
     // false) rejects the re-attached doc; the seed must fall back to the un-adorned prior rather

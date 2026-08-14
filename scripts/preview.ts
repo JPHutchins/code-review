@@ -89,9 +89,9 @@ const previewCounts = computeRoundCounts(findings);
 const previewRounds = isFullReviewRound ? [previewCounts] : [];
 const previewSignal = isFullReviewRound ? signalForRound(1, previewCounts) : null;
 
-// The surfaced marker is built ONCE and shared by the sticky and the review body, exactly like
-// post — the fixture's own counts as round 1, so the reference actually demonstrates the stop
-// signal rather than a stamped blob with no signal.
+// The findings blob + compact signal marker is built ONCE and shared by the sticky and the review
+// body, exactly like post — the fixture's own counts as round 1, so the reference actually
+// demonstrates the stop signal (the compact marker beside the blob) rather than a signal-less blob.
 const marker = surfacedFindingsPointer(findings, previewSignal, undefined);
 
 const sticky = render({

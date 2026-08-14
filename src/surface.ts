@@ -24,11 +24,11 @@ export const severityEmoji = (s: string): string => {
 
 // ~32KB of JSON in base64 — well under GitHub's 65536-char comment limit. Post-#156 the embedded blob
 // is the agent's COMPLETE document with NO pipeline overhead: the stop signal rides its own
-// ~140-char compact signal marker BESIDE the blob (never inside it), and scope_metastasis is
+// ~165-char compact signal marker BESIDE the blob (never inside it), and scope_metastasis is
 // re-derived at seed time rather than carried. The value is kept at the pre-#156 boundary as a
 // deliberate backward-compat margin, so every review that embedded before the surfacing transform
 // was deleted still embeds — the payload ceiling only rose (the ~2.5KB worst-case surfaced overhead
-// is gone), and the ~140 chars that moved outside the blob grow the whole comment by ~0.2% of the
+// is gone), and the ~165 chars that moved outside the blob grow the whole comment by ~0.3% of the
 // 65536 ceiling, well inside the headroom. The link fallback loses only the re-review findings seed —
 // never the stop signal, which survives in the compact marker.
 export const EMBED_LIMIT = 42700;
@@ -457,9 +457,9 @@ export const metastasisNote = (
 };
 
 // The structured counterpart of the prose note (issue #150): the per-code consecutive-round counts
-// plus the decision prompt, stamped into the surfaced findings JSON so a decoding agent — and the
-// re-review seed, which delivers the stripped doc — sees the same recurrence signal the sticky's
-// prose carries. null when nothing is flagged: the field is then omitted from the surfaced doc, so a
+// plus the decision prompt. The re-review seed re-derives this from the carried rounds history and
+// delivers it to the next-round agent (it is NOT embedded in the findings blob), so the machine
+// channel and the sticky's prose carry the same recurrence signal. null when nothing is flagged, so a
 // clean history carries no signal (the same omission semantics as the prose note's ""). The
 // structured entry carries the RAW reviewer-supplied code (the identifier consumers match on); the
 // prose note renders the SANITIZED form (escapeCodeBackticks) — the flagged SET is identical, only
@@ -543,8 +543,8 @@ export const convergenceScore = (counts: SeverityCounts): number =>
 // is a checkered flag, NOT the verdict badge's ✅, so a reader (or the author-agent this steers) can't
 // skim the line as an approval. Score and threshold print exactly (no lossy rounding) so the shown
 // inequality can never contradict the computed comparison — `toFixed` could display "1 > 1.0" for 1 > 0.95.
-// The verdict derives from convergenceSignal — the same `score <= threshold` decision the surfaced
-// blob's literal `converged` uses — so the prose badge and the machine boolean can never disagree.
+// The verdict derives from convergenceSignal — the same `score <= threshold` decision the compact
+// signal marker's literal `converged` uses — so the prose badge and the machine boolean can never disagree.
 export const convergenceSummary = (
   counts: SeverityCounts,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
@@ -570,9 +570,9 @@ export interface ConvergenceSignal {
   readonly converged: boolean;
 }
 
-// The stop signal embedded in a surfaced doc: the round number + that round's score/threshold/
-// converged. Computed once when the round completes; every later post carries it VERBATIM, never
-// re-derived — re-deriving at a changed convergence_threshold would flip a prior round's `converged`.
+// The stop signal carried in the compact signal marker: the round number + that round's score/
+// threshold/converged. Computed once when the round completes; every later post carries it VERBATIM,
+// never re-derived — re-deriving at a changed convergence_threshold would flip a prior round's `converged`.
 export interface SurfaceSignal {
   readonly round: number;
   readonly convergence: ConvergenceSignal;
@@ -629,19 +629,21 @@ export const surfacedFindingsPointer = (
 
 const SIGNAL_RE = /<!-- code-review:signal;base64 ([A-Za-z0-9+/=]+) -->/;
 
-// The stop signal embedded on its own when the whole-doc marker fell to the link form — the
-// counter-part of parseSurfaceSignal for a body carrying the compact marker.
+// The stop signal from the compact marker that rides beside every completed round's findings blob
+// (issue #156) — the primary reader; parseSurfaceSignal below is the legacy fallback for pre-#156
+// stickies whose signal rode inside the blob.
 export const parseSignalMarker = (body: string): SurfaceSignal | null => {
   const b64 = SIGNAL_RE.exec(body)?.[1];
   if (b64 === undefined) return null;
   return parseSurfaceSignal(decodeBase64Json(b64));
 };
 
-// Best-effort like parseRounds: the carried stop signal read back from a prior sticky's surfaced
-// blob, null on any malformed shape, a pre-surface blob, or a doc that does not declare a surfaced
-// version — so a draft or foreign document carrying round/convergence keys can never be treated as
-// the commenter's stop signal (the same version gate stripSurfaceFields applies to the seed
-// channel). A non-round post then carries nothing rather than embedding a corrupted signal.
+// Best-effort like parseRounds: the carried stop signal read back from a LEGACY (pre-#156) surfaced
+// blob whose signal rode inside the findings JSON — null on any malformed shape, a pre-surface blob,
+// or a doc that does not declare a surfaced version, so a draft or foreign document carrying
+// round/convergence keys can never be treated as the commenter's stop signal (the same version gate
+// stripSurfaceFields applies to the seed channel). Post-#156 a fresh signal rides the compact marker
+// (parseSignalMarker); this is reached only as findingsMarkerFor's fallback for an older sticky.
 export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return null;
   const o = doc as Record<string, unknown>;

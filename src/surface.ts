@@ -607,6 +607,11 @@ export const signalMarker = (signal: SurfaceSignal): string =>
     "utf-8",
   ).toString("base64")} -->`;
 
+// The single join policy both post-time callers use to place the compact signal marker beside a base
+// marker: it stands alone when the base is empty (an omitted blob), else rides the line below it.
+export const joinSignalMarker = (base: string, marker: string): string =>
+  base === "" ? marker : `${base}\n${marker}`;
+
 // The findings blob plus the stop signal — one helper so the sticky, the review body, and the
 // standalone render can never disagree on what is emitted. The blob is the agent's complete document
 // (issue #156); the stop signal always rides the compact marker beside it, so an oversized review
@@ -616,15 +621,14 @@ export const surfacedFindingsPointer = (
   signal: SurfaceSignal | null,
   jsonUrl: string | undefined,
 ): string => {
-  // The embedded blob is the agent's COMPLETE document — byte-for-byte the object render reads and the
-  // code-review-findings artifact holds — with NO surfacing transform to drop a field or drift from
-  // the rendered prose (issue #156: the machine channel must never carry less than the comment). The
-  // stop signal and the scope-metastasis note are round state, not the agent's document, so they ride
-  // the compact signal marker and the rounds marker rather than a second, divergeable copy of the
-  // findings; the seed re-derives scope metastasis from the carried rounds history.
+  // The embedded blob is the agent's COMPLETE document — byte-for-byte the object render reads — with
+  // NO surfacing transform to drop a field or drift from the rendered prose (issue #156: the machine
+  // channel must never carry less than the comment). The stop signal and the scope-metastasis note are
+  // round state, not the agent's document, so they ride the compact signal marker and the rounds
+  // marker rather than a second, divergeable copy of the findings; the seed re-derives scope metastasis
+  // from the carried rounds history.
   const marker = findingsPointer(findings, jsonUrl);
-  if (signal === null) return marker;
-  return marker === "" ? signalMarker(signal) : `${marker}\n${signalMarker(signal)}`;
+  return signal === null ? marker : joinSignalMarker(marker, signalMarker(signal));
 };
 
 const SIGNAL_RE = /<!-- code-review:signal;base64 ([A-Za-z0-9+/=]+) -->/;

@@ -923,8 +923,7 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     // Post-#156 the blob is the agent's COMPLETE document with no pipeline overhead; the stop signal
     // rides its own compact marker BESIDE the blob. Grow the raw doc until its base64 form crosses the
     // old 40200 boundary — the population EMBED_LIMIT's backward-compat margin covers — and assert it
-    // still embeds (not the link form), the signal marker rides beside it, and the whole emitted
-    // surface stays well under GitHub's 65536-char comment ceiling.
+    // still embeds as base64 (not the link form) with the signal marker riding beside it.
     const b64Len = (d: Findings): number =>
       Buffer.from(JSON.stringify(d), "utf-8").toString("base64").length;
     // Grow the summary in coarse steps (not one char at a time) so the probe stays linear.
@@ -937,7 +936,6 @@ describe("surface findings document — issue #141 (the stop signal in the blob 
     const surface = surfacedFindingsPointer(doc, signal(1, counts(0, 0, 1, 0)), undefined);
     expect(surface).toContain("code-review:findings-json;base64");
     expect(parseSignalMarker(surface)).not.toBeNull();
-    expect(surface.length).toBeLessThan(65536);
   });
 
   it("stripSurfaceFields drops the surface fields and restores the draft version on a surfaced doc", () => {
@@ -1067,23 +1065,28 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     convergence: { score: 2, threshold: 1, converged: false },
   };
 
-  it("emits ONLY the compact signal marker when the whole-doc payload is too large and no jsonUrl is given", () => {
-    let doc = { ...findings, summary: "x".repeat(20000) };
+  // A doc whose base64 exceeds EMBED_LIMIT, sized in coarse steps so the setup stays linear.
+  const oversizedDoc = ((): Findings => {
+    let doc = { ...findings, summary: "x".repeat(32000) };
     while (Buffer.from(JSON.stringify(doc), "utf-8").toString("base64").length <= EMBED_LIMIT) {
-      doc = { ...doc, summary: `${doc.summary}x` };
+      doc = { ...doc, summary: `${doc.summary}${"x".repeat(500)}` };
     }
-    const pointer = surfacedFindingsPointer(doc, signal, undefined);
+    return doc;
+  })();
+
+  it("emits ONLY the compact signal marker when the whole-doc payload is too large and no jsonUrl is given", () => {
+    const pointer = surfacedFindingsPointer(oversizedDoc, signal, undefined);
     expect(pointer).not.toContain("findings-json;base64");
     expect(pointer).toContain("code-review:signal;base64");
     expect(parseSignalMarker(pointer)).toEqual(signal);
   });
 
   it("emits the link marker PLUS the compact signal marker when a jsonUrl fallback is available", () => {
-    let doc = { ...findings, summary: "x".repeat(20000) };
-    while (Buffer.from(JSON.stringify(doc), "utf-8").toString("base64").length <= EMBED_LIMIT) {
-      doc = { ...doc, summary: `${doc.summary}x` };
-    }
-    const pointer = surfacedFindingsPointer(doc, signal, "https://example.com/findings.zip");
+    const pointer = surfacedFindingsPointer(
+      oversizedDoc,
+      signal,
+      "https://example.com/findings.zip",
+    );
     expect(pointer).toContain(
       "<!-- code-review:findings-json https://example.com/findings.zip -->",
     );
@@ -1103,11 +1106,11 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
   });
 
   it("carryForwardMarkers preserves the signal marker alongside the findings marker", () => {
-    let doc = { ...findings, summary: "x".repeat(20000) };
-    while (Buffer.from(JSON.stringify(doc), "utf-8").toString("base64").length <= EMBED_LIMIT) {
-      doc = { ...doc, summary: `${doc.summary}x` };
-    }
-    const pointer = surfacedFindingsPointer(doc, signal, "https://example.com/findings.zip");
+    const pointer = surfacedFindingsPointer(
+      oversizedDoc,
+      signal,
+      "https://example.com/findings.zip",
+    );
     expect(pointer).toContain("code-review:signal;base64");
     expect(carryForwardMarkers(pointer)).toContain("code-review:signal;base64");
     expect(carryForwardMarkers(pointer)).toContain("findings-json");

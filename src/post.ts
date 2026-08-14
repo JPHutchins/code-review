@@ -31,6 +31,7 @@ import {
   roundRecord,
   signalForRound,
   signalMarker,
+  joinSignalMarker,
   surfacedFindingsPointer,
 } from "./surface.js";
 import type { SurfaceSignal } from "./surface.js";
@@ -591,11 +592,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // is not erased by a failed run (issue #141 review r3).
   const findingsMarkerFor = (findings: Findings, signal: SurfaceSignal | null): string => {
     const pointer = surfacedFindingsPointer(findings, signal, input.jsonUrl);
-    if (signal !== null || priorSignal === null) return pointer;
-    // Carry the prior round's signal forward. When the blob is omitted (oversized, no jsonUrl) the
-    // pointer is empty, so the carried marker stands alone rather than following a blank line.
-    const carried = signalMarker(priorSignal);
-    return pointer === "" ? carried : `${pointer}\n${carried}`;
+    // On a notice, carry the prior round's signal forward so a completed round's stop signal survives;
+    // joinSignalMarker keeps it standing alone when the blob is omitted rather than after a blank line.
+    return signal !== null || priorSignal === null
+      ? pointer
+      : joinSignalMarker(pointer, signalMarker(priorSignal));
   };
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
@@ -939,13 +940,19 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // channel degrades — the stop signal always rides its own compact marker, and the rounds marker is
   // emitted independently, so neither is lost here.
   const markerForm = findingsMarkerForm(findings, input.jsonUrl);
+  // Honest only when a signal actually rides: a first-run oversized mechanic pass has neither this
+  // round's signal nor a prior one, so no compact marker is emitted.
+  const signalNote =
+    signal !== null || priorSignal !== null
+      ? " (the stop signal still rides the compact marker)"
+      : "";
   if (markerForm === "link") {
     process.stderr.write(
-      "Warning: the findings-json blob exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact for the findings (the stop signal still rides the compact marker)\n",
+      `Warning: the findings-json blob exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent must fetch the artifact for the findings${signalNote}\n`,
     );
   } else if (markerForm === "omitted") {
     process.stderr.write(
-      "Warning: the findings-json blob exceeds the embed limit and no --json-url was given — the embedded findings seed is dropped from the posted surfaces (the stop signal still rides the compact marker)\n",
+      `Warning: the findings-json blob exceeds the embed limit and no --json-url was given — the embedded findings seed is dropped from the posted surfaces${signalNote}\n`,
     );
   }
 

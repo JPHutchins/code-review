@@ -146,11 +146,10 @@ const RecurringCodec = t.refinement(
   "RecurringStrict",
 );
 
-// The pipeline-stamped scope-metastasis entry (issue #150): per-code consecutive-round recurrence
-// counts plus the decision prompt, computed from the rounds history and stamped into the surfaced
-// document. The agent never writes it — the pipeline recomputes it from the rounds marker at every
-// post — but the draft schema tolerates it so a seed-echoing agent's draft still validates, and the
-// re-review seed delivers it to the next-round agent.
+// The scope-metastasis entry (issue #150): per-code consecutive-round recurrence counts plus the
+// decision prompt, computed from the rounds history. The agent never writes it — the re-review seed
+// re-derives it from the rounds marker and delivers it to the next-round agent — but the draft schema
+// tolerates it so a seed-echoing agent's draft still validates.
 const ScopeMetastasisShape = t.type({
   decision_prompt: t.string,
   recurring: t.array(RecurringCodec),

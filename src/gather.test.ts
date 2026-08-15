@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { GhApi } from "./gh.js";
 import type { GatherInput, GitRun } from "./gather.js";
 import { gather, renderOutputs } from "./gather.js";
+import { AGENTS_STOP_DIRECTIVE } from "./surface.js";
 
 const sampleDiff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
@@ -962,7 +963,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
   const answered = (): readonly unknown[] => JSON.parse(outFile("answered.json")) as unknown[];
 
   it("stages the answered registry: the prior bot inline finding whose thread a human reply answered", async () => {
-    const botBody = `<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->\n<!-- code-review:findings-json;base64 ${Buffer.from(
+    const botBody = `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${Buffer.from(
       JSON.stringify({
         schema_version: "0.6.0",
         findings: [
@@ -1032,7 +1033,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
     // consumers. Feed the rows exactly as THREAD_COMMENT_JQ emits them (flat user_login/user_type +
     // nested user + author_association): the conversation codec must still decode them (with
     // author_association intact — the review prompt weighs claims by it) AND the registry must.
-    const botBody = `<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->\n<!-- code-review:findings-json;base64 ${Buffer.from(
+    const botBody = `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${Buffer.from(
       JSON.stringify({
         schema_version: "0.6.0",
         findings: [

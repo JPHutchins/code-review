@@ -10,6 +10,7 @@ import {
   parseCompletedAncestor,
   COMPLETED_ANCESTOR_MARKER,
   isFullReviewSticky,
+  AGENTS_STOP_DIRECTIVE,
   findingsPointer,
   findingsMarkerForm,
   parseRounds,
@@ -194,6 +195,31 @@ describe("findingsMarkerForm", () => {
   it("agrees with what findingsPointer actually emits (embedded form is the decodable one)", () => {
     expect(findingsMarkerForm(findings, undefined)).toBe("embedded");
     expect(findingsPointer(findings, undefined)).toContain("code-review:findings-json;base64");
+  });
+});
+
+describe("AGENTS stop directive — download-and-read-the-schema push (issue #171)", () => {
+  it("points a decoding agent at the full schema and the schema_version to match it against", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("schema_version");
+    expect(AGENTS_STOP_DIRECTIVE).toContain(
+      "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json",
+    );
+    expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).toContain("READ THE FULL SCHEMA");
+  });
+
+  it("tells the agent to parse the whole document, not only recognized fields", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("WHOLE document");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("not only the fields you recognize");
+  });
+
+  it("stays a well-formed HTML comment — no bare '--' inside", () => {
+    expect(AGENTS_STOP_DIRECTIVE.startsWith("<!--")).toBe(true);
+    expect(AGENTS_STOP_DIRECTIVE.endsWith("-->")).toBe(true);
+    expect(AGENTS_STOP_DIRECTIVE.slice(4, -3)).not.toContain("--");
+  });
+
+  it("rides ahead of the emitted findings marker on every surface", () => {
+    expect(findingsPointer(findings, undefined).startsWith(AGENTS_STOP_DIRECTIVE)).toBe(true);
   });
 });
 

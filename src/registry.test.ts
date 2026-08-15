@@ -245,6 +245,6 @@ describe("defaultVersion / supportedVersions", () => {
     expect(defaultVersion("triage")).toBe("0.1.0");
     expect(supportedVersions("triage")).toEqual(["0.1"]);
     expect(defaultVersion("prices")).toBe("0.2.0");
-    expect(supportedVersions("prices")).toEqual(["0.2"]);
+    expect(supportedVersions("prices")).toEqual(["0.1", "0.2"]);
   });
 });

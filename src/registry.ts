@@ -99,6 +99,18 @@ const triageTable: readonly VersionEntry<"triage", Triage>[] = [
 
 const pricesTable: readonly VersionEntry<"prices", PriceMap>[] = [
   {
+    // Retained non-latest so `validate`/`print-schema --schema-version 0.1` still resolves (the
+    // keep-old-minors convention the findings table follows). The price map carries no version signal,
+    // and the schema is a single unversioned file, so both entries point at it; the codec's oneOf
+    // accepts a flat 0.1-era map unchanged.
+    minor: "0.1",
+    defaultVersion: "0.1.0",
+    schemaFile: "prices.schema.json",
+    codec: PriceMapCodec,
+    normalize: identity,
+    latest: false,
+  },
+  {
     // v0.2.0 (issue #170): a model's value gained the time-slotted alternative (flat | { slots }).
     minor: "0.2",
     defaultVersion: "0.2.0",
@@ -178,12 +190,15 @@ const resolveFindings = (raw: unknown): Resolution<"findings"> => {
     : { kind: "ok", version, value: entry.normalize(decoded.right) };
 };
 
-/** Resolve a kind with no in-data version signal — a single bundled entry, never "missing-version". */
+/** Resolve a kind with no in-data version signal, never "missing-version". A versionless document is
+ * the CURRENT contract, so it resolves against the latest entry (matching defaultVersion/schemaPathFor);
+ * older entries exist only so an explicit `--schema-version` still resolves. */
 const resolveSingleVersion = <K extends "triage" | "prices">(
   kind: K,
   raw: unknown,
 ): Resolution<K> => {
-  const entry = tableFor(kind)[0];
+  const table = tableFor(kind);
+  const entry = table.find((e) => e.latest) ?? table[0];
   if (!entry) throw new Error(`Registry invariant violated — no entry for "${kind}"`);
   const decoded = entry.codec.decode(raw);
   return decoded._tag === "Left"

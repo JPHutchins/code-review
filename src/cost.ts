@@ -32,6 +32,14 @@ const defaultWarn: Warn = (message) => {
   process.stderr.write(`${message}\n`);
 };
 
+// A parseable UTC instant from an ISO string, or undefined — so an unparseable/no-offset generated_at
+// (issue #170 review r2) falls back to the caller's instant rather than pricing at an Invalid Date.
+export const parseInstant = (iso: string | undefined): Date | undefined => {
+  if (iso === undefined) return undefined;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+};
+
 const utcMinuteOfDay = (at: Date): number => at.getUTCHours() * 60 + at.getUTCMinutes();
 
 const hhmmToMinutes = (hhmm: string): number => {

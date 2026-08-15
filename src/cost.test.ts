@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { computeCost } from "./cost.js";
+import { computeCost, parseInstant } from "./cost.js";
+import { PriceMapCodec } from "./schema.js";
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
 
 const prices: PriceMap = {
@@ -385,5 +386,63 @@ describe("computeCost — UTC time-slot pricing (issue #170)", () => {
     expect(computeCost(oneM(), ds, at(5)).totalCostUSD).toBeCloseTo(1.0, 6);
     expect(computeCost(oneM(), ds, at(12)).totalCostUSD).toBeCloseTo(1.0, 6);
     expect(computeCost(oneM(), ds, at(0, 30)).totalCostUSD).toBeCloseTo(1.0, 6);
+  });
+
+  it("a degenerate utc_from == utc_to slot covers the full day (the schema's wrap semantics)", () => {
+    const allDay = slotted({
+      "slot-model": {
+        slots: [
+          { utc_from: "00:00", utc_to: "00:00", in: 5, out: 0, cache_read: 0, cache_write: 0 },
+        ],
+      },
+    });
+    expect(computeCost(oneM(), allDay, at(3)).totalCostUSD).toBeCloseTo(5, 6);
+    expect(computeCost(oneM(), allDay, at(15)).totalCostUSD).toBeCloseTo(5, 6);
+  });
+});
+
+describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
+  const wrap = (m: unknown): unknown => ({ _updated: "x", _unit: "y", models: { model: m } });
+
+  it("parseInstant returns a Date for a valid ISO instant and undefined for garbage/absent", () => {
+    expect(parseInstant("2026-08-16T03:00:00.000Z")?.getUTCHours()).toBe(3);
+    expect(parseInstant("not-a-date")).toBeUndefined();
+    expect(parseInstant(undefined)).toBeUndefined();
+  });
+
+  it("rejects a negative rate, empty slots, and a hybrid flat+slots entry (the ajv gate rejects each)", () => {
+    expect(PriceMapCodec.decode(wrap({ in: -1, out: 0, cache_read: 0, cache_write: 0 }))._tag).toBe(
+      "Left",
+    );
+    expect(PriceMapCodec.decode(wrap({ slots: [] }))._tag).toBe("Left");
+    expect(
+      PriceMapCodec.decode(
+        wrap({
+          in: 1,
+          out: 1,
+          cache_read: 1,
+          cache_write: 1,
+          slots: [
+            { utc_from: "00:00", utc_to: "12:00", in: 1, out: 1, cache_read: 1, cache_write: 1 },
+          ],
+        }),
+      )._tag,
+    ).toBe("Left");
+  });
+
+  it("still accepts a flat map and a well-formed slotted map", () => {
+    expect(PriceMapCodec.decode(wrap({ in: 1, out: 2, cache_read: 3, cache_write: 4 }))._tag).toBe(
+      "Right",
+    );
+    expect(
+      PriceMapCodec.decode(
+        wrap({
+          slots: [
+            { utc_from: "10:00", utc_to: "01:00", in: 1, out: 2, cache_read: 3, cache_write: 4 },
+            { utc_from: "01:00", utc_to: "10:00", in: 5, out: 6, cache_read: 7, cache_write: 8 },
+          ],
+        }),
+      )._tag,
+    ).toBe("Right");
   });
 });

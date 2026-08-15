@@ -33,6 +33,10 @@ const Likelihood = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, 
 // on the next hop. parseSurfaceSignal guards the same vector; the convergence codec must too.
 const FiniteNumber = t.refinement(t.number, (n): n is number => Number.isFinite(n), "FiniteNumber");
 
+// A non-negative price (USD per 1M tokens). Mirrors prices.schema.json's `minimum: 0` so the codec
+// gate rejects a negative rate exactly as the ajv gate does — else a negative price prices negative cost.
+const NonNegativePrice = t.refinement(t.number, (n): n is number => n >= 0, "NonNegativePrice");
+
 // Mirrors findings.schema.json's schema_version.pattern exactly, so resolve() never accepts a value
 // the ajv gate would reject (e.g. a truncated "0.2" or an over-long "0.2.0.0").
 const SCHEMA_VERSION_RE =
@@ -339,10 +343,10 @@ export const ResultEnvelopeCodec = t.intersection([
 ]);
 
 const FlatModelPricesShape = t.type({
-  in: t.number,
-  out: t.number,
-  cache_read: t.number,
-  cache_write: t.number,
+  in: NonNegativePrice,
+  out: NonNegativePrice,
+  cache_read: NonNegativePrice,
+  cache_write: NonNegativePrice,
 });
 
 // The prices codecs mirror the ajv gate exactly, the same two-gates-agree discipline as

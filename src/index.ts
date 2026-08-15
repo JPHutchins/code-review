@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
 import { render, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
-import { computeCost } from "./cost.js";
+import { computeCost, parseInstant } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
 import {
   evaluateBudgetHook,
@@ -428,7 +428,7 @@ const costCmd = defineCommand({
     const report = computeCost(
       envelope.models,
       prices,
-      envelope.generated_at ? new Date(envelope.generated_at) : new Date(),
+      parseInstant(envelope.generated_at) ?? new Date(),
     );
     process.stdout.write(JSON.stringify(report, null, 2));
   },
@@ -462,7 +462,13 @@ const checkCostCmd = defineCommand({
     const usage = sumTranscriptUsage(tree.entries);
     const priceResolution = resolvePrices(args.prices);
     const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
-    const report = computeCost(usage.models, prices, new Date());
+    // Price at the transcript's last activity instant (deterministic — re-running `check-cost` on the
+    // same transcript prices the same slot), not the invocation wall clock (issue #170 review r2).
+    const report = computeCost(
+      usage.models,
+      prices,
+      usage.lastTsMs !== null ? new Date(usage.lastTsMs) : new Date(),
+    );
     process.stdout.write(
       `${JSON.stringify(
         {
@@ -662,9 +668,15 @@ const budgetHookCmd = defineCommand({
       const prices = args.prices ? tryReadPrices(args.prices) : null;
       const spentUsd =
         prices !== null && usage
-          ? // Silent warn: this budget-steering cost is recomputed on EVERY tool event, so a
+          ? // Price at the transcript's last activity instant, not the wall clock (issue #170 review
+            // r2). Silent warn: this budget-steering cost is recomputed on EVERY tool event, so a
             // misconfigured slot map would otherwise flood stderr; the final post's cost render warns.
-            computeCost(usage.models, prices, new Date(), () => undefined).totalCostUSD
+            computeCost(
+              usage.models,
+              prices,
+              usage.lastTsMs !== null ? new Date(usage.lastTsMs) : new Date(),
+              () => undefined,
+            ).totalCostUSD
           : null;
       // The absolute anchor (set by the review job, inherited by every hook incl. fan-out subagents)
       // is the true remaining wall; the per-transcript first timestamp is only the fallback — it

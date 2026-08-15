@@ -9,7 +9,7 @@ import { copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
-import { render, computeRoundCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
+import { render, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
 import { computeCost } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
@@ -44,13 +44,14 @@ import {
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
+  buildConvergence,
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
   isBelowVisibilityFloor,
   parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
-  parseRounds,
+  priorTrajectory,
   priorBelowFloorNits,
   stripSurfaceFields,
 } from "./surface.js";
@@ -312,14 +313,20 @@ const renderCmd = defineCommand({
     const isRound =
       isConvergenceRound(route, envelope.incomplete === true || isIncompleteFindings(findings)) &&
       isReviewVerdict(findings.verdict);
-    const counts = computeRoundCounts(findings);
+    const threshold = parseConvergenceThreshold(args["convergence-threshold"]);
+    // The render command previews ONE run with no PR history. A completed full-review run IS round 1 of
+    // its conversation, so stamp its convergence (issue #174): the badge, the numeric trajectory, and the
+    // blob all read the same stored score, the same decision post makes (issue #141 reviews r2 + r4).
+    const stampedFindings = isRound
+      ? { ...findings, convergence: buildConvergence(findings, threshold) }
+      : findings;
     // The `render` command previews the sticky CHROME (verdict, counts, convergence, cost) — it has no
     // diff, so it never places findings inline vs stray and shows no per-finding detail. It therefore
     // validates --nit-visibility-floor (issue #164) but does NOT apply the visible split or the
     // suppression aside: rendering shelved nits while the visible findings have no detail line would
     // invert the feature. The human/visible split is post's job — it has the diff and the prior sticky.
     const output = render({
-      findings,
+      findings: stampedFindings,
       envelope,
       prices,
       pricesProvided: priceResolution.kind === "provided",
@@ -328,9 +335,9 @@ const renderCmd = defineCommand({
       route: args.route,
       effort: args.effort,
       testReport,
-      rounds: isRound ? [counts] : [],
-      convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
+      convergenceThreshold: threshold,
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
+      convergenceRound: isRound,
       postedAt: formatUtc(new Date()),
     });
     process.stdout.write(output);
@@ -872,8 +879,13 @@ const isSurfaceStampedDoc = (doc: unknown): boolean =>
   !Array.isArray(doc) &&
   (doc as Record<string, unknown>)["schema_version"] === SURFACE_SCHEMA_VERSION;
 
-// The prior document with any scope_metastasis entry removed — a no-op on a non-object. Mirrors the
-// stripSurfaceFields filter idiom.
+// The pipeline-stamped fields (issue #150 + #174), used by the schema-rejection fallback below.
+const PIPELINE_STAMPED_FIELDS = new Set(["scope_metastasis", "convergence"]);
+// The prior document with the agent-echoable scope_metastasis removed — a stale echo would over-report
+// recurrence, so the seed re-derives it fresh below. The pipeline-stamped convergence is KEPT: it is the
+// last completed round's own trajectory (correct context, not a stale echo), and the review agent's only
+// view of prior state is this seed, so it must carry the convergence signal (issue #174). A no-op on a
+// non-object; mirrors the stripSurfaceFields filter idiom.
 const withoutScopeMetastasis = (doc: unknown): unknown =>
   typeof doc === "object" && doc !== null && !Array.isArray(doc)
     ? Object.fromEntries(Object.entries(doc).filter(([key]) => key !== "scope_metastasis"))
@@ -1013,7 +1025,7 @@ const seedDraftCmd = defineCommand({
       const carried = (strippedPrior as Record<string, unknown>)["scope_metastasis"];
       if (ScopeMetastasisCodec.decode(carried)._tag === "Right") return strippedPrior;
       if ((strippedPrior as Record<string, unknown>)["verdict"] === "error") return strippedPrior;
-      const computed = computeScopeMetastasis(parseRounds(priorBody ?? ""));
+      const computed = computeScopeMetastasis(priorTrajectory(parsedPrior, priorBody ?? ""));
       return computed === null ? strippedPrior : { ...strippedPrior, scope_metastasis: computed };
     })();
 
@@ -1093,16 +1105,16 @@ const seedDraftCmd = defineCommand({
                 ? resolve(args.schema)
                 : schemaPathFor(kind, args["schema-version"]);
               // ALWAYS validate — no short-circuit: a natively-carried 0.8.0 entry must face the
-              // in-force schema like any other doc. When that schema (or the codec) rejects the
-              // doc solely because of scope_metastasis (a consumer-pinned custom --schema
-              // predating the field, or a corrupt blob-carried entry), fall back to the
-              // field-stripped doc: losing the recurrence entry beats losing ALL prior context
-              // (issue #150 review r2). The fallback covers BOTH gates (ajv + codec) uniformly.
+              // in-force schema like any other doc. When that schema (or the codec) rejects the doc
+              // solely because of a pipeline-stamped field (scope_metastasis or convergence — a
+              // consumer-pinned custom --schema predating either, or a corrupt blob-carried entry),
+              // fall back to the field-stripped doc: losing those entries beats losing ALL prior
+              // context (issue #150 review r2 + #174). The fallback covers BOTH gates (ajv + codec).
               const barePrior =
                 typeof priorFindings === "object" && !Array.isArray(priorFindings)
                   ? Object.fromEntries(
                       Object.entries(priorFindings as Record<string, unknown>).filter(
-                        ([key]) => key !== "scope_metastasis",
+                        ([key]) => !PIPELINE_STAMPED_FIELDS.has(key),
                       ),
                     )
                   : priorFindings;

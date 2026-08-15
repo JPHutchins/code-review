@@ -123,6 +123,55 @@
         }
       }
     },
+    "convergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Advisory (issue #174): the current round's convergence score, the threshold it is judged against, whether it converged, and the per-round trajectory. The review agent does NOT write this field — the pipeline computes the score deterministically from the findings (floor(severity) + headroom × confidence × likelihood, summed) and stamps it, so this JSON document is the sole source of the convergence data a decoding agent reads. `score` and `threshold` are both carried so the number is interpretable on its own (converged when score <= threshold); prior rounds are carried verbatim, so changing the threshold never rewrites a past round's score.",
+      "required": ["score", "threshold", "converged"],
+      "properties": {
+        "score": {
+          "type": "number",
+          "description": "This round's convergence score — the sum of every finding's and systemic problem's contribution, rounded to 2 decimals. Lower is closer to convergence."
+        },
+        "threshold": {
+          "type": "number",
+          "description": "The convergence tolerance in force for this round: the round is converged when score <= threshold."
+        },
+        "converged": {
+          "type": "boolean",
+          "description": "Whether this round converged (score <= threshold). Advisory only — never alters the verdict."
+        },
+        "rounds": {
+          "type": "array",
+          "description": "The convergence trajectory: one entry per completed full-review round, oldest first, this round's entry last. Each score is a historical snapshot carried verbatim.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["round"],
+            "properties": {
+              "round": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The 1-indexed completed-round number this entry represents."
+              },
+              "score": {
+                "type": "number",
+                "description": "That round's convergence score, carried verbatim from when the round completed. Absent only for a round migrated from a pre-#174 sticky, which stored no score."
+              },
+              "codes": {
+                "type": "object",
+                "additionalProperties": { "type": "integer", "minimum": 0 },
+                "description": "That round's mechanism-frequency map: finding code -> number of findings carrying it. Feeds the same-mechanism and scope-metastasis recurrence signals."
+              },
+              "sha": {
+                "type": "string",
+                "description": "The reviewed head SHA (short form) for that round, so a same-head CI retry is recognised as the same iteration rather than new recurrence evidence."
+              }
+            }
+          }
+        }
+      }
+    },
     "findings": {
       "type": "array",
       "description": "Zero or more specific findings.",

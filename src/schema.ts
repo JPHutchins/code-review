@@ -169,6 +169,72 @@ const ScopeMetastasisStrict = t.refinement(
 
 export const ScopeMetastasisCodec = t.exact(ScopeMetastasisStrict);
 
+// One round's trajectory entry (issue #174): the round number and its convergence score, plus the
+// mechanism-frequency map and reviewed head SHA the recurrence signals read. Prior rounds are carried
+// verbatim, so a threshold change never rewrites a past score.
+const RoundNumber = t.refinement(
+  t.number,
+  (n): n is number => Number.isSafeInteger(n) && n >= 1,
+  "RoundNumber",
+);
+
+const CodeFrequency = t.record(
+  t.string,
+  t.refinement(t.number, (n): n is number => Number.isSafeInteger(n) && n >= 0, "CodeFrequency"),
+);
+
+const ConvergenceRoundRequired = t.type({ round: RoundNumber });
+const ConvergenceRoundOptional = t.partial({
+  score: t.number,
+  codes: CodeFrequency,
+  sha: t.string,
+});
+const ConvergenceRoundShape = t.intersection([ConvergenceRoundRequired, ConvergenceRoundOptional]);
+
+// Strict-key refinement (see SystemicProblemStrict): the ajv gate rejects unknown keys but t.exact
+// accepts them on decode, so the codec gate must reject exactly what ajv rejects.
+const CONVERGENCE_ROUND_KEYS = new Set([
+  ...Object.keys(ConvergenceRoundRequired.props),
+  ...Object.keys(ConvergenceRoundOptional.props),
+]);
+
+const ConvergenceRoundStrict = t.refinement(
+  ConvergenceRoundShape,
+  (r): r is t.TypeOf<typeof ConvergenceRoundShape> =>
+    Object.keys(r).every((k) => CONVERGENCE_ROUND_KEYS.has(k)),
+  "ConvergenceRoundStrict",
+);
+
+export const ConvergenceRoundCodec = t.exact(ConvergenceRoundStrict);
+
+// The convergence signal (issue #174): the current round's score, the threshold it is judged against,
+// whether it converged, and the per-round trajectory. Pipeline-stamped like scope_metastasis — the
+// agent never writes it; the pipeline computes the score deterministically from the findings and stamps
+// it so the JSON document is the sole source of the convergence data a decoding agent reads, no
+// side-channel marker. score AND threshold are both carried so the number is interpretable on its own.
+const ConvergenceCoreShape = t.type({
+  score: t.number,
+  threshold: t.number,
+  converged: t.boolean,
+});
+
+const ConvergenceOptional = t.partial({ rounds: t.array(ConvergenceRoundCodec) });
+const ConvergenceShape = t.intersection([ConvergenceCoreShape, ConvergenceOptional]);
+
+const CONVERGENCE_KEYS = new Set([
+  ...Object.keys(ConvergenceCoreShape.props),
+  ...Object.keys(ConvergenceOptional.props),
+]);
+
+const ConvergenceStrict = t.refinement(
+  ConvergenceShape,
+  (c): c is t.TypeOf<typeof ConvergenceShape> =>
+    Object.keys(c).every((k) => CONVERGENCE_KEYS.has(k)),
+  "ConvergenceStrict",
+);
+
+export const ConvergenceCodec = t.exact(ConvergenceStrict);
+
 export const FindingsCodec = t.exact(
   t.intersection([
     t.type({
@@ -181,6 +247,8 @@ export const FindingsCodec = t.exact(
       systemic_problems: t.array(SystemicProblemCodec),
       // Pipeline-stamped only (issue #150); see ScopeMetastasisCodec.
       scope_metastasis: ScopeMetastasisCodec,
+      // Pipeline-stamped only (issue #174); see ConvergenceCodec.
+      convergence: ConvergenceCodec,
     }),
   ]),
 );
@@ -267,6 +335,9 @@ export type Finding = t.TypeOf<typeof FindingCodec>;
 export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
 export type ScopeMetastasis = t.TypeOf<typeof ScopeMetastasisCodec>;
+export type Convergence = t.TypeOf<typeof ConvergenceCodec>;
+export type ConvergenceRound = t.TypeOf<typeof ConvergenceRoundCodec>;
+export type ConvergenceCore = t.TypeOf<typeof ConvergenceCoreShape>;
 export type Verdict = t.TypeOf<typeof VerdictCodec>;
 
 // The findings shape for a run that produced no code-review verdict — an operational failure, a

@@ -121,8 +121,14 @@ export const render = (input: RenderInput): string => {
   const incomplete =
     (input.incomplete ?? input.envelope?.incomplete ?? false) ||
     isIncompleteFindings(input.findings);
+  // Price a time-slotted model at the RUN's completion instant (issue #170) — stamped in the envelope
+  // by adapt, so re-rendering the same envelope always picks the same slot; input.pricedAt is only the
+  // fallback for a pre-#170 envelope that carries no generated_at.
+  const pricedAt = input.envelope?.generated_at
+    ? new Date(input.envelope.generated_at)
+    : input.pricedAt;
   const costReport = input.envelope
-    ? computeCost(input.envelope.models, input.prices, input.pricedAt)
+    ? computeCost(input.envelope.models, input.prices, pricedAt)
     : null;
   const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;

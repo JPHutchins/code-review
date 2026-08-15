@@ -138,6 +138,7 @@ const sticky = render({
   strays,
   findingsPointer: marker,
   postedAt: formatUtc(new Date()),
+  pricedAt: new Date(),
 });
 
 const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined);

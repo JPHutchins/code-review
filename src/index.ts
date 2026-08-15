@@ -423,7 +423,13 @@ const costCmd = defineCommand({
   run: async ({ args }) => {
     const envelope = decode(ResultEnvelopeCodec.decode(readJSON(args.envelope)), "envelope");
     const prices = decode(PriceMapCodec.decode(readJSON(args.prices)), "prices");
-    const report = computeCost(envelope.models, prices, new Date());
+    // Price a saved envelope at the RUN's own instant (issue #170), so re-running `cost` later prices
+    // the same envelope to the same slot deterministically — not at whatever wall clock it is re-run at.
+    const report = computeCost(
+      envelope.models,
+      prices,
+      envelope.generated_at ? new Date(envelope.generated_at) : new Date(),
+    );
     process.stdout.write(JSON.stringify(report, null, 2));
   },
 });
@@ -656,7 +662,9 @@ const budgetHookCmd = defineCommand({
       const prices = args.prices ? tryReadPrices(args.prices) : null;
       const spentUsd =
         prices !== null && usage
-          ? computeCost(usage.models, prices, new Date()).totalCostUSD
+          ? // Silent warn: this budget-steering cost is recomputed on EVERY tool event, so a
+            // misconfigured slot map would otherwise flood stderr; the final post's cost render warns.
+            computeCost(usage.models, prices, new Date(), () => undefined).totalCostUSD
           : null;
       // The absolute anchor (set by the review job, inherited by every hook incl. fan-out subagents)
       // is the true remaining wall; the per-transcript first timestamp is only the fallback — it

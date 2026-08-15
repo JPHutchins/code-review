@@ -341,6 +341,32 @@ describe("computeCost — UTC time-slot pricing (issue #170)", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("no run instant"));
   });
 
+  it("applies the SELECTED slot's out/cache_read/cache_write multipliers, not just in", () => {
+    const m = slotted({
+      "slot-model": {
+        slots: [
+          { utc_from: "00:00", utc_to: "12:00", in: 1, out: 2, cache_read: 3, cache_write: 4 },
+          { utc_from: "12:00", utc_to: "00:00", in: 9, out: 9, cache_read: 9, cache_write: 9 },
+        ],
+      },
+    });
+    const report = computeCost(
+      [
+        {
+          model: "slot-model",
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          cache_read_tokens: 1_000_000,
+          cache_write_tokens: 1_000_000,
+        },
+      ],
+      m,
+      at(3), // the 00:00–12:00 slot (1/2/3/4), NOT the 12:00→00:00 slot (all 9s)
+    );
+    // (1M·1 + 1M·2 + 1M·3 + 1M·4) / 1e6 = 1 + 2 + 3 + 4 = 10; a swapped multiplier would not sum to 10.
+    expect(report.totalCostUSD).toBeCloseTo(10, 6);
+  });
+
   it("selects correctly across the real DeepSeek 4-slot shape (peak 01–04 + 06–10 UTC)", () => {
     const ds = slotted({
       "slot-model": {

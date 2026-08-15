@@ -43,11 +43,12 @@ const hhmmOf = (minute: number): string =>
   `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
 
 // A [utc_from, utc_to) half-open UTC window contains `minute`; when utc_to <= utc_from the window wraps
-// past midnight (e.g. 22:00→02:00 covers the late night and early morning).
+// past midnight (e.g. 22:00→02:00 covers the late night and early morning). A degenerate utc_from ==
+// utc_to therefore covers the FULL day (wrap branch), matching the schema's "utc_to <= utc_from wraps".
 const slotCovers = (slot: PriceSlot, minute: number): boolean => {
   const from = hhmmToMinutes(slot.utc_from);
   const to = hhmmToMinutes(slot.utc_to);
-  return from <= to ? minute >= from && minute < to : minute >= from || minute < to;
+  return from < to ? minute >= from && minute < to : minute >= from || minute < to;
 };
 
 // The flat per-token rate for a model at the run's UTC instant (issue #170): a flat entry as-is; a

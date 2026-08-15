@@ -99,8 +99,9 @@ const triageTable: readonly VersionEntry<"triage", Triage>[] = [
 
 const pricesTable: readonly VersionEntry<"prices", PriceMap>[] = [
   {
-    minor: "0.1",
-    defaultVersion: "0.1.0",
+    // v0.2.0 (issue #170): a model's value gained the time-slotted alternative (flat | { slots }).
+    minor: "0.2",
+    defaultVersion: "0.2.0",
     schemaFile: "prices.schema.json",
     codec: PriceMapCodec,
     normalize: identity,

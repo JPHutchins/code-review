@@ -39,7 +39,7 @@ import {
   reviewBodyPointer,
 } from "./surface.js";
 import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./schema.js";
-import type { Finding, Findings } from "./schema.js";
+import type { Finding, Findings, Severity } from "./schema.js";
 import type { SurfaceSignal } from "./surface.js";
 import type { RoundRecord, SeverityCounts } from "./types.js";
 
@@ -369,61 +369,74 @@ describe("rounds trajectory — issue #125", () => {
   });
 });
 
-describe("convergence score — issue #133", () => {
-  const counts = (critical: number, major: number, minor: number, nit: number): SeverityCounts => ({
-    critical,
-    major,
-    minor,
-    nit,
-  });
+describe("convergence score — per-finding weighting (issue #133 / #162)", () => {
+  const docOf = (...items: ReadonlyArray<readonly [Severity, number]>): Findings =>
+    ({
+      schema_version: DEFAULT_SCHEMA_VERSION,
+      summary: "s",
+      verdict: "comment",
+      findings: items.map(([severity, confidence], i) => ({
+        path: "src/x.ts",
+        start_line: i + 1,
+        end_line: i + 1,
+        severity,
+        title: "t",
+        description: "d",
+        reasoning: "r",
+        confidence,
+      })),
+    }) as unknown as Findings;
 
-  it("defaults to the naive weights: crit 4 · major 2 · minor 1 · nit 0", () => {
+  it("scores floor + max(0, ceiling − floor) × confidence; confidence 1 recovers ceilings 4/2/1/0", () => {
     expect(DEFAULT_CONVERGENCE_THRESHOLD).toBe(1);
-    expect(convergenceScore(counts(1, 0, 0, 0))).toBe(4);
-    expect(convergenceScore(counts(0, 1, 0, 0))).toBe(2);
-    expect(convergenceScore(counts(0, 0, 1, 0))).toBe(1);
-    expect(convergenceScore(counts(0, 0, 0, 99))).toBe(0);
-    expect(convergenceScore(counts(1, 1, 1, 1))).toBe(7);
+    expect(convergenceScore(docOf(["critical", 1]), 1)).toBe(4);
+    expect(convergenceScore(docOf(["major", 1]), 1)).toBe(2);
+    expect(convergenceScore(docOf(["minor", 1]), 1)).toBe(1);
+    expect(convergenceScore(docOf(["nit", 1]), 1)).toBe(0);
+    expect(convergenceScore(docOf(["major", 0.5]), 1)).toBe(1.25);
+    expect(convergenceScore(docOf(["minor", 0.4]), 1)).toBe(0.4);
+    expect(convergenceScore(docOf(["minor", 1], ["minor", 1]), 1)).toBe(2);
   });
 
-  it("treats the nit floor as free — unlimited nits stay converged", () => {
-    expect(convergenceSummary(counts(0, 0, 0, 50))).toBe("**Convergence** 🏁 0 ≤ 1 — converged");
+  it("a nit never contributes, at any confidence", () => {
+    expect(convergenceScore(docOf(["nit", 1], ["nit", 0.3]), 1)).toBe(0);
+    expect(convergenceSummary(docOf(["nit", 1]), 1)).toBe("**Convergence** 🏁 0 ≤ 1 — converged");
   });
 
-  it("tolerates exactly one minor at the default threshold, but not two", () => {
-    expect(convergenceSummary(counts(0, 0, 1, 3))).toBe("**Convergence** 🏁 1 ≤ 1 — converged");
-    expect(convergenceSummary(counts(0, 0, 2, 0))).toBe("**Convergence** 🔄 2 > 1 — iterating");
+  it("an open critical never converges — its floor exceeds the threshold even at confidence 0", () => {
+    expect(convergenceScore(docOf(["critical", 0]), 1)).toBe(1.01);
+    expect(convergenceSummary(docOf(["critical", 0]), 1)).toBe(
+      "**Convergence** 🔄 1.01 > 1 — iterating",
+    );
+    expect(convergenceSummary(docOf(["critical", 0]), 3)).toBe(
+      "**Convergence** 🔄 3.01 > 3 — iterating",
+    );
   });
 
-  it("never converges past a single major or critical", () => {
-    expect(convergenceSummary(counts(0, 1, 0, 0))).toBe("**Convergence** 🔄 2 > 1 — iterating");
-    expect(convergenceSummary(counts(1, 0, 0, 0))).toBe("**Convergence** 🔄 4 > 1 — iterating");
+  it("clamps the headroom so a threshold ≥ the critical ceiling cannot invert the score", () => {
+    expect(convergenceScore(docOf(["critical", 1]), 5)).toBe(5.01);
+    expect(convergenceScore(docOf(["critical", 0]), 5)).toBe(5.01);
   });
 
-  it("a clean review reads as converged (score 0)", () => {
-    expect(convergenceSummary(counts(0, 0, 0, 0))).toBe("**Convergence** 🏁 0 ≤ 1 — converged");
+  it("rounds to 2 decimals and compares the boolean on that same rounded value", () => {
+    expect(convergenceSummary(docOf(["minor", 0.334], ["minor", 0.334], ["minor", 0.334]), 1)).toBe(
+      "**Convergence** 🏁 1 ≤ 1 — converged",
+    );
   });
 
   it("respects a raised threshold as the single tolerance knob", () => {
-    expect(convergenceSummary(counts(0, 0, 2, 0), 3)).toBe("**Convergence** 🏁 2 ≤ 3 — converged");
-    expect(convergenceSummary(counts(0, 1, 0, 0), 3)).toBe("**Convergence** 🏁 2 ≤ 3 — converged");
-    expect(convergenceSummary(counts(1, 0, 0, 0), 3)).toBe("**Convergence** 🔄 4 > 3 — iterating");
+    expect(convergenceSummary(docOf(["minor", 1], ["minor", 1]), 3)).toBe(
+      "**Convergence** 🏁 2 ≤ 3 — converged",
+    );
+    expect(convergenceSummary(docOf(["major", 1]), 3)).toBe("**Convergence** 🏁 2 ≤ 3 — converged");
   });
 
   it("renders score and threshold exactly so the printed inequality matches the comparison (#135 review)", () => {
-    expect(convergenceSummary(counts(0, 0, 1, 0), 1.5)).toBe(
+    expect(convergenceSummary(docOf(["minor", 1]), 1.5)).toBe(
       "**Convergence** 🏁 1 ≤ 1.5 — converged",
     );
-    expect(convergenceSummary(counts(0, 0, 2, 0), 1.5)).toBe(
-      "**Convergence** 🔄 2 > 1.5 — iterating",
-    );
-    // A threshold that toFixed(1) would round to "1.0" must print its true value, or the line reads
-    // as a false inequality (1 > 1.0 / 1 ≤ 1.0).
-    expect(convergenceSummary(counts(0, 0, 1, 0), 0.95)).toBe(
+    expect(convergenceSummary(docOf(["minor", 1]), 0.95)).toBe(
       "**Convergence** 🔄 1 > 0.95 — iterating",
-    );
-    expect(convergenceSummary(counts(0, 0, 1, 0), 1.04)).toBe(
-      "**Convergence** 🏁 1 ≤ 1.04 — converged",
     );
   });
 });
@@ -764,9 +777,27 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
     minor,
     nit,
   });
+  const countsToDoc = (c: SeverityCounts): Findings =>
+    ({
+      schema_version: DEFAULT_SCHEMA_VERSION,
+      summary: "s",
+      verdict: "comment",
+      findings: (["critical", "major", "minor", "nit"] as const).flatMap((severity) =>
+        Array.from({ length: c[severity] }, (_, i) => ({
+          path: "src/x.ts",
+          start_line: i + 1,
+          end_line: i + 1,
+          severity,
+          title: "t",
+          description: "d",
+          reasoning: "r",
+          confidence: 1,
+        })),
+      ),
+    }) as unknown as Findings;
   const signal = (round: number, c: SeverityCounts): SurfaceSignal => ({
     round,
-    convergence: convergenceSignal(c),
+    convergence: convergenceSignal(countsToDoc(c)),
   });
 
   it("stamps the current surface version on every surfaced document, keeping the agent's fields verbatim", () => {
@@ -885,30 +916,30 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
     expect(doc.convergence).toEqual({ score: 1, threshold: 1, converged: true });
   });
 
-  it("convergenceSignal computes score/threshold/converged from one round's counts", () => {
-    expect(convergenceSignal(counts(1, 0, 0, 0))).toEqual({
+  it("convergenceSignal computes score/threshold/converged from a round's findings", () => {
+    expect(convergenceSignal(countsToDoc(counts(1, 0, 0, 0)))).toEqual({
       score: 4,
       threshold: 1,
       converged: false,
     });
-    expect(convergenceSignal(counts(0, 0, 0, 50))).toEqual({
+    expect(convergenceSignal(countsToDoc(counts(0, 0, 0, 50)))).toEqual({
       score: 0,
       threshold: 1,
       converged: true,
     });
-    expect(convergenceSignal(counts(0, 1, 0, 0), 3)).toEqual({
+    expect(convergenceSignal(countsToDoc(counts(0, 1, 0, 0)), 3)).toEqual({
       score: 2,
       threshold: 3,
       converged: true,
     });
   });
 
-  it("signalForRound builds the full {round, convergence} shape from one round's counts", () => {
-    expect(signalForRound(2, counts(0, 1, 0, 0))).toEqual({
+  it("signalForRound builds the full {round, convergence} shape from a round's findings", () => {
+    expect(signalForRound(2, countsToDoc(counts(0, 1, 0, 0)))).toEqual({
       round: 2,
       convergence: { score: 2, threshold: 1, converged: false },
     });
-    expect(signalForRound(1, counts(0, 0, 0, 0), 0)).toEqual({
+    expect(signalForRound(1, countsToDoc(counts(0, 0, 0, 0)), 0)).toEqual({
       round: 1,
       convergence: { score: 0, threshold: 0, converged: true },
     });

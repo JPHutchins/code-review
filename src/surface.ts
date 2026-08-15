@@ -3,7 +3,7 @@
 // projection. Pure.
 
 import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
-import type { Finding, Findings, ScopeMetastasis, SystemicProblem } from "./schema.js";
+import type { Finding, Findings, ScopeMetastasis, Severity, SystemicProblem } from "./schema.js";
 import type { CodeCounts, CodeStreak, RoundRecord, SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
 
@@ -527,29 +527,41 @@ export const computeSameRootNotes = (
   return Object.fromEntries(entries);
 };
 
-// The severity-weighted convergence score and its advisory badge. The score is a pure function of one
-// round's severities; the badge is score ≤ threshold. Nits weigh 0 so the reviewer's self-replenishing
-// nit floor never blocks convergence; the threshold is the single tolerance knob (default 1: unlimited
-// nits plus at most one minor). The weights are the fixed naive scheme (design chose a fixed scheme,
-// only the threshold is user-facing). ADVISORY ONLY — this derives from the reviewer's own severities
-// and never alters the verdict; it exists so an iterating author-agent has a deterministic stop signal.
-const CONVERGENCE_WEIGHTS: SeverityCounts = { critical: 4, major: 2, minor: 1, nit: 0 };
+// The convergence score and its advisory badge (score ≤ threshold), per finding/systemic problem:
+// floor(severity) + max(0, ceiling − floor) × confidence. The floor is the weight confidence cannot
+// erode; critical's is threshold-relative (CRITICAL_FLOOR_MARGIN) so an open critical is never converged
+// at any threshold. ADVISORY ONLY: never alters the verdict.
+const CONVERGENCE_CEILINGS: SeverityCounts = { critical: 4, major: 2, minor: 1, nit: 0 };
+// > 0 so a lone critical fails `score ≤ threshold`; 0.01 survives round2 (a coarser round would erase it).
+const CRITICAL_FLOOR_MARGIN = 0.01;
 export const DEFAULT_CONVERGENCE_THRESHOLD = 1;
 
-export const convergenceScore = (counts: SeverityCounts): number =>
-  SEVERITIES.reduce((sum, k) => sum + counts[k] * CONVERGENCE_WEIGHTS[k], 0);
+const convergenceFloor = (severity: Severity, threshold: number): number =>
+  severity === "critical" ? threshold + CRITICAL_FLOOR_MARGIN : severity === "major" ? 0.5 : 0;
+
+const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
+
+// Findings AND systemic problems (issue #134 scope), rounded to 2 decimals.
+export const convergenceScore = (doc: Findings, threshold: number): number =>
+  round2(
+    [...doc.findings, ...(doc.systemic_problems ?? [])].reduce((sum, { severity, confidence }) => {
+      const floor = convergenceFloor(severity, threshold);
+      return sum + floor + Math.max(0, CONVERGENCE_CEILINGS[severity] - floor) * confidence;
+    }, 0),
+  );
 
 // "**Convergence** 🏁 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". The converged glyph
 // is a checkered flag, NOT the verdict badge's ✅, so a reader (or the author-agent this steers) can't
-// skim the line as an approval. Score and threshold print exactly (no lossy rounding) so the shown
-// inequality can never contradict the computed comparison — `toFixed` could display "1 > 1.0" for 1 > 0.95.
-// The verdict derives from convergenceSignal — the same `score <= threshold` decision the compact
-// signal marker's literal `converged` uses — so the prose badge and the machine boolean can never disagree.
+// skim the line as an approval. The score is already rounded to 2 decimals (convergenceScore) and
+// printed with String() — never re-rounded here — and the `converged` boolean reads that SAME rounded
+// value, so the shown inequality can never contradict the computed comparison. The verdict derives from
+// convergenceSignal — the same `score <= threshold` decision the compact signal marker's literal
+// `converged` uses — so the prose badge and the machine boolean can never disagree.
 export const convergenceSummary = (
-  counts: SeverityCounts,
+  doc: Findings,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
 ): string => {
-  const { score, converged } = convergenceSignal(counts, threshold);
+  const { score, converged } = convergenceSignal(doc, threshold);
   return converged
     ? `**Convergence** 🏁 ${String(score)} ≤ ${String(threshold)} — converged`
     : `**Convergence** 🔄 ${String(score)} > ${String(threshold)} — iterating`;
@@ -578,12 +590,12 @@ export interface SurfaceSignal {
   readonly convergence: ConvergenceSignal;
 }
 
-// The pure counts→signal computation, shared by post (a completing round) and render's fallback.
+// The pure findings→signal computation, shared by post (a completing round) and render's fallback.
 export const convergenceSignal = (
-  counts: SeverityCounts,
+  doc: Findings,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
 ): ConvergenceSignal => {
-  const score = convergenceScore(counts);
+  const score = convergenceScore(doc, threshold);
   return { score, threshold, converged: score <= threshold };
 };
 
@@ -591,9 +603,9 @@ export const convergenceSignal = (
 // fallback (the round-1 / last-round cases) — one helper so every site builds the same shape.
 export const signalForRound = (
   round: number,
-  counts: SeverityCounts,
+  doc: Findings,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
-): SurfaceSignal => ({ round, convergence: convergenceSignal(counts, threshold) });
+): SurfaceSignal => ({ round, convergence: convergenceSignal(doc, threshold) });
 
 // The compact signal marker: the stop signal on its own, self-describing (it declares the surface
 // version, so parseSurfaceSignal's version gate applies to it too). Since issue #156 it is the SOLE

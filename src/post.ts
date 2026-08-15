@@ -924,7 +924,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // rounds marker is best-effort (parseRounds filters corrupt entries), so a completing round
   // numbers itself after the carried count when it is ahead.
   const signal = isRound
-    ? signalForRound(roundNumber, computeRoundCounts(findings), input.convergenceThreshold)
+    ? signalForRound(roundNumber, findings, input.convergenceThreshold)
     : thisIncomplete || !isReviewVerdict(findings.verdict)
       ? null
       : priorSignal;

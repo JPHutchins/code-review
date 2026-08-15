@@ -3405,8 +3405,8 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "full review" }), api);
     const blob = stickySignal(calls());
     expect(blob.round).toBe(2);
-    // The default fixture findings are one minor → score 1 at the default threshold 1 → converged.
-    expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+    // The default fixture is one minor at confidence 0.7 → score 0.7 ≤ threshold 1 → converged.
+    expect(blob.convergence).toEqual({ score: 0.7, threshold: 1, converged: true });
   });
 
   it("the signal marker's convergence uses the ROUND counts (findings + systemic), never diverging from the badge — a systemic major beside a nit-only finding reads iterating (issue #134 merge)", async () => {
@@ -3426,8 +3426,9 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "full review" }), api);
     const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
-    // major=2 > threshold 1 → iterating, exactly what the badge would render for this round.
-    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+    // systemic major at confidence 0.8 = 1.7 > threshold 1 → iterating (the nit finding scores 0),
+    // exactly what the badge would render for this round.
+    expect(blob.convergence).toEqual({ score: 1.7, threshold: 1, converged: false });
   });
 
   it("a mechanic pass carries the last completed round's convergence forward in the compact marker (issue #141 item 3)", async () => {
@@ -3566,7 +3567,7 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "full review" }), api);
     const blob = stickySignal(calls());
     expect(blob.round).toBe(3);
-    expect(blob.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+    expect(blob.convergence).toEqual({ score: 0.7, threshold: 1, converged: true });
   });
 
   it("an oversized prior review's signal survives via the compact marker — a mechanic still carries it (issue #141 review r2)", async () => {

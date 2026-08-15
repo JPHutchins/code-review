@@ -171,7 +171,7 @@ on:
         required: false
         default: ""
       convergence_threshold:
-        description: Advisory convergence tolerance shown in the review sticky — the weighted-severity score (critical 4 · major 2 · minor 1 · nit 0) at or below which the review reads as "converged". Empty ⇒ the default (1 — unlimited nits plus at most one minor).
+        description: Advisory convergence tolerance shown in the review sticky — the per-finding convergence score (each finding's floor + confidence-weighted headroom; ceilings critical 4 · major 2 · minor 1 · nit 0) at or below which the review reads as "converged". Empty ⇒ the default (1).
         type: string
         required: false
         default: ""

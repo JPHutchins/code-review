@@ -438,6 +438,11 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(convergenceSummary(docOf(["minor", 1]), 0.95)).toBe(
       "**Convergence** 🔄 1 > 0.95 — iterating",
     );
+    // A threshold a lossy formatter (toFixed(1)) would round to "1.0" must print its true value, or
+    // the converged line reads as a false inequality — the guard case from the pre-#162 suite.
+    expect(convergenceSummary(docOf(["minor", 1]), 1.04)).toBe(
+      "**Convergence** 🏁 1 ≤ 1.04 — converged",
+    );
   });
 });
 

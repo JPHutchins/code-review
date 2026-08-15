@@ -79,11 +79,10 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
 // carries findings — never counts as a completed review and must never read as converged (#141).
 export const isReviewVerdict = (verdict: Verdict): boolean => verdict !== "error";
 
-// The severity counts a convergence round stores and scores: findings PLUS systemic problems at
-// their (now required) severities — a systemic critical weighs like a finding critical, so a review
-// carrying one can never read "converged" beside it. The sticky's "Findings:" histogram stays
-// findings-only (computeSeverityCounts); this is the convergence channel only. Single source for
-// both the badge (render) and the round append (post), so the two can never disagree.
+// The severity counts a convergence round STORES for its trajectory chips + streak history: findings
+// PLUS systemic problems at their severities (a systemic critical weighs like a finding critical). The
+// sticky's "Findings:" histogram stays findings-only (computeSeverityCounts). The convergence SCORE
+// reads confidence off the findings themselves (issue #162), not these aggregate counts.
 export const computeRoundCounts = (findings: Findings): SeverityCounts =>
   (findings.systemic_problems ?? []).reduce<Record<Severity, number>>(
     (acc, s) => (s.severity in acc ? { ...acc, [s.severity]: acc[s.severity] + 1 } : acc),
@@ -181,7 +180,7 @@ export const render = (input: RenderInput): string => {
       surfacedFindingsPointer(
         input.findings,
         // The fallback embeds a signal exactly when the badge renders — never beside a suppressed
-        // badge, and from the same counts the badge reads. It assumes a post-style history (the
+        // badge, and scores the same findings the badge does. It assumes a post-style history (the
         // caller appends this run's counts last), numbering the round exactly as the trajectory
         // label does; post always supplies the marker, so this path cannot disagree with it in
         // production (issue #141 review r4).

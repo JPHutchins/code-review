@@ -154,8 +154,8 @@ export const parseFindingsMarker = (body: string): unknown => {
 // shape decodes to no history rather than throwing on this render path.
 const ROUNDS_RE = /<!-- code-review:rounds;base64 ([A-Za-z0-9+/=]+) -->/;
 
-// The severity keys in descending weight/emphasis order, so every surface (counts validation, chips,
-// the convergence score) iterates them the same way from one source.
+// The severity keys in descending weight/emphasis order, so every surface (counts validation, chips)
+// iterates them the same way from one source.
 const SEVERITIES = ["critical", "major", "minor", "nit"] as const;
 
 // Non-negative integers only: a crafted/corrupted marker with a negative count would render as a
@@ -530,7 +530,8 @@ export const computeSameRootNotes = (
 // The convergence score and its advisory badge (score ≤ threshold), per finding/systemic problem:
 // floor(severity) + max(0, ceiling − floor) × confidence. The floor is the weight confidence cannot
 // erode; critical's is threshold-relative (CRITICAL_FLOOR_MARGIN) so an open critical is never converged
-// at any threshold. ADVISORY ONLY: never alters the verdict.
+// at any practical threshold (the margin degrades only where FP precision drops 0.01, i.e. thresholds
+// ≳ 1e14). ADVISORY ONLY: never alters the verdict.
 const CONVERGENCE_CEILINGS: SeverityCounts = { critical: 4, major: 2, minor: 1, nit: 0 };
 // > 0 so a lone critical fails `score ≤ threshold`; 0.01 survives round2 (a coarser round would erase it).
 const CRITICAL_FLOOR_MARGIN = 0.01;

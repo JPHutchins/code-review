@@ -102,8 +102,8 @@ export interface RenderInput {
   // (post derives it from the carried signal, which survives corrupt rounds-marker entries that
   // parseRounds filters). Omitted ⇒ the parsed history length.
   readonly roundCount?: number;
-  // The advisory convergence tolerance — the weighted-severity score at or below which the round
-  // reads as "converged" (default 1: unlimited nits plus at most one minor). Omitted ⇒ the default.
+  // The advisory convergence tolerance — the per-finding convergence score at or below which the round
+  // reads as "converged" (default 1). Omitted ⇒ the default.
   readonly convergenceThreshold?: number;
   // Whether THIS run is a convergence-defining full-review round (post computes it once and passes it
   // here, using it for BOTH the round append and the badge so the two can't drift). Omitted ⇒ derived

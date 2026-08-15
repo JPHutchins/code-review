@@ -890,10 +890,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   const currentCounts = computeSeverityCounts(findings.findings);
 
-  // The round entry carries the ROUND counts (findings + systemic severities) — the same
-  // computeRoundCounts the badge scores with, so a systemic-only round with a critical systemic item
-  // stores and shows 🔴1 rather than masquerading as "clean" — plus this round's mechanism-frequency
-  // map, so the carried trajectory tells a later round which mechanisms keep recurring. `isRound` was
+  // The round entry carries the ROUND counts (findings + systemic severities), so a systemic-only
+  // round with a critical systemic item stores and shows 🔴1 rather than masquerading as "clean" —
+  // plus this round's mechanism-frequency map, so the carried trajectory tells a later round which
+  // mechanisms keep recurring. (The convergence SCORE reads confidence off the findings, issue #162 —
+  // this entry is the trajectory/streak channel.) `isRound` was
   // computed above, where it also gates the same-root notes.
   const currentCodes = computeCodeCounts(findings.findings, findings.systemic_problems ?? []);
   const priorLastCodes =

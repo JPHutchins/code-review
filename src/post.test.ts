@@ -3409,7 +3409,7 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 0.7, threshold: 1, converged: true });
   });
 
-  it("the signal marker's convergence uses the ROUND counts (findings + systemic), never diverging from the badge — a systemic major beside a nit-only finding reads iterating (issue #134 merge)", async () => {
+  it("the signal marker's convergence scores the same findings + systemic the badge does — a systemic major beside a nit-only finding reads iterating (issue #134)", async () => {
     // The round history (computeRoundCounts) folds systemic severities in; the signal marker must use
     // the SAME counts or a doc whose systemic items cross the threshold would carry `converged: true`
     // beside a badge that reads iterating.

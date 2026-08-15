@@ -1118,22 +1118,18 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
   });
 });
 
-describe("reviewBodyPointer — the review body links the sticky; the blob is a no-sticky fallback only (issue #161)", () => {
-  const marker =
-    "<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->\n<!-- code-review:findings-json;base64 eyJhIjoxfQ== -->";
-
-  it("omits the findings blob and links the sticky when one exists (the sticky is the sole decode surface)", () => {
-    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky", marker);
+describe("reviewBodyPointer — a bare pointer to the sticky, never the blob (issue #161)", () => {
+  it("links the sticky and embeds no blob when a URL is present", () => {
+    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky");
     expect(pointer).not.toContain("code-review:findings-json");
     expect(pointer).not.toContain("AGENTS: STOP");
     expect(pointer).toContain("[summary comment](https://example.com/sticky)");
     expect(pointer).toContain("`abc1234`");
   });
 
-  it("embeds the blob as the fallback when no sticky exists to carry it", () => {
-    const pointer = reviewBodyPointer("abc1234def", undefined, marker);
-    expect(pointer).toContain("code-review:findings-json;base64");
-    expect(pointer).toContain("AGENTS: STOP");
+  it("emits an unlinked pointer — still no blob — when the sticky URL is unavailable", () => {
+    const pointer = reviewBodyPointer("abc1234def", undefined);
+    expect(pointer).not.toContain("code-review:findings-json");
     expect(pointer).toContain("see the summary comment");
   });
 });

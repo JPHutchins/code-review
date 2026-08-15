@@ -109,6 +109,6 @@ const sticky = render({
   postedAt: formatUtc(new Date()),
 });
 
-const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined, marker);
+const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined);
 
 process.stdout.write(buildPreviewDoc(sticky, reviewBody, comments));

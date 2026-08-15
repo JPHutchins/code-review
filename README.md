@@ -139,8 +139,8 @@ links to:
   agent's own document, and a recurrence claim is round state the commenter owns. Each inline review
   comment embeds only its own finding (a `schema_version` + one-finding fragment), and the
   review-object body only links the sticky — so the **sticky is the sole documented decode surface**
-  for the whole-document marker; a decoding agent reads it there. The review body embeds the blob only
-  as a fallback when no sticky could be written, so a review is never left without a machine channel.
+  for the whole-document marker; a decoding agent reads it there. The review body is written only after
+  the sticky exists (a failed sticky write aborts the run first), so it never carries the blob itself.
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
   phases. This is advisory/auditability only: it is never read by the comment job and never affects
   what gets posted.

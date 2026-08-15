@@ -171,10 +171,14 @@ describe("suppressed-nit aside — issue #164", () => {
     expect(out).toContain("src/a b.ts");
   });
 
-  it("does not render the aside on an incomplete notice", () => {
-    expect(renderWith([nit({ title: "A" })], { incomplete: true })).not.toContain(
+  it("still renders the aside on an incomplete round that carries suppressed nits (they must not vanish while the histogram counts them)", () => {
+    expect(renderWith([nit({ title: "A" })], { incomplete: true })).toContain(
       "below the visibility floor",
     );
+  });
+
+  it("emits no aside on a pure notice (no findings ⇒ no suppressed nits)", () => {
+    expect(renderWith([], { incomplete: true })).not.toContain("below the visibility floor");
   });
 });
 
@@ -590,11 +594,12 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template });
 
       expect(result).toContain("### 🔗 Systemic problems");
-      // Systemic likelihood is a hardcoded constant (1) in scoring — see the convergence-score change
-      // — so it carries no per-item information and is NOT surfaced on the systemic header; findings
-      // keep confidence + likelihood.
-      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80");
-      expect(result).not.toContain("Retry plumbing is inconsistent · confidence 0.80 · likelihood");
+      // Confidence AND likelihood on the systemic header — this PR's score reads the written systemic
+      // likelihood, so it must be shown. (The systemic-likelihood-to-1 scoring change and the matching
+      // header removal travel together in the convergence-calibration PR, not here.)
+      expect(result).toContain(
+        "#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80 · likelihood 1.00",
+      );
       expect(result).toContain("Three spots, three retry policies — the pattern is the problem.");
       expect(result).toContain("_Affects: `src/upload/config.ts`, `src/upload/client.ts`");
       expect(result).toContain("Ties together: `widened-type`");

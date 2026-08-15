@@ -36,6 +36,7 @@ import {
   computeSameRootNotes,
   MAX_CODES_PER_ROUND,
   EMBED_LIMIT,
+  reviewBodyPointer,
 } from "./surface.js";
 import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./schema.js";
 import type { Finding, Findings } from "./schema.js";
@@ -1114,5 +1115,21 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
     expect(pointer).toContain("code-review:signal;base64");
     expect(carryForwardMarkers(pointer)).toContain("code-review:signal;base64");
     expect(carryForwardMarkers(pointer)).toContain("findings-json");
+  });
+});
+
+describe("reviewBodyPointer — a bare pointer to the sticky, never the blob (issue #161)", () => {
+  it("links the sticky and embeds no blob when a URL is present", () => {
+    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky");
+    expect(pointer).not.toContain("code-review:findings-json");
+    expect(pointer).not.toContain("AGENTS: STOP");
+    expect(pointer).toContain("[summary comment](https://example.com/sticky)");
+    expect(pointer).toContain("`abc1234`");
+  });
+
+  it("emits an unlinked pointer — still no blob — when the sticky URL is unavailable", () => {
+    const pointer = reviewBodyPointer("abc1234def", undefined);
+    expect(pointer).not.toContain("code-review:findings-json");
+    expect(pointer).toContain("see the summary comment");
   });
 });

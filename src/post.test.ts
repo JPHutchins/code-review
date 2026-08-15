@@ -519,10 +519,11 @@ describe("post — inline review", () => {
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     expect(body.event).toBe("COMMENT");
     expect(body.commit_id).toBe("abc123def456");
-    // A body-only review: no in-diff comments, but the review still posts and its body carries the
-    // code-review marker (points humans at the sticky, agents at the findings JSON).
+    // A body-only review: no in-diff comments, but the review still posts and its body is a bare
+    // pointer to the sticky — the machine channel lives only there (issue #161), never in the body.
     expect(body.comments).toEqual([]);
-    expect(body.body).toContain("code-review");
+    expect(body.body).toContain("summary comment");
+    expect(body.body).not.toContain("code-review:findings-json");
   });
 });
 
@@ -1772,7 +1773,7 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     expect(body.event).toBe("COMMENT");
   });
 
-  it("prepends the findings-json marker to the review body itself, not just the sticky and inline comments (issue #19)", async () => {
+  it("does NOT duplicate the findings-json blob into the review body when a sticky exists — it links the sticky, the sole documented decode surface (issue #161 supersedes #19)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({}), api);
@@ -1781,9 +1782,10 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
     );
     const body = JSON.parse(reviewCall!.stdin!) as ReviewBody;
-    expect(body.body.startsWith("<!-- AGENTS: STOP")).toBe(true);
-    expect(body.body).toContain("<!-- code-review:findings-json;base64 ");
+    expect(body.body).not.toContain("<!-- AGENTS: STOP");
+    expect(body.body).not.toContain("code-review:findings-json");
     expect(body.body).toContain("Automated code review");
+    expect(body.body).toContain("summary comment");
   });
 });
 

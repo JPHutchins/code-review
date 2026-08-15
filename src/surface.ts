@@ -757,16 +757,14 @@ export const projectPatch = (patch: string | undefined): PatchProjection => {
 
 export const formatConfidence = (n: number): string => n.toFixed(2);
 
-// The review-object body: the findings-json marker (when present) then a one-line pointer to the
-// sticky. SSOT shared by the commenter (post.ts) and the `preview` command.
-export const reviewBodyPointer = (
-  headSha: string,
-  stickyUrl: string | undefined,
-  marker: string,
-): string => {
+// The review-object body: a bare one-line pointer to the sticky, where the findings-json blob lives —
+// the sole documented decode surface (issue #161). It never embeds the blob: the review body is written
+// only after upsertSticky returns (a genuinely failed sticky write throws and aborts post() first), so
+// the sticky always exists to carry the machine channel by the time this renders. SSOT shared by the
+// commenter (post.ts) and the `preview` command.
+export const reviewBodyPointer = (headSha: string, stickyUrl: string | undefined): string => {
   const sha7 = headSha.slice(0, 7);
-  const linkLine = stickyUrl
+  return stickyUrl
     ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
     : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
-  return marker ? `${marker}\n\n${linkLine}` : linkLine;
 };

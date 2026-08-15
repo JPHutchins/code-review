@@ -7,11 +7,14 @@ import type { GhApi, PostInput, AnnounceInput } from "./post.js";
 import { post, announce, reportIncomplete } from "./post.js";
 import {
   AGENTS_STOP_DIRECTIVE,
+  convergenceMarker,
   findingPointer,
   findingsPointer,
+  parseConvergenceMarker,
   parseFindingsMarker,
 } from "./surface.js";
 import type {
+  Convergence,
   Findings,
   ResultEnvelope,
   PriceMap,
@@ -3524,6 +3527,66 @@ describe("post — convergence rounds (issue #125)", () => {
     // the default fixture (one minor at confidence 0.7) scores 0.73.
     expect(rounds?.[0]).toMatchObject({ round: 1, score: 2, codes: { "old-code": 1 } });
     expect(rounds?.[1]).toMatchObject({ round: 2, score: 0.73 });
+  });
+
+  it("an oversized full review links the findings but rides the convergence in a compact marker (#185 review)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(
+        mkFindings(
+          Array.from({ length: 500 }, (_, i) =>
+            mkFinding({ title: `F${String(i)}`, description: "x".repeat(200) }),
+          ),
+        ),
+      ),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+    await post(
+      mkInput({ route: "full review", jsonUrl: "https://artifacts.example.com/f.zip" }),
+      api,
+    );
+    const body = patchedBody(calls());
+    // The findings blob fell to the link form, so its embedded convergence is gone...
+    expect(body).not.toContain("code-review:findings-json;base64");
+    expect(body).toContain("code-review:findings-json https://artifacts.example.com/f.zip");
+    // ...but the convergence rides a compact marker beside it — a size fallback, the same object.
+    const conv = parseConvergenceMarker(body);
+    expect(conv?.rounds).toHaveLength(1);
+    expect(conv?.rounds?.[0]?.round).toBe(1);
+  });
+
+  it("a full review reading an oversized prior (link blob + compact convergence marker, no legacy markers) appends the next round (#185 review)", async () => {
+    const priorConv: Convergence = {
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, codes: { old: 1 } }],
+    };
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
+      priorConv,
+    )}\nold`;
+    const { api, calls } = mkMockGhApi(mkMocks(priorSticky));
+    await post(mkInput({ route: "full review" }), api);
+    const rounds = decodedBlob(calls()).convergence?.rounds;
+    expect(rounds).toHaveLength(2);
+    expect(rounds?.[0]).toMatchObject({ round: 1, score: 2, codes: { old: 1 } });
+    expect(rounds?.[1]?.round).toBe(2);
+  });
+
+  it("strips an invalid agent-echoed convergence and still posts the review, not a notice (#185 review)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        ...mkFindings([mkFinding({ severity: "minor" })]),
+        convergence: { score: "nope", threshold: 1, converged: true, rounds: [] },
+      }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    expect(body).not.toContain("did not complete");
+    // The pipeline re-stamped a valid convergence over the stripped invalid one.
+    expect(decodedBlob(calls()).convergence?.rounds).toHaveLength(1);
   });
 
   it("a mechanic pass carries the convergence trajectory forward with no code append (#145 / #174)", async () => {

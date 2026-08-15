@@ -317,9 +317,12 @@ const renderCmd = defineCommand({
     // The render command previews ONE run with no PR history. A completed full-review run IS round 1 of
     // its conversation, so stamp its convergence (issue #174): the badge, the numeric trajectory, and the
     // blob all read the same stored score, the same decision post makes (issue #141 reviews r2 + r4).
-    const stampedFindings = isRound
-      ? { ...findings, convergence: buildConvergence(findings, threshold) }
-      : findings;
+    // Mirror post's stamp: convergence is pipeline-owned and always overwritten, so a draft's echoed
+    // value never rides the preview blob — a round previews a fresh round-1 stamp, a non-round none.
+    const stampedFindings = {
+      ...findings,
+      convergence: isRound ? buildConvergence(findings, threshold) : undefined,
+    };
     // The `render` command previews the sticky CHROME (verdict, counts, convergence, cost) — it has no
     // diff, so it never places findings inline vs stray and shows no per-finding detail. It therefore
     // validates --nit-visibility-floor (issue #164) but does NOT apply the visible split or the

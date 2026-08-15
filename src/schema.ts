@@ -28,6 +28,11 @@ const LineNumber = t.refinement(
 const Confidence = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Confidence");
 const Likelihood = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Likelihood");
 
+// A convergence score/threshold must be FINITE: io-ts's t.number accepts Infinity/NaN (JSON.parse("1e400")
+// yields Infinity), which JSON.stringify then coerces to null — silently dropping the carried convergence
+// on the next hop. parseSurfaceSignal guards the same vector; the convergence codec must too.
+const FiniteNumber = t.refinement(t.number, (n): n is number => Number.isFinite(n), "FiniteNumber");
+
 // Mirrors findings.schema.json's schema_version.pattern exactly, so resolve() never accepts a value
 // the ajv gate would reject (e.g. a truncated "0.2" or an over-long "0.2.0.0").
 const SCHEMA_VERSION_RE =
@@ -185,7 +190,7 @@ const CodeFrequency = t.record(
 
 const ConvergenceRoundRequired = t.type({ round: RoundNumber });
 const ConvergenceRoundOptional = t.partial({
-  score: t.number,
+  score: FiniteNumber,
   codes: CodeFrequency,
   sha: t.string,
 });
@@ -213,8 +218,8 @@ export const ConvergenceRoundCodec = t.exact(ConvergenceRoundStrict);
 // it so the JSON document is the sole source of the convergence data a decoding agent reads, no
 // side-channel marker. score AND threshold are both carried so the number is interpretable on its own.
 const ConvergenceCoreShape = t.type({
-  score: t.number,
-  threshold: t.number,
+  score: FiniteNumber,
+  threshold: FiniteNumber,
   converged: t.boolean,
 });
 

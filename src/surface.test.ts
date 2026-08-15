@@ -542,6 +542,42 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(conv.rounds?.[conv.rounds.length - 1]?.round).toBe(71);
     expect(conv.rounds?.[0]?.round).toBe(71 - CONVERGENCE_TRAJECTORY_LIMIT + 1);
   });
+
+  it("rejects a convergence with a non-finite score — Infinity serializes to null and would drop the trajectory (#185 review)", () => {
+    expect(
+      parseConvergence({
+        convergence: {
+          score: Infinity,
+          threshold: 1,
+          converged: false,
+          rounds: [{ round: 1, score: 1 }],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("treats a convergence with an empty trajectory as absent, so it can't reset the round count (#185 review)", () => {
+    expect(
+      parseConvergence({ convergence: { score: 0, threshold: 1, converged: true, rounds: [] } }),
+    ).toBeNull();
+  });
+
+  it("classifies a post-#174 notice carrying convergence only in its blob as full-review history (#185 review)", () => {
+    // A notice: no route marker, no legacy rounds marker — the trajectory rides only the convergence
+    // blob, so isFullReviewSticky must read it there or the empty-mechanic guard buries the review.
+    const doc: Findings = {
+      ...docOf(["minor", 0.7]),
+      convergence: {
+        score: 0.73,
+        threshold: 1,
+        converged: true,
+        rounds: [{ round: 1, score: 0.73 }],
+      },
+    };
+    const body = `<!-- code-review -->\n${findingsPointer(doc, undefined)}`;
+    expect(body).not.toContain("reviewed-route");
+    expect(isFullReviewSticky(body)).toBe(true);
+  });
 });
 
 describe("nit visibility floor — issue #164", () => {

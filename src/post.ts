@@ -13,6 +13,7 @@ import {
   carryForwardMarkers,
   computeCodeCounts,
   computeSameRootNotes,
+  convergenceMarker,
   findingsMarkerForm,
   findingsPointer,
   isBelowVisibilityFloor,
@@ -112,14 +113,11 @@ type FindingsLoadResult =
   | { readonly kind: "invalid-shape" }
   | { readonly kind: "unsupported-schema-version"; readonly version: string };
 
-const loadFindings = (path: string): FindingsLoadResult => {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
-  } catch {
-    return { kind: "corrupt" };
-  }
-  const resolution = resolve("findings", raw);
+// convergence + scope_metastasis are pipeline-OWNED (post overwrites them after load).
+const PIPELINE_STAMPED_FIELDS = new Set(["convergence", "scope_metastasis"]);
+
+const decodeFindings = (doc: unknown): FindingsLoadResult => {
+  const resolution = resolve("findings", doc);
   switch (resolution.kind) {
     case "ok":
       return { kind: "ok", findings: resolution.value };
@@ -129,6 +127,39 @@ const loadFindings = (path: string): FindingsLoadResult => {
     case "missing-version":
       return { kind: "invalid-shape" };
   }
+};
+
+const loadFindings = (path: string): FindingsLoadResult => {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+  } catch {
+    return { kind: "corrupt" };
+  }
+  const first = decodeFindings(raw);
+  // The seed hands the agent a prior doc that carries `convergence`, and the agent is told not to write
+  // it — but an echoed or mangled stamp must not fail the WHOLE review into a "did not complete" notice,
+  // since the pipeline overwrites both stamped fields after load. Strip them and retry before degrading
+  // (mirrors seed-draft's strip-and-retry, issue #185 review).
+  if (
+    first.kind === "invalid-shape" &&
+    typeof raw === "object" &&
+    raw !== null &&
+    !Array.isArray(raw) &&
+    Object.keys(raw).some((k) => PIPELINE_STAMPED_FIELDS.has(k))
+  ) {
+    const stripped = Object.fromEntries(
+      Object.entries(raw).filter(([key]) => !PIPELINE_STAMPED_FIELDS.has(key)),
+    );
+    const retry = decodeFindings(stripped);
+    if (retry.kind === "ok") {
+      process.stderr.write(
+        "Warning: the review draft carried an invalid pipeline-stamped field (convergence/scope_metastasis) — stripped it and used the rest; the pipeline re-stamps convergence\n",
+      );
+      return retry;
+    }
+  }
+  return first;
 };
 
 const noticeMessageFor = (result: Exclude<FindingsLoadResult, { kind: "ok" }>): string => {
@@ -597,7 +628,18 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ...doc,
     convergence: conv ?? undefined,
   });
-  const findingsBlob = (doc: Findings): string => findingsPointer(doc, input.jsonUrl);
+  const findingsBlob = (doc: Findings): string => {
+    const marker = findingsPointer(doc, input.jsonUrl);
+    // On the link/omitted form the embedded blob (and the convergence inside it) is gone, so carry the
+    // SAME stamped convergence compactly beside it — a size fallback so an oversized review's trajectory
+    // + stop signal survive (issue #185 review). The embedded blob always wins on read, so a normal
+    // sticky carries no such marker and the two can never diverge.
+    if (doc.convergence === undefined || findingsMarkerForm(doc, input.jsonUrl) === "embedded") {
+      return marker;
+    }
+    const conv = convergenceMarker(doc.convergence);
+    return marker === "" ? conv : `${marker}\n${conv}`;
+  };
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
   // TDZ ReferenceError and crashes the post (issue #151 review r4 — a real regression in r3). The
@@ -950,11 +992,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const markerForm = findingsMarkerForm(stampedFindings, input.jsonUrl);
   if (markerForm === "link") {
     process.stderr.write(
-      "Warning: the findings-json blob exceeds the embed limit — degraded to the jsonUrl-link form; a decoding agent (and the next-round seed) must fetch the artifact for the findings and convergence\n",
+      "Warning: the findings-json blob exceeds the embed limit — degraded to the jsonUrl-link form; the convergence rides a compact marker beside it, but a decoding agent (and the next-round seed) must fetch the artifact for the FINDINGS\n",
     );
   } else if (markerForm === "omitted") {
     process.stderr.write(
-      "Warning: the findings-json blob exceeds the embed limit and no --json-url was given — the embedded findings + convergence seed is dropped from the posted surfaces\n",
+      "Warning: the findings-json blob exceeds the embed limit and no --json-url was given — the convergence rides a compact marker but the embedded findings seed is dropped from the posted surfaces\n",
     );
   }
 

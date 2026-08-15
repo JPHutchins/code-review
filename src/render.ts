@@ -135,9 +135,10 @@ export const render = (input: RenderInput): string => {
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
   const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
-  // The convergence field the pipeline stamped into the JSON (issue #174) is the source for the
-  // trajectory and the badge; a legacy sticky (or the standalone `render` command on a doc without it)
-  // falls back to the parsed rounds marker, whose entries carry no score and render "—".
+  // The pipeline-stamped convergence field (issue #174) is the source for the trajectory and the badge.
+  // `input.rounds` is a fallback only for callers that supply a legacy trajectory directly (tests, or a
+  // standalone render of a doc without convergence); its entries carry no score and render "—". Every
+  // production sticky carries convergence in the blob, so the fallback never fires there.
   const convergence = input.findings.convergence;
   const trajectory = convergence?.rounds ?? input.rounds ?? [];
   // The same-root annotation: post passes the explicit map computed from the PRIOR-round history it

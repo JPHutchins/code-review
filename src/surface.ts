@@ -41,17 +41,16 @@ export const severityEmoji = (s: string): string => {
   }
 };
 
-// ~32KB of JSON in base64 — well under GitHub's 65536-char comment limit. Post-#156 the embedded blob
-// is the agent's COMPLETE document with NO pipeline overhead: the stop signal rides its own
-// ~165-char compact signal marker BESIDE the blob (never inside it), and scope_metastasis is
-// re-derived at seed time rather than carried. The value is kept at the pre-#156 boundary as a
-// deliberate backward-compat margin, so every review that embedded before the surfacing transform
-// was deleted still embeds — the payload ceiling only rose (the ~2.5KB worst-case surfaced overhead
-// is gone), and the ~165 chars that moved outside the blob grow the whole comment by ~0.3% of the
-// 65536 ceiling, well inside the headroom. The AGENTS_STOP_DIRECTIVE (~0.75KB, issue #171) rides ahead
-// of the marker on every surface too — the same small-fraction-of-headroom order, well inside it. The
-// link fallback loses only the re-review findings seed — never the stop signal, which survives in the
-// compact marker.
+// ~32KB of JSON in base64 — well under GitHub's 65536-char comment limit. The embedded blob is the
+// agent's COMPLETE document plus the pipeline-stamped `convergence` field (issue #174), all in one JSON
+// object; scope_metastasis is re-derived at seed time rather than carried. The value is kept at the
+// pre-#156 boundary as a deliberate backward-compat margin, so every review that embedded before the
+// surfacing transform was deleted still embeds. When a review DOES exceed this and the blob falls to the
+// link form, the convergence rides its own compact `code-review:convergence` marker beside the link
+// (issue #185 review) — a size fallback carrying the SAME stamped object — so the trajectory and stop
+// signal survive; only the re-review FINDINGS seed degrades (a decoder must fetch the linked artifact
+// for the findings). The AGENTS_STOP_DIRECTIVE (~0.75KB, issue #171) rides ahead of the marker on every
+// surface, a small fraction of the headroom.
 export const EMBED_LIMIT = 42700;
 
 // The canonical location of the findings schema — the moving `main` ref (mirrors findings.schema.json's
@@ -151,7 +150,12 @@ export const parseReviewedRoute = (body: string): string | null => ROUTE_RE.exec
 // review, so it requires the route marker outright.
 export const isFullReviewSticky = (body: string): boolean => {
   const route = parseReviewedRoute(body);
-  return route === "full review" || (route !== "mechanic" && parseRounds(body).length > 0);
+  if (route === "full review") return true;
+  if (route === "mechanic") return false;
+  // Round history means a completed full review — whether it rides the new convergence field/marker or a
+  // legacy rounds marker (issue #185 review). A post-#174 notice carries its trajectory only in the blob,
+  // and this predicate gates the empty-mechanic guard that must not bury that completed review.
+  return priorTrajectory(parseFindingsMarker(body), body).length > 0;
 };
 
 // Carried by the announce placeholder when the sticky it replaced was a COMPLETED review: the
@@ -326,9 +330,10 @@ export const roundsMarker = (rounds: readonly RoundRecord[]): string => {
   return serialize(bounded);
 };
 
-// A convergence score for display: fixed 2 decimals so a descent reads cleanly (2.40 → 1.10 → 0.42)
-// and the badge and the trajectory's last entry print identically.
-export const formatScore = (score: number): string => score.toFixed(2);
+// A convergence score for display: the same fixed-2-decimal formatting as formatConfidence (a descent
+// reads cleanly — 2.40 → 1.10 → 0.42 — and the badge and the trajectory's last entry print identically).
+// Delegates so a future change to the 2-decimal rule lands in one place.
+export const formatScore = (score: number): string => formatConfidence(score);
 
 // The convergence trajectory (issue #174): "**Round 3** · 2.40 → 1.10 → 0.42"; "" when there is no
 // round history. Each entry is a round's stored convergence score; a round with no stored score (a
@@ -840,15 +845,40 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // Decode-tolerant read of the pipeline-stamped convergence field from a prior findings blob (the raw
 // parseFindingsMarker output): the convergence when the blob carries a valid one, else null.
 // Best-effort like parseRounds — a malformed or absent field yields null, never a throw.
+// A #174 pipeline stamp always carries a NON-EMPTY trajectory. A convergence that decodes but has no
+// `rounds` (or an empty one) is either a legacy pre-#156 surface blob's embedded stop signal or a
+// crafted/reset value — treat it as absent so the marker/legacy fallbacks reconstruct the whole thing,
+// and an empty trajectory can never silently reset the round count to 0 (issue #185 review).
+const validStampedConvergence = (raw: unknown): Convergence | null => {
+  const decoded = ConvergenceCodec.decode(raw);
+  return decoded._tag === "Right" &&
+    decoded.right.rounds !== undefined &&
+    decoded.right.rounds.length > 0
+    ? decoded.right
+    : null;
+};
+
 export const parseConvergence = (priorDoc: unknown): Convergence | null => {
   if (typeof priorDoc !== "object" || priorDoc === null) return null;
   const raw = (priorDoc as Record<string, unknown>)["convergence"];
-  if (raw === undefined) return null;
-  const decoded = ConvergenceCodec.decode(raw);
-  // A #174 pipeline stamp always carries the trajectory (`rounds`); a convergence with no rounds is a
-  // legacy pre-#156 surface blob's embedded stop signal, whose trajectory rides the separate rounds
-  // marker — treat it as absent so carriedConvergence reconstructs the whole thing from the markers.
-  return decoded._tag === "Right" && decoded.right.rounds !== undefined ? decoded.right : null;
+  return raw === undefined ? null : validStampedConvergence(raw);
+};
+
+const CONVERGENCE_RE = /<!-- code-review:convergence;base64 ([A-Za-z0-9+/=]+) -->/;
+
+// The compact convergence marker — a SIZE FALLBACK for the link/omitted blob form (issue #185 review):
+// convergence lives IN the findings blob (the SSOT), but an oversized review's blob falls to the link
+// form and the convergence would be lost with it. This carries the SAME stamped convergence object
+// compactly beside the link, emitted ONLY when the blob does not embed and read ONLY as a fallback (the
+// embedded blob always wins), so a normal sticky carries no such marker and the two can never diverge.
+export const convergenceMarker = (convergence: Convergence): string =>
+  `<!-- code-review:convergence;base64 ${Buffer.from(JSON.stringify(convergence), "utf-8").toString(
+    "base64",
+  )} -->`;
+
+export const parseConvergenceMarker = (body: string): Convergence | null => {
+  const b64 = CONVERGENCE_RE.exec(body)?.[1];
+  return b64 === undefined ? null : validStampedConvergence(decodeBase64Json(b64));
 };
 
 // A legacy parsed rounds marker mapped into the trajectory shape: codes/sha/round survive (the
@@ -869,14 +899,16 @@ export const priorTrajectory = (
   priorDoc: unknown,
   priorBody: string,
 ): readonly ConvergenceRound[] =>
-  parseConvergence(priorDoc)?.rounds ?? roundRecordsToConvergenceRounds(parseRounds(priorBody));
+  parseConvergence(priorDoc)?.rounds ??
+  parseConvergenceMarker(priorBody)?.rounds ??
+  roundRecordsToConvergenceRounds(parseRounds(priorBody));
 
 // The prior completed round's convergence, carried VERBATIM into a notice or CI-fix pass so the JSON
 // keeps the trajectory + last score across a non-round post: the stamped convergence field if present,
 // else reconstructed from a legacy sticky's compact signal marker (the core) + rounds marker (the
 // trajectory, scoreless). null when no round has completed — a first-run notice stamps no convergence.
 export const carriedConvergence = (priorDoc: unknown, priorBody: string): Convergence | null => {
-  const stamped = parseConvergence(priorDoc);
+  const stamped = parseConvergence(priorDoc) ?? parseConvergenceMarker(priorBody);
   if (stamped !== null) return stamped;
   const signal = parseSignalMarker(priorBody) ?? parseSurfaceSignal(priorDoc);
   if (signal === null) return null;
@@ -942,6 +974,9 @@ export const carryForwardMarkers = (body: string): string => {
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
   const reviewedRoute = ROUTE_RE.exec(body)?.[0];
+  // The compact convergence marker (issue #185 review) rides an oversized review's link-form blob, so
+  // the in-progress placeholder must carry it forward too or the trajectory is lost across the swap.
+  const convergence = CONVERGENCE_RE.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
   const signal = SIGNAL_RE.exec(body)?.[0];
   // The replaced sticky was a completed review — the placeholder must record that ancestry even
@@ -951,7 +986,7 @@ export const carryForwardMarkers = (body: string): string => {
       ? COMPLETED_ANCESTOR_MARKER
       : undefined;
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, rounds, signal]
+  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, convergence, rounds, signal]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
 };

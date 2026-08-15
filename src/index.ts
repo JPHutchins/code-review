@@ -352,6 +352,7 @@ const renderCmd = defineCommand({
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       convergenceRound: isRound,
       postedAt: formatUtc(new Date()),
+      pricedAt: new Date(),
     });
     process.stdout.write(output);
   },
@@ -422,7 +423,7 @@ const costCmd = defineCommand({
   run: async ({ args }) => {
     const envelope = decode(ResultEnvelopeCodec.decode(readJSON(args.envelope)), "envelope");
     const prices = decode(PriceMapCodec.decode(readJSON(args.prices)), "prices");
-    const report = computeCost(envelope.models, prices);
+    const report = computeCost(envelope.models, prices, new Date());
     process.stdout.write(JSON.stringify(report, null, 2));
   },
 });
@@ -455,7 +456,7 @@ const checkCostCmd = defineCommand({
     const usage = sumTranscriptUsage(tree.entries);
     const priceResolution = resolvePrices(args.prices);
     const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
-    const report = computeCost(usage.models, prices);
+    const report = computeCost(usage.models, prices, new Date());
     process.stdout.write(
       `${JSON.stringify(
         {
@@ -654,7 +655,9 @@ const budgetHookCmd = defineCommand({
       const usage = tree ? sumTranscriptUsage(tree.entries) : undefined;
       const prices = args.prices ? tryReadPrices(args.prices) : null;
       const spentUsd =
-        prices !== null && usage ? computeCost(usage.models, prices).totalCostUSD : null;
+        prices !== null && usage
+          ? computeCost(usage.models, prices, new Date()).totalCostUSD
+          : null;
       // The absolute anchor (set by the review job, inherited by every hook incl. fan-out subagents)
       // is the true remaining wall; the per-transcript first timestamp is only the fallback — it
       // reads ≈0 in a fresh subagent and leaves the fan-out unsteered.
@@ -1775,6 +1778,7 @@ const postCmd = defineCommand({
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       postedAt: formatUtc(new Date()),
+      pricedAt: new Date(),
     });
   },
 });

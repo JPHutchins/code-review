@@ -80,6 +80,9 @@ export interface PostInput {
   readonly nitVisibilityFloor?: number;
   // Computed by the caller via formatUtc so post() stays a clockless pass-through into render().
   readonly postedAt?: string;
+  // The run's UTC instant (same instant as postedAt), threaded to render for time-slotted pricing
+  // (issue #170); post() stays clockless. Ignored for a flat price map.
+  readonly pricedAt?: Date;
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
@@ -1045,6 +1048,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     jsonUrl: input.jsonUrl,
     findingsPointer: findingsMarker,
     postedAt: input.postedAt,
+    pricedAt: input.pricedAt,
   };
   const longFilesNote =
     longFiles.length > 0

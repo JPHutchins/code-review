@@ -121,7 +121,9 @@ export const render = (input: RenderInput): string => {
   const incomplete =
     (input.incomplete ?? input.envelope?.incomplete ?? false) ||
     isIncompleteFindings(input.findings);
-  const costReport = input.envelope ? computeCost(input.envelope.models, input.prices) : null;
+  const costReport = input.envelope
+    ? computeCost(input.envelope.models, input.prices, input.pricedAt)
+    : null;
   const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;

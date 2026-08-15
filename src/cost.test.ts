@@ -75,6 +75,7 @@ describe("computeCost", () => {
     const report = computeCost(
       [mkEntry({ model: "unknown-model", input_tokens: 100_000, output_tokens: 10_000 })],
       prices,
+      undefined,
       warn,
     );
 
@@ -104,6 +105,7 @@ describe("computeCost", () => {
     computeCost(
       [mkEntry({ model: "pro-model", input_tokens: 100, output_tokens: 10, cache_read_tokens: 5 })],
       prices,
+      undefined,
       warn,
     );
     expect(warn).not.toHaveBeenCalled();
@@ -111,7 +113,7 @@ describe("computeCost", () => {
 
   it("returns zero totals for empty models array", () => {
     const warn = vi.fn();
-    const report = computeCost([], prices, warn);
+    const report = computeCost([], prices, undefined, warn);
 
     expect(report.lines).toHaveLength(0);
     expect(report.totalCostUSD).toBe(0);
@@ -127,6 +129,7 @@ describe("computeCost", () => {
     const report = computeCost(
       [mkEntry({ model: "pro-model", input_tokens: 100_000, output_tokens: 10_000 })],
       prices,
+      undefined,
       warn,
     );
     expect(report.lines[0]!.cacheReadTokens).toBe(0);
@@ -224,5 +227,137 @@ describe("computeCost", () => {
     // provenance; the render layer owns the N/A presentation decision.
     expect(typeof report.totalCostUSD).toBe("number");
     expect(report.totalCostUSD).toBe(0);
+  });
+});
+
+describe("computeCost — UTC time-slot pricing (issue #170)", () => {
+  const at = (h: number, m = 0): Date => new Date(Date.UTC(2026, 7, 16, h, m));
+  const oneM = (): ModelUsageEntry[] => [
+    { model: "slot-model", input_tokens: 1_000_000, output_tokens: 0 },
+  ];
+  const slotted = (models: PriceMap["models"]): PriceMap => ({
+    _updated: "2026-08-16",
+    _unit: "USD per 1M tokens",
+    models,
+  });
+  // off-peak wrap 10:00→01:00 (in 1.0), peak 01:00→10:00 (in 2.0) — a 2-slot 24h partition.
+  const twoSlot = slotted({
+    "slot-model": {
+      slots: [
+        {
+          utc_from: "10:00",
+          utc_to: "01:00",
+          in: 1.0,
+          out: 2.0,
+          cache_read: 0.1,
+          cache_write: 0.0,
+        },
+        {
+          utc_from: "01:00",
+          utc_to: "10:00",
+          in: 2.0,
+          out: 4.0,
+          cache_read: 0.2,
+          cache_write: 0.0,
+        },
+      ],
+    },
+  });
+
+  it("prices at the PEAK slot for a UTC instant inside it", () => {
+    expect(computeCost(oneM(), twoSlot, at(3)).totalCostUSD).toBeCloseTo(2.0, 6);
+  });
+
+  it("prices at the OFF-PEAK wrap slot for late-night and past-midnight UTC instants", () => {
+    expect(computeCost(oneM(), twoSlot, at(23)).totalCostUSD).toBeCloseTo(1.0, 6);
+    expect(computeCost(oneM(), twoSlot, at(0, 30)).totalCostUSD).toBeCloseTo(1.0, 6);
+  });
+
+  it("treats utc_from as inclusive and utc_to as exclusive at the boundaries", () => {
+    // 01:00 = peak's utc_from (inclusive) → peak; 10:00 = peak's utc_to (exclusive) + the wrap's
+    // utc_from (inclusive) → off-peak.
+    expect(computeCost(oneM(), twoSlot, at(1)).totalCostUSD).toBeCloseTo(2.0, 6);
+    expect(computeCost(oneM(), twoSlot, at(10)).totalCostUSD).toBeCloseTo(1.0, 6);
+  });
+
+  it("leaves flat entries unaffected — pricedAt is ignored for a flat price map", () => {
+    expect(
+      computeCost([mkEntry({ model: "pro-model", input_tokens: 1_000_000 })], prices, at(3))
+        .totalCostUSD,
+    ).toBeCloseTo(1.1, 6);
+  });
+
+  it("warns and prices $0 when the slots leave the instant uncovered (a gap)", () => {
+    const warn = vi.fn();
+    const gap = slotted({
+      "slot-model": {
+        slots: [
+          {
+            utc_from: "01:00",
+            utc_to: "10:00",
+            in: 2.0,
+            out: 4.0,
+            cache_read: 0.2,
+            cache_write: 0.0,
+          },
+        ],
+      },
+    });
+    expect(computeCost(oneM(), gap, at(23), warn).totalCostUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("0 price slots"));
+  });
+
+  it("warns and prices $0 when two slots overlap the instant", () => {
+    const warn = vi.fn();
+    const overlap = slotted({
+      "slot-model": {
+        slots: [
+          {
+            utc_from: "00:00",
+            utc_to: "12:00",
+            in: 2.0,
+            out: 4.0,
+            cache_read: 0.2,
+            cache_write: 0.0,
+          },
+          {
+            utc_from: "06:00",
+            utc_to: "18:00",
+            in: 3.0,
+            out: 6.0,
+            cache_read: 0.3,
+            cache_write: 0.0,
+          },
+        ],
+      },
+    });
+    expect(computeCost(oneM(), overlap, at(8), warn).totalCostUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("2 price slots"));
+  });
+
+  it("warns and prices $0 for a slotted model when no run instant is supplied", () => {
+    const warn = vi.fn();
+    expect(computeCost(oneM(), twoSlot, undefined, warn).totalCostUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("no run instant"));
+  });
+
+  it("selects correctly across the real DeepSeek 4-slot shape (peak 01–04 + 06–10 UTC)", () => {
+    const ds = slotted({
+      "slot-model": {
+        slots: [
+          { utc_from: "10:00", utc_to: "01:00", in: 1.0, out: 0, cache_read: 0, cache_write: 0 },
+          { utc_from: "01:00", utc_to: "04:00", in: 2.0, out: 0, cache_read: 0, cache_write: 0 },
+          { utc_from: "04:00", utc_to: "06:00", in: 1.0, out: 0, cache_read: 0, cache_write: 0 },
+          { utc_from: "06:00", utc_to: "10:00", in: 2.0, out: 0, cache_read: 0, cache_write: 0 },
+        ],
+      },
+    });
+    // peak windows
+    expect(computeCost(oneM(), ds, at(2)).totalCostUSD).toBeCloseTo(2.0, 6);
+    expect(computeCost(oneM(), ds, at(8)).totalCostUSD).toBeCloseTo(2.0, 6);
+    // off-peak: the between-peaks band (04–06), the daytime tail, and the wrap past midnight
+    expect(computeCost(oneM(), ds, at(5)).totalCostUSD).toBeCloseTo(1.0, 6);
+    expect(computeCost(oneM(), ds, at(12)).totalCostUSD).toBeCloseTo(1.0, 6);
+    expect(computeCost(oneM(), ds, at(0, 30)).totalCostUSD).toBeCloseTo(1.0, 6);
   });
 });

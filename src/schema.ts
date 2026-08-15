@@ -333,12 +333,34 @@ export const ResultEnvelopeCodec = t.intersection([
   }),
 ]);
 
-export const ModelPricesCodec = t.type({
+const FlatModelPricesCodec = t.type({
   in: t.number,
   out: t.number,
   cache_read: t.number,
   cache_write: t.number,
 });
+
+// HH:MM in UTC (00:00–23:59); mirrors prices.schema.json's slot time pattern so the codec + ajv gates agree.
+const UtcHHMM = t.refinement(
+  t.string,
+  (s): s is string => /^([01]\d|2[0-3]):[0-5]\d$/.test(s),
+  "UtcHHMM",
+);
+
+// One UTC time-of-day slot (issue #170): a [utc_from, utc_to) half-open window — wrapping past midnight
+// when utc_to <= utc_from — carrying the same per-token fields as the flat shape. cost.ts selects the
+// slot covering the run's UTC instant; a model's slots must partition the 24h day with no gap or overlap.
+const PriceSlotCodec = t.intersection([
+  t.type({ utc_from: UtcHHMM, utc_to: UtcHHMM }),
+  FlatModelPricesCodec,
+]);
+
+const SlottedModelPricesCodec = t.type({ slots: t.array(PriceSlotCodec) });
+
+// A model's price is EITHER flat (one all-day rate — unchanged, fully backward-compatible) OR a set of
+// UTC time-of-day slots (issue #170), for a provider with peak/off-peak rates (DeepSeek). Disjoint: a
+// flat entry has no `slots`, a slotted entry has no top-level `in`/`out`, so the union never ambiguates.
+export const ModelPricesCodec = t.union([FlatModelPricesCodec, SlottedModelPricesCodec]);
 
 export const PriceMapCodec = t.type({
   _updated: t.string,
@@ -400,6 +422,8 @@ export type Severity = t.TypeOf<typeof SeverityCodec>;
 export type Side = t.TypeOf<typeof SideCodec>;
 export type ModelUsageEntry = t.TypeOf<typeof ModelUsageEntryCodec>;
 export type ResultEnvelope = t.TypeOf<typeof ResultEnvelopeCodec>;
+export type FlatModelPrices = t.TypeOf<typeof FlatModelPricesCodec>;
+export type PriceSlot = t.TypeOf<typeof PriceSlotCodec>;
 export type ModelPrices = t.TypeOf<typeof ModelPricesCodec>;
 export type PriceMap = t.TypeOf<typeof PriceMapCodec>;
 export type TestFailure = t.TypeOf<typeof TestFailureCodec>;

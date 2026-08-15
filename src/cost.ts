@@ -36,6 +36,10 @@ const defaultWarn: Warn = (message) => {
 // (issue #170 review r2) falls back to the caller's instant rather than pricing at an Invalid Date.
 export const parseInstant = (iso: string | undefined): Date | undefined => {
   if (iso === undefined) return undefined;
+  // A date-TIME with no UTC designator (Z or ±offset) is parsed as LOCAL time by Date — ambiguous and
+  // slot-wrong. Reject a T-bearing instant that lacks an explicit offset (adapt stamps toISOString(),
+  // always Z; a date-only value is unambiguous UTC midnight and is allowed).
+  if (iso.includes("T") && !/(Z|[+-]\d{2}:?\d{2})$/.test(iso)) return undefined;
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? undefined : d;
 };

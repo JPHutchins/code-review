@@ -408,6 +408,8 @@ describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
     expect(parseInstant("2026-08-16T03:00:00.000Z")?.getUTCHours()).toBe(3);
     expect(parseInstant("not-a-date")).toBeUndefined();
     expect(parseInstant(undefined)).toBeUndefined();
+    // A date-time with no UTC offset is rejected (would parse as ambiguous local time).
+    expect(parseInstant("2026-08-16T03:00:00")).toBeUndefined();
   });
 
   it("rejects a negative rate, empty slots, and a hybrid flat+slots entry (the ajv gate rejects each)", () => {

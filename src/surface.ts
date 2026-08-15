@@ -757,16 +757,20 @@ export const projectPatch = (patch: string | undefined): PatchProjection => {
 
 export const formatConfidence = (n: number): string => n.toFixed(2);
 
-// The review-object body: the findings-json marker (when present) then a one-line pointer to the
-// sticky. SSOT shared by the commenter (post.ts) and the `preview` command.
+// The review-object body: a one-line pointer to the sticky, where the findings-json blob lives — the
+// sole documented decode surface (issue #161). The blob is embedded here ONLY as the fallback when no
+// sticky exists to carry it (a failed sticky write); with a sticky present the body is a bare pointer,
+// so a full document is not duplicated into every per-round review object. SSOT shared by the
+// commenter (post.ts) and the `preview` command.
 export const reviewBodyPointer = (
   headSha: string,
   stickyUrl: string | undefined,
   marker: string,
 ): string => {
   const sha7 = headSha.slice(0, 7);
+  const fallbackMarker = stickyUrl === undefined ? marker : "";
   const linkLine = stickyUrl
     ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
     : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
-  return marker ? `${marker}\n\n${linkLine}` : linkLine;
+  return fallbackMarker ? `${fallbackMarker}\n\n${linkLine}` : linkLine;
 };

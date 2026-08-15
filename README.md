@@ -137,8 +137,10 @@ links to:
   frequencies — from which the re-review seed re-derives the advisory `scope_metastasis` entry it
   hands the next-round agent. It is deliberately NOT embedded in the findings blob: the blob is the
   agent's own document, and a recurrence claim is round state the commenter owns. Each inline review
-  comment embeds only its own finding (a `schema_version` + one-finding fragment), so the sticky and
-  review-body markers remain the whole-document source of truth.
+  comment embeds only its own finding (a `schema_version` + one-finding fragment), and the
+  review-object body only links the sticky — so the **sticky is the sole documented decode surface**
+  for the whole-document marker; a decoding agent reads it there. The review body embeds the blob only
+  as a fallback when no sticky could be written, so a review is never left without a machine channel.
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
   phases. This is advisory/auditability only: it is never read by the comment job and never affects
   what gets posted.

@@ -25,6 +25,7 @@ import {
   SEED_SENTINEL,
   priorContextPath,
   priorAnswersPath,
+  priorSuppressedPath,
   lastValidPath,
   isSubagentHookInput,
   DEFAULT_RESERVE,
@@ -45,10 +46,12 @@ import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
+  isBelowVisibilityFloor,
   parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
   parseRounds,
+  priorBelowFloorNits,
   stripSurfaceFields,
 } from "./surface.js";
 import {
@@ -235,6 +238,9 @@ const TEST_REPORT_DESCRIPTION =
 const CONVERGENCE_THRESHOLD_DESCRIPTION =
   "Advisory convergence tolerance: the per-finding convergence score (each finding's floor + confidence-weighted headroom; ceilings critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged (default: 1)";
 
+const NIT_VISIBILITY_FLOOR_DESCRIPTION =
+  "Nit visibility floor: nits whose confidence × likelihood falls below this are hidden from humans (no inline comment; a collapsed aside in the sticky) but kept in the machine blob as adjudicated. In [0, 1] (default: 0.25)";
+
 const renderCmd = defineCommand({
   meta: {
     name: "render",
@@ -282,6 +288,10 @@ const renderCmd = defineCommand({
       type: "string",
       description: CONVERGENCE_THRESHOLD_DESCRIPTION,
     },
+    "nit-visibility-floor": {
+      type: "string",
+      description: NIT_VISIBILITY_FLOOR_DESCRIPTION,
+    },
   },
   run: async ({ args }) => {
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
@@ -303,6 +313,11 @@ const renderCmd = defineCommand({
       isConvergenceRound(route, envelope.incomplete === true || isIncompleteFindings(findings)) &&
       isReviewVerdict(findings.verdict);
     const counts = computeRoundCounts(findings);
+    // The `render` command previews the sticky CHROME (verdict, counts, convergence, cost) — it has no
+    // diff, so it never places findings inline vs stray and shows no per-finding detail. It therefore
+    // validates --nit-visibility-floor (issue #164) but does NOT apply the visible split or the
+    // suppression aside: rendering shelved nits while the visible findings have no detail line would
+    // invert the feature. The human/visible split is post's job — it has the diff and the prior sticky.
     const output = render({
       findings,
       envelope,
@@ -315,6 +330,7 @@ const renderCmd = defineCommand({
       testReport,
       rounds: isRound ? [counts] : [],
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
+      nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       postedAt: formatUtc(new Date()),
     });
     process.stdout.write(output);
@@ -341,12 +357,22 @@ const inlineCmd = defineCommand({
       type: "string",
       description: "Path to inline comment Eta template (default: bundled templates/inline.eta)",
     },
+    "nit-visibility-floor": {
+      type: "string",
+      description: NIT_VISIBILITY_FLOOR_DESCRIPTION,
+    },
   },
   run: async ({ args }) => {
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
     const diff = readFileSync(resolve(args.diff), "utf-8");
     const inlineTemplate = readFileSync(resolveInlineTemplatePath(args.template), "utf-8");
-    const { comments, strays } = buildInlineComments(findings.findings, diff, {
+    // Apply the FIXED-floor part of the nit-visibility split (issue #164): a below-floor nit gets no
+    // inline comment. This standalone payload builder has no prior sticky, so no one-round stickiness
+    // (post applies that); it also has no sticky to carry the collapsed aside, so a suppressed nit is
+    // simply absent here — the aside is post's surface.
+    const floor = parseNitVisibilityFloor(args["nit-visibility-floor"]);
+    const visibleFindings = findings.findings.filter((f) => !isBelowVisibilityFloor(f, floor));
+    const { comments, strays } = buildInlineComments(visibleFindings, diff, {
       inlineTemplate,
       findings,
     });
@@ -464,6 +490,38 @@ const parseConvergenceThreshold = (raw: string | undefined): number | undefined 
     fail(`--convergence-threshold is too large to be a meaningful tolerance; got "${trimmed}"`);
   }
   return n;
+};
+
+/** Parse `--nit-visibility-floor`: a decimal in [0, 1], or undefined when absent/blank (the render/post
+ *  layer then applies DEFAULT_NIT_VISIBILITY_FLOOR as the SSOT default). Same empty-string-is-absent
+ *  handling as --convergence-threshold (an unset optional workflow input expands to ""). Bounded to
+ *  [0, 1] because the value it gates — confidence × likelihood — is itself in [0, 1]: a value above 1
+ *  would silently hide EVERY nit (a fat-fingered "25" meant as "0.25"), so it fails loudly instead. */
+const parseNitVisibilityFloor = (raw: string | undefined): number | undefined => {
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === "") return undefined;
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    fail(`--nit-visibility-floor must be a number in [0, 1]; got "${trimmed}"`);
+  }
+  const n = Number.parseFloat(trimmed);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    fail(
+      `--nit-visibility-floor must be in [0, 1] (it gates confidence × likelihood); got "${trimmed}"`,
+    );
+  }
+  return n;
+};
+
+/** seed-draft's best-effort floor parse: like parseNitVisibilityFloor but NEVER exits — seed-draft's
+ *  always-exit-0 contract forbids the process-exiting `fail` (it runs under the review job's `set -e`).
+ *  An absent/blank/malformed/out-of-range value degrades to undefined (priorBelowFloorNits then applies
+ *  the SSOT default); a genuine misconfiguration is still caught loudly at post, where the floor is
+ *  actually enforced. */
+const parseNitVisibilityFloorLenient = (raw: string | undefined): number | undefined => {
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === "" || !/^\d+(\.\d+)?$/.test(trimmed)) return undefined;
+  const n = Number.parseFloat(trimmed);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined;
 };
 
 /** The `transcript_path` a hook payload carries, when present. */
@@ -838,6 +896,11 @@ const seedDraftCmd = defineCommand({
       description:
         "Path to the gather-staged answered-findings registry (answered.json) — the prior inline findings whose threads a human reply answered (issue #151). Delivered out-of-band to the .prior-answers sidecar beside the prior context so the next-round agent sees the already-answered state; best-effort, never fails the seed",
     },
+    "nit-visibility-floor": {
+      type: "string",
+      description:
+        "The nit visibility floor (issue #164), matched to the commenter's: the prior review's below-floor nits (confidence × likelihood below it) are re-derived from --prior and delivered to the .prior-suppressed sidecar as adjudicated context, so the next-round agent does not re-raise them as fresh nits; best-effort, never fails the seed. Empty ⇒ the default",
+    },
     "head-sha": {
       type: "string",
       description:
@@ -986,6 +1049,37 @@ const seedDraftCmd = defineCommand({
       } catch (err) {
         process.stderr.write(
           `Warning: could not read the answered-findings registry ${args["prior-answers"]} (${errMsg(err)}) — no prior-answers sidecar\n`,
+        );
+      }
+    }
+
+    // The prior round's below-visibility-floor nits (issue #164), re-derived from the SAME prior blob
+    // the commenter split on — delivered as adjudicated context so the next-round agent does not
+    // re-raise them as fresh nits. Best-effort and independent of whether the prior findings seeded:
+    // a first review, an old blob without likelihood, or a link/omitted blob simply yields none. The
+    // floor is read from the same workflow input the commenter uses, so seed and post agree within a
+    // run. Correctness does not depend on this note — the blob keeps every nit and post re-suppresses a
+    // re-raised still-nit by stickiness — it only spares the agent the wasted re-mining.
+    // Route-gated exactly like the prior-context seed below (parseReviewedRoute === "full review"):
+    // a mechanic (CI-fix) pass writes its OWN findings blob, so deriving "prior round's below-floor
+    // nits" from it would deliver a CI-fix pass's nits as adjudicated prior-round context. Only a
+    // completed FULL review is a prior round. The floor is parsed LENIENTLY — seed-draft must exit 0,
+    // so it cannot call the process-exiting parseNitVisibilityFloor (post enforces the floor loudly).
+    if (parsedPrior !== null && parseReviewedRoute(priorBody ?? "") === "full review") {
+      try {
+        const belowFloor = priorBelowFloorNits(
+          parsedPrior,
+          parseNitVisibilityFloorLenient(args["nit-visibility-floor"]),
+        );
+        if (belowFloor.length > 0) {
+          writeFileSync(priorSuppressedPath(outPath), `${JSON.stringify(belowFloor, null, 2)}\n`);
+          process.stderr.write(
+            `Seeded ${priorSuppressedPath(outPath)} with ${String(belowFloor.length)} below-floor nit(s) as adjudicated context\n`,
+          );
+        }
+      } catch (err) {
+        process.stderr.write(
+          `Warning: could not derive the prior below-floor nits (${errMsg(err)}) — no prior-suppressed sidecar\n`,
         );
       }
     }
@@ -1625,6 +1719,10 @@ const postCmd = defineCommand({
       type: "string",
       description: CONVERGENCE_THRESHOLD_DESCRIPTION,
     },
+    "nit-visibility-floor": {
+      type: "string",
+      description: NIT_VISIBILITY_FLOOR_DESCRIPTION,
+    },
   },
   run: async ({ args }) => {
     const priceResolution = resolvePrices(args.prices);
@@ -1645,6 +1743,7 @@ const postCmd = defineCommand({
       runUrl: args["run-url"],
       jsonUrl: args["json-url"],
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
+      nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       postedAt: formatUtc(new Date()),
     });
   },

@@ -209,6 +209,13 @@ export const priorContextPath = (draftPath: string): string => sidecarPath(draft
 export const priorAnswersPath = (draftPath: string): string =>
   sidecarPath(draftPath, ".prior-answers");
 
+// The prior review's below-visibility-floor nits (issue #164) — the nits the last round shelved
+// below the noise floor — delivered beside the prior context so the next-round agent knows not to
+// re-raise them as fresh nits. Like $PRIOR_CONTEXT/$PRIOR_ANSWERS, read-only context, never a
+// deliverable.
+export const priorSuppressedPath = (draftPath: string): string =>
+  sidecarPath(draftPath, ".prior-suppressed");
+
 // Holds only ever a document that passed the extraction ladder: the budget hook snapshots the draft
 // here whenever it validates, so a wall-kill that leaves the live draft truncated still recovers the
 // last valid state instead of posting "did not complete". The postfix goes before the extension so

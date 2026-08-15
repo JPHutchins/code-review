@@ -238,9 +238,11 @@ index abc..def 100644
     buildInlineComments(findingAt(overrides), diff, { inlineTemplate: bundledInlineTemplate })
       .comments[0]!.body;
 
-  it("renders a single header line — emoji, severity label, bold title, confidence (issues #27, a11y)", () => {
-    const body = bodyOf({ severity: "critical", title: "SQLi", confidence: 0.5 });
-    expect(body.startsWith("🔴 Critical: **SQLi** · 0.50 confidence\n")).toBe(true);
+  it("renders a single header line — emoji, severity label, bold title, confidence + likelihood (issues #27, a11y, #164)", () => {
+    const body = bodyOf({ severity: "critical", title: "SQLi", confidence: 0.5, likelihood: 1 });
+    expect(body.startsWith("🔴 Critical: **SQLi** · 0.50 confidence · 1.00 likelihood\n")).toBe(
+      true,
+    );
   });
 
   it("renders the finding's description", () => {

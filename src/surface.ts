@@ -724,6 +724,18 @@ export const convergenceSummary = (
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
 ): string => convergenceBadge(convergenceSignal(doc, threshold));
 
+// The in-progress trajectory line for the announce placeholder (issue #180): the completed rounds'
+// scores plus a pending "⏳" cell for the round now running, so the "review in progress" sticky shows
+// the iterations → convergence progression while the next round is computed. Labeled with the RUNNING
+// round — the ⏳ cell — so the label and the pending cell agree. NO badge: a carried "converged" above a
+// running round would read as "done, ignore this." "" when the prior carries no completed round.
+export const inProgressConvergence = (prior: Convergence): string => {
+  const rounds = prior.rounds ?? [];
+  if (rounds.length === 0) return "";
+  const running = (rounds[rounds.length - 1]?.round ?? rounds.length) + 1;
+  return `${roundsSummary(rounds, running)} → ⏳`;
+};
+
 // The version the compact stop-signal marker declares (signalMarker stamps it into that marker's
 // payload) and the version a LEGACY surfaced blob declared before issue #156 deleted the surfacing
 // transform. DISTINCT from the draft axis (DEFAULT_SCHEMA_VERSION is 0.9.0 after issue #163) so the

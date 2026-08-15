@@ -16,6 +16,7 @@ import {
   convergenceMarker,
   findingsMarkerForm,
   findingsPointer,
+  inProgressConvergence,
   isBelowVisibilityFloor,
   isFullReviewSticky,
   priorBelowFloorNits,
@@ -1147,13 +1148,25 @@ const bodyRefsRun = (body: string, runUrl: string): boolean => {
     : new RegExp(`/actions/runs/${runId}(?!\\d)`).test(body);
 };
 
-// The placeholder body: a "review in progress" line linking the run. The commenter job overwrites this
-// with the real summary when the review completes.
-const announceBody = (headSha: string, runUrl: string, existingBody: string | undefined): string =>
-  noticeBody(
-    `${DEFAULT_MARKER}\n\n🔄 **Code review in progress** for \`${headSha.slice(0, 7)}\` — see the [workflow run](${runUrl}) for progress; this comment is updated with the review when it completes.`,
+// The placeholder body: a "review in progress" line linking the run, plus — when the sticky it replaces
+// carried a completed review — the prior convergence trajectory with a pending "⏳" cell for the round
+// now running (issue #180), so the iterations → convergence progression stays visible while the review
+// runs. The commenter job overwrites this with the real summary when the review completes.
+const announceBody = (
+  headSha: string,
+  runUrl: string,
+  existingBody: string | undefined,
+): string => {
+  const prior =
+    existingBody !== undefined
+      ? carriedConvergence(parseFindingsMarker(existingBody), existingBody)
+      : null;
+  const progress = prior !== null ? inProgressConvergence(prior) : "";
+  return noticeBody(
+    `${DEFAULT_MARKER}\n\n🔄 **Code review in progress** for \`${headSha.slice(0, 7)}\` — see the [workflow run](${runUrl}) for progress; this comment is updated with the review when it completes.${progress ? `\n\n${progress}` : ""}`,
     existingBody,
   );
+};
 
 // Post (or update) the sticky the moment a review starts, so a workflow_run review — which runs from
 // the default branch and is otherwise invisible on the PR — is visibly under way. Shares post's PR

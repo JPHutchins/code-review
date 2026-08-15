@@ -104,14 +104,14 @@ links to:
   [`src/surface.ts`](src/surface.ts).
 
   The embedded document is the agent's **complete** findings document — the same `schema_version`
-  0.6.0 contract the review agent is held to and
+  0.9.0 contract the review agent is held to and
   [`schema/findings.schema.json`](schema/findings.schema.json) validates, and the same object the
   comment is rendered from. It is embedded verbatim: no field is added or dropped, so the machine
   channel can never carry less than, or drift from, the rendered prose.
 
   ```json
   {
-    "schema_version": "0.6.0",
+    "schema_version": "0.9.0",
     "verdict": "comment",
     "summary": "...",
     "findings": []

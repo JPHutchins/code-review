@@ -261,7 +261,7 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.7.0";
+export const DEFAULT_SCHEMA_VERSION = "0.9.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;

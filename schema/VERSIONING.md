@@ -76,21 +76,25 @@ ignored); a version outside the supported set degrades to a §5.5 sticky notice.
 
 The commenter embeds the agent's **complete** findings document verbatim in review comments
 (`<!-- code-review:findings-json -->`) — no surfaced copy, no added fields (issue #156). The
-deterministic stop signal an iterating author-agent needs rides its own compact
-`<!-- code-review:signal -->` marker beside the blob: the pipeline-computed `convergence` (`{score,
-threshold, converged}` — a literal boolean, so a decoding agent cannot re-derive the weights) and
-`round` (the count of completed full-review rounds) of the last completed full-review round. The
-agent never writes the signal (it cannot know the score — the weights and threshold are
-commenter-side), so the findings schema above describes the whole embedded document; the signal
-marker declares its own surface version:
+deterministic stop signal an iterating author-agent needs is the pipeline-stamped `convergence` field
+INSIDE that document (issue #174): `{score, threshold, converged}` (a literal boolean, so a decoding
+agent cannot re-derive the weights) plus the per-round `rounds` trajectory. It is the single source of
+truth — the agent never writes it (it cannot know the score; the weights and threshold are
+commenter-side), and the findings schema above describes the whole embedded document, `convergence`
+included. When an oversized review falls to the link form (the blob is a URL, not base64), the same
+stamped object rides a compact `<!-- code-review:convergence -->` marker beside the link (issue #185)
+so the trajectory and stop signal survive; the embedded blob always wins on read.
+
+Two older surface formats survive only as READ-ONLY migration inputs — a re-review may still parse a
+sticky posted by an earlier release. Nothing writes either anymore:
 
 | Version | Status | Notes |
 |---|---|---|
-| `v0.7.0` | superseded | The pre-#156 surface axis: the commenter embedded a **surfaced** copy of the findings document carrying `convergence` + `round` inside it (issue #141). A sticky written by a `0.7.0` release still seeds — `stripSurfaceFields` peels the surfaced copy back to the agent's draft. |
-| `v0.8.0` | **current** | The version the compact `code-review:signal` marker declares (and the version a legacy `0.8.0` surfaced blob declared). `0.8.0` added the agent-facing `scope_metastasis` entry (issue #150): per-code consecutive-round recurrence counts plus a decision prompt. Post-#156 that entry is embedded in no document — the re-review seed re-derives it from the rounds marker and delivers it to the next-round agent. The flat draft schema (now `v0.9.0`) accepts an optional `scope_metastasis` property so a seed-echoing draft validates — an in-place additive change, deliberately NOT a draft version bump: a draft sharing a `0.7.0`/`0.8.0` number would collide with the surface axis's version gate, so the draft axis skips past them to `0.9.0` (issue #163); the axes must stay distinct so `stripSurfaceFields`/`parseSurfaceSignal` can tell a legacy surfaced blob from a draft). |
+| `v0.7.0` | legacy (read-only) | The pre-#156 surface axis: the commenter embedded a **surfaced** copy of the findings document carrying `convergence` + `round` inside it (issue #141). A sticky written by a `0.7.0` release still seeds — `stripSurfaceFields` peels the surfaced copy back to the agent's draft. |
+| `v0.8.0` | legacy (read-only) | The version a compact `<!-- code-review:signal -->` marker declared (and a legacy `0.8.0` surfaced blob). Its writer is retired (issue #186); `parseSignalMarker` / `parseSurfaceSignal` still decode it so a pre-#185 sticky seeds. `0.8.0` also added the agent-facing `scope_metastasis` entry (issue #150): per-code consecutive-round recurrence counts plus a decision prompt. Post-#156 that entry is embedded in no document — the re-review seed re-derives it from the carried trajectory. The flat draft schema (now `v0.9.0`) accepts an optional `scope_metastasis` property so a seed-echoing draft validates — an in-place additive change, deliberately NOT a draft version bump: a draft sharing a `0.7.0`/`0.8.0` number would collide with the surface axis's version gate, so the draft axis skips past them to `0.9.0` (issue #163); the axes must stay distinct so `stripSurfaceFields`/`parseSurfaceSignal` can tell a legacy surfaced blob from a draft). |
 
-The surface axis is independent of the draft-version registry: `v0.8.0` is the signal marker's
-contract, while the agent-written document above is now `v0.9.0`. `stripSurfaceFields` and
+The surface axis is independent of the draft-version registry: it numbers the legacy read-only signal
+formats, while the agent-written document above is `v0.9.0`. `stripSurfaceFields` and
 `parseSurfaceSignal` are version-gated on the surface axis, so a future draft bump can never be
 mistaken for a legacy surfaced blob — and no fresh document is ever surfaced.
 

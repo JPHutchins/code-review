@@ -791,22 +791,25 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(parseRounds(`prose\n${mkRoundsMarker(rounds)}\nmore`)).toEqual(rounds);
   });
 
-  it("parseRounds chains priorCodes across 3+ rounds so a low-count recurring code survives a finding-heavy history", () => {
+  it("parseRounds chains the PRECEDING round's NORMALIZED codes as priorCodes across 3+ rounds", () => {
     const hi = (prefix: string): Record<string, number> =>
       Object.fromEntries(
         Array.from({ length: MAX_CODES_PER_ROUND }, (_, i) => [`${prefix}${String(i)}`, 5]),
       );
-    // "watched" recurs at a low count while 8 fresh high-count codes churn each round — it survives only
-    // if each round's priorCodes is the PRECEDING round's NORMALIZED output (the sequential chain).
+    // "watched" recurs at a low count and survives each round via the prior-kept pass; "dropme" appears
+    // from round 2 but is cut from round 2's NORMALIZED output (not in round 1's prior), so it must NOT
+    // reappear in round 3 — proving the chain feeds forward round 2's normalized codes, not its raw ones.
     const parsed = parseRounds(
       mkRoundsMarker([
         coded(counts(0, 0, 0, 0), { watched: 1 }),
-        coded(counts(0, 0, 0, 0), { ...hi("d"), watched: 1 }),
-        coded(counts(0, 0, 0, 0), { ...hi("e"), watched: 1 }),
+        coded(counts(0, 0, 0, 0), { ...hi("h"), watched: 1, dropme: 1 }),
+        coded(counts(0, 0, 0, 0), { ...hi("g"), watched: 1, dropme: 1 }),
       ]),
     );
     expect(parsed[1]?.codes?.["watched"]).toBe(1);
+    expect(parsed[1]?.codes?.["dropme"]).toBeUndefined();
     expect(parsed[2]?.codes?.["watched"]).toBe(1);
+    expect(parsed[2]?.codes?.["dropme"]).toBeUndefined();
   });
 
   it("parseRounds keeps a valid round number and drops an invalid one, preserving the counts", () => {
@@ -1231,6 +1234,13 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
     expect(convergenceSignal(countsToDoc(counts(0, 1, 0, 0)), 3)).toEqual({
       score: 2,
       threshold: 3,
+      converged: true,
+    });
+    // threshold 0: a zero-score doc still converges (0 ≤ 0) — the boundary the deleted signalForRound
+    // test covered.
+    expect(convergenceSignal(countsToDoc(counts(0, 0, 0, 0)), 0)).toEqual({
+      score: 0,
+      threshold: 0,
       converged: true,
     });
   });

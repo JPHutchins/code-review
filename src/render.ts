@@ -154,11 +154,11 @@ export const render = (input: RenderInput): string => {
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && trajectory.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
 
-  // The badge AND the compact signal marker both score THIS run's findings + systemic problems (issue
-  // #162: the score is per-finding, reading confidence off the findings themselves, not a round's
-  // aggregate counts) — one source, so the two can never disagree (issue #141 review r2). In the post
-  // path this run is the last stored round, so scoring input.findings matches the trajectory's last
-  // chip; the score already weighs a systemic critical like a finding critical (issue #134 scope).
+  // The badge and the trajectory both read the ONE pipeline-stamped `convergence` field (issue #174),
+  // whose score is per-finding — reading confidence × likelihood off the findings themselves, not a
+  // round's aggregate counts (issue #162) — so by construction they can never disagree (issue #141
+  // review r2). In the post path this run is the last stored round, so the stamped score matches the
+  // trajectory's last chip; the score already weighs a systemic critical like a finding critical (issue #134 scope).
   // The advisory notes (same-root + scope-metastasis) are a property of a real review, gated by the
   // same decision as the badge (a completed FULL-REVIEW round): a mechanic pass or a lost-envelope
   // completed review must not render a "still recurring" claim from carried-forward rounds beside a

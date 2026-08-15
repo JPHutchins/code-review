@@ -79,11 +79,10 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
 // carries findings — never counts as a completed review and must never read as converged (#141).
 export const isReviewVerdict = (verdict: Verdict): boolean => verdict !== "error";
 
-// The severity counts a convergence round stores and scores: findings PLUS systemic problems at
-// their (now required) severities — a systemic critical weighs like a finding critical, so a review
-// carrying one can never read "converged" beside it. The sticky's "Findings:" histogram stays
-// findings-only (computeSeverityCounts); this is the convergence channel only. Single source for
-// both the badge (render) and the round append (post), so the two can never disagree.
+// The severity counts a convergence round STORES for its trajectory chips + streak history: findings
+// PLUS systemic problems at their severities (a systemic critical weighs like a finding critical). The
+// sticky's "Findings:" histogram stays findings-only (computeSeverityCounts). The convergence SCORE
+// reads confidence off the findings themselves (issue #162), not these aggregate counts.
 export const computeRoundCounts = (findings: Findings): SeverityCounts =>
   (findings.systemic_problems ?? []).reduce<Record<Severity, number>>(
     (acc, s) => (s.severity in acc ? { ...acc, [s.severity]: acc[s.severity] + 1 } : acc),
@@ -141,12 +140,11 @@ export const render = (input: RenderInput): string => {
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && rounds.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
 
-  // The convergence counts the badge AND the compact signal marker both derive from — the last
-  // completed round when a history exists (post-style histories end with THIS run), else this run's
-  // own counts — one source, so the two can never disagree (issue #141 review r2). The stored round
-  // entries are computeRoundCounts (findings PLUS systemic severities, issue #134), so the last
-  // round already weighs a systemic critical like a finding critical.
-  const convergenceCounts = rounds[rounds.length - 1] ?? computeRoundCounts(input.findings);
+  // The badge AND the compact signal marker both score THIS run's findings + systemic problems (issue
+  // #162: the score is per-finding, reading confidence off the findings themselves, not a round's
+  // aggregate counts) — one source, so the two can never disagree (issue #141 review r2). In the post
+  // path this run is the last stored round, so scoring input.findings matches the trajectory's last
+  // chip; the score already weighs a systemic critical like a finding critical (issue #134 scope).
   // The advisory notes (same-root + scope-metastasis) are a property of a real review, gated by the
   // same decision as the badge (a completed FULL-REVIEW round): a mechanic pass or a lost-envelope
   // completed review must not render a "still recurring" claim from carried-forward rounds beside a
@@ -169,7 +167,7 @@ export const render = (input: RenderInput): string => {
     postedAt: input.postedAt ?? "",
     severityCounts,
     convergenceSummary: isFullReviewRound
-      ? convergenceSummary(convergenceCounts, input.convergenceThreshold)
+      ? convergenceSummary(input.findings, input.convergenceThreshold)
       : "",
     strays: (input.strays ?? []).map((f) => sanitizeFinding(f, input.answeredNotes)),
     systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
@@ -182,12 +180,12 @@ export const render = (input: RenderInput): string => {
       surfacedFindingsPointer(
         input.findings,
         // The fallback embeds a signal exactly when the badge renders — never beside a suppressed
-        // badge, and from the same counts the badge reads. It assumes a post-style history (the
+        // badge, and scores the same findings the badge does. It assumes a post-style history (the
         // caller appends this run's counts last), numbering the round exactly as the trajectory
         // label does; post always supplies the marker, so this path cannot disagree with it in
         // production (issue #141 review r4).
         isFullReviewRound && rounds.length > 0
-          ? signalForRound(rounds.length, convergenceCounts, input.convergenceThreshold)
+          ? signalForRound(rounds.length, input.findings, input.convergenceThreshold)
           : null,
         input.jsonUrl,
       ),

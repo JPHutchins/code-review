@@ -233,7 +233,7 @@ const TEST_REPORT_DESCRIPTION =
   'Path to a JSON test summary: {"passed": number, "failed": number, "total": number, "failures"?: [{"name": string, "message"?: string}]}';
 
 const CONVERGENCE_THRESHOLD_DESCRIPTION =
-  "Advisory convergence tolerance: the weighted-severity score (critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged (default: 1 — unlimited nits plus at most one minor)";
+  "Advisory convergence tolerance: the per-finding convergence score (each finding's floor + confidence-weighted headroom; ceilings critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged (default: 1)";
 
 const renderCmd = defineCommand({
   meta: {

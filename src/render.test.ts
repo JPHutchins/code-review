@@ -217,7 +217,7 @@ describe("render", () => {
       // Since issue #156 the stop signal rides the standalone compact marker, not the findings blob.
       const signal = parseSignalMarker(result);
       expect(signal?.round).toBe(1);
-      expect(signal?.convergence).toEqual({ score: 1, threshold: 1, converged: true });
+      expect(signal?.convergence).toEqual({ score: 0.7, threshold: 1, converged: true });
     });
 
     it("suppresses the Scope metastasis prose note on a non-round (mechanic) render — recurrence is a property of full-review rounds (issue #150)", () => {
@@ -624,7 +624,7 @@ describe("render", () => {
         route: "full review",
         convergenceRound: true,
       });
-      expect(result).toContain("**Convergence** 🔄 2 > 1 — iterating");
+      expect(result).toContain("**Convergence** 🔄 1.7 > 1 — iterating");
     });
 
     it("treats a nit systemic item as free, like a nit finding — nits never block convergence (issue #134 review)", () => {
@@ -654,7 +654,7 @@ describe("render", () => {
         route: "full review",
         convergenceRound: true,
       });
-      expect(result).toContain("**Convergence** 🔄 4 > 1 — iterating");
+      expect(result).toContain("**Convergence** 🔄 3.4 > 1 — iterating");
     });
 
     it("scores findings and systemic severities together for a mixed round", () => {
@@ -669,8 +669,8 @@ describe("render", () => {
         route: "full review",
         convergenceRound: true,
       });
-      // one major finding + one major systemic item
-      expect(result).toContain("**Convergence** 🔄 4 > 1 — iterating");
+      // one major finding (conf 0.7 → 1.55) + one major systemic item (conf 0.8 → 1.7)
+      expect(result).toContain("**Convergence** 🔄 3.25 > 1 — iterating");
     });
 
     it("still shows the convergence badge for a round without systemic problems", () => {
@@ -1790,7 +1790,7 @@ describe("convergence score — issue #133", () => {
       route: "full review",
       rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
     });
-    expect(result).toContain("**Convergence** 🔄 2 > 1 — iterating");
+    expect(result).toContain("**Convergence** 🔄 1.55 > 1 — iterating");
   });
 
   it("respects a raised --convergence-threshold", () => {
@@ -1804,7 +1804,7 @@ describe("convergence score — issue #133", () => {
       rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
       convergenceThreshold: 3,
     });
-    expect(result).toContain("**Convergence** 🏁 2 ≤ 3 — converged");
+    expect(result).toContain("**Convergence** 🏁 1.55 ≤ 3 — converged");
   });
 
   it("shows NO badge on a mechanic pass — even one that finds a critical — so it can't post a false stop signal (#135 review r2)", () => {

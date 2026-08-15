@@ -87,7 +87,7 @@ const isFullReviewRound =
   isConvergenceRound("full review", false) && isReviewVerdict(findings.verdict);
 const previewCounts = computeRoundCounts(findings);
 const previewRounds = isFullReviewRound ? [previewCounts] : [];
-const previewSignal = isFullReviewRound ? signalForRound(1, previewCounts) : null;
+const previewSignal = isFullReviewRound ? signalForRound(1, findings) : null;
 
 // The findings blob + compact signal marker is built ONCE and shared by the sticky and the review
 // body, exactly like post — the fixture's own counts as round 1, so the reference actually

@@ -6,9 +6,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Validation } from "io-ts";
-import { render, computeRoundCounts, isConvergenceRound, isReviewVerdict } from "../src/render.js";
+import { render, isConvergenceRound, isReviewVerdict } from "../src/render.js";
 import { buildInlineComments } from "../src/inline.js";
-import { reviewBodyPointer, signalForRound, surfacedFindingsPointer } from "../src/surface.js";
+import {
+  reviewBodyPointer,
+  buildConvergence,
+  computeCodeCounts,
+  findingsPointer,
+  DEFAULT_CONVERGENCE_THRESHOLD,
+} from "../src/surface.js";
 import { formatUtc } from "../src/format.js";
 import {
   FindingsCodec,
@@ -80,22 +86,31 @@ const { comments, strays } = buildInlineComments(findings.findings, diff, {
   findings,
 });
 
-// Mirror post's isRound: only a completed full-review run carries a stop signal. The fixture is
-// rendered as such (explicit route), with its own counts as round 1 — so the reference demonstrates
-// the signal, the badge, AND the trajectory together, exactly as a real round-1 sticky would.
+// Mirror post's isRound: only a completed full-review run stamps convergence. The fixture is rendered
+// as such (explicit route), with its own findings as round 1 — so the reference demonstrates the badge
+// AND the trajectory together, exactly as a real round-1 sticky would.
 const isFullReviewRound =
   isConvergenceRound("full review", false) && isReviewVerdict(findings.verdict);
-const previewCounts = computeRoundCounts(findings);
-const previewRounds = isFullReviewRound ? [previewCounts] : [];
-const previewSignal = isFullReviewRound ? signalForRound(1, findings) : null;
+const stampedFindings = isFullReviewRound
+  ? {
+      ...findings,
+      convergence: buildConvergence(
+        findings,
+        DEFAULT_CONVERGENCE_THRESHOLD,
+        [],
+        1,
+        computeCodeCounts(findings.findings, findings.systemic_problems ?? []),
+        REVIEWED_SHA,
+      ),
+    }
+  : findings;
 
-// The findings blob + compact signal marker is built ONCE and shared by the sticky and the review
-// body, exactly like post — the fixture's own counts as round 1, so the reference actually
-// demonstrates the stop signal (the compact marker beside the blob) rather than a signal-less blob.
-const marker = surfacedFindingsPointer(findings, previewSignal, undefined);
+// The findings blob is the agent's complete document with the pipeline-stamped convergence field
+// (issue #174), built ONCE and shared by the sticky and the review body exactly like post.
+const marker = findingsPointer(stampedFindings, undefined);
 
 const sticky = render({
-  findings,
+  findings: stampedFindings,
   envelope,
   prices,
   pricesProvided: true,
@@ -104,7 +119,6 @@ const sticky = render({
   reviewedSha: REVIEWED_SHA,
   testReport,
   strays,
-  rounds: previewRounds,
   findingsPointer: marker,
   postedAt: formatUtc(new Date()),
 });

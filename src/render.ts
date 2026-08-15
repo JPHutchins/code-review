@@ -1,7 +1,7 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
-import type { Finding, Findings, Severity, SystemicProblem, Verdict } from "./schema.js";
+import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
@@ -97,16 +97,6 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
 // is the pipeline-reserved no-verdict value, so a doc that carries it — even one that somehow also
 // carries findings — never counts as a completed review and must never read as converged (#141).
 export const isReviewVerdict = (verdict: Verdict): boolean => verdict !== "error";
-
-// The severity counts a convergence round STORES for its trajectory chips + streak history: findings
-// PLUS systemic problems at their severities (a systemic critical weighs like a finding critical). The
-// sticky's "Findings:" histogram stays findings-only (computeSeverityCounts). The convergence SCORE
-// reads confidence off the findings themselves (issue #162), not these aggregate counts.
-export const computeRoundCounts = (findings: Findings): SeverityCounts =>
-  (findings.systemic_problems ?? []).reduce<Record<Severity, number>>(
-    (acc, s) => (s.severity in acc ? { ...acc, [s.severity]: acc[s.severity] + 1 } : acc),
-    computeSeverityCounts(findings.findings),
-  );
 
 // The single decision "is THIS run a convergence-defining full-review round?" — a completed full
 // review (not a CI-fix mechanic pass, not an incomplete notice). post() calls it to decide the round
@@ -207,7 +197,6 @@ export const render = (input: RenderInput): string => {
     // (issue #174) — no separate signal or rounds marker rides beside it. post always supplies the
     // precomputed marker; the standalone `render` command falls back to encoding the doc here.
     findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
-    roundsMarker: "",
     roundsSummary: roundsSummary(trajectory, input.roundCount),
     metastasisNote: advisoryAllowed ? metastasisNote(trajectory) : "",
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},

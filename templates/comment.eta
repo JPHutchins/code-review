@@ -9,9 +9,6 @@
 <% if (it.findingsPointer) { -%>
 <%~ it.findingsPointer %>
 <% } -%>
-<% if (it.roundsMarker) { -%>
-<%~ it.roundsMarker %>
-<% } -%>
 
 ### <%= it.verdictBadge(it.findings.verdict) %>
 

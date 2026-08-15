@@ -16,7 +16,6 @@ import {
   findingPointer,
   findingsMarkerForm,
   parseRounds,
-  roundsMarker,
   roundsSummary,
   carryForwardMarkers,
   convergenceScore,
@@ -29,8 +28,6 @@ import {
   isBelowVisibilityFloor,
   priorBelowFloorNits,
   DEFAULT_NIT_VISIBILITY_FLOOR,
-  signalForRound,
-  surfacedFindingsPointer,
   stripSurfaceFields,
   parseSurfaceSignal,
   parseSignalMarker,
@@ -38,7 +35,6 @@ import {
   SURFACE_SCHEMA_VERSIONS,
   DEFAULT_CONVERGENCE_THRESHOLD,
   computeCodeCounts,
-  roundRecord,
   consecutiveCodeStreaks,
   metastasisNote,
   computeScopeMetastasis,
@@ -80,6 +76,19 @@ const surfacedDoc = (
       ? {}
       : { scope_metastasis: scopeMetastasis }),
   }) as unknown as SurfacedTestDoc;
+
+// The legacy `code-review:rounds` marker parseRounds must still decode — production stopped writing it
+// (issue #186), so the reader's tests hand-build the format here.
+const mkRoundsMarker = (rounds: readonly RoundRecord[]): string =>
+  `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->`;
+
+// The legacy `code-review:signal` marker parseSignalMarker + carryForwardMarkers must still decode
+// (issue #186 retired the writer).
+const mkSignalMarker = (signal: SurfaceSignal): string =>
+  `<!-- code-review:signal;base64 ${Buffer.from(
+    JSON.stringify({ schema_version: SURFACE_SCHEMA_VERSION, ...signal }),
+    "utf-8",
+  ).toString("base64")} -->`;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bundledSchemaPath = resolve(__dirname, "..", "schema", "findings.schema.json");
@@ -276,7 +285,7 @@ describe("parseReviewedRoute", () => {
 });
 
 describe("isFullReviewSticky — post's full-review predicate (issue #127)", () => {
-  const oneRound = roundsMarker([{ critical: 0, major: 1, minor: 0, nit: 0 }]);
+  const oneRound = mkRoundsMarker([{ critical: 0, major: 1, minor: 0, nit: 0 }]);
 
   it("route marker 'full review' wins, even with no round history", () => {
     expect(isFullReviewSticky("<!-- reviewed-route: full review -->")).toBe(true);
@@ -338,13 +347,12 @@ describe("rounds trajectory — issue #125", () => {
     nit,
   });
 
-  it("round-trips through roundsMarker → parseRounds", () => {
+  it("round-trips a legacy rounds marker → parseRounds", () => {
     const rounds = [counts(1, 2, 0, 0), counts(0, 1, 3, 0), counts(0, 0, 0, 0)];
-    expect(parseRounds(`prose\n${roundsMarker(rounds)}\nmore`)).toEqual(rounds);
+    expect(parseRounds(`prose\n${mkRoundsMarker(rounds)}\nmore`)).toEqual(rounds);
   });
 
-  it("yields no rounds for an empty history and never emits an empty marker", () => {
-    expect(roundsMarker([])).toBe("");
+  it("yields no rounds when there is no marker", () => {
     expect(parseRounds("no marker here")).toEqual([]);
   });
 
@@ -372,7 +380,7 @@ describe("rounds trajectory — issue #125", () => {
   });
 
   it("carryForwardMarkers preserves the rounds marker alongside findings + reviewed-sha", () => {
-    const body = `x\n${roundsMarker([counts(0, 0, 1, 0)])}\n<!-- reviewed-sha: ${"a".repeat(40)} -->`;
+    const body = `x\n${mkRoundsMarker([counts(0, 0, 1, 0)])}\n<!-- reviewed-sha: ${"a".repeat(40)} -->`;
     expect(carryForwardMarkers(body)).toContain("code-review:rounds;base64");
     expect(carryForwardMarkers(body)).toContain("reviewed-sha:");
   });
@@ -766,30 +774,13 @@ describe("mechanism frequency rounds — issue #145", () => {
     ).toEqual({ "null-check-missing": 2, "body-reconstruction": 1 });
   });
 
-  it("roundRecord omits the codes field when no finding carried a code (pre-feature marker shape)", () => {
-    expect(roundRecord(counts(1, 0, 0, 0), {})).toEqual({
-      critical: 1,
-      major: 0,
-      minor: 0,
-      nit: 0,
-    });
-  });
-
-  it("roundRecord adds the codes map when present", () => {
-    expect(roundRecord(counts(1, 0, 0, 0), { "null-check-missing": 1 })).toEqual({
-      critical: 1,
-      major: 0,
-      minor: 0,
-      nit: 0,
-      codes: { "null-check-missing": 1 },
-    });
-  });
-
-  it("caps a round's recorded codes at the top-N by count", () => {
+  it("parseRounds caps a round's decoded codes at the top-N by count", () => {
     const many = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`code-${String(i)}`, 1]));
-    const record = roundRecord(counts(0, 0, 0, 0), many);
-    expect(record.codes).toBeDefined();
-    expect(Object.keys(record.codes ?? {})).toHaveLength(MAX_CODES_PER_ROUND);
+    const parsed = parseRounds(
+      mkRoundsMarker([{ critical: 0, major: 0, minor: 0, nit: 0, codes: many }]),
+    );
+    expect(parsed[0]?.codes).toBeDefined();
+    expect(Object.keys(parsed[0]?.codes ?? {})).toHaveLength(MAX_CODES_PER_ROUND);
   });
 
   it("parseRounds round-trips coded rounds and keeps count-only rounds beside them", () => {
@@ -797,7 +788,40 @@ describe("mechanism frequency rounds — issue #145", () => {
       counts(1, 0, 0, 0),
       coded(counts(0, 1, 0, 0), { "body-reconstruction": 2 }),
     ];
-    expect(parseRounds(`prose\n${roundsMarker(rounds)}\nmore`)).toEqual(rounds);
+    expect(parseRounds(`prose\n${mkRoundsMarker(rounds)}\nmore`)).toEqual(rounds);
+  });
+
+  it("parseRounds chains the PRECEDING round's NORMALIZED codes as priorCodes across 3+ rounds", () => {
+    const hi = (prefix: string): Record<string, number> =>
+      Object.fromEntries(
+        Array.from({ length: MAX_CODES_PER_ROUND }, (_, i) => [`${prefix}${String(i)}`, 5]),
+      );
+    // "watched" recurs at a low count and survives each round via the prior-kept pass; "dropme" appears
+    // from round 2 but is cut from round 2's NORMALIZED output (not in round 1's prior), so it must NOT
+    // reappear in round 3 — proving the chain feeds forward round 2's normalized codes, not its raw ones.
+    const parsed = parseRounds(
+      mkRoundsMarker([
+        coded(counts(0, 0, 0, 0), { watched: 1 }),
+        coded(counts(0, 0, 0, 0), { ...hi("h"), watched: 1, dropme: 1 }),
+        coded(counts(0, 0, 0, 0), { ...hi("g"), watched: 1, dropme: 1 }),
+      ]),
+    );
+    expect(parsed[1]?.codes?.["watched"]).toBe(1);
+    expect(parsed[1]?.codes?.["dropme"]).toBeUndefined();
+    expect(parsed[2]?.codes?.["watched"]).toBe(1);
+    expect(parsed[2]?.codes?.["dropme"]).toBeUndefined();
+  });
+
+  it("parseRounds keeps a valid round number and drops an invalid one, preserving the counts", () => {
+    expect(
+      parseRounds(mkRoundsMarker([{ critical: 0, major: 1, minor: 0, nit: 0, round: 5 }]))[0]
+        ?.round,
+    ).toBe(5);
+    const badRound = `<!-- code-review:rounds;base64 ${Buffer.from(
+      JSON.stringify([{ critical: 0, major: 1, minor: 0, nit: 0, round: 1.5 }]),
+      "utf-8",
+    ).toString("base64")} -->`;
+    expect(parseRounds(badRound)[0]).toEqual({ critical: 0, major: 1, minor: 0, nit: 0 });
   });
 
   it("parseRounds strips a malformed codes shape but keeps the round's severity counts", () => {
@@ -969,13 +993,13 @@ describe("mechanism frequency rounds — issue #145", () => {
     });
   });
 
-  it("roundsMarker keeps the full mechanism history under the size cap", () => {
+  it("parseRounds round-trips codes + sha across many rounds", () => {
     const rounds: RoundRecord[] = Array.from({ length: 10 }, (_, i) =>
       i === 9
         ? { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "last" }
         : { ...coded(counts(0, 0, 0, 0), { [String(i)]: 1 }), sha: `sha${String(i)}` },
     );
-    const parsed = parseRounds(roundsMarker(rounds));
+    const parsed = parseRounds(mkRoundsMarker(rounds));
     expect(parsed).toHaveLength(10);
     expect(parsed[0]?.codes).toEqual({ "0": 1 });
     expect(parsed[0]?.sha).toBe("sha0");
@@ -983,33 +1007,19 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(parsed[9]?.sha).toBe("last");
   });
 
-  it("roundsMarker degrades the OLDEST rounds' codes first when the marker would exceed the size cap", () => {
-    const longCode = (n: number): string =>
-      `mechanism-with-a-very-long-name-that-bloats-the-marker-${String(n).padStart(3, "0")}`;
-    const rounds: RoundRecord[] = Array.from({ length: 20 }, (_, i) =>
-      coded(
-        counts(0, 0, 0, 0),
-        Object.fromEntries(Array.from({ length: 8 }, (_, k) => [longCode(i * 8 + k), 1])),
-      ),
-    );
-    const parsed = parseRounds(roundsMarker(rounds));
-    expect(parsed).toHaveLength(20);
-    expect(parsed[0]?.codes).toBeUndefined();
-    expect(Object.keys(parsed[19]?.codes ?? {})).toHaveLength(8);
+  it("parseRounds drops count-0 code entries so every consumer agrees 0 is absence", () => {
+    const parsed = parseRounds(mkRoundsMarker([coded(counts(0, 0, 0, 0), { a: 0, b: 0, c: 1 })]));
+    expect(parsed[0]?.codes).toEqual({ c: 1 });
   });
 
-  it("normalizeCodeCounts drops count-0 entries so every consumer agrees 0 is absence", () => {
-    const record = roundRecord(counts(0, 0, 0, 0), { a: 0, b: 0, c: 1 });
-    expect(record.codes).toEqual({ c: 1 });
-  });
-
-  it("the per-round cap prefers codes that recurred in the previous round", () => {
+  it("parseRounds's per-round cap prefers codes that recurred in the previous round", () => {
     const nine = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`code-${String(i)}`, 1]));
-    const priorCodes = { "code-8": 1 };
-    const record = roundRecord(counts(0, 0, 0, 0), nine, priorCodes);
-    expect(record.codes).toBeDefined();
-    expect(record.codes?.["code-8"]).toBe(1);
-    expect(Object.keys(record.codes ?? {})).toHaveLength(MAX_CODES_PER_ROUND);
+    const parsed = parseRounds(
+      mkRoundsMarker([coded(counts(0, 0, 0, 0), { "code-8": 1 }), coded(counts(0, 0, 0, 0), nine)]),
+    );
+    expect(parsed[1]?.codes).toBeDefined();
+    expect(parsed[1]?.codes?.["code-8"]).toBe(1);
+    expect(Object.keys(parsed[1]?.codes ?? {})).toHaveLength(MAX_CODES_PER_ROUND);
   });
 
   it("computeSameRootNotes skips a same-sha prior round so a CI retry doesn't self-annotate", () => {
@@ -1035,13 +1045,15 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })])["a"]).toContain("round 5");
   });
 
-  it("the per-round cap never drops a code that recurred in the previous round, even at a low count (issue #145 r4)", () => {
+  it("parseRounds's per-round cap never drops a code that recurred in the previous round, even at a low count (issue #145 r4)", () => {
     const codes: Record<string, number> = Object.fromEntries([
       ...Array.from({ length: 8 }, (_, i) => [`bulk-${String(i)}`, 5] as [string, number]),
       ["watched", 1] as [string, number],
     ]);
-    const record = roundRecord(counts(0, 0, 0, 0), codes, { watched: 1 });
-    expect(record.codes?.["watched"]).toBe(1);
+    const parsed = parseRounds(
+      mkRoundsMarker([coded(counts(0, 0, 0, 0), { watched: 1 }), coded(counts(0, 0, 0, 0), codes)]),
+    );
+    expect(parsed[1]?.codes?.["watched"]).toBe(1);
   });
 
   it("computeSameRootNotes also collapses a same-sha retry DEEPER in the history (issue #145 r3)", () => {
@@ -1224,16 +1236,12 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
       threshold: 3,
       converged: true,
     });
-  });
-
-  it("signalForRound builds the full {round, convergence} shape from a round's findings", () => {
-    expect(signalForRound(2, countsToDoc(counts(0, 1, 0, 0)))).toEqual({
-      round: 2,
-      convergence: { score: 2, threshold: 1, converged: false },
-    });
-    expect(signalForRound(1, countsToDoc(counts(0, 0, 0, 0)), 0)).toEqual({
-      round: 1,
-      convergence: { score: 0, threshold: 0, converged: true },
+    // threshold 0: a zero-score doc still converges (0 ≤ 0) — the boundary the deleted signalForRound
+    // test covered.
+    expect(convergenceSignal(countsToDoc(counts(0, 0, 0, 0)), 0)).toEqual({
+      score: 0,
+      threshold: 0,
+      converged: true,
     });
   });
 
@@ -1243,11 +1251,10 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
     expect(parseFindingsMarker(body)).toEqual(doc);
   });
 
-  it("embeds a raw agent doc past the old boundary as base64, with the compact signal marker beside it inside the comment budget (issue #156)", () => {
-    // Post-#156 the blob is the agent's COMPLETE document with no pipeline overhead; the stop signal
-    // rides its own compact marker BESIDE the blob. Grow the raw doc until its base64 form crosses the
-    // old 40200 boundary — the population EMBED_LIMIT's backward-compat margin covers — and assert it
-    // still embeds as base64 (not the link form) with the signal marker riding beside it.
+  it("embeds a raw agent doc past the old boundary as base64 within the comment budget (issue #156)", () => {
+    // Post-#156 the blob is the agent's COMPLETE document with no pipeline overhead. Grow the raw doc
+    // until its base64 form crosses the old 40200 boundary — the EMBED_LIMIT backward-compat margin
+    // covers it — and assert it still embeds as base64, not the link form.
     const b64Len = (d: Findings): number =>
       Buffer.from(JSON.stringify(d), "utf-8").toString("base64").length;
     // Grow the summary in coarse steps (not one char at a time) so the probe stays linear.
@@ -1257,9 +1264,7 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
     }
     expect(b64Len(doc)).toBeGreaterThan(40200);
     expect(b64Len(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
-    const surface = surfacedFindingsPointer(doc, signal(1, counts(0, 0, 1, 0)), undefined);
-    expect(surface).toContain("code-review:findings-json;base64");
-    expect(parseSignalMarker(surface)).not.toBeNull();
+    expect(findingsPointer(doc, undefined)).toContain("code-review:findings-json;base64");
   });
 
   it("stripSurfaceFields drops the surface fields and restores the draft version on a surfaced doc", () => {
@@ -1383,45 +1388,14 @@ describe("parseSurfaceSignal — issue #141 (verbatim carry of the prior round's
   });
 });
 
-describe("signal marker — issue #141 (the stop signal survives an oversized review)", () => {
+describe("signal marker — issue #141 (the legacy compact stop signal, still read back)", () => {
   const signal: SurfaceSignal = {
     round: 1,
     convergence: { score: 2, threshold: 1, converged: false },
   };
 
-  // A doc whose base64 exceeds EMBED_LIMIT, sized in coarse steps so the setup stays linear.
-  const oversizedDoc = ((): Findings => {
-    let doc = { ...findings, summary: "x".repeat(32000) };
-    while (Buffer.from(JSON.stringify(doc), "utf-8").toString("base64").length <= EMBED_LIMIT) {
-      doc = { ...doc, summary: `${doc.summary}${"x".repeat(500)}` };
-    }
-    return doc;
-  })();
-
-  it("emits ONLY the compact signal marker when the whole-doc payload is too large and no jsonUrl is given", () => {
-    const pointer = surfacedFindingsPointer(oversizedDoc, signal, undefined);
-    expect(pointer).not.toContain("findings-json;base64");
-    expect(pointer).toContain("code-review:signal;base64");
-    expect(parseSignalMarker(pointer)).toEqual(signal);
-  });
-
-  it("emits the link marker PLUS the compact signal marker when a jsonUrl fallback is available", () => {
-    const pointer = surfacedFindingsPointer(
-      oversizedDoc,
-      signal,
-      "https://example.com/findings.zip",
-    );
-    expect(pointer).toContain(
-      "<!-- code-review:findings-json https://example.com/findings.zip -->",
-    );
-    expect(pointer).toContain("code-review:signal;base64");
-  });
-
-  it("carries the compact signal marker alongside the base64 blob — the signal always rides its own marker now (issue #156)", () => {
-    const pointer = surfacedFindingsPointer(findings, signal, undefined);
-    expect(pointer).toContain("findings-json;base64");
-    expect(pointer).toContain("code-review:signal;base64");
-    expect(parseSignalMarker(pointer)).toEqual(signal);
+  it("parseSignalMarker round-trips a compact signal marker", () => {
+    expect(parseSignalMarker(`prose\n${mkSignalMarker(signal)}\nmore`)).toEqual(signal);
   });
 
   it("parseSignalMarker returns null when the body carries no signal marker", () => {
@@ -1430,14 +1404,9 @@ describe("signal marker — issue #141 (the stop signal survives an oversized re
   });
 
   it("carryForwardMarkers preserves the signal marker alongside the findings marker", () => {
-    const pointer = surfacedFindingsPointer(
-      oversizedDoc,
-      signal,
-      "https://example.com/findings.zip",
-    );
-    expect(pointer).toContain("code-review:signal;base64");
-    expect(carryForwardMarkers(pointer)).toContain("code-review:signal;base64");
-    expect(carryForwardMarkers(pointer)).toContain("findings-json");
+    const body = `${findingsPointer(findings, undefined)}\n${mkSignalMarker(signal)}`;
+    expect(carryForwardMarkers(body)).toContain("code-review:signal;base64");
+    expect(carryForwardMarkers(body)).toContain("findings-json");
   });
 });
 

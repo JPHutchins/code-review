@@ -235,18 +235,10 @@ export const escapeCodeBackticks = (code: string): string =>
 // shape into the streak/note renderers.
 const normalizeCodeCounts = (codes: unknown, priorCodes?: CodeCounts): CodeCounts | undefined => {
   if (typeof codes !== "object" || codes === null || Array.isArray(codes)) return undefined;
-  const entries = Object.entries(codes as Record<string, unknown>)
-    .filter(
-      (e): e is [string, number] =>
-        typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
-    )
-    .sort((a, b) => {
-      if (b[1] !== a[1]) return b[1] - a[1];
-      const aPrior = hasCode(priorCodes, a[0]) ? 1 : 0;
-      const bPrior = hasCode(priorCodes, b[0]) ? 1 : 0;
-      if (aPrior !== bPrior) return bPrior - aPrior;
-      return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
-    });
+  const entries = Object.entries(codes as Record<string, unknown>).filter(
+    (e): e is [string, number] =>
+      typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
+  );
   if (entries.length === 0) return undefined;
   const sorted = entries.sort((a, b) => {
     if (b[1] !== a[1]) return b[1] - a[1];
@@ -276,10 +268,9 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   // field is normalized independently — a bad codes shape strips just that field, never the round.
   if (!Array.isArray(decoded)) return [];
   // SEQUENTIAL normalization: each round's codes are re-normalized with the PRECEDING round's
-  // normalized codes as priorCodes — the same prior-kept pass roundRecord performed in memory — so
-  // the up-to-8 prior-kept codes of a finding-heavy round survive the marker round-trip (without
-  // it, the re-parse collapses every round to its top-8 base and the re-attached scope_metastasis
-  // under-reports mechanisms post() would have flagged, issue #150 review r2).
+  // normalized codes as priorCodes, so the up-to-8 prior-kept codes of a finding-heavy round survive
+  // the marker round-trip (without it, the re-parse collapses every round to its top-8 base and the
+  // re-attached scope_metastasis under-reports mechanisms post() would have flagged, issue #150 review r2).
   const kept: RoundRecord[] = [];
   let priorCodes: CodeCounts | undefined;
   for (const u of (decoded as readonly unknown[]).filter(isSeverityCounts)) {
@@ -299,35 +290,6 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
     kept.push(roundNum === undefined ? record : { ...record, round: roundNum });
   }
   return kept;
-};
-
-// The rounds marker's base64 length cap. The severity counts (the trajectory) always survive; when a
-// very long PR's mechanism-frequency maps would push the marker past the cap, the OLDEST rounds are
-// re-serialized count-only first — so the marker stays bounded while keeping the full mechanism
-// history for typical PRs. Safe because both the streak detector and the same-root annotator read
-// from the END of the history; a code whose only occurrence is older than the degradation point loses
-// its annotation only on an extreme (cap-exceeding) PR — the accepted boundedness tradeoff.
-const ROUNDS_MARKER_LIMIT = 8000;
-export const roundsMarker = (rounds: readonly RoundRecord[]): string => {
-  if (rounds.length === 0) return "";
-  const serialize = (kept: readonly RoundRecord[]): string =>
-    `<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(kept), "utf-8").toString("base64")} -->`;
-  const stripCodes = (n: number): readonly RoundRecord[] =>
-    rounds.map((r, i) =>
-      i < n ? { critical: r.critical, major: r.major, minor: r.minor, nit: r.nit } : r,
-    );
-  // Stage 1: strip the codes+sha from the oldest rounds, oldest first, until the marker fits — the
-  // severity counts (the trajectory) always survive.
-  let stripped = 0;
-  while (stripped < rounds.length && serialize(stripCodes(stripped)).length > ROUNDS_MARKER_LIMIT) {
-    stripped += 1;
-  }
-  const kept = stripCodes(stripped);
-  // Stage 2: even count-only, a very long history can still exceed the cap — keep only the most
-  // recent rounds (the trajectory label uses the true count via the carried signal, so eliding
-  // entries never falsifies the round number).
-  const bounded = serialize(kept).length > ROUNDS_MARKER_LIMIT ? kept.slice(-8) : kept;
-  return serialize(bounded);
 };
 
 // A convergence score for display: the same fixed-2-decimal formatting as formatConfidence (a descent
@@ -381,27 +343,6 @@ export const computeCodeCounts = (
     counts.set(code, (counts.get(code) ?? 0) + 1);
   }
   return Object.fromEntries(counts);
-};
-
-// The enriched round entry post() appends: the severity counts plus the round's code-frequency map
-// (capped with a preference for codes that recurred in the previous round, so the cap can't drop a
-// watched mechanism) and the reviewed head SHA. Omitting the codes field entirely when no finding
-// carried a code keeps a coded-less round byte-identical to the pre-feature marker shape.
-export const roundRecord = (
-  counts: SeverityCounts,
-  codes: CodeCounts,
-  priorCodes?: CodeCounts,
-  sha?: string,
-  round?: number,
-): RoundRecord => {
-  const normalized = normalizeCodeCounts(codes, priorCodes);
-  const record: RoundRecord =
-    normalized === undefined ? { ...counts } : { ...counts, codes: normalized };
-  return {
-    ...record,
-    ...(sha !== undefined ? { sha } : {}),
-    ...(round !== undefined ? { round } : {}),
-  };
 };
 
 // Per code, how many consecutive rounds (ending at the last recorded round) carried a finding with
@@ -624,9 +565,10 @@ export const convergenceScore = (doc: Findings, threshold: number): number =>
 // The pipeline-stamped convergence field (issue #174): this round's score/threshold/converged plus the
 // per-round trajectory. Prior rounds are carried VERBATIM — their scores are historical snapshots, and
 // recomputing at a changed threshold would rewrite the past — while THIS round is appended with its
-// score and the mechanism map + head SHA the recurrence signals read. The trajectory is bounded to the
-// most recent rounds so it can never bloat the blob past its embed limit; the recurrence detectors read
-// only the recent tail, so bounding never ends a live streak.
+// score and the mechanism map + head SHA the recurrence signals read. The trajectory keeps only the
+// most recent CONVERGENCE_TRAJECTORY_LIMIT rounds — a COUNT bound (not a byte cap), which keeps the blob
+// growth bounded in the common case (a round record is compact) and caps the same-root memory at that
+// many rounds; the recurrence detectors read only the recent tail, so bounding never ends a live streak.
 export const CONVERGENCE_TRAJECTORY_LIMIT = 64;
 export const buildConvergence = (
   doc: Findings,
@@ -747,22 +689,23 @@ export const inProgressConvergence = (prior: Convergence, runningRound: number):
   return rounds.length === 0 ? "" : `${roundsSummary(rounds, runningRound)} → ⏳`;
 };
 
-// The version the compact stop-signal marker declares (signalMarker stamps it into that marker's
-// payload) and the version a LEGACY surfaced blob declared before issue #156 deleted the surfacing
-// transform. DISTINCT from the draft axis (DEFAULT_SCHEMA_VERSION is 0.9.0 after issue #163) so the
-// surface channel can never be mistaken for the agent's own document: parseSurfaceSignal accepts a
-// signal marker only at a surface version, and stripSurfaceFields recognizes a legacy surfaced blob
-// by it to peel that blob back to a draft. Post-#156 nothing stamps a surfaced findings DOCUMENT —
-// the embedded blob is the agent's raw draft — but the signal marker still carries this version.
+// The version a LEGACY compact stop-signal marker declared, and the version a LEGACY surfaced blob
+// declared before issue #156 deleted the surfacing transform. Its writer is retired (issue #186); the
+// version survives so the migration readers recognize a pre-#185 marker. DISTINCT from the draft axis
+// (DEFAULT_SCHEMA_VERSION is 0.9.0 after issue #163) so the surface channel can never be mistaken for
+// the agent's own document: parseSurfaceSignal accepts a signal marker only at a surface version, and
+// stripSurfaceFields recognizes a legacy surfaced blob by it to peel that blob back to a draft.
 export const SURFACE_SCHEMA_VERSION = "0.8.0";
 
 // The stop signal's convergence core is the schema's ConvergenceCore — one definition shared by the
 // JSON convergence field and the legacy compact signal marker's reader.
 export type ConvergenceSignal = ConvergenceCore;
 
-// The stop signal carried in the compact signal marker: the round number + that round's score/
-// threshold/converged. Computed once when the round completes; every later post carries it VERBATIM,
-// never re-derived — re-deriving at a changed convergence_threshold would flip a prior round's `converged`.
+// The shape parseSignalMarker / parseSurfaceSignal return from a LEGACY compact signal marker or
+// surfaced blob: the round number + that round's score/threshold/converged. Its writer is retired
+// (issue #186); post now carries convergence forward via the stamped field (carriedConvergence), and a
+// stored `converged` is never re-derived — re-deriving at a changed convergence_threshold would flip a
+// prior round's decision.
 export interface SurfaceSignal {
   readonly round: number;
   readonly convergence: ConvergenceSignal;
@@ -777,55 +720,12 @@ export const convergenceSignal = (
   return { score, threshold, converged: score <= threshold };
 };
 
-// The full {round, convergence} construction, shared by post (a completing round) and render's
-// fallback (the round-1 / last-round cases) — one helper so every site builds the same shape.
-export const signalForRound = (
-  round: number,
-  doc: Findings,
-  threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
-): SurfaceSignal => ({ round, convergence: convergenceSignal(doc, threshold) });
-
-// The compact signal marker: the stop signal on its own, self-describing (it declares the surface
-// version, so parseSurfaceSignal's version gate applies to it too). Since issue #156 it is the SOLE
-// carrier of the stop signal — the findings blob is the agent's raw document and holds no signal — so
-// surfacedFindingsPointer emits it beside the blob whenever a completed round's signal exists,
-// including when the blob falls to the link form and when a notice carries a prior round's signal
-// forward for the next post to read back.
-export const signalMarker = (signal: SurfaceSignal): string =>
-  `<!-- code-review:signal;base64 ${Buffer.from(
-    JSON.stringify({ schema_version: SURFACE_SCHEMA_VERSION, ...signal }),
-    "utf-8",
-  ).toString("base64")} -->`;
-
-// The single join policy both post-time callers use to place the compact signal marker beside a base
-// marker: it stands alone when the base is empty (an omitted blob), else rides the line below it.
-export const joinSignalMarker = (base: string, marker: string): string =>
-  base === "" ? marker : `${base}\n${marker}`;
-
-// The findings blob plus the stop signal — one helper so the sticky, the review body, and the
-// standalone render can never disagree on what is emitted. The blob is the agent's complete document
-// (issue #156); the stop signal always rides the compact marker beside it, so an oversized review
-// that falls to the link form (or is dropped) still surfaces its signal for later posts to carry.
-export const surfacedFindingsPointer = (
-  findings: Findings,
-  signal: SurfaceSignal | null,
-  jsonUrl: string | undefined,
-): string => {
-  // The embedded blob is the agent's COMPLETE document — byte-for-byte the object render reads — with
-  // NO surfacing transform to drop a field or drift from the rendered prose (issue #156: the machine
-  // channel must never carry less than the comment). The stop signal and the scope-metastasis note are
-  // round state, not the agent's document, so they ride the compact signal marker and the rounds
-  // marker rather than a second, divergeable copy of the findings; the seed re-derives scope metastasis
-  // from the carried rounds history.
-  const marker = findingsPointer(findings, jsonUrl);
-  return signal === null ? marker : joinSignalMarker(marker, signalMarker(signal));
-};
-
 const SIGNAL_RE = /<!-- code-review:signal;base64 ([A-Za-z0-9+/=]+) -->/;
 
-// The stop signal from the compact marker that rides beside every completed round's findings blob
-// (issue #156) — the primary reader; parseSurfaceSignal below is the legacy fallback for pre-#156
-// stickies whose signal rode inside the blob.
+// Decodes a LEGACY compact signal marker (writer retired, issue #186) — a read-only fallback in the
+// carry chain: carriedConvergence reads the stamped convergence field, then the code-review:convergence
+// marker, and only then this. parseSurfaceSignal below is the older fallback for pre-#156 stickies whose
+// signal rode inside the blob.
 export const parseSignalMarker = (body: string): SurfaceSignal | null => {
   const b64 = SIGNAL_RE.exec(body)?.[1];
   if (b64 === undefined) return null;
@@ -836,8 +736,8 @@ export const parseSignalMarker = (body: string): SurfaceSignal | null => {
 // blob whose signal rode inside the findings JSON — null on any malformed shape, a pre-surface blob,
 // or a doc that does not declare a surfaced version, so a draft or foreign document carrying
 // round/convergence keys can never be treated as the commenter's stop signal (the same version gate
-// stripSurfaceFields applies to the seed channel). Post-#156 a fresh signal rides the compact marker
-// (parseSignalMarker); this is reached only as findingsMarkerFor's fallback for an older sticky.
+// stripSurfaceFields applies to the seed channel). Nothing writes this anymore (issue #186); it is the
+// last fallback in carriedConvergence's carry chain, reached only for an older sticky.
 export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return null;
   const o = doc as Record<string, unknown>;
@@ -951,10 +851,10 @@ export const carriedConvergence = (priorDoc: unknown, priorBody: string): Conver
 
 // Every surface-channel version this CLI recognizes: the versions a LEGACY surfaced blob declared
 // (which stripSurfaceFields peels back to the agent document, so a sticky written before issue #156
-// still seeds) plus the version the compact signal marker declares today. A dedicated list,
-// deliberately distinct from the draft-version registry axis: only these versions declare the surface
-// channel, so a draft bump can never be mistaken for one. A future surface bump appends the
-// superseded version(s) here alongside the new one.
+// still seeds) plus the version a legacy compact signal marker declared. Both are read-only now (the
+// writers are retired, issue #186). A dedicated list, deliberately distinct from the draft-version
+// registry axis: only these versions declare the surface channel, so a draft bump can never be
+// mistaken for one. A future surface bump appends the superseded version(s) here alongside the new one.
 export const SURFACE_SCHEMA_VERSIONS: readonly string[] = ["0.7.0", SURFACE_SCHEMA_VERSION];
 
 // Does a value declare one of the surface-channel versions? The single gate the surface channel

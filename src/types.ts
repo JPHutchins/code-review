@@ -44,10 +44,10 @@ export type CodeCounts = Readonly<Record<string, number>>;
 export type RoundRecord = SeverityCounts & {
   readonly codes?: CodeCounts;
   readonly sha?: string;
-  // The TRUE completed-round number (1-indexed) this record represents. The rounds marker's array
+  // The TRUE completed-round number (1-indexed) this record represents. A legacy rounds marker's array
   // position can drift from it when parseRounds filters a corrupt entry, and the trajectory label
-  // (and the compact signal marker) number rounds by the carried count — so the same-root annotation must
-  // reference this, not the parsed index. Absent on pre-feature rounds ⇒ the parsed index + 1.
+  // numbers rounds by the carried count — so the same-root annotation must reference this, not the
+  // parsed index. Absent on pre-feature rounds ⇒ the parsed index + 1.
   readonly round?: number;
 };
 
@@ -79,12 +79,11 @@ export interface RenderInput {
   readonly effort?: string;
   readonly testReport?: TestSummary;
   readonly severityCounts?: SeverityCounts;
-  // Per-full-review-round records (oldest first, this run's record last when it is a full review):
-  // the severity counts plus each round's mechanism-frequency map, rendered as the convergence
-  // TRAJECTORY, the advisory scope-metastasis note, and re-embedded as the carried-forward marker.
-  // Omitted/empty ⇒ no trajectory line or metastasis note. The convergence BADGE is independent of
-  // this (it reads the current run's counts under `convergenceRound`), so an empty history no longer
-  // implies no badge.
+  // Per-full-review-round records (oldest first) — the LEGACY trajectory fallback, read only when the
+  // findings document carries no stamped `convergence`: the standalone render command, or a test that
+  // supplies a trajectory directly. Rendered as the convergence TRAJECTORY and the advisory
+  // scope-metastasis note; a production sticky reads its trajectory from `findings.convergence.rounds`
+  // instead. Omitted/empty ⇒ no trajectory line or metastasis note.
   readonly rounds?: readonly RoundRecord[];
   // Code → "same mechanism as round N" note for findings whose mechanism recurred in a PRIOR round,
   // computed at the IO boundary (post has the prior-round history; the standalone render command

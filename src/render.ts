@@ -1,7 +1,7 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
-import type { Finding, Findings, Severity, SystemicProblem, Verdict } from "./schema.js";
+import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost } from "./cost.js";
@@ -98,16 +98,6 @@ export const computeSeverityCounts = (findings: readonly Finding[]): SeverityCou
 // carries findings — never counts as a completed review and must never read as converged (#141).
 export const isReviewVerdict = (verdict: Verdict): boolean => verdict !== "error";
 
-// The severity counts a convergence round STORES for its trajectory chips + streak history: findings
-// PLUS systemic problems at their severities (a systemic critical weighs like a finding critical). The
-// sticky's "Findings:" histogram stays findings-only (computeSeverityCounts). The convergence SCORE
-// reads confidence off the findings themselves (issue #162), not these aggregate counts.
-export const computeRoundCounts = (findings: Findings): SeverityCounts =>
-  (findings.systemic_problems ?? []).reduce<Record<Severity, number>>(
-    (acc, s) => (s.severity in acc ? { ...acc, [s.severity]: acc[s.severity] + 1 } : acc),
-    computeSeverityCounts(findings.findings),
-  );
-
 // The single decision "is THIS run a convergence-defining full-review round?" — a completed full
 // review (not a CI-fix mechanic pass, not an incomplete notice). post() calls it to decide the round
 // append AND passes the result to render() for the badge gate, so the two can never disagree; render()
@@ -164,11 +154,11 @@ export const render = (input: RenderInput): string => {
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && trajectory.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
 
-  // The badge AND the compact signal marker both score THIS run's findings + systemic problems (issue
-  // #162: the score is per-finding, reading confidence off the findings themselves, not a round's
-  // aggregate counts) — one source, so the two can never disagree (issue #141 review r2). In the post
-  // path this run is the last stored round, so scoring input.findings matches the trajectory's last
-  // chip; the score already weighs a systemic critical like a finding critical (issue #134 scope).
+  // The badge and the trajectory both read the ONE pipeline-stamped `convergence` field (issue #174),
+  // whose score is per-finding — reading confidence × likelihood off the findings themselves, not a
+  // round's aggregate counts (issue #162) — so by construction they can never disagree (issue #141
+  // review r2). In the post path this run is the last stored round, so the stamped score matches the
+  // trajectory's last chip; the score already weighs a systemic critical like a finding critical (issue #134 scope).
   // The advisory notes (same-root + scope-metastasis) are a property of a real review, gated by the
   // same decision as the badge (a completed FULL-REVIEW round): a mechanic pass or a lost-envelope
   // completed review must not render a "still recurring" claim from carried-forward rounds beside a
@@ -207,7 +197,6 @@ export const render = (input: RenderInput): string => {
     // (issue #174) — no separate signal or rounds marker rides beside it. post always supplies the
     // precomputed marker; the standalone `render` command falls back to encoding the doc here.
     findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
-    roundsMarker: "",
     roundsSummary: roundsSummary(trajectory, input.roundCount),
     metastasisNote: advisoryAllowed ? metastasisNote(trajectory) : "",
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},

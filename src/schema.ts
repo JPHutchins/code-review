@@ -156,8 +156,8 @@ const RecurringCodec = t.refinement(
 
 // The scope-metastasis entry (issue #150): per-code consecutive-round recurrence counts plus the
 // decision prompt, computed from the rounds history. The agent never writes it — the re-review seed
-// re-derives it from the rounds marker and delivers it to the next-round agent — but the draft schema
-// tolerates it so a seed-echoing agent's draft still validates.
+// re-derives it from the carried convergence trajectory and delivers it to the next-round agent — but
+// the draft schema tolerates it so a seed-echoing agent's draft still validates.
 const ScopeMetastasisShape = t.type({
   decision_prompt: t.string,
   recurring: t.array(RecurringCodec),

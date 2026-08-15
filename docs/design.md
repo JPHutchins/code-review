@@ -204,14 +204,15 @@ this doc.
   run's live placeholder or a completed review.
 - **The stop signal lives in the data, not the prose.** The AGENTS directive on the findings marker
   tells a decoding agent to ignore the prose — which would leave the convergence badge (prose-only)
-  invisible to exactly the iterating author-agent it exists for. So the stop signal rides its own
-  compact `code-review:signal` marker beside the findings blob (the blob is the agent's complete
-  document; the signal is round state the commenter owns): it carries the pipeline-computed
-  `convergence`/`round` of the last completed full-review round, `converged` a literal boolean the
-  commenter computes, never something an agent re-derives (the weights are free to change without
-  breaking a decoder). The signal is omitted until a round completes, and — because the in-progress
-  banner and every non-round post carry the marker forward — the last completed round's stop signal
-  survives a re-review in flight (issue #141).
+  invisible to exactly the iterating author-agent it exists for. So the stop signal is a
+  pipeline-stamped `convergence` field INSIDE the embedded findings document (issue #174): the
+  `{score, threshold, converged}` plus the per-round `rounds` trajectory of the last completed
+  full-review round, `converged` a literal boolean the commenter computes, never something an agent
+  re-derives (the weights are free to change without breaking a decoder). It is omitted until a round
+  completes, and — because a notice or in-progress post carries the prior document's convergence
+  forward — the last completed round's stop signal survives a re-review in flight. An oversized review
+  that falls to the link form carries the same stamped object on a compact `code-review:convergence`
+  marker beside the link (issue #185); the embedded blob always wins on read.
 - **Same-root classification + a scope-metastasis signal.** A reviewer is individually right every
   round but has no way to say "this is the same mechanism as round N's finding," so on a long PR each
   fix keeps enabling the next finding in the same machinery (the salix#94 pattern: fourteen rounds,

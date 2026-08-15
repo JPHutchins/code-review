@@ -41,6 +41,7 @@ import {
   ScopeMetastasisCodec,
   TestSummaryCodec,
   isIncompleteFindings,
+  RECOVERABLE_OPTIONAL_FIELDS,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
@@ -891,8 +892,6 @@ const isSurfaceStampedDoc = (doc: unknown): boolean =>
   !Array.isArray(doc) &&
   (doc as Record<string, unknown>)["schema_version"] === SURFACE_SCHEMA_VERSION;
 
-// The pipeline-stamped fields (issue #150 + #174), used by the schema-rejection fallback below.
-const PIPELINE_STAMPED_FIELDS = new Set(["scope_metastasis", "convergence"]);
 // The prior document with the agent-echoable scope_metastasis removed — a stale echo would over-report
 // recurrence, so the seed re-derives it fresh below. The pipeline-stamped convergence is KEPT: it is the
 // last completed round's own trajectory (correct context, not a stale echo), and the review agent's only
@@ -1118,15 +1117,17 @@ const seedDraftCmd = defineCommand({
                 : schemaPathFor(kind, args["schema-version"]);
               // ALWAYS validate — no short-circuit: a natively-carried 0.8.0 entry must face the
               // in-force schema like any other doc. When that schema (or the codec) rejects the doc
-              // solely because of a pipeline-stamped field (scope_metastasis or convergence — a
-              // consumer-pinned custom --schema predating either, or a corrupt blob-carried entry),
-              // fall back to the field-stripped doc: losing those entries beats losing ALL prior
-              // context (issue #150 review r2 + #174). The fallback covers BOTH gates (ajv + codec).
+              // solely because of a RECOVERABLE optional field (scope_metastasis, convergence, or
+              // change_size — a consumer-pinned custom --schema predating one, an older pinned CLI in
+              // the merge-to-release window, or a corrupt blob-carried entry), fall back to the
+              // field-stripped doc: losing those fields beats losing ALL prior context (issue #150
+              // review r2 + #174 + #182 review r2). Shares post's recovery set (SSOT) so the two
+              // recovery sites can never diverge. Covers BOTH gates (ajv + codec).
               const barePrior =
                 typeof priorFindings === "object" && !Array.isArray(priorFindings)
                   ? Object.fromEntries(
                       Object.entries(priorFindings as Record<string, unknown>).filter(
-                        ([key]) => !PIPELINE_STAMPED_FIELDS.has(key),
+                        ([key]) => !RECOVERABLE_OPTIONAL_FIELDS.has(key),
                       ),
                     )
                   : priorFindings;
@@ -1137,7 +1138,7 @@ const seedDraftCmd = defineCommand({
                 ? priorFindings
                 : accepts(barePrior)
                   ? (process.stderr.write(
-                      `Note: the in-force schema rejects the carried scope_metastasis entry — seeding the prior without it (issue #150 review r2)\n`,
+                      `Note: the in-force schema rejects a carried recoverable field (scope_metastasis/convergence/change_size) — seeding the prior without it (issue #150 review r2 / #182 review r2)\n`,
                     ),
                     barePrior)
                   : null;

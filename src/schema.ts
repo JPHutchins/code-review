@@ -275,6 +275,20 @@ export const FindingsCodec = t.exact(
   ]),
 );
 
+// The optional document fields safe to strip to RECOVER a findings doc when the in-force schema or the
+// codec rejects it — rather than lose the whole review (post's loadFindings) or all prior seed context
+// (the seed's barePrior fallback). PIPELINE_STAMPED_FIELDS are re-derived/re-stamped after load; the
+// agent's best-effort chrome (change_size, issue #182) is dropped because it never affects the verdict.
+// ONE definition so the two recovery sites can never diverge on the key set (issue #182 review r2).
+export const PIPELINE_STAMPED_FIELDS: ReadonlySet<string> = new Set([
+  "convergence",
+  "scope_metastasis",
+]);
+export const RECOVERABLE_OPTIONAL_FIELDS: ReadonlySet<string> = new Set([
+  ...PIPELINE_STAMPED_FIELDS,
+  "change_size",
+]);
+
 export const TriageCodec = t.type({
   safe: t.boolean,
   reasons: t.string,

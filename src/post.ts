@@ -35,6 +35,7 @@ import {
   TestSummaryCodec,
   incompleteFindings,
   isIncompleteFindings,
+  RECOVERABLE_OPTIONAL_FIELDS,
 } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
@@ -116,16 +117,6 @@ type FindingsLoadResult =
   | { readonly kind: "corrupt" }
   | { readonly kind: "invalid-shape" }
   | { readonly kind: "unsupported-schema-version"; readonly version: string };
-
-// convergence + scope_metastasis are pipeline-OWNED (post overwrites them after load).
-const PIPELINE_STAMPED_FIELDS = new Set(["convergence", "scope_metastasis"]);
-
-// Fields safe to drop when a draft fails to decode, to recover the core review rather than degrade to a
-// "did not complete" notice: the pipeline-stamped fields (re-stamped after load) plus the agent's own
-// best-effort chrome (change_size, issue #182). change_size never affects the verdict, so a malformed
-// one must not tank the whole review — it rides FindingsCodec, which the seed's validate usually
-// catches, but a validate-bypassing draft (a timeout-kill leftover) could still reach load malformed.
-const RECOVERABLE_OPTIONAL_FIELDS = new Set([...PIPELINE_STAMPED_FIELDS, "change_size"]);
 
 const decodeFindings = (doc: unknown): FindingsLoadResult => {
   const resolution = resolve("findings", doc);

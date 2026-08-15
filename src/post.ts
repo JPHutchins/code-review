@@ -35,6 +35,7 @@ import {
   TestSummaryCodec,
   incompleteFindings,
   isIncompleteFindings,
+  RECOVERABLE_OPTIONAL_FIELDS,
 } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
@@ -66,6 +67,8 @@ export interface PostInput {
   readonly route?: string;
   readonly headBranch?: string;
   readonly testReportPath?: string;
+  // Raw `cloc --git --diff` table (issue #182), rendered verbatim in the sticky's cloc collapsible.
+  readonly clocDiffPath?: string;
   readonly effort?: string;
   readonly runUrl?: string;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
@@ -115,9 +118,6 @@ type FindingsLoadResult =
   | { readonly kind: "invalid-shape" }
   | { readonly kind: "unsupported-schema-version"; readonly version: string };
 
-// convergence + scope_metastasis are pipeline-OWNED (post overwrites them after load).
-const PIPELINE_STAMPED_FIELDS = new Set(["convergence", "scope_metastasis"]);
-
 const decodeFindings = (doc: unknown): FindingsLoadResult => {
   const resolution = resolve("findings", doc);
   switch (resolution.kind) {
@@ -148,15 +148,15 @@ const loadFindings = (path: string): FindingsLoadResult => {
     typeof raw === "object" &&
     raw !== null &&
     !Array.isArray(raw) &&
-    Object.keys(raw).some((k) => PIPELINE_STAMPED_FIELDS.has(k))
+    Object.keys(raw).some((k) => RECOVERABLE_OPTIONAL_FIELDS.has(k))
   ) {
     const stripped = Object.fromEntries(
-      Object.entries(raw).filter(([key]) => !PIPELINE_STAMPED_FIELDS.has(key)),
+      Object.entries(raw).filter(([key]) => !RECOVERABLE_OPTIONAL_FIELDS.has(key)),
     );
     const retry = decodeFindings(stripped);
     if (retry.kind === "ok") {
       process.stderr.write(
-        "Warning: the review draft carried an invalid pipeline-stamped field (convergence/scope_metastasis) — stripped it and used the rest; the pipeline re-stamps convergence\n",
+        "Warning: the review draft carried an invalid best-effort field (convergence/scope_metastasis/change_size) — stripped it and used the rest; the pipeline re-stamps convergence\n",
       );
       return retry;
     }
@@ -209,6 +209,22 @@ const loadTestReport = (path: string): TestSummary | undefined => {
     return undefined;
   }
   return decoded.right;
+};
+
+// The raw cloc --diff table (issue #182), best-effort like loadTestReport: an unreadable path warns
+// and omits the collapsible, and an empty/whitespace-only file (cloc ran but produced nothing, or a
+// placeholder left by a failed run) is treated as absent so no empty collapsible renders.
+export const loadClocDiff = (path: string): string | undefined => {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not read cloc diff at ${path}: ${errMsg(err)} — omitting the cloc collapsible\n`,
+    );
+    return undefined;
+  }
+  return raw.trim() === "" ? undefined : raw;
 };
 
 const parseHtmlUrl = (raw: string): string | undefined => {
@@ -838,6 +854,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   const envelope = loadEnvelope(input.envelopePath);
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
+  const clocDiff = input.clocDiffPath ? loadClocDiff(input.clocDiffPath) : undefined;
 
   // The route the review job stamped, read the same way render does — `input.route` first, then the
   // envelope — so the workflow's --route passthrough and standalone callers both work, and the
@@ -887,6 +904,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         roundCount: priorRoundCount,
         convergenceRound: false,
         testReport,
+        clocDiff,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
@@ -1012,6 +1030,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     reviewedSha: input.headSha,
     effort: input.effort,
     testReport,
+    clocDiff,
     severityCounts: currentCounts,
     sameRootNotes,
     answeredNotes: reRaisedNotes,

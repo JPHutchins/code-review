@@ -41,6 +41,7 @@ import {
   ScopeMetastasisCodec,
   TestSummaryCodec,
   isIncompleteFindings,
+  RECOVERABLE_OPTIONAL_FIELDS,
 } from "./schema.js";
 import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
@@ -62,7 +63,7 @@ import {
   parseAgentAllowlist,
   NOTICE_KINDS,
 } from "./notice.js";
-import { announce, post, reportIncomplete } from "./post.js";
+import { announce, loadClocDiff, post, reportIncomplete } from "./post.js";
 import { type CheckIntent, checkRun } from "./checkrun.js";
 import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.js";
 import { react, isReaction, REACTIONS } from "./react.js";
@@ -236,6 +237,9 @@ const resolvePrices = (pricesArg: string | undefined): PriceResolution => {
 const TEST_REPORT_DESCRIPTION =
   'Path to a JSON test summary: {"passed": number, "failed": number, "total": number, "failures"?: [{"name": string, "message"?: string}]}';
 
+const CLOC_DIFF_DESCRIPTION =
+  "Path to a raw `cloc --git --diff <base> <head>` table, rendered verbatim in the sticky's cloc collapsible. Best-effort: an absent, unreadable, or empty file omits the collapsible.";
+
 const CONVERGENCE_THRESHOLD_DESCRIPTION =
   "Advisory convergence tolerance: the per-finding convergence score (each finding's severity floor + confidence-and-likelihood-weighted headroom; ceilings critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged. The floor values and the systemic-likelihood rule are documented in the README and the findings schema (default: 1)";
 
@@ -285,6 +289,10 @@ const renderCmd = defineCommand({
       type: "string",
       description: TEST_REPORT_DESCRIPTION,
     },
+    "cloc-diff": {
+      type: "string",
+      description: CLOC_DIFF_DESCRIPTION,
+    },
     "convergence-threshold": {
       type: "string",
       description: CONVERGENCE_THRESHOLD_DESCRIPTION,
@@ -304,6 +312,7 @@ const renderCmd = defineCommand({
     const testReport = args["test-report"]
       ? decode(TestSummaryCodec.decode(readJSON(args["test-report"])), "test report")
       : undefined;
+    const clocDiff = args["cloc-diff"] ? loadClocDiff(args["cloc-diff"]) : undefined;
     // The render command renders ONE run with no PR history, so render's fallback (which requires a
     // completed round in the history) would show no convergence at all. A completed full-review run
     // IS round 1 of its conversation: pass its own counts as the history — the badge, the
@@ -338,6 +347,7 @@ const renderCmd = defineCommand({
       route: args.route,
       effort: args.effort,
       testReport,
+      clocDiff,
       convergenceThreshold: threshold,
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       convergenceRound: isRound,
@@ -882,8 +892,6 @@ const isSurfaceStampedDoc = (doc: unknown): boolean =>
   !Array.isArray(doc) &&
   (doc as Record<string, unknown>)["schema_version"] === SURFACE_SCHEMA_VERSION;
 
-// The pipeline-stamped fields (issue #150 + #174), used by the schema-rejection fallback below.
-const PIPELINE_STAMPED_FIELDS = new Set(["scope_metastasis", "convergence"]);
 // The prior document with the agent-echoable scope_metastasis removed — a stale echo would over-report
 // recurrence, so the seed re-derives it fresh below. The pipeline-stamped convergence is KEPT: it is the
 // last completed round's own trajectory (correct context, not a stale echo), and the review agent's only
@@ -1109,15 +1117,17 @@ const seedDraftCmd = defineCommand({
                 : schemaPathFor(kind, args["schema-version"]);
               // ALWAYS validate — no short-circuit: a natively-carried 0.8.0 entry must face the
               // in-force schema like any other doc. When that schema (or the codec) rejects the doc
-              // solely because of a pipeline-stamped field (scope_metastasis or convergence — a
-              // consumer-pinned custom --schema predating either, or a corrupt blob-carried entry),
-              // fall back to the field-stripped doc: losing those entries beats losing ALL prior
-              // context (issue #150 review r2 + #174). The fallback covers BOTH gates (ajv + codec).
+              // solely because of a RECOVERABLE optional field (scope_metastasis, convergence, or
+              // change_size — a consumer-pinned custom --schema predating one, an older pinned CLI in
+              // the merge-to-release window, or a corrupt blob-carried entry), fall back to the
+              // field-stripped doc: losing those fields beats losing ALL prior context (issue #150
+              // review r2 + #174 + #182 review r2). Shares post's recovery set (SSOT) so the two
+              // recovery sites can never diverge. Covers BOTH gates (ajv + codec).
               const barePrior =
                 typeof priorFindings === "object" && !Array.isArray(priorFindings)
                   ? Object.fromEntries(
                       Object.entries(priorFindings as Record<string, unknown>).filter(
-                        ([key]) => !PIPELINE_STAMPED_FIELDS.has(key),
+                        ([key]) => !RECOVERABLE_OPTIONAL_FIELDS.has(key),
                       ),
                     )
                   : priorFindings;
@@ -1128,7 +1138,7 @@ const seedDraftCmd = defineCommand({
                 ? priorFindings
                 : accepts(barePrior)
                   ? (process.stderr.write(
-                      `Note: the in-force schema rejects the carried scope_metastasis entry — seeding the prior without it (issue #150 review r2)\n`,
+                      `Note: the in-force schema rejects a carried recoverable field (scope_metastasis/convergence/change_size) — seeding the prior without it (issue #150 review r2 / #182 review r2)\n`,
                     ),
                     barePrior)
                   : null;
@@ -1720,6 +1730,10 @@ const postCmd = defineCommand({
       type: "string",
       description: TEST_REPORT_DESCRIPTION,
     },
+    "cloc-diff": {
+      type: "string",
+      description: CLOC_DIFF_DESCRIPTION,
+    },
     "run-url": {
       type: "string",
       description:
@@ -1755,6 +1769,7 @@ const postCmd = defineCommand({
       headBranch: args["head-branch"],
       effort: args.effort,
       testReportPath: args["test-report"],
+      clocDiffPath: args["cloc-diff"],
       runUrl: args["run-url"],
       jsonUrl: args["json-url"],
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),

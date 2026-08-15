@@ -69,6 +69,42 @@ describe("validateAgainstSchema", () => {
     expect(result.valid).toBe(true);
   });
 
+  describe("change_size (issue #182)", () => {
+    const withChangeSize = (cs: unknown): unknown => doc([], { change_size: cs });
+    it("validates a well-formed change_size (and a single-role partial)", () => {
+      expect(
+        validateAgainstSchema(
+          withChangeSize({ code: { added: 240, removed: 80 }, tests: { added: 12, removed: 0 } }),
+          schemaPath,
+        ).valid,
+      ).toBe(true);
+      expect(
+        validateAgainstSchema(withChangeSize({ docs: { added: 3, removed: 0 } }), schemaPath).valid,
+      ).toBe(true);
+    });
+
+    it("rejects a negative or non-integer line count", () => {
+      expect(
+        validateAgainstSchema(withChangeSize({ code: { added: -1, removed: 0 } }), schemaPath)
+          .valid,
+      ).toBe(false);
+      expect(
+        validateAgainstSchema(withChangeSize({ code: { added: 1.5, removed: 0 } }), schemaPath)
+          .valid,
+      ).toBe(false);
+    });
+
+    it("rejects a role missing added/removed, and an unknown role key", () => {
+      expect(validateAgainstSchema(withChangeSize({ code: { added: 1 } }), schemaPath).valid).toBe(
+        false,
+      );
+      expect(
+        validateAgainstSchema(withChangeSize({ generated: { added: 1, removed: 0 } }), schemaPath)
+          .valid,
+      ).toBe(false);
+    });
+  });
+
   describe("required field validation", () => {
     it("rejects findings missing summary", () => {
       const result = validateAgainstSchema({ verdict: "approve", findings: [] }, schemaPath);

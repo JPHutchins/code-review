@@ -1658,7 +1658,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("prior-new");
-    expect(stderr).toContain("rejects the carried scope_metastasis entry");
+    expect(stderr).toContain("rejects a carried recoverable field");
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings & {
@@ -1703,13 +1703,54 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("prior-new");
-    expect(stderr).toContain("rejects the carried scope_metastasis entry");
+    expect(stderr).toContain("rejects a carried recoverable field");
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings & {
       scope_metastasis?: unknown;
     };
     expect(context.scope_metastasis).toBeUndefined();
+    expect(context.findings).toHaveLength(1);
+  });
+
+  it("applies the same bare-fallback to a blob carrying change_size against a schema that predates it — the merge-to-release / custom-schema skew (issue #182 review r2)", async () => {
+    // A prior blob with change_size, validated against a schema that lacks the field (an older pinned
+    // CLI in the merge-to-release window, or a consumer --schema predating #182): the seed must strip
+    // the one incompatible field and still seed the prior context, not drop it whole — the seed and
+    // post share ONE recoverable-field set, so this recovers exactly as post's loadFindings does.
+    const customSchema = join(tmpDir, "old-findings.schema.json");
+    const bundled = JSON.parse(
+      readFileSync(resolve(repoRoot, "schema", "findings.schema.json"), "utf-8"),
+    ) as { properties: Record<string, unknown> };
+    delete bundled.properties["change_size"];
+    writeFileSync(customSchema, JSON.stringify(bundled));
+    const withChangeSize = {
+      ...priorFindings,
+      schema_version: "0.9.0",
+      change_size: { code: { added: 10, removed: 2 } },
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(withChangeSize as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, stderr, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--schema",
+      customSchema,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    expect(stderr).toContain("rejects a carried recoverable field");
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings & {
+      change_size?: unknown;
+    };
+    expect(context.change_size).toBeUndefined();
     expect(context.findings).toHaveLength(1);
   });
 

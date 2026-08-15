@@ -12,10 +12,12 @@ import {
   roundsSummary,
   convergenceSummary,
   convergenceBadge,
+  changeSizeSummary,
   computeSameRootNotes,
   metastasisNote,
   findingsPointer,
   escapeCodeBackticks,
+  escapeFence,
   DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
 import { answeredNoteKey } from "./answered.js";
@@ -177,6 +179,10 @@ export const render = (input: RenderInput): string => {
     effort,
     modelNames,
     testReport: input.testReport ?? null,
+    // The agent's best-effort role split (issue #182) and the pipeline's deterministic cloc table; both
+    // chrome, gated to a completed review by the template's !incomplete block.
+    changeSummary: changeSizeSummary(input.findings.change_size),
+    clocDiff: input.clocDiff !== undefined ? escapeFence(input.clocDiff) : null,
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
     postedAt: input.postedAt ?? "",
     severityCounts,

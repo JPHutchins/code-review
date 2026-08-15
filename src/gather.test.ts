@@ -180,6 +180,7 @@ describe("gather — PR resolution", () => {
       conclusion: "success",
       diffSize: Buffer.byteLength(sampleDiff, "utf8"),
       stacked: false,
+      baseSha: "base",
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -826,7 +827,7 @@ describe("renderOutputs", () => {
     expect(renderOutputs({ kind: "skip" })).toBe("skip=true\n");
   });
 
-  it("renders pr, conclusion, diff_size, stacked for the gathered case", () => {
+  it("renders pr, conclusion, diff_size, stacked, base_sha for the gathered case", () => {
     expect(
       renderOutputs({
         kind: "gathered",
@@ -834,8 +835,9 @@ describe("renderOutputs", () => {
         conclusion: "success",
         diffSize: 1234,
         stacked: false,
+        baseSha: "abc1234",
       }),
-    ).toBe("pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\n");
+    ).toBe("pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\n");
   });
 });
 

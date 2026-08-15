@@ -3650,6 +3650,26 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(decodedBlob(calls()).convergence?.rounds).toHaveLength(1);
   });
 
+  it("strips a malformed best-effort change_size and still posts the review, not a notice (#182 review)", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        ...mkFindings([mkFinding({ severity: "minor" })]),
+        // A negative line count fails FindingsCodec; change_size is best-effort chrome that never
+        // affects the verdict, so it must be dropped to recover the review rather than degrade to a notice.
+        change_size: { code: { added: -5, removed: 0 } },
+      }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    expect(body).not.toContain("did not complete");
+    // The review decoded + posted as a real full review (convergence re-stamped), and the malformed
+    // change_size was dropped — the blob carries no change_size (nothing re-adds it).
+    expect(decodedBlob(calls()).convergence?.rounds).toHaveLength(1);
+    expect(decodedBlob(calls()).change_size).toBeUndefined();
+  });
+
   it("a mechanic pass carries the convergence trajectory forward with no code append (#145 / #174)", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),
@@ -3707,6 +3727,7 @@ describe("post — convergence rounds (issue #125)", () => {
         readonly sha?: string;
       }[];
     };
+    readonly change_size?: unknown;
   }
 
   // The machine channel embedded in whichever sticky write this run made (patch or post). Since

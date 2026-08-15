@@ -78,6 +78,9 @@ export interface RenderInput {
   readonly route?: string;
   readonly effort?: string;
   readonly testReport?: TestSummary;
+  // The deterministic `cloc --git --diff` table the pipeline captured (issue #182), rendered verbatim
+  // in the sticky's collapsible. Omitted ⇒ no cloc collapsible (cloc absent, or the run failed).
+  readonly clocDiff?: string;
   readonly severityCounts?: SeverityCounts;
   // Per-full-review-round records (oldest first) — the LEGACY trajectory fallback, read only when the
   // findings document carries no stamped `convergence`: the standalone render command, or a test that

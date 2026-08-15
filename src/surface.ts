@@ -4,6 +4,7 @@
 
 import { ConvergenceCodec, DEFAULT_SCHEMA_VERSION } from "./schema.js";
 import type {
+  ChangeSize,
   Convergence,
   ConvergenceCore,
   ConvergenceRound,
@@ -666,6 +667,25 @@ export const convergenceSummary = (
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
 ): string => convergenceBadge(convergenceSignal(doc, threshold));
 
+// The change-size breakdown line (issue #182): "+240 / −80 code · +120 / −10 tests · +30 / −0 docs",
+// dropping a role the agent left absent. "" when the field or every role is absent. The agent's
+// best-effort role split (chrome); the per-language cloc table rides its own collapsible beside it.
+export const changeSizeSummary = (changeSize: ChangeSize | undefined): string => {
+  if (changeSize === undefined) return "";
+  const cell = (
+    label: string,
+    d: { readonly added: number; readonly removed: number } | undefined,
+  ): string | null =>
+    d === undefined ? null : `+${String(d.added)} / −${String(d.removed)} ${label}`;
+  return [
+    cell("code", changeSize.code),
+    cell("tests", changeSize.tests),
+    cell("docs", changeSize.docs),
+  ]
+    .filter((c): c is string => c !== null)
+    .join(" · ");
+};
+
 // The round number the NEXT completed full review will stamp, from a prior sticky's parsed state: the
 // max of the trajectory and the carried convergence's last round (never regresses across a legacy
 // signal/marker split), + 1. post numbers its appended round with it and announce labels the in-progress
@@ -915,7 +935,7 @@ export const carryForwardMarkers = (body: string): string => {
 };
 
 // Escape triple-backticks so fenced content can't break out of its block.
-const escapeFence = (text: string): string => text.replace(/```/g, "`` ` ``");
+export const escapeFence = (text: string): string => text.replace(/```/g, "`` ` ``");
 
 // A GitHub ```suggestion when the patch lowers to replacement text, a non-lossy ```patch fallback
 // when it can't, or nothing when the finding carries no patch.

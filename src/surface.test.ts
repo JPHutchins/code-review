@@ -21,6 +21,7 @@ import {
   convergenceScore,
   convergenceSummary,
   convergenceSignal,
+  changeSizeSummary,
   buildConvergence,
   parseConvergence,
   carriedConvergence,
@@ -1423,5 +1424,26 @@ describe("reviewBodyPointer — a bare pointer to the sticky, never the blob (is
     const pointer = reviewBodyPointer("abc1234def", undefined);
     expect(pointer).not.toContain("code-review:findings-json");
     expect(pointer).toContain("see the summary comment");
+  });
+});
+
+describe("changeSizeSummary — the change-size line (issue #182)", () => {
+  it("formats all three roles joined, in code/tests/docs order", () => {
+    expect(
+      changeSizeSummary({
+        code: { added: 240, removed: 80 },
+        tests: { added: 120, removed: 10 },
+        docs: { added: 30, removed: 0 },
+      }),
+    ).toBe("+240 / −80 code · +120 / −10 tests · +30 / −0 docs");
+  });
+
+  it("drops a role the agent omitted", () => {
+    expect(changeSizeSummary({ code: { added: 5, removed: 1 } })).toBe("+5 / −1 code");
+  });
+
+  it("is empty for an undefined field or an all-absent object", () => {
+    expect(changeSizeSummary(undefined)).toBe("");
+    expect(changeSizeSummary({})).toBe("");
   });
 });

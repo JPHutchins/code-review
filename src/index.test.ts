@@ -2145,7 +2145,7 @@ describe("cli — render --nit-visibility-floor (issue #164)", () => {
     expect(stderr).toContain("must be a number in [0, 1]");
   });
 
-  it("renders a below-floor nit into the collapsed aside", async () => {
+  it("previews chrome only — validates the floor but renders no suppression aside (the split is post's job)", async () => {
     const doc = {
       schema_version: "0.9.0",
       summary: "s",
@@ -2166,10 +2166,9 @@ describe("cli — render --nit-visibility-floor (issue #164)", () => {
     };
     const f = join(tmpDir, "nit-findings.json");
     writeFileSync(f, JSON.stringify(doc));
-    const { stdout, exitCode } = await runCli(args(undefined, f));
+    const { stdout, exitCode } = await runCli(args("0.25", f));
     expect(exitCode).toBeNull();
-    expect(stdout).toContain("below the visibility floor");
-    expect(stdout).toContain("trivial-nit");
+    expect(stdout).not.toContain("below the visibility floor");
   });
 });
 

@@ -773,12 +773,15 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // an all-suppressed round must not read as "clean"). Stickiness, one round deep, re-derived from the
   // prior sticky's blob: a nit matching a prior round's below-floor nit (by code, else title) stays
   // hidden even if its score wobbled up — only a promotion to >= minor un-hides it — so a hidden nit
-  // never flickers into view. Best-effort: an old/missing/oversized prior blob yields no keys, so
-  // stickiness fails open to visible.
+  // never flickers into view. The prior blob is read ONLY from a completed FULL-REVIEW sticky
+  // (isFullReviewSticky) — route-aware like the seed chain, since a mechanic pass writes its OWN
+  // findings blob and its nits are not this review's prior round; a notice/placeholder carries an empty
+  // or prior blob and is handled the same way. Best-effort: an old/missing/oversized/non-review prior
+  // yields no keys, so stickiness fails open to visible.
   const priorSuppressedKeys = new Set(
-    priorBelowFloorNits(
-      existingSticky === null ? null : parseFindingsMarker(existingSticky.body),
-      input.nitVisibilityFloor,
+    (existingSticky !== null && isFullReviewSticky(existingSticky.body)
+      ? priorBelowFloorNits(parseFindingsMarker(existingSticky.body), input.nitVisibilityFloor)
+      : []
     ).map((n) => answeredNoteKey({ code: n.code, title: n.title })),
   );
   const isSuppressedNit = (f: Finding): boolean =>

@@ -585,7 +585,7 @@ describe("post — nit visibility floor (issue #164)", () => {
   });
 
   it("keeps a re-rated still-nit hidden when it matches a prior below-floor nit (stickiness)", async () => {
-    const priorSticky = `<!-- code-review -->\n${findingsPointer(
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${findingsPointer(
       doc([belowFloorNit({ title: "sticky", code: "sticky-nit" })]),
       undefined,
     )}`;
@@ -610,8 +610,36 @@ describe("post — nit visibility floor (issue #164)", () => {
     expect(stickyPatchBody(calls())).toContain("below the visibility floor");
   });
 
+  it("does NOT read below-floor nits from a mechanic sticky (route-gated, like the seed chain)", async () => {
+    // A mechanic pass writes its OWN blob; its nits are not this review's prior round.
+    const mechanicSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${findingsPointer(
+      doc([belowFloorNit({ title: "mech", code: "mech-nit" })]),
+      undefined,
+    )}`;
+    // Same code, now above the floor and still a nit — WITHOUT the gate this would stick hidden; the
+    // gate ignores the mechanic sticky, so it materializes.
+    write(
+      doc([
+        mkFinding({
+          severity: "nit",
+          code: "mech-nit",
+          title: "mech",
+          confidence: 0.9,
+          likelihood: 0.9,
+          start_line: 10,
+          end_line: 10,
+        }),
+      ]),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks(mechanicSticky));
+    await post(mkInput({}), api);
+
+    expect(inlineComments(calls())).toHaveLength(1);
+    expect(stickyPatchBody(calls())).not.toContain("below the visibility floor");
+  });
+
   it("un-hides a prior below-floor nit that was PROMOTED to minor", async () => {
-    const priorSticky = `<!-- code-review -->\n${findingsPointer(
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${findingsPointer(
       doc([belowFloorNit({ title: "promo", code: "promo" })]),
       undefined,
     )}`;

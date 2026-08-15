@@ -46,7 +46,6 @@ import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
-  isBelowVisibilityFloor,
   parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
@@ -313,10 +312,11 @@ const renderCmd = defineCommand({
       isConvergenceRound(route, envelope.incomplete === true || isIncompleteFindings(findings)) &&
       isReviewVerdict(findings.verdict);
     const counts = computeRoundCounts(findings);
-    // The standalone preview has no diff and no prior sticky, so it applies only the FIXED-floor part
-    // of the nit-visibility split (issue #164) — no in-diff/stray placement, no one-round stickiness.
-    // The below-floor nits render as the collapsed aside; the split into inline vs stray is post's job.
-    const nitFloor = parseNitVisibilityFloor(args["nit-visibility-floor"]);
+    // The `render` command previews the sticky CHROME (verdict, counts, convergence, cost) — it has no
+    // diff, so it never places findings inline vs stray and shows no per-finding detail. It therefore
+    // validates --nit-visibility-floor (issue #164) but does NOT apply the visible split or the
+    // suppression aside: rendering shelved nits while the visible findings have no detail line would
+    // invert the feature. The human/visible split is post's job — it has the diff and the prior sticky.
     const output = render({
       findings,
       envelope,
@@ -329,8 +329,7 @@ const renderCmd = defineCommand({
       testReport,
       rounds: isRound ? [counts] : [],
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
-      nitVisibilityFloor: nitFloor,
-      suppressedNits: findings.findings.filter((f) => isBelowVisibilityFloor(f, nitFloor)),
+      nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       postedAt: formatUtc(new Date()),
     });
     process.stdout.write(output);

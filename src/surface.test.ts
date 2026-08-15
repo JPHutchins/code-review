@@ -791,6 +791,36 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(parseRounds(`prose\n${mkRoundsMarker(rounds)}\nmore`)).toEqual(rounds);
   });
 
+  it("parseRounds chains priorCodes across 3+ rounds so a low-count recurring code survives a finding-heavy history", () => {
+    const hi = (prefix: string): Record<string, number> =>
+      Object.fromEntries(
+        Array.from({ length: MAX_CODES_PER_ROUND }, (_, i) => [`${prefix}${String(i)}`, 5]),
+      );
+    // "watched" recurs at a low count while 8 fresh high-count codes churn each round — it survives only
+    // if each round's priorCodes is the PRECEDING round's NORMALIZED output (the sequential chain).
+    const parsed = parseRounds(
+      mkRoundsMarker([
+        coded(counts(0, 0, 0, 0), { watched: 1 }),
+        coded(counts(0, 0, 0, 0), { ...hi("d"), watched: 1 }),
+        coded(counts(0, 0, 0, 0), { ...hi("e"), watched: 1 }),
+      ]),
+    );
+    expect(parsed[1]?.codes?.["watched"]).toBe(1);
+    expect(parsed[2]?.codes?.["watched"]).toBe(1);
+  });
+
+  it("parseRounds keeps a valid round number and drops an invalid one, preserving the counts", () => {
+    expect(
+      parseRounds(mkRoundsMarker([{ critical: 0, major: 1, minor: 0, nit: 0, round: 5 }]))[0]
+        ?.round,
+    ).toBe(5);
+    const badRound = `<!-- code-review:rounds;base64 ${Buffer.from(
+      JSON.stringify([{ critical: 0, major: 1, minor: 0, nit: 0, round: 1.5 }]),
+      "utf-8",
+    ).toString("base64")} -->`;
+    expect(parseRounds(badRound)[0]).toEqual({ critical: 0, major: 1, minor: 0, nit: 0 });
+  });
+
   it("parseRounds strips a malformed codes shape but keeps the round's severity counts", () => {
     const bad = Buffer.from(
       JSON.stringify([{ critical: 0, major: 0, minor: 0, nit: 0, codes: "garbage" }]),

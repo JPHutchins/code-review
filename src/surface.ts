@@ -724,6 +724,29 @@ export const convergenceSummary = (
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
 ): string => convergenceBadge(convergenceSignal(doc, threshold));
 
+// The round number the NEXT completed full review will stamp, from a prior sticky's parsed state: the
+// max of the trajectory and the carried convergence's last round (never regresses across a legacy
+// signal/marker split), + 1. post numbers its appended round with it and announce labels the in-progress
+// trajectory with it, so the placeholder's round and post's stamp are ONE derivation, not copy-paste.
+export const nextRoundNumber = (
+  priorTraj: readonly ConvergenceRound[],
+  priorConvRounds: readonly ConvergenceRound[],
+): number => {
+  const last = (rounds: readonly ConvergenceRound[]): number =>
+    rounds.length > 0 ? (rounds[rounds.length - 1]?.round ?? rounds.length) : 0;
+  return Math.max(last(priorTraj), last(priorConvRounds)) + 1;
+};
+
+// The in-progress trajectory line for the announce placeholder (issue #180): the completed rounds'
+// scores plus a pending "⏳" cell for the round now running. The caller passes the running round from
+// nextRoundNumber, so the label and the pending cell agree with what post will stamp — by construction,
+// not by re-derivation here. NO badge: a carried "converged" above a running round would read as "done,
+// ignore this." "" when the prior carries no completed round.
+export const inProgressConvergence = (prior: Convergence, runningRound: number): string => {
+  const rounds = prior.rounds ?? [];
+  return rounds.length === 0 ? "" : `${roundsSummary(rounds, runningRound)} → ⏳`;
+};
+
 // The version the compact stop-signal marker declares (signalMarker stamps it into that marker's
 // payload) and the version a LEGACY surfaced blob declared before issue #156 deleted the surfacing
 // transform. DISTINCT from the draft axis (DEFAULT_SCHEMA_VERSION is 0.9.0 after issue #163) so the

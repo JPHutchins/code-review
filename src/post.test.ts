@@ -2704,6 +2704,67 @@ describe("announce — in-progress sticky", () => {
     ).toBe(false);
   });
 
+  it("shows the prior convergence trajectory with a pending marker for the running round (#180)", async () => {
+    const priorDoc = {
+      ...mkFindings([]),
+      convergence: {
+        score: 0.42,
+        threshold: 1,
+        converged: true,
+        rounds: [
+          { round: 1, score: 2.4 },
+          { round: 2, score: 1.1 },
+          { round: 3, score: 0.42 },
+        ],
+      },
+    };
+    const existing = `<!-- code-review -->\n${findingsPointer(priorDoc, undefined)}`;
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+    ]);
+
+    await announce(mkAnnounceInput(), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("Code review in progress");
+    // The running round (4) labels the line, matching the pending ⏳ cell; the completed scores precede it.
+    expect(body).toContain("**Round 4** · 2.40 → 1.10 → 0.42 → ⏳");
+    // No stale "converged" badge above a running round.
+    expect(body).not.toContain("**Convergence**");
+  });
+
+  it("shows the trajectory from an oversized prior (link blob + compact convergence marker, no embedded blob) (#180)", async () => {
+    const priorConv: Convergence = {
+      score: 0.42,
+      threshold: 1,
+      converged: true,
+      rounds: [
+        { round: 1, score: 2.4 },
+        { round: 2, score: 0.42 },
+      ],
+    };
+    const existing = `<!-- code-review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
+      priorConv,
+    )}`;
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+    ]);
+
+    await announce(mkAnnounceInput(), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    // The trajectory renders from the compact marker even though the blob is link-form.
+    expect(body).toContain("**Round 3** · 2.40 → 0.42 → ⏳");
+    // ...and that marker is carried forward across the announce swap.
+    expect(body).toContain("code-review:convergence;base64");
+  });
+
   it("does nothing when there is no open PR", async () => {
     const { api, calls } = mkMockGhApi([
       { match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false, response: "\n" },

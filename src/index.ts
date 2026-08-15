@@ -236,7 +236,7 @@ const TEST_REPORT_DESCRIPTION =
   'Path to a JSON test summary: {"passed": number, "failed": number, "total": number, "failures"?: [{"name": string, "message"?: string}]}';
 
 const CONVERGENCE_THRESHOLD_DESCRIPTION =
-  "Advisory convergence tolerance: the per-finding convergence score (each finding's floor + confidence-weighted headroom; ceilings critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged (default: 1)";
+  "Advisory convergence tolerance: the per-finding convergence score (each finding's severity floor + confidence-and-likelihood-weighted headroom; ceilings critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged. The floor values and the systemic-likelihood rule are documented in the README and the findings schema (default: 1)";
 
 const NIT_VISIBILITY_FLOOR_DESCRIPTION =
   "Nit visibility floor: nits whose confidence × likelihood falls below this are hidden from humans (no inline comment; a collapsed aside in the sticky) but kept in the machine blob as adjudicated. In [0, 1] (default: 0.25)";

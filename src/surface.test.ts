@@ -442,7 +442,8 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(convergenceScore(docOf(["minor", 1]), 1)).toBe(1);
     expect(convergenceScore(docOf(["nit", 1]), 1)).toBe(0);
     expect(convergenceScore(docOf(["major", 0.5]), 1)).toBe(1.25);
-    expect(convergenceScore(docOf(["minor", 0.4]), 1)).toBe(0.4);
+    // minor floor 0.1 + 0.9 × 0.4 = 0.46 (issue #178 gave minor a floor)
+    expect(convergenceScore(docOf(["minor", 0.4]), 1)).toBe(0.46);
     expect(convergenceScore(docOf(["minor", 1], ["minor", 1]), 1)).toBe(2);
   });
 
@@ -450,10 +451,11 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     // major, confidence 0.8, likelihood 0.5 → 0.5 + 1.5 × 0.8 × 0.5 = 1.1
     expect(convergenceScore(docOf(["major", 0.8, 0.5]), 1)).toBe(1.1);
     // a certain-but-never-triggered footgun (the `__slots__` case) is crushed toward its floor
-    expect(convergenceScore(docOf(["minor", 1, 0.02]), 1)).toBe(0.02);
+    // (0.1 for a minor after issue #178): 0.1 + 0.9 × 0.02 = 0.118 → 0.12
+    expect(convergenceScore(docOf(["minor", 1, 0.02]), 1)).toBe(0.12);
     // likelihood 0 zeroes the headroom entirely — only the floor survives
     expect(convergenceScore(docOf(["critical", 1, 0]), 1)).toBe(1.01);
-    expect(convergenceScore(docOf(["minor", 1, 0]), 1)).toBe(0);
+    expect(convergenceScore(docOf(["minor", 1, 0]), 1)).toBe(0.1);
   });
 
   it("a nit never contributes, at any confidence", () => {
@@ -477,7 +479,8 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
   });
 
   it("rounds to 2 decimals and compares the boolean on that same rounded value", () => {
-    expect(convergenceSummary(docOf(["minor", 0.334], ["minor", 0.334], ["minor", 0.334]), 1)).toBe(
+    // three minors at 0.1 + 0.9 × 0.26 = 0.334 each → raw 1.002, which rounds to 1.00 ≤ 1 (issue #178)
+    expect(convergenceSummary(docOf(["minor", 0.26], ["minor", 0.26], ["minor", 0.26]), 1)).toBe(
       "**Convergence** 🏁 1 ≤ 1 — converged",
     );
   });
@@ -589,6 +592,68 @@ describe("nit visibility floor — issue #164", () => {
       expect(priorBelowFloorNits("nope")).toEqual([]);
       expect(priorBelowFloorNits({ findings: "not-an-array" })).toEqual([]);
     });
+  });
+});
+
+describe("convergence score — calibration (issue #178)", () => {
+  const mkFinding = (severity: Severity, confidence: number, likelihood = 1) => ({
+    path: "src/x.ts",
+    start_line: 1,
+    end_line: 1,
+    severity,
+    title: "t",
+    description: "d",
+    reasoning: "r",
+    confidence,
+    likelihood,
+  });
+  const mkSystemic = (severity: Severity, confidence: number, likelihood: number) => ({
+    title: "sys",
+    description: "d",
+    severity,
+    reasoning: "r",
+    confidence,
+    likelihood,
+  });
+  const doc = (findings: readonly unknown[], systemic: readonly unknown[] = []): Findings =>
+    ({
+      schema_version: DEFAULT_SCHEMA_VERSION,
+      summary: "s",
+      verdict: "comment",
+      findings,
+      systemic_problems: systemic,
+    }) as unknown as Findings;
+
+  it("a minor carries a 0.1 floor the modulation cannot erode; a single solid minor still converges", () => {
+    expect(convergenceScore(doc([mkFinding("minor", 1, 0)]), 1)).toBe(0.1);
+    expect(convergenceScore(doc([mkFinding("minor", 0.8, 0.9)]), 1)).toBe(0.75);
+  });
+
+  it("a pile of low-likelihood minors resists convergence — count now matters", () => {
+    const tiny = Array.from({ length: 10 }, () => mkFinding("minor", 0.6, 0.1));
+    expect(convergenceScore(doc(tiny), 1)).toBe(1.54);
+    expect(convergenceSignal(doc(tiny), 1).converged).toBe(false);
+  });
+
+  it("scores a systemic problem with likelihood 1, ignoring its written value", () => {
+    // written 0.15, scored as if 1 → 0.1 + 0.9 × 0.75 = 0.78
+    expect(convergenceScore(doc([], [mkSystemic("minor", 0.75, 0.15)]), 1)).toBe(0.78);
+    expect(convergenceScore(doc([], [mkSystemic("minor", 0.75, 1)]), 1)).toBe(0.78);
+    // a FINDING minor at the same numbers IS discounted: 0.1 + 0.9 × 0.75 × 0.15 = 0.2
+    expect(convergenceScore(doc([mkFinding("minor", 0.75, 0.15)]), 1)).toBe(0.2);
+  });
+
+  it("the camas #283 scenario now iterates (field-validated)", () => {
+    const findings = [
+      mkFinding("minor", 0.85, 0.1),
+      mkFinding("minor", 0.7, 0.05),
+      mkFinding("minor", 0.7, 0.3),
+      mkFinding("minor", 0.75, 0.5),
+      mkFinding("minor", 0.6, 0.15),
+    ];
+    const sig = convergenceSignal(doc(findings, [mkSystemic("minor", 0.75, 0.15)]), 1);
+    expect(sig.score).toBe(1.99);
+    expect(sig.converged).toBe(false);
   });
 });
 

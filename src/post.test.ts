@@ -3594,7 +3594,7 @@ describe("post — convergence rounds (issue #125)", () => {
     const blob = stickySignal(calls());
     expect(blob.round).toBe(2);
     // The default fixture is one minor at confidence 0.7 → score 0.7 ≤ threshold 1 → converged.
-    expect(blob.convergence).toEqual({ score: 0.7, threshold: 1, converged: true });
+    expect(blob.convergence).toEqual({ score: 0.73, threshold: 1, converged: true });
   });
 
   it("the signal marker's convergence scores the same findings + systemic the badge does — a systemic major beside a nit-only finding reads iterating (issue #134)", async () => {
@@ -3762,7 +3762,7 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "full review" }), api);
     const blob = stickySignal(calls());
     expect(blob.round).toBe(3);
-    expect(blob.convergence).toEqual({ score: 0.7, threshold: 1, converged: true });
+    expect(blob.convergence).toEqual({ score: 0.73, threshold: 1, converged: true });
   });
 
   it("an oversized prior review's signal survives via the compact marker — a mechanic still carries it (issue #141 review r2)", async () => {

@@ -2149,22 +2149,22 @@ describe("cli — render --convergence-threshold (issue #133)", () => {
     ...(threshold === undefined ? [] : ["--convergence-threshold", threshold]),
   ];
 
-  it("renders the badge at the default threshold (sample scores 2.97) when the flag is omitted", async () => {
+  it("renders the badge at the default threshold (sample scores 3.06) when the flag is omitted", async () => {
     const { stdout, exitCode } = await runCli(renderArgs());
     expect(exitCode).toBeNull();
-    expect(stdout).toContain("**Convergence** 🔄 2.97 > 1 — iterating");
+    expect(stdout).toContain("**Convergence** 🔄 3.06 > 1 — iterating");
   });
 
   it("treats an empty value (an unset optional workflow input) as the default, not a hard failure", async () => {
     const { stdout, exitCode } = await runCli(renderArgs(""));
     expect(exitCode).toBeNull();
-    expect(stdout).toContain("**Convergence** 🔄 2.97 > 1 — iterating");
+    expect(stdout).toContain("**Convergence** 🔄 3.06 > 1 — iterating");
   });
 
   it("applies a valid raised threshold", async () => {
     const { stdout, exitCode } = await runCli(renderArgs("5"));
     expect(exitCode).toBeNull();
-    expect(stdout).toContain("**Convergence** 🏁 2.97 ≤ 5 — converged");
+    expect(stdout).toContain("**Convergence** 🏁 3.06 ≤ 5 — converged");
   });
 
   it("fails loudly on a malformed value rather than silently coercing a numeric prefix", async () => {

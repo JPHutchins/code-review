@@ -123,8 +123,10 @@ links to:
   `{ "schema_version": "0.8.0", "round": <n>, "convergence": { "score": <s>, "threshold": <t>, "converged": <bool> } }`.
   `round` is the count of completed full-review rounds; `convergence.score` sums each finding and
   systemic problem's `floor(severity) + max(0, ceiling − floor) × confidence × likelihood` (ceilings
-  critical 4 · major 2 · minor 1 · nit 0; floors critical `threshold + 0.01` · major 0.5 · else 0),
-  rounded to 2 decimals; `threshold` defaults to 1, and `converged` = score ≤ threshold as a literal
+  critical 4 · major 2 · minor 1 · nit 0; floors critical `threshold + 0.01` · major 0.5 · minor 0.1
+  · nit 0). A **systemic problem is scored with `likelihood` = 1** — a structural observation has no
+  single triggering input, so it is never discounted by likelihood. Rounded to 2
+  decimals; `threshold` defaults to 1, and `converged` = score ≤ threshold as a literal
   boolean — `converged: true` means the last completed round is at or below the tolerance, so another
   iteration round is not warranted. The commenter computes the signal from the review's own severities
   (the agent never writes it); it appears once at least one full-review round has completed and is

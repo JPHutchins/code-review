@@ -548,27 +548,54 @@ export const computeSameRootNotes = (
 const CONVERGENCE_CEILINGS: SeverityCounts = { critical: 4, major: 2, minor: 1, nit: 0 };
 // > 0 so a lone critical fails `score ≤ threshold`; 0.01 survives round2 (a coarser round would erase it).
 const CRITICAL_FLOOR_MARGIN = 0.01;
+// A minor's floor (issue #178): the weight the modulation cannot erode, so a PILE of low-likelihood
+// minors resists convergence even when each is individually unlikely — count matters, not only
+// per-finding likelihood. A single solid minor still converges (0.1 + 0.9 × conf × like ≤ 1).
+const MINOR_FLOOR = 0.1;
 export const DEFAULT_CONVERGENCE_THRESHOLD = 1;
 
 const convergenceFloor = (severity: Severity, threshold: number): number =>
-  severity === "critical" ? threshold + CRITICAL_FLOOR_MARGIN : severity === "major" ? 0.5 : 0;
+  severity === "critical"
+    ? threshold + CRITICAL_FLOOR_MARGIN
+    : severity === "major"
+      ? 0.5
+      : severity === "minor"
+        ? MINOR_FLOOR
+        : 0;
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
-// Findings AND systemic problems (issue #134 scope), rounded to 2 decimals.
+// One finding/systemic-problem's contribution: floor(severity) + confidence-and-likelihood-weighted
+// headroom. The interlocks live HERE so both reducers below share them: max(0, …) can't invert when
+// threshold ≥ ceiling, and the critical margin + round2 preserve an open critical's `> threshold`
+// guarantee.
+const contribution = (
+  severity: Severity,
+  confidence: number,
+  likelihood: number,
+  threshold: number,
+): number => {
+  const floor = convergenceFloor(severity, threshold);
+  return floor + Math.max(0, CONVERGENCE_CEILINGS[severity] - floor) * confidence * likelihood;
+};
+
+// Findings AND systemic problems (issue #134 scope), rounded to 2 decimals. A systemic problem is
+// scored with likelihood 1, NEVER its written value (issue #178): `likelihood` measures how routinely a
+// triggering input/state occurs, but a structural/cross-cutting observation has no single triggering
+// input — it is definitionally always present — so discounting it by likelihood is a category error
+// that under-weights exactly the findings that tie a review together. The field stays on the schema
+// (removing it would invalidate blobs already posted) but the score does not read it for systemic.
 export const convergenceScore = (doc: Findings, threshold: number): number =>
   round2(
-    [...doc.findings, ...(doc.systemic_problems ?? [])].reduce(
-      (sum, { severity, confidence, likelihood }) => {
-        const floor = convergenceFloor(severity, threshold);
-        return (
-          sum +
-          floor +
-          Math.max(0, CONVERGENCE_CEILINGS[severity] - floor) * confidence * likelihood
-        );
-      },
+    doc.findings.reduce(
+      (sum, { severity, confidence, likelihood }) =>
+        sum + contribution(severity, confidence, likelihood, threshold),
       0,
-    ),
+    ) +
+      (doc.systemic_problems ?? []).reduce(
+        (sum, { severity, confidence }) => sum + contribution(severity, confidence, 1, threshold),
+        0,
+      ),
   );
 
 // ── Nit visibility floor (issue #164) ───────────────────────────────────────────────────────────

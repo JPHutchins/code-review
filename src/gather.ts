@@ -40,6 +40,9 @@ export type GatherResult =
       // strict subset of what gets checked out + triaged (default...head), so the review prompt frames
       // the extra changes as already-reviewed context.
       readonly stacked: boolean;
+      // The review-scope base commit (the pr.diff endpoint), exposed so a downstream step can run
+      // `cloc --git --diff <baseSha> <head>` over exactly the PR's own change (issue #182).
+      readonly baseSha: string;
     };
 
 export const renderOutputs = (result: GatherResult): string => {
@@ -47,7 +50,7 @@ export const renderOutputs = (result: GatherResult): string => {
     case "skip":
       return "skip=true\n";
     case "gathered":
-      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\n`;
+      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\n`;
   }
 };
 
@@ -448,5 +451,6 @@ export const gather = async (
     conclusion: input.conclusion,
     diffSize: Buffer.byteLength(prDiff, "utf8"),
     stacked,
+    baseSha: meta.base_sha,
   };
 };

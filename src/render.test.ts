@@ -1493,7 +1493,7 @@ describe("render", () => {
       expect(changesLine).not.toContain("tests");
     });
 
-    it("renders the cloc table verbatim in a collapsible", () => {
+    it("renders the cloc table verbatim inside a fenced ```-block collapsible", () => {
       const clocDiff = "Language      files    blank    code\nTypeScript        8        0      49";
       const result = render({
         findings: mkFindings([]),
@@ -1503,8 +1503,12 @@ describe("render", () => {
         route: "full review",
         clocDiff,
       });
-      expect(result).toContain("📏 cloc");
-      expect(result).toContain("TypeScript        8        0      49");
+      expect(result).toContain("<details><summary>📏 cloc</summary>");
+      expect(result).toContain("</details>");
+      // The table must ride inside a ``` fence — a dropped opening/closing fence would still leave the
+      // text present (a toContain check would pass) but break the rendered GitHub comment.
+      const afterSummary = result.split("📏 cloc</summary>")[1] ?? "";
+      expect(afterSummary).toMatch(/```\n[\s\S]*TypeScript {8}8 {8}0 {6}49[\s\S]*?\n```/);
     });
 
     it("hides both on an incomplete review (chrome is for a completed round only)", () => {

@@ -120,6 +120,13 @@ type FindingsLoadResult =
 // convergence + scope_metastasis are pipeline-OWNED (post overwrites them after load).
 const PIPELINE_STAMPED_FIELDS = new Set(["convergence", "scope_metastasis"]);
 
+// Fields safe to drop when a draft fails to decode, to recover the core review rather than degrade to a
+// "did not complete" notice: the pipeline-stamped fields (re-stamped after load) plus the agent's own
+// best-effort chrome (change_size, issue #182). change_size never affects the verdict, so a malformed
+// one must not tank the whole review — it rides FindingsCodec, which the seed's validate usually
+// catches, but a validate-bypassing draft (a timeout-kill leftover) could still reach load malformed.
+const RECOVERABLE_OPTIONAL_FIELDS = new Set([...PIPELINE_STAMPED_FIELDS, "change_size"]);
+
 const decodeFindings = (doc: unknown): FindingsLoadResult => {
   const resolution = resolve("findings", doc);
   switch (resolution.kind) {
@@ -150,15 +157,15 @@ const loadFindings = (path: string): FindingsLoadResult => {
     typeof raw === "object" &&
     raw !== null &&
     !Array.isArray(raw) &&
-    Object.keys(raw).some((k) => PIPELINE_STAMPED_FIELDS.has(k))
+    Object.keys(raw).some((k) => RECOVERABLE_OPTIONAL_FIELDS.has(k))
   ) {
     const stripped = Object.fromEntries(
-      Object.entries(raw).filter(([key]) => !PIPELINE_STAMPED_FIELDS.has(key)),
+      Object.entries(raw).filter(([key]) => !RECOVERABLE_OPTIONAL_FIELDS.has(key)),
     );
     const retry = decodeFindings(stripped);
     if (retry.kind === "ok") {
       process.stderr.write(
-        "Warning: the review draft carried an invalid pipeline-stamped field (convergence/scope_metastasis) — stripped it and used the rest; the pipeline re-stamps convergence\n",
+        "Warning: the review draft carried an invalid best-effort field (convergence/scope_metastasis/change_size) — stripped it and used the rest; the pipeline re-stamps convergence\n",
       );
       return retry;
     }

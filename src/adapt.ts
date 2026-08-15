@@ -195,10 +195,18 @@ const buildEnvelope = (
   // last-valid rungs — but it still runs: a REAL review the agent produced in the native envelope
   // (structured_output/result) is recovered, not discarded with the seed. Only the miss is
   // re-worded: the untouched sentinel names the cause precisely (issue #127).
+  // The run's completion instant (issue #170), stamped once here so cost recomputation prices a
+  // time-slotted model deterministically at the run's UTC time rather than at each command's wall clock.
+  const generated_at = new Date().toISOString();
   const outcome = findingsOutcome(native, agentFilePath, agentFileFallbackPath);
   switch (outcome.kind) {
     case "ok":
-      return { schema_version: outcome.version, findings: outcome.findings, ...telemetry };
+      return {
+        schema_version: outcome.version,
+        findings: outcome.findings,
+        generated_at,
+        ...telemetry,
+      };
     case "telemetry-only": {
       const reason = seedUnrevised
         ? "the review agent did not write a review (its draft is still the pre-seeded sentinel)"
@@ -207,6 +215,7 @@ const buildEnvelope = (
         schema_version: DEFAULT_SCHEMA_VERSION,
         findings: incompleteFindings(`### ⚠️ Review did not complete\n\n${reason}`),
         incomplete: true,
+        generated_at,
         ...telemetry,
       };
     }

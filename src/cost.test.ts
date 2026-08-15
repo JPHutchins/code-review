@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { computeCost } from "./cost.js";
+import { computeCost, parseInstant } from "./cost.js";
+import { PriceMapCodec } from "./schema.js";
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
 
 const prices: PriceMap = {
@@ -75,6 +76,7 @@ describe("computeCost", () => {
     const report = computeCost(
       [mkEntry({ model: "unknown-model", input_tokens: 100_000, output_tokens: 10_000 })],
       prices,
+      undefined,
       warn,
     );
 
@@ -104,6 +106,7 @@ describe("computeCost", () => {
     computeCost(
       [mkEntry({ model: "pro-model", input_tokens: 100, output_tokens: 10, cache_read_tokens: 5 })],
       prices,
+      undefined,
       warn,
     );
     expect(warn).not.toHaveBeenCalled();
@@ -111,7 +114,7 @@ describe("computeCost", () => {
 
   it("returns zero totals for empty models array", () => {
     const warn = vi.fn();
-    const report = computeCost([], prices, warn);
+    const report = computeCost([], prices, undefined, warn);
 
     expect(report.lines).toHaveLength(0);
     expect(report.totalCostUSD).toBe(0);
@@ -127,6 +130,7 @@ describe("computeCost", () => {
     const report = computeCost(
       [mkEntry({ model: "pro-model", input_tokens: 100_000, output_tokens: 10_000 })],
       prices,
+      undefined,
       warn,
     );
     expect(report.lines[0]!.cacheReadTokens).toBe(0);
@@ -224,5 +228,223 @@ describe("computeCost", () => {
     // provenance; the render layer owns the N/A presentation decision.
     expect(typeof report.totalCostUSD).toBe("number");
     expect(report.totalCostUSD).toBe(0);
+  });
+});
+
+describe("computeCost — UTC time-slot pricing (issue #170)", () => {
+  const at = (h: number, m = 0): Date => new Date(Date.UTC(2026, 7, 16, h, m));
+  const oneM = (): ModelUsageEntry[] => [
+    { model: "slot-model", input_tokens: 1_000_000, output_tokens: 0 },
+  ];
+  const slotted = (models: PriceMap["models"]): PriceMap => ({
+    _updated: "2026-08-16",
+    _unit: "USD per 1M tokens",
+    models,
+  });
+  // off-peak wrap 10:00→01:00 (in 1.0), peak 01:00→10:00 (in 2.0) — a 2-slot 24h partition.
+  const twoSlot = slotted({
+    "slot-model": {
+      slots: [
+        {
+          utc_from: "10:00",
+          utc_to: "01:00",
+          in: 1.0,
+          out: 2.0,
+          cache_read: 0.1,
+          cache_write: 0.0,
+        },
+        {
+          utc_from: "01:00",
+          utc_to: "10:00",
+          in: 2.0,
+          out: 4.0,
+          cache_read: 0.2,
+          cache_write: 0.0,
+        },
+      ],
+    },
+  });
+
+  it("prices at the PEAK slot for a UTC instant inside it", () => {
+    expect(computeCost(oneM(), twoSlot, at(3)).totalCostUSD).toBeCloseTo(2.0, 6);
+  });
+
+  it("prices at the OFF-PEAK wrap slot for late-night and past-midnight UTC instants", () => {
+    expect(computeCost(oneM(), twoSlot, at(23)).totalCostUSD).toBeCloseTo(1.0, 6);
+    expect(computeCost(oneM(), twoSlot, at(0, 30)).totalCostUSD).toBeCloseTo(1.0, 6);
+  });
+
+  it("treats utc_from as inclusive and utc_to as exclusive at the boundaries", () => {
+    // 01:00 = peak's utc_from (inclusive) → peak; 10:00 = peak's utc_to (exclusive) + the wrap's
+    // utc_from (inclusive) → off-peak.
+    expect(computeCost(oneM(), twoSlot, at(1)).totalCostUSD).toBeCloseTo(2.0, 6);
+    expect(computeCost(oneM(), twoSlot, at(10)).totalCostUSD).toBeCloseTo(1.0, 6);
+  });
+
+  it("leaves flat entries unaffected — pricedAt is ignored for a flat price map", () => {
+    expect(
+      computeCost([mkEntry({ model: "pro-model", input_tokens: 1_000_000 })], prices, at(3))
+        .totalCostUSD,
+    ).toBeCloseTo(1.1, 6);
+  });
+
+  it("warns and prices $0 when the slots leave the instant uncovered (a gap)", () => {
+    const warn = vi.fn();
+    const gap = slotted({
+      "slot-model": {
+        slots: [
+          {
+            utc_from: "01:00",
+            utc_to: "10:00",
+            in: 2.0,
+            out: 4.0,
+            cache_read: 0.2,
+            cache_write: 0.0,
+          },
+        ],
+      },
+    });
+    expect(computeCost(oneM(), gap, at(23), warn).totalCostUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("0 price slots"));
+  });
+
+  it("warns and prices $0 when two slots overlap the instant", () => {
+    const warn = vi.fn();
+    const overlap = slotted({
+      "slot-model": {
+        slots: [
+          {
+            utc_from: "00:00",
+            utc_to: "12:00",
+            in: 2.0,
+            out: 4.0,
+            cache_read: 0.2,
+            cache_write: 0.0,
+          },
+          {
+            utc_from: "06:00",
+            utc_to: "18:00",
+            in: 3.0,
+            out: 6.0,
+            cache_read: 0.3,
+            cache_write: 0.0,
+          },
+        ],
+      },
+    });
+    expect(computeCost(oneM(), overlap, at(8), warn).totalCostUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("2 price slots"));
+  });
+
+  it("warns and prices $0 for a slotted model when no run instant is supplied", () => {
+    const warn = vi.fn();
+    expect(computeCost(oneM(), twoSlot, undefined, warn).totalCostUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("no run instant"));
+  });
+
+  it("applies the SELECTED slot's out/cache_read/cache_write multipliers, not just in", () => {
+    const m = slotted({
+      "slot-model": {
+        slots: [
+          { utc_from: "00:00", utc_to: "12:00", in: 1, out: 2, cache_read: 3, cache_write: 4 },
+          { utc_from: "12:00", utc_to: "00:00", in: 9, out: 9, cache_read: 9, cache_write: 9 },
+        ],
+      },
+    });
+    const report = computeCost(
+      [
+        {
+          model: "slot-model",
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          cache_read_tokens: 1_000_000,
+          cache_write_tokens: 1_000_000,
+        },
+      ],
+      m,
+      at(3), // the 00:00–12:00 slot (1/2/3/4), NOT the 12:00→00:00 slot (all 9s)
+    );
+    // (1M·1 + 1M·2 + 1M·3 + 1M·4) / 1e6 = 1 + 2 + 3 + 4 = 10; a swapped multiplier would not sum to 10.
+    expect(report.totalCostUSD).toBeCloseTo(10, 6);
+  });
+
+  it("selects correctly across the real DeepSeek 4-slot shape (peak 01–04 + 06–10 UTC)", () => {
+    const ds = slotted({
+      "slot-model": {
+        slots: [
+          { utc_from: "10:00", utc_to: "01:00", in: 1.0, out: 0, cache_read: 0, cache_write: 0 },
+          { utc_from: "01:00", utc_to: "04:00", in: 2.0, out: 0, cache_read: 0, cache_write: 0 },
+          { utc_from: "04:00", utc_to: "06:00", in: 1.0, out: 0, cache_read: 0, cache_write: 0 },
+          { utc_from: "06:00", utc_to: "10:00", in: 2.0, out: 0, cache_read: 0, cache_write: 0 },
+        ],
+      },
+    });
+    // peak windows
+    expect(computeCost(oneM(), ds, at(2)).totalCostUSD).toBeCloseTo(2.0, 6);
+    expect(computeCost(oneM(), ds, at(8)).totalCostUSD).toBeCloseTo(2.0, 6);
+    // off-peak: the between-peaks band (04–06), the daytime tail, and the wrap past midnight
+    expect(computeCost(oneM(), ds, at(5)).totalCostUSD).toBeCloseTo(1.0, 6);
+    expect(computeCost(oneM(), ds, at(12)).totalCostUSD).toBeCloseTo(1.0, 6);
+    expect(computeCost(oneM(), ds, at(0, 30)).totalCostUSD).toBeCloseTo(1.0, 6);
+  });
+
+  it("a degenerate utc_from == utc_to slot covers the full day (the schema's wrap semantics)", () => {
+    const allDay = slotted({
+      "slot-model": {
+        slots: [
+          { utc_from: "00:00", utc_to: "00:00", in: 5, out: 0, cache_read: 0, cache_write: 0 },
+        ],
+      },
+    });
+    expect(computeCost(oneM(), allDay, at(3)).totalCostUSD).toBeCloseTo(5, 6);
+    expect(computeCost(oneM(), allDay, at(15)).totalCostUSD).toBeCloseTo(5, 6);
+  });
+});
+
+describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
+  const wrap = (m: unknown): unknown => ({ _updated: "x", _unit: "y", models: { model: m } });
+
+  it("parseInstant returns a Date for a valid ISO instant and undefined for garbage/absent", () => {
+    expect(parseInstant("2026-08-16T03:00:00.000Z")?.getUTCHours()).toBe(3);
+    expect(parseInstant("not-a-date")).toBeUndefined();
+    expect(parseInstant(undefined)).toBeUndefined();
+    // A date-time with no UTC offset is rejected (would parse as ambiguous local time).
+    expect(parseInstant("2026-08-16T03:00:00")).toBeUndefined();
+  });
+
+  it("rejects a negative rate, empty slots, and a hybrid flat+slots entry (the ajv gate rejects each)", () => {
+    expect(PriceMapCodec.decode(wrap({ in: -1, out: 0, cache_read: 0, cache_write: 0 }))._tag).toBe(
+      "Left",
+    );
+    expect(PriceMapCodec.decode(wrap({ slots: [] }))._tag).toBe("Left");
+    expect(
+      PriceMapCodec.decode(
+        wrap({
+          in: 1,
+          out: 1,
+          cache_read: 1,
+          cache_write: 1,
+          slots: [
+            { utc_from: "00:00", utc_to: "12:00", in: 1, out: 1, cache_read: 1, cache_write: 1 },
+          ],
+        }),
+      )._tag,
+    ).toBe("Left");
+  });
+
+  it("still accepts a flat map and a well-formed slotted map", () => {
+    expect(PriceMapCodec.decode(wrap({ in: 1, out: 2, cache_read: 3, cache_write: 4 }))._tag).toBe(
+      "Right",
+    );
+    expect(
+      PriceMapCodec.decode(
+        wrap({
+          slots: [
+            { utc_from: "10:00", utc_to: "01:00", in: 1, out: 2, cache_read: 3, cache_write: 4 },
+            { utc_from: "01:00", utc_to: "10:00", in: 5, out: 6, cache_read: 7, cache_write: 8 },
+          ],
+        }),
+      )._tag,
+    ).toBe("Right");
   });
 });

@@ -33,6 +33,10 @@ const Likelihood = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, 
 // on the next hop. parseSurfaceSignal guards the same vector; the convergence codec must too.
 const FiniteNumber = t.refinement(t.number, (n): n is number => Number.isFinite(n), "FiniteNumber");
 
+// A non-negative price (USD per 1M tokens). Mirrors prices.schema.json's `minimum: 0` so the codec
+// gate rejects a negative rate exactly as the ajv gate does — else a negative price prices negative cost.
+const NonNegativePrice = t.refinement(t.number, (n): n is number => n >= 0, "NonNegativePrice");
+
 // Mirrors findings.schema.json's schema_version.pattern exactly, so resolve() never accepts a value
 // the ajv gate would reject (e.g. a truncated "0.2" or an over-long "0.2.0.0").
 const SCHEMA_VERSION_RE =
@@ -325,6 +329,11 @@ export const ResultEnvelopeCodec = t.intersection([
     vendor_cost_usd: t.union([t.number, t.null]),
     route: t.string,
     effort: t.string,
+    // The ISO-8601 UTC instant the run completed (stamped by `adapt` when it built this envelope, issue
+    // #170). Cost recomputation prices a time-slotted model at THIS instant, so the same envelope prices
+    // to the same slot deterministically wherever it is re-rendered — not at each command's wall clock.
+    // Absent on a pre-#170 envelope (cost then falls back to the caller's instant).
+    generated_at: t.string,
     // The run produced a notice rather than a completed review (security-gate block, agent kill, no
     // recoverable findings). An empty `findings` array alone can't say this — a genuine clean review
     // is also empty — so the render suppresses "clean review" and the sticky precedence guard refuses
@@ -333,12 +342,66 @@ export const ResultEnvelopeCodec = t.intersection([
   }),
 ]);
 
-export const ModelPricesCodec = t.type({
-  in: t.number,
-  out: t.number,
-  cache_read: t.number,
-  cache_write: t.number,
+const FlatModelPricesShape = t.type({
+  in: NonNegativePrice,
+  out: NonNegativePrice,
+  cache_read: NonNegativePrice,
+  cache_write: NonNegativePrice,
 });
+
+// The prices codecs mirror the ajv gate exactly, the same two-gates-agree discipline as
+// SystemicProblemStrict et al. (issue #170 review): t.exact strips unknown keys on encode, and a
+// key-set refinement rejects them on DECODE (ajv's additionalProperties:false) — so a hybrid entry that
+// carries BOTH flat fields and `slots` is rejected by both variants and the union never ambiguates,
+// rather than decoding as flat while being priced as slotted.
+const FLAT_PRICE_KEYS = new Set(Object.keys(FlatModelPricesShape.props));
+const FlatModelPricesStrict = t.refinement(
+  FlatModelPricesShape,
+  (p): p is t.TypeOf<typeof FlatModelPricesShape> =>
+    Object.keys(p).every((k) => FLAT_PRICE_KEYS.has(k)),
+  "FlatModelPricesStrict",
+);
+const FlatModelPricesCodec = t.exact(FlatModelPricesStrict);
+
+// HH:MM in UTC (00:00–23:59). The pattern string is byte-identical to prices.schema.json's slot-time
+// pattern so the codec + ajv gates cannot silently disagree (issue #170 review).
+const UTC_HHMM_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+const UtcHHMM = t.refinement(t.string, (s): s is string => UTC_HHMM_RE.test(s), "UtcHHMM");
+
+// One UTC time-of-day slot (issue #170): a [utc_from, utc_to) half-open window — wrapping past midnight
+// when utc_to <= utc_from — carrying the same per-token fields as the flat shape. cost.ts selects the
+// slot covering the run's UTC instant; a model's slots must partition the 24h day with no gap or overlap.
+const PriceSlotShape = t.intersection([
+  t.type({ utc_from: UtcHHMM, utc_to: UtcHHMM }),
+  FlatModelPricesShape,
+]);
+const PRICE_SLOT_KEYS = new Set(["utc_from", "utc_to", ...Object.keys(FlatModelPricesShape.props)]);
+const PriceSlotStrict = t.refinement(
+  PriceSlotShape,
+  (s): s is t.TypeOf<typeof PriceSlotShape> => Object.keys(s).every((k) => PRICE_SLOT_KEYS.has(k)),
+  "PriceSlotStrict",
+);
+const PriceSlotCodec = t.exact(PriceSlotStrict);
+
+// `slots` must be non-empty (the ajv gate's minItems: 1) — an empty array is a misconfiguration, not a
+// zero-cost model.
+const NonEmptyPriceSlots = t.refinement(
+  t.array(PriceSlotCodec),
+  (a): a is t.TypeOf<typeof PriceSlotCodec>[] => a.length >= 1,
+  "NonEmptyPriceSlots",
+);
+const SlottedModelPricesStrict = t.refinement(
+  t.type({ slots: NonEmptyPriceSlots }),
+  (s): s is { slots: t.TypeOf<typeof PriceSlotCodec>[] } =>
+    Object.keys(s).every((k) => k === "slots"),
+  "SlottedModelPricesStrict",
+);
+const SlottedModelPricesCodec = t.exact(SlottedModelPricesStrict);
+
+// A model's price is EITHER flat (one all-day rate — unchanged, fully backward-compatible) OR a set of
+// UTC time-of-day slots (issue #170), for a provider with peak/off-peak rates (DeepSeek). Both variants
+// are strict-keyed (above), so the union rejects a hybrid entry instead of silently resolving it to one.
+export const ModelPricesCodec = t.union([FlatModelPricesCodec, SlottedModelPricesCodec]);
 
 export const PriceMapCodec = t.type({
   _updated: t.string,
@@ -400,6 +463,8 @@ export type Severity = t.TypeOf<typeof SeverityCodec>;
 export type Side = t.TypeOf<typeof SideCodec>;
 export type ModelUsageEntry = t.TypeOf<typeof ModelUsageEntryCodec>;
 export type ResultEnvelope = t.TypeOf<typeof ResultEnvelopeCodec>;
+export type FlatModelPrices = t.TypeOf<typeof FlatModelPricesCodec>;
+export type PriceSlot = t.TypeOf<typeof PriceSlotCodec>;
 export type ModelPrices = t.TypeOf<typeof ModelPricesCodec>;
 export type PriceMap = t.TypeOf<typeof PriceMapCodec>;
 export type TestFailure = t.TypeOf<typeof TestFailureCodec>;

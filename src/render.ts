@@ -4,7 +4,7 @@ import { Eta } from "eta";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
-import { computeCost } from "./cost.js";
+import { computeCost, parseInstant } from "./cost.js";
 import {
   severityEmoji,
   projectPatch,
@@ -121,7 +121,13 @@ export const render = (input: RenderInput): string => {
   const incomplete =
     (input.incomplete ?? input.envelope?.incomplete ?? false) ||
     isIncompleteFindings(input.findings);
-  const costReport = input.envelope ? computeCost(input.envelope.models, input.prices) : null;
+  // Price a time-slotted model at the RUN's completion instant (issue #170) — stamped in the envelope
+  // by adapt, so re-rendering the same envelope always picks the same slot; input.pricedAt is only the
+  // fallback for a pre-#170 envelope that carries no generated_at.
+  const pricedAt = parseInstant(input.envelope?.generated_at) ?? input.pricedAt;
+  const costReport = input.envelope
+    ? computeCost(input.envelope.models, input.prices, pricedAt)
+    : null;
   const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;

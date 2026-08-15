@@ -75,6 +75,9 @@ export interface RenderInput {
   readonly reviewedSha?: string;
   // Computed at the IO boundary so render() stays pure/clockless. Omitted ⇒ segment suppressed.
   readonly postedAt?: string;
+  // The run's UTC instant, passed in at the IO boundary (same instant as postedAt) so render() stays
+  // clockless. Selects a time-slotted model's price at cost time (issue #170); ignored for a flat map.
+  readonly pricedAt?: Date;
   readonly route?: string;
   readonly effort?: string;
   readonly testReport?: TestSummary;

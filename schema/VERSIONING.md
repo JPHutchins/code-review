@@ -106,7 +106,8 @@ policy; the `main` `$id` tracks latest, tagged releases pin to the version. Its 
 
 | Version | Status | Notes |
 |---|---|---|
-| `v0.1.0` | **current** | Initial price-map schema. Per-model `in`/`out`/`cache_read`/`cache_write` (USD per 1M tokens); `_updated` date; `_unit`. |
+| `v0.1.0` | superseded | Initial price-map schema. Per-model `in`/`out`/`cache_read`/`cache_write` (USD per 1M tokens); `_updated` date; `_unit`. |
+| `v0.2.0` | **current** | A model's value is now a `oneOf` (issue #170): the flat shape above, OR `{ "slots": [ { "utc_from", "utc_to", "in", "out", "cache_read", "cache_write" } ] }` — UTC time-of-day pricing (half-open `[utc_from, utc_to)` windows; `utc_to <= utc_from` wraps past midnight; slots must partition the 24h day). Additive/backward-compatible: every flat map keeps validating. |
 
 The `_updated` field inside a price-map instance tracks **price drift** (a data concern) and is
 distinct from the schema's semver version (a **contract** concern). Adding a new price field (e.g. a

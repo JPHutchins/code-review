@@ -2138,3 +2138,44 @@ describe("scope metastasis + same-root notes — issue #145", () => {
     expect(result).not.toContain("Same mechanism as round 2");
   });
 });
+
+describe("time-slot pricing via envelope.generated_at (issue #170)", () => {
+  const slottedPrices: PriceMap = {
+    _updated: "2026-08-16",
+    _unit: "USD per 1M tokens",
+    models: {
+      "slot-model": {
+        slots: [
+          { utc_from: "10:00", utc_to: "01:00", in: 1, out: 0, cache_read: 0, cache_write: 0 },
+          { utc_from: "01:00", utc_to: "10:00", in: 2, out: 0, cache_read: 0, cache_write: 0 },
+        ],
+      },
+    },
+  };
+  const envelopeAt = (generated_at: string): ResultEnvelope => ({
+    ...baseEnvelope,
+    models: [{ model: "slot-model", input_tokens: 1_000_000, output_tokens: 0 }],
+    generated_at,
+  });
+
+  it("prices the slotted model at the envelope's generated_at instant, deterministically (not the render wall clock)", () => {
+    // 03:00 UTC → the 01:00–10:00 (peak) slot, in 2.0 → 1M·2/1e6 = $2.00, wherever/whenever render runs.
+    const peak = render({
+      findings: mkFindings([]),
+      envelope: envelopeAt("2026-08-16T03:00:00.000Z"),
+      prices: slottedPrices,
+      template,
+      route: "full review",
+    });
+    expect(peak).toContain("$2.00");
+    // 23:00 UTC → the 10:00→01:00 (off-peak wrap) slot, in 1.0 → $1.00.
+    const offPeak = render({
+      findings: mkFindings([]),
+      envelope: envelopeAt("2026-08-16T23:00:00.000Z"),
+      prices: slottedPrices,
+      template,
+      route: "full review",
+    });
+    expect(offPeak).toContain("$1.00");
+  });
+});

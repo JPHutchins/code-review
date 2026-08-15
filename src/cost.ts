@@ -1,6 +1,12 @@
 // Recomputes USD (the CLI's vendor_cost_usd is vendor-priced); warnings threaded via a `warn` sink.
 
-import type { PriceMap, ModelUsageEntry } from "./schema.js";
+import type {
+  PriceMap,
+  ModelUsageEntry,
+  ModelPrices,
+  FlatModelPrices,
+  PriceSlot,
+} from "./schema.js";
 
 export interface CostLine {
   readonly model: string;
@@ -26,45 +32,107 @@ const defaultWarn: Warn = (message) => {
   process.stderr.write(`${message}\n`);
 };
 
-const computeModelCost = (entry: ModelUsageEntry, prices: PriceMap, warn: Warn): CostLine => {
+// A parseable UTC instant from an ISO string, or undefined — so an unparseable/no-offset generated_at
+// (issue #170 review r2) falls back to the caller's instant rather than pricing at an Invalid Date.
+export const parseInstant = (iso: string | undefined): Date | undefined => {
+  if (iso === undefined) return undefined;
+  // A date-TIME with no UTC designator (Z or ±offset) is parsed as LOCAL time by Date — ambiguous and
+  // slot-wrong. Reject a T-bearing instant that lacks an explicit offset (adapt stamps toISOString(),
+  // always Z; a date-only value is unambiguous UTC midnight and is allowed).
+  if (iso.includes("T") && !/(Z|[+-]\d{2}:?\d{2})$/.test(iso)) return undefined;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+};
+
+const utcMinuteOfDay = (at: Date): number => at.getUTCHours() * 60 + at.getUTCMinutes();
+
+const hhmmToMinutes = (hhmm: string): number => {
+  const [h, m] = hhmm.split(":");
+  return Number(h) * 60 + Number(m);
+};
+
+const hhmmOf = (minute: number): string =>
+  `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+
+// A [utc_from, utc_to) half-open UTC window contains `minute`; when utc_to <= utc_from the window wraps
+// past midnight (e.g. 22:00→02:00 covers the late night and early morning). A degenerate utc_from ==
+// utc_to therefore covers the FULL day (wrap branch), matching the schema's "utc_to <= utc_from wraps".
+const slotCovers = (slot: PriceSlot, minute: number): boolean => {
+  const from = hhmmToMinutes(slot.utc_from);
+  const to = hhmmToMinutes(slot.utc_to);
+  return from < to ? minute >= from && minute < to : minute >= from || minute < to;
+};
+
+// The flat per-token rate for a model at the run's UTC instant (issue #170): a flat entry as-is; a
+// slotted entry's covering slot. A slotted map that leaves the instant uncovered (a gap) or double-
+// covers it (an overlap) — or a slotted model priced with no instant supplied — is a misconfiguration:
+// warn LOUDLY (like the unknown-model path) and return null so cost falls back to $0 for that model,
+// never crashing and never silently mis-pricing.
+const resolveFlatPrices = (
+  model: string,
+  p: ModelPrices,
+  pricedAt: Date | undefined,
+  warn: Warn,
+): FlatModelPrices | null => {
+  if (!("slots" in p)) return p;
+  if (pricedAt === undefined) {
+    warn(
+      `code-review cost: model "${model}" has time-slotted prices but no run instant was supplied to select a slot; cost for this model set to $0`,
+    );
+    return null;
+  }
+  const minute = utcMinuteOfDay(pricedAt);
+  const covering = p.slots.filter((s) => slotCovers(s, minute));
+  if (covering.length === 1) return covering[0] ?? null;
+  warn(
+    `code-review cost: model "${model}" — ${String(covering.length)} price slots cover ${hhmmOf(minute)} UTC (expected exactly 1); a model's slots must partition the 24h day with no gap or overlap; cost for this model set to $0`,
+  );
+  return null;
+};
+
+const computeModelCost = (
+  entry: ModelUsageEntry,
+  prices: PriceMap,
+  pricedAt: Date | undefined,
+  warn: Warn,
+): CostLine => {
   const p = prices.models[entry.model];
   const cacheRead = entry.cache_read_tokens ?? 0;
   const cacheWrite = entry.cache_write_tokens ?? 0;
-  if (!p) {
-    warn(
-      `code-review cost: unknown model "${entry.model}" — no entry in price map; cost for this model set to $0`,
-    );
-    return {
-      model: entry.model,
-      inputTokens: entry.input_tokens,
-      outputTokens: entry.output_tokens,
-      cacheReadTokens: cacheRead,
-      cacheWriteTokens: cacheWrite,
-      costUSD: 0,
-    };
-  }
-  const costUSD =
-    (entry.input_tokens * p.in +
-      entry.output_tokens * p.out +
-      cacheRead * p.cache_read +
-      cacheWrite * p.cache_write) /
-    1_000_000;
-  return {
+  const zero: CostLine = {
     model: entry.model,
     inputTokens: entry.input_tokens,
     outputTokens: entry.output_tokens,
     cacheReadTokens: cacheRead,
     cacheWriteTokens: cacheWrite,
-    costUSD,
+    costUSD: 0,
   };
+  if (!p) {
+    warn(
+      `code-review cost: unknown model "${entry.model}" — no entry in price map; cost for this model set to $0`,
+    );
+    return zero;
+  }
+  const rate = resolveFlatPrices(entry.model, p, pricedAt, warn);
+  if (rate === null) return zero;
+  const costUSD =
+    (entry.input_tokens * rate.in +
+      entry.output_tokens * rate.out +
+      cacheRead * rate.cache_read +
+      cacheWrite * rate.cache_write) /
+    1_000_000;
+  return { ...zero, costUSD };
 };
 
 export const computeCost = (
   models: readonly ModelUsageEntry[],
   prices: PriceMap,
+  // The run's UTC instant, used to select a time-slotted model's rate (issue #170). Undefined is fine
+  // for a flat price map (ignored); a slotted model priced without it degrades to $0 with a warning.
+  pricedAt?: Date,
   warn: Warn = defaultWarn,
 ): CostReport => {
-  const lines = models.map((entry) => computeModelCost(entry, prices, warn));
+  const lines = models.map((entry) => computeModelCost(entry, prices, pricedAt, warn));
 
   return {
     lines,

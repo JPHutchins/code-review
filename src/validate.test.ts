@@ -18,6 +18,7 @@ const finding = (overrides: Record<string, unknown> = {}): Record<string, unknow
   description: "What is wrong.",
   reasoning: "Why it holds.",
   confidence: 0.7,
+  likelihood: 1,
   ...overrides,
 });
 
@@ -121,6 +122,12 @@ describe("validateAgainstSchema", () => {
       const result = validateAgainstSchema(doc([findingWithout("confidence")]), schemaPath);
       expect(result.valid).toBe(false);
       expect(result.errors.some((e) => e.includes("confidence"))).toBe(true);
+    });
+
+    it("rejects a finding missing likelihood (issue #163 — required)", () => {
+      const result = validateAgainstSchema(doc([findingWithout("likelihood")]), schemaPath);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes("likelihood"))).toBe(true);
     });
   });
 
@@ -259,6 +266,7 @@ describe("FindingsCodec (io-ts round-trip)", () => {
           description: "Memory leak detected.",
           reasoning: "The handle is opened but never closed on the error path.",
           confidence: 0.99,
+          likelihood: 1,
           patch: "@@ -5 +5 @@\n-leak()\n+leak(); handle.close();",
         },
       ],
@@ -328,6 +336,7 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
     severity: "major",
     reasoning: "Each file implements its own policy.",
     confidence: 0.8,
+    likelihood: 1,
     ...overrides,
   });
 
@@ -450,6 +459,7 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
           severity: "major",
           reasoning: "Each file implements its own policy.",
           confidence: 0.8,
+          likelihood: 1,
           finding_codes: ["widened-type"],
         },
       ],

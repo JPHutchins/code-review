@@ -27,7 +27,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "description", "severity", "reasoning", "confidence"],
+        "required": ["title", "description", "severity", "reasoning", "confidence", "likelihood"],
         "properties": {
           "title": {
             "type": "string",
@@ -51,6 +51,12 @@
             "minimum": 0,
             "maximum": 1,
             "description": "0..1 confidence in the systemic problem itself. Mirrors the finding field of the same name."
+          },
+          "likelihood": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "0..1 probability the pattern's triggering condition actually occurs in practice. Mirrors the finding field of the same name."
           },
           "code": {
             "type": "string",
@@ -131,7 +137,8 @@
           "title",
           "description",
           "reasoning",
-          "confidence"
+          "confidence",
+          "likelihood"
         ],
         "properties": {
           "path": {
@@ -185,6 +192,12 @@
             "minimum": 0,
             "maximum": 1,
             "description": "0..1 confidence; a commenter MAY suppress findings below a configurable threshold to control noise, but MUST NOT suppress a critical-severity finding on confidence alone."
+          },
+          "likelihood": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "0..1 probability the triggering input or state actually occurs in practice — from a normal user in routine use, OR from an adversary who chooses it when the finding is a security issue. Distinct from confidence (which rates whether the defect is real): a footgun that fires only on hostile-to-oneself input is high-confidence yet low-likelihood. Anchors: 0.9 = any normal input, or any input an attacker can choose (e.g. an injectable query parameter); 0.5 = a plausible-but-uncommon configuration; 0.1 = a genuinely obscure state no one seeks; 0.02 = requires deliberately hostile-to-oneself input (e.g. naming a struct field \"__slots__\"). Name the triggering input, then rate how routinely it occurs."
           },
           "reasoning": {
             "type": "string",

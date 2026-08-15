@@ -58,6 +58,7 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   description: "Test description content.",
   reasoning: "Test reasoning content.",
   confidence: 0.7,
+  likelihood: 1,
   ...overrides,
 });
 
@@ -506,6 +507,7 @@ describe("render", () => {
       severity: "major",
       reasoning: "Each touched file implements its own retry policy.",
       confidence: 0.8,
+      likelihood: 1,
       ...overrides,
     });
 

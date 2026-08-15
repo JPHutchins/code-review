@@ -24,6 +24,7 @@ const validFinding = {
   description: "d",
   reasoning: "Flagged because the same pattern caused a bug in a prior PR.",
   confidence: 0.5,
+  likelihood: 1,
 };
 
 describe('resolve("findings", ...)', () => {
@@ -58,6 +59,7 @@ describe('resolve("findings", ...)', () => {
           severity: "major",
           reasoning: "Each file implements its own policy.",
           confidence: 0.8,
+          likelihood: 1,
           code: "retry-policy-inconsistent",
           finding_codes: ["widened-type"],
           paths: ["src/upload/config.ts"],
@@ -81,7 +83,7 @@ describe('resolve("findings", ...)', () => {
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
     expect(result.version).toBe("1.0.0");
-    expect(result.supported).toEqual(["0.4", "0.5", "0.6"]);
+    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.7"]);
   });
 
   it("returns invalid-shape for a supported version with a malformed body", () => {
@@ -158,14 +160,14 @@ describe('resolve("findings", ...) — 0.4 requires reasoning + confidence (sche
     const result = resolve("findings", { ...validFindings, schema_version: "0.2.0" });
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
-    expect(result.supported).toEqual(["0.4", "0.5", "0.6"]);
+    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.7"]);
   });
 
   it("degrades a 0.3.0 document to unsupported-version too", () => {
     const result = resolve("findings", { ...validFindings, schema_version: "0.3.0" });
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
-    expect(result.supported).toEqual(["0.4", "0.5", "0.6"]);
+    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.7"]);
   });
 });
 
@@ -238,8 +240,8 @@ describe("schemaPathFor", () => {
 
 describe("defaultVersion / supportedVersions", () => {
   it("report today's supported entries per kind", () => {
-    expect(defaultVersion("findings")).toBe("0.6.0");
-    expect(supportedVersions("findings")).toEqual(["0.4", "0.5", "0.6"]);
+    expect(defaultVersion("findings")).toBe("0.7.0");
+    expect(supportedVersions("findings")).toEqual(["0.4", "0.5", "0.6", "0.7"]);
     expect(defaultVersion("triage")).toBe("0.1.0");
     expect(supportedVersions("triage")).toEqual(["0.1"]);
     expect(defaultVersion("prices")).toBe("0.1.0");

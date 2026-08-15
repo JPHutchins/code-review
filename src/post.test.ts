@@ -8,6 +8,8 @@ import { post, announce, reportIncomplete } from "./post.js";
 import {
   AGENTS_STOP_DIRECTIVE,
   findingPointer,
+  findingsPointer,
+  parseFindingsMarker,
   parseRounds,
   parseSignalMarker,
 } from "./surface.js";
@@ -531,6 +533,158 @@ describe("post — inline review", () => {
     expect(body.comments).toEqual([]);
     expect(body.body).toContain("summary comment");
     expect(body.body).not.toContain("code-review:findings-json");
+  });
+});
+
+describe("post — nit visibility floor (issue #164)", () => {
+  // 0.9.0 docs so `likelihood` is required and preserved through resolve.
+  const doc = (fs: Finding[]): Findings => ({
+    schema_version: "0.9.0",
+    summary: "s",
+    verdict: "comment",
+    findings: fs,
+  });
+  const belowFloorNit = (over: Partial<Finding> = {}): Finding =>
+    mkFinding({ severity: "nit", confidence: 0.5, likelihood: 0.4, ...over }); // m 0.20 < 0.25
+  const write = (d: Findings): void => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(d));
+  };
+  const stickyPatchBody = (calls: readonly RecordedCall[]): string =>
+    (
+      JSON.parse(
+        calls.find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+      ) as CommentBody
+    ).body;
+  const inlineComments = (calls: readonly RecordedCall[]): ReviewBody["comments"] => {
+    const rc = calls.find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    return rc ? (JSON.parse(rc.stdin!) as ReviewBody).comments : [];
+  };
+
+  it("hides a below-floor nit from inline + strays, keeps it in the blob, shows it in the aside", async () => {
+    write(
+      doc([
+        mkFinding({ severity: "minor", title: "real-bug", start_line: 10, end_line: 10 }),
+        belowFloorNit({ title: "trivial", code: "triv", start_line: 11, end_line: 11 }),
+      ]),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nno prior blob"));
+    await post(mkInput({}), api);
+
+    const comments = inlineComments(calls());
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("real-bug");
+    expect(comments.some((c) => c.body.includes("trivial"))).toBe(false);
+
+    const body = stickyPatchBody(calls());
+    expect(body).toContain("below the visibility floor");
+    expect(body).toContain("trivial");
+    // The blob KEEPS the nit — the machine channel / next-round seed reads it as adjudicated.
+    expect(JSON.stringify(parseFindingsMarker(body))).toContain("triv");
+  });
+
+  it("keeps a re-rated still-nit hidden when it matches a prior below-floor nit (stickiness)", async () => {
+    const priorSticky = `<!-- code-review -->\n${findingsPointer(
+      doc([belowFloorNit({ title: "sticky", code: "sticky-nit" })]),
+      undefined,
+    )}`;
+    // Same code, now m = 0.9 × 0.9 = 0.81 (ABOVE the floor) but STILL a nit → stays suppressed.
+    write(
+      doc([
+        mkFinding({
+          severity: "nit",
+          code: "sticky-nit",
+          title: "sticky",
+          confidence: 0.9,
+          likelihood: 0.9,
+          start_line: 10,
+          end_line: 10,
+        }),
+      ]),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks(priorSticky));
+    await post(mkInput({}), api);
+
+    expect(inlineComments(calls())).toHaveLength(0);
+    expect(stickyPatchBody(calls())).toContain("below the visibility floor");
+  });
+
+  it("un-hides a prior below-floor nit that was PROMOTED to minor", async () => {
+    const priorSticky = `<!-- code-review -->\n${findingsPointer(
+      doc([belowFloorNit({ title: "promo", code: "promo" })]),
+      undefined,
+    )}`;
+    write(
+      doc([
+        mkFinding({
+          severity: "minor",
+          code: "promo",
+          title: "promo",
+          start_line: 10,
+          end_line: 10,
+        }),
+      ]),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks(priorSticky));
+    await post(mkInput({}), api);
+
+    const comments = inlineComments(calls());
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("promo");
+    expect(stickyPatchBody(calls())).not.toContain("below the visibility floor");
+  });
+
+  it("materializes an at-or-above-floor nit normally (no aside)", async () => {
+    write(
+      doc([
+        mkFinding({
+          severity: "nit",
+          title: "worth-showing",
+          confidence: 0.7,
+          likelihood: 1,
+          start_line: 10,
+          end_line: 10,
+        }),
+      ]),
+    );
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nno prior"));
+    await post(mkInput({}), api);
+
+    expect(inlineComments(calls())).toHaveLength(1);
+    expect(stickyPatchBody(calls())).not.toContain("below the visibility floor");
+  });
+
+  it("an all-suppressed round still counts the nit (⚪) and never reads 'clean review'", async () => {
+    write(doc([belowFloorNit({ title: "only-nit", start_line: 10, end_line: 10 })]));
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nno prior"));
+    await post(mkInput({}), api);
+
+    const body = stickyPatchBody(calls());
+    expect(body).toContain("below the visibility floor");
+    expect(body).toContain("⚪"); // the histogram counts the full set
+    expect(body).not.toContain("No findings — clean review");
+    expect(inlineComments(calls())).toHaveLength(0);
+  });
+
+  it("applies the floor on the lost-envelope branch too", async () => {
+    write(doc([belowFloorNit({ title: "lost-env-nit", start_line: 999, end_line: 999 })]));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nno prior"));
+    await expect(
+      post(mkInput({ envelopePath: join(tmpDir, "nonexistent.json") }), api),
+    ).rejects.toThrow("exit");
+
+    const body = stickyPatchBody(calls());
+    expect(body).toContain("below the visibility floor");
+    expect(body).toContain("lost-env-nit");
+    // Not rendered as a visible finding heading in the lost-envelope list.
+    expect(body).not.toContain("#### ⚪");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
   });
 });
 

@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main, snapshotIfValid } from "./index.js";
-import { lastValidPath, priorAnswersPath, priorContextPath, SEED_SENTINEL } from "./budget.js";
+import {
+  lastValidPath,
+  priorAnswersPath,
+  priorContextPath,
+  priorSuppressedPath,
+  SEED_SENTINEL,
+} from "./budget.js";
 import { ResultEnvelopeCodec } from "./schema.js";
 import { findingsPointer } from "./surface.js";
 import type { Findings } from "./schema.js";
@@ -1202,6 +1208,88 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.findings[0]!.title).toBe("Prior finding");
   });
 
+  it("delivers the prior round's below-floor nits to the .prior-suppressed sidecar as adjudicated context (issue #164)", async () => {
+    const withNits = {
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        // m 0.5 × 0.4 = 0.20 < 0.25 → below floor
+        {
+          path: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "nit",
+          title: "below",
+          code: "b1",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 0.4,
+        },
+        // m 0.9 × 0.9 = 0.81 → above floor
+        {
+          path: "src/b.ts",
+          start_line: 2,
+          end_line: 2,
+          severity: "nit",
+          title: "above",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.9,
+          likelihood: 0.9,
+        },
+        // not a nit, however low
+        {
+          path: "src/c.ts",
+          start_line: 3,
+          end_line: 3,
+          severity: "minor",
+          title: "not-a-nit",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.1,
+          likelihood: 0.1,
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(withNits as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    const suppressed = JSON.parse(readFileSync(priorSuppressedPath(out), "utf-8")) as unknown[];
+    expect(suppressed).toEqual([{ title: "below", code: "b1", path: "src/a.ts" }]);
+  });
+
+  it("writes no .prior-suppressed sidecar when the prior blob predates likelihood (fails open, issue #164)", async () => {
+    const oldDoc = {
+      schema_version: "0.6.0",
+      summary: "s",
+      verdict: "comment",
+      // a nit with NO likelihood (a pre-0.9 blob) — priorBelowFloorNits fails open, so no sidecar.
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "nit",
+          title: "old-nit",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.1,
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(oldDoc as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(existsSync(priorSuppressedPath(out))).toBe(false);
+  });
+
   it("seeds from a SURFACED 0.8.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
     // The sticky's embedded marker is a LEGACY (pre-#156) surfaced document: the agent's fields plus
     // the pipeline-stamped stop signal. Only the agent's own fields may reach $DRAFT.
@@ -2021,6 +2109,67 @@ describe("cli — render --convergence-threshold (issue #133)", () => {
     const { stderr, exitCode } = await runCli(renderArgs("9".repeat(320)));
     expect(exitCode).toBe(1);
     expect(stderr).toContain("too large to be a meaningful tolerance");
+  });
+});
+
+describe("cli — render --nit-visibility-floor (issue #164)", () => {
+  const args = (floor?: string, findingsPath = sampleFindingsPath): string[] => [
+    "render",
+    findingsPath,
+    "--usage",
+    sampleEnvelopePath,
+    "--route",
+    "full review",
+    ...(floor === undefined ? [] : ["--nit-visibility-floor", floor]),
+  ];
+
+  it("treats an empty value (an unset optional workflow input) as the default, not a failure", async () => {
+    const { exitCode } = await runCli(args(""));
+    expect(exitCode).toBeNull();
+  });
+
+  it("accepts a valid in-range floor", async () => {
+    const { exitCode } = await runCli(args("0.4"));
+    expect(exitCode).toBeNull();
+  });
+
+  it("fails loudly on a value above 1 (a fat-fingered 25 for 0.25 would hide every nit)", async () => {
+    const { stderr, exitCode } = await runCli(args("25"));
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("must be in [0, 1]");
+  });
+
+  it("fails loudly on a non-numeric value", async () => {
+    const { stderr, exitCode } = await runCli(args("abc"));
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("must be a number in [0, 1]");
+  });
+
+  it("renders a below-floor nit into the collapsed aside", async () => {
+    const doc = {
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "nit",
+          title: "trivial-nit",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 0.4,
+        },
+      ],
+    };
+    const f = join(tmpDir, "nit-findings.json");
+    writeFileSync(f, JSON.stringify(doc));
+    const { stdout, exitCode } = await runCli(args(undefined, f));
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("below the visibility floor");
+    expect(stdout).toContain("trivial-nit");
   });
 });
 

@@ -17,6 +17,7 @@ import {
   signalForRound,
   surfacedFindingsPointer,
   escapeCodeBackticks,
+  DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
 import { answeredNoteKey } from "./answered.js";
 import type { PatchProjection } from "./surface.js";
@@ -49,6 +50,25 @@ const sanitizeFinding = (
         : "",
   };
 };
+
+// The suppressed-nit aside sits inside a `> [!NOTE]` blockquote, so a reviewer-supplied newline in a
+// title or path would break out of it (the hazard escapeCodeBackticks documents — it collapses
+// newlines AND neutralizes backticks). `m` is the confidence × likelihood the floor compared against,
+// shown so a maintainer who expands the aside sees WHY each nit was shelved (issue #164).
+type SuppressedNitView = {
+  readonly title: string;
+  readonly code?: string;
+  readonly path: string;
+  readonly startLine: number;
+  readonly m: string;
+};
+const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
+  title: escapeCodeBackticks(f.title),
+  ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
+  path: escapeCodeBackticks(f.path),
+  startLine: f.start_line,
+  m: formatConfidence(f.confidence * f.likelihood),
+});
 
 // The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
 // finding_codes render inside backticks too, so they get the same backtick escaping as paths.
@@ -170,6 +190,8 @@ export const render = (input: RenderInput): string => {
       ? convergenceSummary(input.findings, input.convergenceThreshold)
       : "",
     strays: (input.strays ?? []).map((f) => sanitizeFinding(f, input.answeredNotes)),
+    suppressedNits: (input.suppressedNits ?? []).map(sanitizeSuppressedNit),
+    nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,
     systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,

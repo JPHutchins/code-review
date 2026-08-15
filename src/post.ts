@@ -18,7 +18,9 @@ import {
   computeCodeCounts,
   computeSameRootNotes,
   findingsMarkerForm,
+  isBelowVisibilityFloor,
   isFullReviewSticky,
+  priorBelowFloorNits,
   parseCompletedAncestor,
   parseFindingsMarker,
   parseReviewComplete,
@@ -51,6 +53,7 @@ import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { runIdFromUrl } from "./checkrun.js";
 import {
   applyAnswered,
+  answeredNoteKey,
   answeredReRaiseNote,
   answeredRegistryFrom,
   fetchThreadComments,
@@ -77,6 +80,9 @@ export interface PostInput {
   readonly jsonUrl?: string;
   // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
   readonly convergenceThreshold?: number;
+  // The nit visibility floor (issue #164): nits below confidence × likelihood are hidden from humans.
+  // Omitted ⇒ the surface default.
+  readonly nitVisibilityFloor?: number;
   // Computed by the caller via formatUtc so post() stays a clockless pass-through into render().
   readonly postedAt?: string;
 }
@@ -758,6 +764,29 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     findings: [...answeredFilter.findings],
     ...(systemic.length > 0 ? { systemic_problems: systemic } : {}),
   };
+  // Nit visibility floor (issue #164): split the human-visible findings from the below-floor nits.
+  // The blob (`findings`) stays COMPLETE — the machine channel and the next-round seed keep every nit,
+  // so a hidden nit reads as already adjudicated and is never re-raised as fresh (a policy-suppressed
+  // nit has no external anchor the way an answered-drop's live GitHub thread does, so it MUST remain in
+  // the blob). Only the HUMAN surfaces filter: no inline comment, no visible stray, a collapsed aside;
+  // the severity histogram and the rounds trajectory stay FULL (a nit contributes 0 to the score, and
+  // an all-suppressed round must not read as "clean"). Stickiness, one round deep, re-derived from the
+  // prior sticky's blob: a nit matching a prior round's below-floor nit (by code, else title) stays
+  // hidden even if its score wobbled up — only a promotion to >= minor un-hides it — so a hidden nit
+  // never flickers into view. Best-effort: an old/missing/oversized prior blob yields no keys, so
+  // stickiness fails open to visible.
+  const priorSuppressedKeys = new Set(
+    priorBelowFloorNits(
+      existingSticky === null ? null : parseFindingsMarker(existingSticky.body),
+      input.nitVisibilityFloor,
+    ).map((n) => answeredNoteKey({ code: n.code, title: n.title })),
+  );
+  const isSuppressedNit = (f: Finding): boolean =>
+    f.severity === "nit" &&
+    (isBelowVisibilityFloor(f, input.nitVisibilityFloor) ||
+      priorSuppressedKeys.has(answeredNoteKey(f)));
+  const suppressedNits = findings.findings.filter(isSuppressedNit);
+  const visibleFindings = findings.findings.filter((f) => !isSuppressedNit(f));
   // The drop note, shared by every surface that renders the filtered findings: the TRUE pre-dedup
   // count (issue #151 review r5), plus — when the drops emptied the round — a line reconciling the
   // draft's verdict with the empty kept counts, so the sticky never reads "changes requested"
@@ -803,10 +832,15 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         rounds: priorRounds,
         sameRootNotes: {},
         // The answered-state honesty rules apply on EVERY surface that renders the filtered
-        // findings — the lost-envelope branch lists every finding (no inline review exists to
+        // findings — the lost-envelope branch lists every VISIBLE finding (no inline review exists to
         // carry them) so the kept re-raises' annotations actually render, and names the drops
-        // exactly like the main path (issues #151 review r1 + r2).
-        strays: findings.findings,
+        // exactly like the main path (issues #151 review r1 + r2). The nit visibility floor applies
+        // here too (issue #164): below-floor nits are hidden from the human list and shown only in the
+        // collapsed aside — the floor is a human-visibility policy, not an inline-comment policy, so it
+        // must hold on the surface that lists findings without an inline review.
+        strays: visibleFindings,
+        suppressedNits,
+        nitVisibilityFloor: input.nitVisibilityFloor,
         answeredNotes: reRaisedNotes,
         answeredReRaiseNote: answeredDropNote,
         roundCount: priorSignal?.round ?? priorRounds.length,
@@ -865,7 +899,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     comments: rawComments,
     strays,
     inDiff,
-  } = buildInlineComments(findings.findings, diff, {
+  } = buildInlineComments(visibleFindings, diff, {
     inlineTemplate,
     models: envelope.models.map((m) => m.model),
     findings,
@@ -974,8 +1008,10 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     answeredReRaiseNote: answeredDropNote,
     roundCount: signal?.round ?? priorSignal?.round ?? priorRounds.length,
     convergenceThreshold: input.convergenceThreshold,
+    nitVisibilityFloor: input.nitVisibilityFloor,
     convergenceRound: isRound,
     strays,
+    suppressedNits,
     runUrl: input.runUrl,
     jsonUrl: input.jsonUrl,
     findingsPointer: findingsMarker,

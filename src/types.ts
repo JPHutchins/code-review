@@ -105,6 +105,14 @@ export interface RenderInput {
   // The advisory convergence tolerance — the per-finding convergence score at or below which the round
   // reads as "converged" (default 1). Omitted ⇒ the default.
   readonly convergenceThreshold?: number;
+  // The nit visibility floor (issue #164): nits whose confidence × likelihood falls below this are
+  // hidden from the human surfaces. Passed through only so the sticky's suppression aside can name the
+  // threshold it applied; the split itself happens in post. Omitted ⇒ the default.
+  readonly nitVisibilityFloor?: number;
+  // The below-floor nits post split out of the human-visible findings (issue #164): kept in the blob,
+  // rendered ONLY as a collapsed aside in the sticky — never an inline comment or a visible stray.
+  // Omitted/empty ⇒ no aside.
+  readonly suppressedNits?: readonly Finding[];
   // Whether THIS run is a convergence-defining full-review round (post computes it once and passes it
   // here, using it for BOTH the round append and the badge so the two can't drift). Omitted ⇒ derived
   // from route + incompleteness, the fallback the standalone `render` command relies on.

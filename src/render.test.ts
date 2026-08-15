@@ -117,6 +117,67 @@ describe("formatConfidence (issue #26 — always 2 decimal places)", () => {
   });
 });
 
+describe("suppressed-nit aside — issue #164", () => {
+  const nit = (over: Partial<Finding> = {}): Finding =>
+    mkFinding({ severity: "nit", confidence: 0.5, likelihood: 0.4, ...over });
+
+  const renderWith = (
+    suppressedNits: Finding[],
+    over: Partial<Parameters<typeof render>[0]> = {},
+  ): string =>
+    render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+      suppressedNits,
+      ...over,
+    });
+
+  it("renders a collapsed NOTE aside listing the below-floor nits with their m", () => {
+    const out = renderWith([nit({ title: "Trivial thing", code: "c1", path: "src/a.ts" })]);
+    expect(out).toContain("> [!NOTE]");
+    expect(out).toContain("<details><summary>🔇 1 nit");
+    expect(out).toContain("below the visibility floor");
+    expect(out).toContain("`src/a.ts:42`");
+    expect(out).toContain("Trivial thing");
+    expect(out).toContain("(`c1`)");
+    expect(out).toContain("_(m = 0.20)_"); // 0.5 × 0.4
+  });
+
+  it("pluralizes and shows the count", () => {
+    const out = renderWith([nit({ title: "A" }), nit({ title: "B" })]);
+    expect(out).toContain("🔇 2 nits below the visibility floor");
+  });
+
+  it("shows the floor it applied (custom, else the 0.25 default)", () => {
+    expect(renderWith([nit({ title: "A" })], { nitVisibilityFloor: 0.3 })).toContain(
+      "confidence × likelihood < 0.3",
+    );
+    expect(renderWith([nit({ title: "A" })])).toContain("confidence × likelihood < 0.25");
+  });
+
+  it("emits no aside when nothing is below the floor", () => {
+    expect(renderWith([])).not.toContain("below the visibility floor");
+  });
+
+  it("collapses a newline in a title or path so it cannot break out of the blockquote", () => {
+    const out = renderWith([nit({ title: "line1\nline2", path: "src/a\nb.ts" })]);
+    for (const line of out.split("\n").filter((l) => l.includes("line1") || l.includes("src/a"))) {
+      expect(line.startsWith(">")).toBe(true);
+    }
+    expect(out).toContain("line1 line2");
+    expect(out).toContain("src/a b.ts");
+  });
+
+  it("does not render the aside on an incomplete notice", () => {
+    expect(renderWith([nit({ title: "A" })], { incomplete: true })).not.toContain(
+      "below the visibility floor",
+    );
+  });
+});
+
 describe("render", () => {
   it("produces output with the <!-- code-review --> marker", () => {
     const findings = mkFindings([]);
@@ -529,7 +590,9 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template });
 
       expect(result).toContain("### 🔗 Systemic problems");
-      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80");
+      expect(result).toContain(
+        "#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80 · likelihood 1.00",
+      );
       expect(result).toContain("Three spots, three retry policies — the pattern is the problem.");
       expect(result).toContain("_Affects: `src/upload/config.ts`, `src/upload/client.ts`");
       expect(result).toContain("Ties together: `widened-type`");
@@ -690,12 +753,13 @@ describe("render", () => {
   });
 
   describe("stray confidence and reasoning fold (issue #16; both required in 0.4)", () => {
-    it("shows confidence on the bullet line, outside the fold", () => {
+    it("shows confidence AND likelihood on the bullet line, outside the fold (issue #164)", () => {
       const findings = mkFindings([]);
-      const strays = [mkFinding({ title: "Stray conf", confidence: 0.82 })];
+      const strays = [mkFinding({ title: "Stray conf", confidence: 0.82, likelihood: 0.3 })];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const bulletLine = result.split("\n").find((line) => line.includes("Stray conf"));
       expect(bulletLine).toContain("confidence 0.82");
+      expect(bulletLine).toContain("likelihood 0.30");
     });
 
     it("shows a zero confidence (falsy but valid) on the bullet line, at 2 decimal places (issue #26)", () => {
@@ -706,14 +770,21 @@ describe("render", () => {
       expect(bulletLine).toContain("confidence 0.00");
     });
 
-    it("renders a collapsible reasoning fold in a [!TIP] aside with the confidence (reasoning is always present)", () => {
+    it("renders a collapsible reasoning fold in a [!TIP] aside with the confidence + likelihood (reasoning is always present)", () => {
       const findings = mkFindings([]);
       const strays = [
-        mkFinding({ title: "Stray reason", confidence: 0.9, reasoning: "Because X causes Y." }),
+        mkFinding({
+          title: "Stray reason",
+          confidence: 0.9,
+          likelihood: 1,
+          reasoning: "Because X causes Y.",
+        }),
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       expect(result).toContain("> [!TIP]");
-      expect(result).toContain("<details><summary>Reasoning (0.90 confidence)</summary>");
+      expect(result).toContain(
+        "<details><summary>Reasoning (0.90 confidence · 1.00 likelihood)</summary>",
+      );
       expect(result).toContain("Because X causes Y.");
       expect(result).toContain("</details>");
     });

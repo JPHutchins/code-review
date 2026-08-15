@@ -38,7 +38,7 @@
 ### 🔗 Systemic problems
 
 <% it.systemic.forEach(function(s) { -%>
-#### <%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <%= s.title %> · confidence <%= it.formatConfidence(s.confidence) %>
+#### <%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <%= s.title %> · confidence <%= it.formatConfidence(s.confidence) %> · likelihood <%= it.formatConfidence(s.likelihood) %>
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_codes && s.finding_codes.length > 0) { meta.push('Ties together: ' + s.finding_codes.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
 <%~ s.description %>
@@ -81,7 +81,7 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% } %>
 
 <% it.strays.forEach(function(f) { -%>
-#### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %>
+#### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %>` — <%= f.title %> · confidence <%= it.formatConfidence(f.confidence) %> · likelihood <%= it.formatConfidence(f.likelihood) %>
 
 <%~ f.description %>
 <% if (f.code && it.sameRootNotes && Object.prototype.hasOwnProperty.call(it.sameRootNotes, f.code)) { -%>
@@ -109,7 +109,7 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% } -%>
 
 > [!TIP]
-> <details><summary>Reasoning (<%= it.formatConfidence(f.confidence) %> confidence)</summary>
+> <details><summary>Reasoning (<%= it.formatConfidence(f.confidence) %> confidence · <%= it.formatConfidence(f.likelihood) %> likelihood)</summary>
 >
 <% f.reasoning.split("\n").forEach(function(rl) { -%>
 > <%= rl %>
@@ -117,6 +117,17 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 >
 > </details>
 <% }) %>
+<% } %>
+
+<% if (!it.incomplete && it.suppressedNits && it.suppressedNits.length > 0) { %>
+> [!NOTE]
+> <details><summary>🔇 <%= it.suppressedNits.length %> nit<%= it.suppressedNits.length === 1 ? '' : 's' %> below the visibility floor (confidence × likelihood < <%= it.nitVisibilityFloor %>) — hidden</summary>
+>
+<% it.suppressedNits.forEach(function(n) { -%>
+> - `<%= n.path %>:<%= n.startLine %>` — <%= n.title %><% if (n.code) { %> (`<%= n.code %>`)<% } %> _(m = <%= n.m %>)_
+<% }) -%>
+>
+> </details>
 <% } %>
 
 <% if (it.testReport) { %>

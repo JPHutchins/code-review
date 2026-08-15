@@ -22,6 +22,9 @@ import {
   convergenceScore,
   convergenceSummary,
   convergenceSignal,
+  isBelowVisibilityFloor,
+  priorBelowFloorNits,
+  DEFAULT_NIT_VISIBILITY_FLOOR,
   signalForRound,
   surfacedFindingsPointer,
   stripSurfaceFields,
@@ -498,6 +501,94 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(convergenceSummary(docOf(["minor", 1]), 1.04)).toBe(
       "**Convergence** 🏁 1 ≤ 1.04 — converged",
     );
+  });
+});
+
+describe("nit visibility floor — issue #164", () => {
+  const nit = (over: Partial<Finding> = {}): Finding =>
+    ({
+      path: "src/x.ts",
+      start_line: 1,
+      end_line: 1,
+      severity: "nit",
+      title: "t",
+      description: "d",
+      reasoning: "r",
+      confidence: 0.5,
+      likelihood: 0.4,
+      ...over,
+    }) as unknown as Finding;
+
+  it("defaults the floor to 0.25", () => {
+    expect(DEFAULT_NIT_VISIBILITY_FLOOR).toBe(0.25);
+  });
+
+  describe("isBelowVisibilityFloor", () => {
+    it("flags a nit whose confidence × likelihood is below the floor", () => {
+      // 0.5 × 0.4 = 0.20 < 0.25
+      expect(isBelowVisibilityFloor(nit())).toBe(true);
+    });
+
+    it("does not flag a nit at or above the floor", () => {
+      // 0.5 × 0.6 = 0.30 >= 0.25
+      expect(isBelowVisibilityFloor(nit({ likelihood: 0.6 }))).toBe(false);
+    });
+
+    it("never flags a non-nit, however low its score (nit-only)", () => {
+      for (const severity of ["minor", "major", "critical"] as const) {
+        expect(isBelowVisibilityFloor(nit({ severity, confidence: 0.01, likelihood: 0.01 }))).toBe(
+          false,
+        );
+      }
+    });
+
+    it("fails OPEN to visible when likelihood is missing (a pre-0.9 blob has none)", () => {
+      const noLikelihood = { severity: "nit", confidence: 0.5 };
+      expect(isBelowVisibilityFloor(noLikelihood)).toBe(false);
+    });
+
+    it("honors a custom floor", () => {
+      // 0.5 × 0.4 = 0.20; below 0.5, at-or-above 0.1
+      expect(isBelowVisibilityFloor(nit(), 0.5)).toBe(true);
+      expect(isBelowVisibilityFloor(nit(), 0.1)).toBe(false);
+    });
+  });
+
+  describe("priorBelowFloorNits", () => {
+    const priorDoc = (fs: readonly unknown[]): unknown => ({
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: fs,
+    });
+
+    it("extracts the below-floor nits' identifying bits (code, title, path)", () => {
+      const doc = priorDoc([
+        nit({ code: "c1", title: "T1", path: "src/a.ts" }), // m 0.20 — below
+        nit({ likelihood: 0.9, title: "T2" }), // m 0.45 — above
+        nit({ severity: "minor", title: "T3" }), // not a nit
+      ]);
+      expect(priorBelowFloorNits(doc)).toEqual([{ title: "T1", code: "c1", path: "src/a.ts" }]);
+    });
+
+    it("omits code when absent (title-keyed) and drops a titleless entry", () => {
+      const doc = priorDoc([
+        nit({ title: "only-title" }),
+        nit({ title: 123 as unknown as string }),
+      ]);
+      expect(priorBelowFloorNits(doc)).toEqual([{ title: "only-title", path: "src/x.ts" }]);
+    });
+
+    it("returns [] for an old blob whose nits have no likelihood (fails open)", () => {
+      const doc = priorDoc([{ severity: "nit", title: "T", path: "p", confidence: 0.1 }]);
+      expect(priorBelowFloorNits(doc)).toEqual([]);
+    });
+
+    it("returns [] for a non-object, a null, or a doc with no findings array", () => {
+      expect(priorBelowFloorNits(null)).toEqual([]);
+      expect(priorBelowFloorNits("nope")).toEqual([]);
+      expect(priorBelowFloorNits({ findings: "not-an-array" })).toEqual([]);
+    });
   });
 });
 

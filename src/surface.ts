@@ -571,6 +571,63 @@ export const convergenceScore = (doc: Findings, threshold: number): number =>
     ),
   );
 
+// ── Nit visibility floor (issue #164) ───────────────────────────────────────────────────────────
+// A nit whose confidence × likelihood falls below this is below the noise floor: KEPT in the machine
+// blob (so the next-round seed reads it as already adjudicated and never re-raises it as fresh) but
+// hidden from the HUMAN surfaces (no inline comment; a collapsed aside in the sticky). Nit-only, and
+// orthogonal to the convergence score — a nit's ceiling is 0, so it contributes 0 whether shown or
+// hidden. Scoped to findings only; a nit-severity systemic problem is never floored here (hiding a
+// cross-cutting observation is a heavier call than hiding a per-line nit).
+export const DEFAULT_NIT_VISIBILITY_FLOOR = 0.25;
+
+// True when a finding is a nit below the visibility floor. Accepts a loose shape so it serves both a
+// validated current Finding (confidence/likelihood are always numbers) and a hand-parsed prior-blob
+// finding: a non-numeric confidence or likelihood — a pre-0.9 blob predates likelihood — makes this
+// FALSE, so a finding is never hidden on missing data; suppression fails OPEN to visible.
+export const isBelowVisibilityFloor = (
+  f: { readonly severity?: unknown; readonly confidence?: unknown; readonly likelihood?: unknown },
+  floor: number = DEFAULT_NIT_VISIBILITY_FLOOR,
+): boolean =>
+  f.severity === "nit" &&
+  typeof f.confidence === "number" &&
+  typeof f.likelihood === "number" &&
+  f.confidence * f.likelihood < floor;
+
+// The identifying bits of a prior round's below-floor nit, hand-parsed from a decoded prior findings
+// blob (parseFindingsMarker output) — the one-round suppression memory. post derives its stickiness
+// key from these (a still-nit matching one stays hidden even if its score wobbled up); the seed
+// delivers them as adjudicated context. Defensive/best-effort like parseRounds: a non-object, an old
+// blob without likelihood, or a malformed entry contributes nothing.
+export interface PriorSuppressedNit {
+  readonly title: string;
+  readonly code?: string;
+  readonly path?: string;
+}
+export const priorBelowFloorNits = (
+  priorDoc: unknown,
+  floor: number = DEFAULT_NIT_VISIBILITY_FLOOR,
+): readonly PriorSuppressedNit[] => {
+  if (typeof priorDoc !== "object" || priorDoc === null) return [];
+  const arr = (priorDoc as Record<string, unknown>)["findings"];
+  if (!Array.isArray(arr)) return [];
+  const nits: PriorSuppressedNit[] = [];
+  for (const f of arr) {
+    if (typeof f !== "object" || f === null) continue;
+    const rec = f as Record<string, unknown>;
+    if (!isBelowVisibilityFloor(rec, floor)) continue;
+    const title = rec["title"];
+    if (typeof title !== "string") continue;
+    const code = typeof rec["code"] === "string" && rec["code"] !== "" ? rec["code"] : undefined;
+    const path = typeof rec["path"] === "string" ? rec["path"] : undefined;
+    nits.push({
+      title,
+      ...(code !== undefined ? { code } : {}),
+      ...(path !== undefined ? { path } : {}),
+    });
+  }
+  return nits;
+};
+
 // "**Convergence** 🏁 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". The converged glyph
 // is a checkered flag, NOT the verdict badge's ✅, so a reader (or the author-agent this steers) can't
 // skim the line as an approval. The score is already rounded to 2 decimals (convergenceScore) and

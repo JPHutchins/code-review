@@ -1290,6 +1290,74 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(existsSync(priorSuppressedPath(out))).toBe(false);
   });
 
+  it("writes no .prior-suppressed for a MECHANIC prior — route-gated like the prior-context seed (issue #164)", async () => {
+    // A mechanic (CI-fix) pass writes its OWN findings blob; its nits are not a prior REVIEW round.
+    const mechDoc = {
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "nit",
+          title: "mech-nit",
+          code: "m1",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 0.4,
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${findingsPointer(mechDoc as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(existsSync(priorSuppressedPath(out))).toBe(false);
+  });
+
+  it("an invalid --nit-visibility-floor never exits seed-draft (always-exit-0); degrades to the default (issue #164)", async () => {
+    const withNit = {
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "nit",
+          title: "below",
+          code: "b1",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 0.4,
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(withNit as unknown as Findings, undefined)}`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--nit-visibility-floor",
+      "not-a-number",
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull(); // did NOT process.exit(1) — the always-exit-0 contract holds
+    // degraded to the default floor 0.25, so the below-floor nit (m 0.20) is still delivered
+    const suppressed = JSON.parse(readFileSync(priorSuppressedPath(out), "utf-8")) as unknown[];
+    expect(suppressed).toEqual([{ title: "below", code: "b1", path: "src/a.ts" }]);
+  });
+
   it("seeds from a SURFACED 0.8.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
     // The sticky's embedded marker is a LEGACY (pre-#156) surfaced document: the agent's fields plus
     // the pipeline-stamped stop signal. Only the agent's own fields may reach $DRAFT.
@@ -2109,6 +2177,67 @@ describe("cli — render --convergence-threshold (issue #133)", () => {
     const { stderr, exitCode } = await runCli(renderArgs("9".repeat(320)));
     expect(exitCode).toBe(1);
     expect(stderr).toContain("too large to be a meaningful tolerance");
+  });
+});
+
+describe("cli — inline --nit-visibility-floor (issue #164)", () => {
+  const inlineDiff = `diff --git a/src/foo.ts b/src/foo.ts
+index abc..def 100644
+--- a/src/foo.ts
++++ b/src/foo.ts
+@@ -8,3 +8,5 @@
+ line8
+ line9
+ line10
++added11
++added12
+`;
+
+  it("omits a below-floor nit from the payload (fixed-floor — no aside, which is post's surface)", async () => {
+    const doc = {
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "src/foo.ts",
+          start_line: 10,
+          end_line: 10,
+          severity: "minor",
+          title: "real-bug",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.8,
+          likelihood: 1,
+        },
+        {
+          path: "src/foo.ts",
+          start_line: 11,
+          end_line: 11,
+          severity: "nit",
+          title: "trivial-nit",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 0.4,
+        },
+      ],
+    };
+    const f = join(tmpDir, "inl-findings.json");
+    const dfile = join(tmpDir, "inl.diff");
+    writeFileSync(f, JSON.stringify(doc));
+    writeFileSync(dfile, inlineDiff);
+    const { stdout, exitCode } = await runCli([
+      "inline",
+      f,
+      "--diff",
+      dfile,
+      "--nit-visibility-floor",
+      "0.25",
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout).toContain("real-bug");
+    expect(stdout).not.toContain("trivial-nit");
   });
 });
 

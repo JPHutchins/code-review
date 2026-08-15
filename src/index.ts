@@ -46,6 +46,7 @@ import type { Triage, Finding, PriceMap } from "./schema.js";
 import {
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
+  isBelowVisibilityFloor,
   parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
@@ -356,12 +357,22 @@ const inlineCmd = defineCommand({
       type: "string",
       description: "Path to inline comment Eta template (default: bundled templates/inline.eta)",
     },
+    "nit-visibility-floor": {
+      type: "string",
+      description: NIT_VISIBILITY_FLOOR_DESCRIPTION,
+    },
   },
   run: async ({ args }) => {
     const findings = decode(FindingsCodec.decode(readJSON(args.findings)), "findings");
     const diff = readFileSync(resolve(args.diff), "utf-8");
     const inlineTemplate = readFileSync(resolveInlineTemplatePath(args.template), "utf-8");
-    const { comments, strays } = buildInlineComments(findings.findings, diff, {
+    // Apply the FIXED-floor part of the nit-visibility split (issue #164): a below-floor nit gets no
+    // inline comment. This standalone payload builder has no prior sticky, so no one-round stickiness
+    // (post applies that); it also has no sticky to carry the collapsed aside, so a suppressed nit is
+    // simply absent here — the aside is post's surface.
+    const floor = parseNitVisibilityFloor(args["nit-visibility-floor"]);
+    const visibleFindings = findings.findings.filter((f) => !isBelowVisibilityFloor(f, floor));
+    const { comments, strays } = buildInlineComments(visibleFindings, diff, {
       inlineTemplate,
       findings,
     });
@@ -499,6 +510,18 @@ const parseNitVisibilityFloor = (raw: string | undefined): number | undefined =>
     );
   }
   return n;
+};
+
+/** seed-draft's best-effort floor parse: like parseNitVisibilityFloor but NEVER exits — seed-draft's
+ *  always-exit-0 contract forbids the process-exiting `fail` (it runs under the review job's `set -e`).
+ *  An absent/blank/malformed/out-of-range value degrades to undefined (priorBelowFloorNits then applies
+ *  the SSOT default); a genuine misconfiguration is still caught loudly at post, where the floor is
+ *  actually enforced. */
+const parseNitVisibilityFloorLenient = (raw: string | undefined): number | undefined => {
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === "" || !/^\d+(\.\d+)?$/.test(trimmed)) return undefined;
+  const n = Number.parseFloat(trimmed);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined;
 };
 
 /** The `transcript_path` a hook payload carries, when present. */
@@ -1037,11 +1060,16 @@ const seedDraftCmd = defineCommand({
     // floor is read from the same workflow input the commenter uses, so seed and post agree within a
     // run. Correctness does not depend on this note — the blob keeps every nit and post re-suppresses a
     // re-raised still-nit by stickiness — it only spares the agent the wasted re-mining.
-    if (parsedPrior !== null) {
+    // Route-gated exactly like the prior-context seed below (parseReviewedRoute === "full review"):
+    // a mechanic (CI-fix) pass writes its OWN findings blob, so deriving "prior round's below-floor
+    // nits" from it would deliver a CI-fix pass's nits as adjudicated prior-round context. Only a
+    // completed FULL review is a prior round. The floor is parsed LENIENTLY — seed-draft must exit 0,
+    // so it cannot call the process-exiting parseNitVisibilityFloor (post enforces the floor loudly).
+    if (parsedPrior !== null && parseReviewedRoute(priorBody ?? "") === "full review") {
       try {
         const belowFloor = priorBelowFloorNits(
           parsedPrior,
-          parseNitVisibilityFloor(args["nit-visibility-floor"]),
+          parseNitVisibilityFloorLenient(args["nit-visibility-floor"]),
         );
         if (belowFloor.length > 0) {
           writeFileSync(priorSuppressedPath(outPath), `${JSON.stringify(belowFloor, null, 2)}\n`);

@@ -997,16 +997,16 @@ const seedDraftCmd = defineCommand({
     // document (a draft version) and carries no pipeline stamp, so any scope_metastasis in it is the agent
     // ECHOING the entry the prior seed attached to its context — stale the moment the recurrence
     // changes. Drop that echo up front (the surface peel-back keeps a legacy blob's authoritative
-    // entry) so the recurrence signal comes solely from the rounds-marker re-derivation below, never
-    // a carried copy that can outlive the streak it claims.
+    // entry) so the recurrence signal comes solely from the carried-trajectory re-derivation below,
+    // never a carried copy that can outlive the streak it claims.
     const strippedPrior =
       parsedPrior === null
         ? null
         : stripSurfaceFields(
             isSurfaceStampedDoc(parsedPrior) ? parsedPrior : withoutScopeMetastasis(parsedPrior),
           );
-    // The agent-facing scope_metastasis entry is derivable from the carried rounds marker — the same
-    // computation post() ran when it stamped it — so the seed re-attaches it: the next-round agent
+    // The agent-facing scope_metastasis entry is derivable from the carried convergence trajectory —
+    // the same computation post() ran when it stamped it — so the seed re-attaches it: the next-round agent
     // must see the recurrence signal. A legacy blob whose stripped doc still carries the authoritative
     // pipeline stamp keeps it. The re-attach is best-effort: if the in-force schema (a consumer-pinned
     // custom --schema predating the field) rejects the adorned doc, the un-adorned prior is seeded
@@ -1021,7 +1021,7 @@ const seedDraftCmd = defineCommand({
       // A carried entry only counts when it VALIDATES as the entry shape — for a draft blob it is
       // already dropped (only a legacy pipeline-stamped blob reaches here with one), and an explicit
       // null, an array, or a malformed object (all possible in a corrupt blob; genuine posts omit the
-      // key on null) falls through to the rounds-marker recovery like an absent one (issues #150
+      // key on null) falls through to the trajectory recovery like an absent one (issues #150
       // review r3 + r4). The derivation is also gated on the prior's verdict exactly like post's
       // stamp (isRound requires a review verdict): an error-verdict prior never carries a
       // re-derived entry (issue #150 review r4).

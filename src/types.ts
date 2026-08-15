@@ -80,10 +80,10 @@ export interface RenderInput {
   readonly testReport?: TestSummary;
   readonly severityCounts?: SeverityCounts;
   // Per-full-review-round records (oldest first) — the LEGACY trajectory fallback, read only when the
-  // findings document carries no stamped `convergence` (a pre-#174 sticky, or the standalone render
-  // command): rendered as the convergence TRAJECTORY and the advisory scope-metastasis note. A current
-  // sticky reads its trajectory from `findings.convergence.rounds` instead. Omitted/empty ⇒ no
-  // trajectory line or metastasis note.
+  // findings document carries no stamped `convergence`: the standalone render command, or a test that
+  // supplies a trajectory directly. Rendered as the convergence TRAJECTORY and the advisory
+  // scope-metastasis note; a production sticky reads its trajectory from `findings.convergence.rounds`
+  // instead. Omitted/empty ⇒ no trajectory line or metastasis note.
   readonly rounds?: readonly RoundRecord[];
   // Code → "same mechanism as round N" note for findings whose mechanism recurred in a PRIOR round,
   // computed at the IO boundary (post has the prior-round history; the standalone render command

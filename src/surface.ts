@@ -235,18 +235,10 @@ export const escapeCodeBackticks = (code: string): string =>
 // shape into the streak/note renderers.
 const normalizeCodeCounts = (codes: unknown, priorCodes?: CodeCounts): CodeCounts | undefined => {
   if (typeof codes !== "object" || codes === null || Array.isArray(codes)) return undefined;
-  const entries = Object.entries(codes as Record<string, unknown>)
-    .filter(
-      (e): e is [string, number] =>
-        typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
-    )
-    .sort((a, b) => {
-      if (b[1] !== a[1]) return b[1] - a[1];
-      const aPrior = hasCode(priorCodes, a[0]) ? 1 : 0;
-      const bPrior = hasCode(priorCodes, b[0]) ? 1 : 0;
-      if (aPrior !== bPrior) return bPrior - aPrior;
-      return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
-    });
+  const entries = Object.entries(codes as Record<string, unknown>).filter(
+    (e): e is [string, number] =>
+      typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
+  );
   if (entries.length === 0) return undefined;
   const sorted = entries.sort((a, b) => {
     if (b[1] !== a[1]) return b[1] - a[1];
@@ -573,9 +565,10 @@ export const convergenceScore = (doc: Findings, threshold: number): number =>
 // The pipeline-stamped convergence field (issue #174): this round's score/threshold/converged plus the
 // per-round trajectory. Prior rounds are carried VERBATIM — their scores are historical snapshots, and
 // recomputing at a changed threshold would rewrite the past — while THIS round is appended with its
-// score and the mechanism map + head SHA the recurrence signals read. The trajectory is bounded to the
-// most recent rounds so it can never bloat the blob past its embed limit; the recurrence detectors read
-// only the recent tail, so bounding never ends a live streak.
+// score and the mechanism map + head SHA the recurrence signals read. The trajectory keeps only the
+// most recent CONVERGENCE_TRAJECTORY_LIMIT rounds — a COUNT bound (not a byte cap), which keeps the blob
+// growth bounded in the common case (a round record is compact) and caps the same-root memory at that
+// many rounds; the recurrence detectors read only the recent tail, so bounding never ends a live streak.
 export const CONVERGENCE_TRAJECTORY_LIMIT = 64;
 export const buildConvergence = (
   doc: Findings,
@@ -708,9 +701,11 @@ export const SURFACE_SCHEMA_VERSION = "0.8.0";
 // JSON convergence field and the legacy compact signal marker's reader.
 export type ConvergenceSignal = ConvergenceCore;
 
-// The stop signal carried in the compact signal marker: the round number + that round's score/
-// threshold/converged. Computed once when the round completes; every later post carries it VERBATIM,
-// never re-derived — re-deriving at a changed convergence_threshold would flip a prior round's `converged`.
+// The shape parseSignalMarker / parseSurfaceSignal return from a LEGACY compact signal marker or
+// surfaced blob: the round number + that round's score/threshold/converged. Its writer is retired
+// (issue #186); post now carries convergence forward via the stamped field (carriedConvergence), and a
+// stored `converged` is never re-derived — re-deriving at a changed convergence_threshold would flip a
+// prior round's decision.
 export interface SurfaceSignal {
   readonly round: number;
   readonly convergence: ConvergenceSignal;
@@ -727,9 +722,10 @@ export const convergenceSignal = (
 
 const SIGNAL_RE = /<!-- code-review:signal;base64 ([A-Za-z0-9+/=]+) -->/;
 
-// The stop signal from the compact marker that rides beside every completed round's findings blob
-// (issue #156) — the primary reader; parseSurfaceSignal below is the legacy fallback for pre-#156
-// stickies whose signal rode inside the blob.
+// Decodes a LEGACY compact signal marker (writer retired, issue #186) — a read-only fallback in the
+// carry chain: carriedConvergence reads the stamped convergence field, then the code-review:convergence
+// marker, and only then this. parseSurfaceSignal below is the older fallback for pre-#156 stickies whose
+// signal rode inside the blob.
 export const parseSignalMarker = (body: string): SurfaceSignal | null => {
   const b64 = SIGNAL_RE.exec(body)?.[1];
   if (b64 === undefined) return null;
@@ -740,8 +736,8 @@ export const parseSignalMarker = (body: string): SurfaceSignal | null => {
 // blob whose signal rode inside the findings JSON — null on any malformed shape, a pre-surface blob,
 // or a doc that does not declare a surfaced version, so a draft or foreign document carrying
 // round/convergence keys can never be treated as the commenter's stop signal (the same version gate
-// stripSurfaceFields applies to the seed channel). Post-#156 a fresh signal rides the compact marker
-// (parseSignalMarker); this is reached only as findingsMarkerFor's fallback for an older sticky.
+// stripSurfaceFields applies to the seed channel). Nothing writes this anymore (issue #186); it is the
+// last fallback in carriedConvergence's carry chain, reached only for an older sticky.
 export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return null;
   const o = doc as Record<string, unknown>;
@@ -855,10 +851,10 @@ export const carriedConvergence = (priorDoc: unknown, priorBody: string): Conver
 
 // Every surface-channel version this CLI recognizes: the versions a LEGACY surfaced blob declared
 // (which stripSurfaceFields peels back to the agent document, so a sticky written before issue #156
-// still seeds) plus the version the compact signal marker declares today. A dedicated list,
-// deliberately distinct from the draft-version registry axis: only these versions declare the surface
-// channel, so a draft bump can never be mistaken for one. A future surface bump appends the
-// superseded version(s) here alongside the new one.
+// still seeds) plus the version a legacy compact signal marker declared. Both are read-only now (the
+// writers are retired, issue #186). A dedicated list, deliberately distinct from the draft-version
+// registry axis: only these versions declare the surface channel, so a draft bump can never be
+// mistaken for one. A future surface bump appends the superseded version(s) here alongside the new one.
 export const SURFACE_SCHEMA_VERSIONS: readonly string[] = ["0.7.0", SURFACE_SCHEMA_VERSION];
 
 // Does a value declare one of the surface-channel versions? The single gate the surface channel

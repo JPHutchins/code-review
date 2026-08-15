@@ -3753,7 +3753,7 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 0.73, threshold: 1, converged: true });
   });
 
-  it("the signal marker's convergence scores the same findings + systemic the badge does — a systemic major beside a nit-only finding reads iterating (issue #134)", async () => {
+  it("the stamped convergence scores the same findings + systemic the badge does — a systemic major beside a nit-only finding reads iterating (issue #134)", async () => {
     // The convergence score folds systemic severities in; the badge and the stamped convergence must
     // score the SAME findings + systemic or a doc whose systemic items cross the threshold would carry
     // `converged: true` beside a badge that reads iterating.

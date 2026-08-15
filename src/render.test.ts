@@ -283,7 +283,7 @@ describe("render", () => {
       // Since issue #156 the stop signal rides the standalone compact marker, not the findings blob.
       const signal = parseSignalMarker(result);
       expect(signal?.round).toBe(1);
-      expect(signal?.convergence).toEqual({ score: 0.7, threshold: 1, converged: true });
+      expect(signal?.convergence).toEqual({ score: 0.73, threshold: 1, converged: true });
     });
 
     it("suppresses the Scope metastasis prose note on a non-round (mechanic) render — recurrence is a property of full-review rounds (issue #150)", () => {
@@ -594,12 +594,10 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template });
 
       expect(result).toContain("### 🔗 Systemic problems");
-      // Confidence AND likelihood on the systemic header — this PR's score reads the written systemic
-      // likelihood, so it must be shown. (The systemic-likelihood-to-1 scoring change and the matching
-      // header removal travel together in the convergence-calibration PR, not here.)
-      expect(result).toContain(
-        "#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80 · likelihood 1.00",
-      );
+      // Systemic likelihood is scored as a constant 1 (this PR's calibration), so it carries no
+      // per-item information and is NOT surfaced on the systemic header; findings keep both.
+      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80");
+      expect(result).not.toContain("Retry plumbing is inconsistent · confidence 0.80 · likelihood");
       expect(result).toContain("Three spots, three retry policies — the pattern is the problem.");
       expect(result).toContain("_Affects: `src/upload/config.ts`, `src/upload/client.ts`");
       expect(result).toContain("Ties together: `widened-type`");

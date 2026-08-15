@@ -56,7 +56,7 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "0..1 probability the pattern's triggering condition actually occurs in practice. Mirrors the finding field of the same name."
+            "description": "Set to 1 for a systemic problem. A structural/cross-cutting observation has no single triggering input — it is definitionally always present — so the convergence score treats a systemic problem's likelihood as 1 and never discounts it. (Required for schema symmetry with a finding's likelihood; the written value is not read by the score.)"
           },
           "code": {
             "type": "string",

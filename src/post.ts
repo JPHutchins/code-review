@@ -17,6 +17,7 @@ import {
   findingsMarkerForm,
   findingsPointer,
   inProgressConvergence,
+  nextRoundNumber,
   isBelowVisibilityFloor,
   isFullReviewSticky,
   priorBelowFloorNits,
@@ -612,12 +613,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // carries its codes); and the convergence to carry forward on a non-round post (carriedConvergence).
   const priorTraj = priorTrajectory(priorDoc, priorBody);
   const priorConv = carriedConvergence(priorDoc, priorBody);
-  // The completed-round count never regresses: the max round across the trajectory and the carried
-  // convergence, so a legacy sticky whose compact signal ran ahead of a filtered rounds marker still
-  // advances (issue #141).
-  const lastRound = (rounds: readonly { readonly round?: number }[]): number =>
-    rounds.length > 0 ? (rounds[rounds.length - 1]?.round ?? rounds.length) : 0;
-  const priorRoundCount = Math.max(lastRound(priorTraj), lastRound(priorConv?.rounds ?? []));
+  // The completed-round count never regresses: nextRoundNumber takes the max round across the trajectory
+  // and the carried convergence (a legacy sticky whose compact signal ran ahead of a filtered rounds
+  // marker still advances, issue #141), and announce labels its in-progress line with the SAME derivation
+  // so the placeholder's round and this round's stamp can't disagree (issue #188 review).
+  const priorRoundCount = nextRoundNumber(priorTraj, priorConv?.rounds ?? []) - 1;
 
   // The blob is the agent's complete document with the pipeline-stamped convergence inside it — no
   // separate signal or rounds marker (issue #174). A notice / CI-fix pass carries the prior convergence
@@ -1157,11 +1157,17 @@ const announceBody = (
   runUrl: string,
   existingBody: string | undefined,
 ): string => {
-  const prior =
-    existingBody !== undefined
-      ? carriedConvergence(parseFindingsMarker(existingBody), existingBody)
-      : null;
-  const progress = prior !== null ? inProgressConvergence(prior) : "";
+  const priorDoc = existingBody !== undefined ? parseFindingsMarker(existingBody) : null;
+  const prior = existingBody !== undefined ? carriedConvergence(priorDoc, existingBody) : null;
+  // The running round is the SAME derivation post uses to number its appended round (nextRoundNumber),
+  // so the placeholder's label matches what post will stamp — by construction (issue #188 review).
+  const progress =
+    prior !== null
+      ? inProgressConvergence(
+          prior,
+          nextRoundNumber(priorTrajectory(priorDoc, existingBody ?? ""), prior.rounds ?? []),
+        )
+      : "";
   return noticeBody(
     `${DEFAULT_MARKER}\n\n🔄 **Code review in progress** for \`${headSha.slice(0, 7)}\` — see the [workflow run](${runUrl}) for progress; this comment is updated with the review when it completes.${progress ? `\n\n${progress}` : ""}`,
     existingBody,

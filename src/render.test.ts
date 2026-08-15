@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
-import { formatConfidence, parseSignalMarker } from "./surface.js";
+import { formatConfidence, parseFindingsMarker, parseSignalMarker } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -270,20 +270,26 @@ describe("render", () => {
       expect(decoded).toEqual(findings);
     });
 
-    it("carries the convergence stop signal (score/threshold/converged + round) in the compact marker when round history is supplied (#141)", () => {
-      const findings = mkFindings([mkFinding({ severity: "minor" })]);
+    it("embeds convergence (score/threshold/converged + trajectory) in the findings blob, not a signal marker (#174)", () => {
+      const convergence = {
+        score: 0.73,
+        threshold: 1,
+        converged: true,
+        rounds: [{ round: 1, score: 0.73 }],
+      };
+      const findings = { ...mkFindings([mkFinding({ severity: "minor" })]), convergence };
       const result = render({
         findings,
         envelope: baseEnvelope,
         prices,
         template,
         route: "full review",
-        rounds: [{ critical: 0, major: 0, minor: 1, nit: 0 }],
+        convergenceRound: true,
       });
-      // Since issue #156 the stop signal rides the standalone compact marker, not the findings blob.
-      const signal = parseSignalMarker(result);
-      expect(signal?.round).toBe(1);
-      expect(signal?.convergence).toEqual({ score: 0.73, threshold: 1, converged: true });
+      // Convergence rides IN the findings blob now — no separate compact signal marker.
+      expect(result).not.toContain("code-review:signal;base64");
+      const decoded = parseFindingsMarker(result) as { convergence?: unknown };
+      expect(decoded.convergence).toEqual(convergence);
     });
 
     it("suppresses the Scope metastasis prose note on a non-round (mechanic) render — recurrence is a property of full-review rounds (issue #150)", () => {
@@ -694,7 +700,7 @@ describe("render", () => {
         route: "full review",
         convergenceRound: true,
       });
-      expect(result).toContain("**Convergence** 🔄 1.7 > 1 — iterating");
+      expect(result).toContain("**Convergence** 🔄 1.70 > 1 — iterating");
     });
 
     it("treats a nit systemic item as free, like a nit finding — nits never block convergence (issue #134 review)", () => {
@@ -709,7 +715,7 @@ describe("render", () => {
         route: "full review",
         convergenceRound: true,
       });
-      expect(result).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
+      expect(result).toContain("**Convergence** 🏁 0.00 ≤ 1 — converged");
     });
 
     it("a critical systemic problem beside a nit-only round reads 'iterating' — the badge is severity-aware (issue #134 review)", () => {
@@ -724,7 +730,7 @@ describe("render", () => {
         route: "full review",
         convergenceRound: true,
       });
-      expect(result).toContain("**Convergence** 🔄 3.4 > 1 — iterating");
+      expect(result).toContain("**Convergence** 🔄 3.40 > 1 — iterating");
     });
 
     it("scores findings and systemic severities together for a mixed round", () => {
@@ -1812,18 +1818,26 @@ describe("strays list structural integrity", () => {
 
 describe("convergence trajectory — issue #125", () => {
   it("renders the round line and embeds the rounds marker when a history is supplied", () => {
+    const convergence = {
+      score: 0.42,
+      threshold: 1,
+      converged: true,
+      rounds: [
+        { round: 1, score: 2.4 },
+        { round: 2, score: 0.42 },
+      ],
+    };
     const result = render({
-      findings: mkFindings([]),
+      findings: { ...mkFindings([]), convergence },
       envelope: baseEnvelope,
       prices,
       template,
-      rounds: [
-        { critical: 1, major: 2, minor: 0, nit: 0 },
-        { critical: 0, major: 0, minor: 0, nit: 0 },
-      ],
+      route: "full review",
+      convergenceRound: true,
     });
-    expect(result).toContain("**Round 2** · 🔴1 🟠2 → clean");
-    expect(result).toContain("<!-- code-review:rounds;base64 ");
+    expect(result).toContain("**Round 2** · 2.40 → 0.42");
+    // The trajectory is carried in the findings blob (issue #174), not a separate rounds marker.
+    expect(result).not.toContain("code-review:rounds");
   });
 
   it("renders no convergence line or marker when there is no round history", () => {
@@ -1832,17 +1846,25 @@ describe("convergence trajectory — issue #125", () => {
     expect(result).not.toContain("code-review:rounds");
   });
 
-  it("hides the trajectory LINE on an incomplete review but still carries the marker forward", () => {
+  it("hides the trajectory LINE on an incomplete review but keeps the trajectory in the blob (#174)", () => {
+    const convergence = {
+      score: 0.5,
+      threshold: 1,
+      converged: true,
+      rounds: [{ round: 1, score: 0.5 }],
+    };
     const result = render({
-      findings: mkFindings([]),
+      findings: { ...mkFindings([]), convergence },
       envelope: baseEnvelope,
       prices,
       template,
       incomplete: true,
-      rounds: [{ critical: 0, major: 1, minor: 0, nit: 0 }],
     });
     expect(result).not.toContain("**Round");
-    expect(result).toContain("<!-- code-review:rounds;base64 ");
+    // No rounds marker; the trajectory survives inside the findings blob for the next round.
+    expect(result).not.toContain("code-review:rounds");
+    const decoded = parseFindingsMarker(result) as { convergence?: { rounds?: unknown[] } };
+    expect(decoded.convergence?.rounds).toHaveLength(1);
   });
 });
 
@@ -1856,7 +1878,7 @@ describe("convergence score — issue #133", () => {
       route: "full review",
       rounds: [{ critical: 0, major: 0, minor: 0, nit: 0 }],
     });
-    expect(result).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
+    expect(result).toContain("**Convergence** 🏁 0.00 ≤ 1 — converged");
   });
 
   it("renders the iterating badge when a full-review round's score exceeds the threshold", () => {
@@ -1927,7 +1949,7 @@ describe("convergence score — issue #133", () => {
       // post appends this run's counts to the history for a completed full review.
       rounds: [{ critical: 0, major: 0, minor: 0, nit: 0 }],
     });
-    expect(full).toContain("**Convergence** 🏁 0 ≤ 1 — converged");
+    expect(full).toContain("**Convergence** 🏁 0.00 ≤ 1 — converged");
     const mechanic = render({
       findings: mkFindings([mkFinding({ severity: "critical" })]),
       envelope: { ...baseEnvelope, route: "mechanic" },

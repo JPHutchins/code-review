@@ -2,10 +2,29 @@
 // must agree on: severity→emoji, the machine-readable findings-json marker, and patch→suggestion
 // projection. Pure.
 
-import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
-import type { Finding, Findings, ScopeMetastasis, Severity, SystemicProblem } from "./schema.js";
+import { ConvergenceCodec, DEFAULT_SCHEMA_VERSION } from "./schema.js";
+import type {
+  Convergence,
+  ConvergenceCore,
+  ConvergenceRound,
+  Finding,
+  Findings,
+  ScopeMetastasis,
+  Severity,
+  SystemicProblem,
+} from "./schema.js";
 import type { CodeCounts, CodeStreak, RoundRecord, SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
+
+// The recurrence signals (streaks, scope metastasis, same-root) read only a round's mechanism map,
+// head SHA, and round number — never its score or severity counts — so this structural shape lets both
+// the JSON trajectory (ConvergenceRound) and a legacy parsed rounds marker (RoundRecord) flow through
+// the same detectors without an adapter.
+type RecurrenceRound = {
+  readonly codes?: CodeCounts;
+  readonly sha?: string;
+  readonly round?: number;
+};
 
 export const severityEmoji = (s: string): string => {
   switch (s) {
@@ -22,17 +41,16 @@ export const severityEmoji = (s: string): string => {
   }
 };
 
-// ~32KB of JSON in base64 — well under GitHub's 65536-char comment limit. Post-#156 the embedded blob
-// is the agent's COMPLETE document with NO pipeline overhead: the stop signal rides its own
-// ~165-char compact signal marker BESIDE the blob (never inside it), and scope_metastasis is
-// re-derived at seed time rather than carried. The value is kept at the pre-#156 boundary as a
-// deliberate backward-compat margin, so every review that embedded before the surfacing transform
-// was deleted still embeds — the payload ceiling only rose (the ~2.5KB worst-case surfaced overhead
-// is gone), and the ~165 chars that moved outside the blob grow the whole comment by ~0.3% of the
-// 65536 ceiling, well inside the headroom. The AGENTS_STOP_DIRECTIVE (~0.75KB, issue #171) rides ahead
-// of the marker on every surface too — the same small-fraction-of-headroom order, well inside it. The
-// link fallback loses only the re-review findings seed — never the stop signal, which survives in the
-// compact marker.
+// ~32KB of JSON in base64 — well under GitHub's 65536-char comment limit. The embedded blob is the
+// agent's COMPLETE document plus the pipeline-stamped `convergence` field (issue #174), all in one JSON
+// object; scope_metastasis is re-derived at seed time rather than carried. The value is kept at the
+// pre-#156 boundary as a deliberate backward-compat margin, so every review that embedded before the
+// surfacing transform was deleted still embeds. When a review DOES exceed this and the blob falls to the
+// link form, the convergence rides its own compact `code-review:convergence` marker beside the link
+// (issue #185 review) — a size fallback carrying the SAME stamped object — so the trajectory and stop
+// signal survive; only the re-review FINDINGS seed degrades (a decoder must fetch the linked artifact
+// for the findings). The AGENTS_STOP_DIRECTIVE (~0.75KB, issue #171) rides ahead of the marker on every
+// surface, a small fraction of the headroom.
 export const EMBED_LIMIT = 42700;
 
 // The canonical location of the findings schema — the moving `main` ref (mirrors findings.schema.json's
@@ -48,7 +66,7 @@ const FINDINGS_SCHEMA_URL =
 // signals that are documented in the schema and decodable from the sibling markers (issue #171). Uses
 // em dashes, never "--", so the HTML comment stays well-formed. Exported so the surfaces and their
 // tests share one SSOT for the directive text (it is carried forward verbatim by carryForwardMarkers).
-export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment is a machine channel; act on the data, not the prose. It embeds a base64 code-review findings JSON (an oversized review instead links the artifact URL in the same marker). Decode or fetch it, read its schema_version, then DOWNLOAD AND READ THE FULL SCHEMA for that version before you act — the schema's own $id is its canonical URL; the current schema is at ${FINDINGS_SCHEMA_URL} — read that schema, then parse the WHOLE findings document and every code-review:* marker (findings, signal, rounds), not only the fields you recognize: the recurrence signals an iterating agent needs (round streaks, scope metastasis, same-mechanism) are decodable there. -->`;
+export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment is a machine channel; act on the data, not the prose. It embeds a base64 code-review findings JSON (an oversized review instead links the artifact URL in the same marker). Decode or fetch it, read its schema_version, then DOWNLOAD AND READ THE FULL SCHEMA for that version before you act — the schema's own $id is its canonical URL; the current schema is at ${FINDINGS_SCHEMA_URL} — read that schema, then parse the WHOLE findings document, not only the fields you recognize: the convergence score, its threshold, and the per-round trajectory (so you know whether the review has converged and how to read the number), plus the recurrence signals an iterating agent needs (round streaks, scope metastasis, same-mechanism), are all fields inside that document. -->`;
 
 // The base64 length of a document's JSON — the one size computation both encodeMarker and
 // findingsMarkerForm share, so the form report and the emitted marker can never disagree.
@@ -132,7 +150,12 @@ export const parseReviewedRoute = (body: string): string | null => ROUTE_RE.exec
 // review, so it requires the route marker outright.
 export const isFullReviewSticky = (body: string): boolean => {
   const route = parseReviewedRoute(body);
-  return route === "full review" || (route !== "mechanic" && parseRounds(body).length > 0);
+  if (route === "full review") return true;
+  if (route === "mechanic") return false;
+  // Round history means a completed full review — whether it rides the new convergence field/marker or a
+  // legacy rounds marker (issue #185 review). A post-#174 notice carries its trajectory only in the blob,
+  // and this predicate gates the empty-mechanic guard that must not bury that completed review.
+  return priorTrajectory(parseFindingsMarker(body), body).length > 0;
 };
 
 // Carried by the announce placeholder when the sticky it replaced was a COMPLETED review: the
@@ -307,31 +330,31 @@ export const roundsMarker = (rounds: readonly RoundRecord[]): string => {
   return serialize(bounded);
 };
 
-// One round's chip: "🔴4 🟠3" for the round's severity content (findings + systemic, as stored), or
-// "clean" for none.
-const roundChip = (c: SeverityCounts): string => {
-  const parts = SEVERITIES.filter((k) => c[k] > 0).map((k) => `${severityEmoji(k)}${String(c[k])}`);
-  return parts.length === 0 ? "clean" : parts.join(" ");
-};
+// A convergence score for display: the same fixed-2-decimal formatting as formatConfidence (a descent
+// reads cleanly — 2.40 → 1.10 → 0.42 — and the badge and the trajectory's last entry print identically).
+// Delegates so a future change to the 2-decimal rule lands in one place.
+export const formatScore = (score: number): string => formatConfidence(score);
 
-// The convergence line: "**Round 3** · 🔴4 🟠3 → 🟠2 → clean"; "" when there is no round history. The
-// round number is always the true count; the trajectory shows only the most recent chips (with a
-// leading "…" when older ones are elided) so a long-running PR's line stays readable and bounded.
-const TRAJECTORY_CHIPS = 8;
+// The convergence trajectory (issue #174): "**Round 3** · 2.40 → 1.10 → 0.42"; "" when there is no
+// round history. Each entry is a round's stored convergence score; a round with no stored score (a
+// legacy rounds marker predating this feature) renders "—" rather than a severity chip, so the line
+// never mixes units. The round number is always the true count; only the most recent entries show
+// (with a leading "…" when older ones are elided) so a long-running PR's line stays bounded.
+const TRAJECTORY_SCORES = 8;
 export const roundsSummary = (
-  rounds: readonly SeverityCounts[],
+  rounds: readonly { readonly round?: number; readonly score?: number }[],
   count: number = rounds.length,
 ): string => {
   if (count === 0) return "";
-  const chips = rounds.slice(-TRAJECTORY_CHIPS).map(roundChip);
-  // Every marker entry filtered (a corrupt history) still shows the round number the carried signal
-  // claims — the label survives even with no chips to render (issue #141 review r4).
+  const cells = rounds
+    .slice(-TRAJECTORY_SCORES)
+    .map((r) => (typeof r.score === "number" ? formatScore(r.score) : "—"));
   const trajectory =
-    chips.length === 0
+    cells.length === 0
       ? ""
-      : rounds.length > TRAJECTORY_CHIPS
-        ? `… → ${chips.join(" → ")}`
-        : chips.join(" → ");
+      : rounds.length > TRAJECTORY_SCORES
+        ? `… → ${cells.join(" → ")}`
+        : cells.join(" → ");
   return trajectory === ""
     ? `**Round ${String(count)}**`
     : `**Round ${String(count)}** · ${trajectory}`;
@@ -385,7 +408,7 @@ export const roundRecord = (
 // that code, and the 1-indexed round where the streak began. A round with no codes record (pre-feature
 // or a round with no coded findings) ENDS every streak — absence of data cannot evidence recurrence.
 export const consecutiveCodeStreaks = (
-  rounds: readonly RoundRecord[],
+  rounds: readonly RecurrenceRound[],
 ): Readonly<Record<string, CodeStreak>> => {
   const entries: [string, CodeStreak][] = [];
   if (rounds.length === 0) return {};
@@ -436,7 +459,7 @@ export const SCOPE_METASTASIS_DECISION_PROMPT =
 // single computation both the advisory prose note and the structured scope-metastasis entry derive
 // from, so the two surfaces can never disagree on what is flagged.
 const flaggedCodeStreaks = (
-  rounds: readonly RoundRecord[],
+  rounds: readonly RecurrenceRound[],
   minStreak: number,
 ): ReadonlyArray<{ readonly code: string; readonly streak: CodeStreak }> =>
   Object.entries(consecutiveCodeStreaks(rounds))
@@ -450,7 +473,7 @@ const flaggedCodeStreaks = (
 // mirrors the convergence badge's posture: derives from the reviewer's own codes and never alters any
 // finding's severity or the verdict.
 export const metastasisNote = (
-  rounds: readonly RoundRecord[],
+  rounds: readonly RecurrenceRound[],
   minStreak: number = DEFAULT_METASTASIS_STREAK,
 ): string => {
   const flagged = flaggedCodeStreaks(rounds, minStreak);
@@ -479,7 +502,7 @@ export const metastasisNote = (
 // the representation differs (a backtick/newline code is escaped for the markdown surface, raw in
 // the JSON).
 export const computeScopeMetastasis = (
-  rounds: readonly RoundRecord[],
+  rounds: readonly RecurrenceRound[],
   minStreak: number = DEFAULT_METASTASIS_STREAK,
 ): ScopeMetastasis | null => {
   const flagged = flaggedCodeStreaks(rounds, minStreak);
@@ -499,7 +522,7 @@ export const computeScopeMetastasis = (
 // reviewer's own prose — the pipeline can't name the mechanism (that needs the finding text), but it
 // can name the round the code last appeared in. Empty when nothing recurs.
 export const computeSameRootNotes = (
-  priorRounds: readonly RoundRecord[],
+  priorRounds: readonly RecurrenceRound[],
   findings: readonly Finding[],
   currentSha?: string,
 ): Readonly<Record<string, string>> => {
@@ -598,6 +621,33 @@ export const convergenceScore = (doc: Findings, threshold: number): number =>
       ),
   );
 
+// The pipeline-stamped convergence field (issue #174): this round's score/threshold/converged plus the
+// per-round trajectory. Prior rounds are carried VERBATIM — their scores are historical snapshots, and
+// recomputing at a changed threshold would rewrite the past — while THIS round is appended with its
+// score and the mechanism map + head SHA the recurrence signals read. The trajectory is bounded to the
+// most recent rounds so it can never bloat the blob past its embed limit; the recurrence detectors read
+// only the recent tail, so bounding never ends a live streak.
+export const CONVERGENCE_TRAJECTORY_LIMIT = 64;
+export const buildConvergence = (
+  doc: Findings,
+  threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
+  priorRounds: readonly ConvergenceRound[] = [],
+  round: number = 1,
+  codes: CodeCounts = {},
+  sha?: string,
+): Convergence => {
+  const score = convergenceScore(doc, threshold);
+  const normalized = normalizeCodeCounts(codes, priorRounds[priorRounds.length - 1]?.codes);
+  const current: ConvergenceRound = {
+    round,
+    score,
+    ...(normalized !== undefined ? { codes: { ...normalized } } : {}),
+    ...(sha !== undefined ? { sha } : {}),
+  };
+  const rounds = [...priorRounds, current].slice(-CONVERGENCE_TRAJECTORY_LIMIT);
+  return { score, threshold, converged: score <= threshold, rounds };
+};
+
 // ── Nit visibility floor (issue #164) ───────────────────────────────────────────────────────────
 // A nit whose confidence × likelihood falls below this is below the noise floor: KEPT in the machine
 // blob (so the next-round seed reads it as already adjudicated and never re-raises it as fresh) but
@@ -655,22 +705,24 @@ export const priorBelowFloorNits = (
   return nits;
 };
 
-// "**Convergence** 🏁 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". The converged glyph
-// is a checkered flag, NOT the verdict badge's ✅, so a reader (or the author-agent this steers) can't
-// skim the line as an approval. The score is already rounded to 2 decimals (convergenceScore) and
-// printed with String() — never re-rounded here — and the `converged` boolean reads that SAME rounded
-// value, so the shown inequality can never contradict the computed comparison. The verdict derives from
-// convergenceSignal — the same `score <= threshold` decision the compact signal marker's literal
-// `converged` uses — so the prose badge and the machine boolean can never disagree.
+// The convergence badge from a stored or freshly-computed signal: "**Convergence** 🏁 0.42 ≤ 1 —
+// converged" / "**Convergence** 🔄 2.40 > 1 — iterating". The score prints 2-decimal (formatScore) so it
+// matches the trajectory's last entry; the converged glyph is a checkered flag, NOT the verdict badge's
+// ✅, so a reader (or the author-agent this steers) can't skim the line as an approval. `converged` is
+// read from the signal, never recomputed here, so the shown inequality can't contradict the stored
+// decision.
+export const convergenceBadge = (c: ConvergenceCore): string =>
+  c.converged
+    ? `**Convergence** 🏁 ${formatScore(c.score)} ≤ ${String(c.threshold)} — converged`
+    : `**Convergence** 🔄 ${formatScore(c.score)} > ${String(c.threshold)} — iterating`;
+
+// The badge computed fresh from a document — the standalone `render` command and any legacy sticky with
+// no stored convergence. The post path reads the stamped signal via convergenceBadge, so its shown
+// score is the verbatim historical value.
 export const convergenceSummary = (
   doc: Findings,
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
-): string => {
-  const { score, converged } = convergenceSignal(doc, threshold);
-  return converged
-    ? `**Convergence** 🏁 ${String(score)} ≤ ${String(threshold)} — converged`
-    : `**Convergence** 🔄 ${String(score)} > ${String(threshold)} — iterating`;
-};
+): string => convergenceBadge(convergenceSignal(doc, threshold));
 
 // The version the compact stop-signal marker declares (signalMarker stamps it into that marker's
 // payload) and the version a LEGACY surfaced blob declared before issue #156 deleted the surfacing
@@ -681,11 +733,9 @@ export const convergenceSummary = (
 // the embedded blob is the agent's raw draft — but the signal marker still carries this version.
 export const SURFACE_SCHEMA_VERSION = "0.8.0";
 
-export interface ConvergenceSignal {
-  readonly score: number;
-  readonly threshold: number;
-  readonly converged: boolean;
-}
+// The stop signal's convergence core is the schema's ConvergenceCore — one definition shared by the
+// JSON convergence field and the legacy compact signal marker's reader.
+export type ConvergenceSignal = ConvergenceCore;
 
 // The stop signal carried in the compact signal marker: the round number + that round's score/
 // threshold/converged. Computed once when the round completes; every later post carries it VERBATIM,
@@ -792,6 +842,90 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
   };
 };
 
+// Decode-tolerant read of the pipeline-stamped convergence field from a prior findings blob (the raw
+// parseFindingsMarker output): the convergence when the blob carries a valid one, else null.
+// Best-effort like parseRounds — a malformed or absent field yields null, never a throw.
+// A #174 pipeline stamp always carries a NON-EMPTY trajectory. A convergence that decodes but has no
+// `rounds` (or an empty one) is either a legacy pre-#156 surface blob's embedded stop signal or a
+// crafted/reset value — treat it as absent so the marker/legacy fallbacks reconstruct the whole thing,
+// and an empty trajectory can never silently reset the round count to 0 (issue #185 review).
+const validStampedConvergence = (raw: unknown): Convergence | null => {
+  const decoded = ConvergenceCodec.decode(raw);
+  return decoded._tag === "Right" &&
+    decoded.right.rounds !== undefined &&
+    decoded.right.rounds.length > 0
+    ? decoded.right
+    : null;
+};
+
+export const parseConvergence = (priorDoc: unknown): Convergence | null => {
+  if (typeof priorDoc !== "object" || priorDoc === null) return null;
+  const raw = (priorDoc as Record<string, unknown>)["convergence"];
+  return raw === undefined ? null : validStampedConvergence(raw);
+};
+
+const CONVERGENCE_RE = /<!-- code-review:convergence;base64 ([A-Za-z0-9+/=]+) -->/;
+
+// The compact convergence marker — a SIZE FALLBACK for the link/omitted blob form (issue #185 review):
+// convergence lives IN the findings blob (the SSOT), but an oversized review's blob falls to the link
+// form and the convergence would be lost with it. This carries the SAME stamped convergence object
+// compactly beside the link, emitted ONLY when the blob does not embed and read ONLY as a fallback (the
+// embedded blob always wins), so a normal sticky carries no such marker and the two can never diverge.
+export const convergenceMarker = (convergence: Convergence): string =>
+  `<!-- code-review:convergence;base64 ${Buffer.from(JSON.stringify(convergence), "utf-8").toString(
+    "base64",
+  )} -->`;
+
+export const parseConvergenceMarker = (body: string): Convergence | null => {
+  const b64 = CONVERGENCE_RE.exec(body)?.[1];
+  return b64 === undefined ? null : validStampedConvergence(decodeBase64Json(b64));
+};
+
+// A legacy parsed rounds marker mapped into the trajectory shape: codes/sha/round survive (the
+// recurrence detectors read them), score is absent (a legacy round stored no score, so the trajectory
+// renders "—" for it). The one-time bridge across the upgrade to the JSON convergence field.
+export const roundRecordsToConvergenceRounds = (
+  records: readonly RoundRecord[],
+): ConvergenceRound[] =>
+  records.map((r, i) => ({
+    round: r.round ?? i + 1,
+    ...(r.codes !== undefined ? { codes: { ...r.codes } } : {}),
+    ...(r.sha !== undefined ? { sha: r.sha } : {}),
+  }));
+
+// The prior round trajectory for post + seed: the JSON convergence field's rounds when the prior blob
+// carries it, else the legacy rounds marker mapped forward. Empty on a first review.
+export const priorTrajectory = (
+  priorDoc: unknown,
+  priorBody: string,
+): readonly ConvergenceRound[] =>
+  parseConvergence(priorDoc)?.rounds ??
+  parseConvergenceMarker(priorBody)?.rounds ??
+  roundRecordsToConvergenceRounds(parseRounds(priorBody));
+
+// The prior completed round's convergence, carried VERBATIM into a notice or CI-fix pass so the JSON
+// keeps the trajectory + last score across a non-round post: the stamped convergence field if present,
+// else reconstructed from a legacy sticky's compact signal marker (the core) + rounds marker (the
+// trajectory, scoreless). null when no round has completed — a first-run notice stamps no convergence.
+export const carriedConvergence = (priorDoc: unknown, priorBody: string): Convergence | null => {
+  const stamped = parseConvergence(priorDoc) ?? parseConvergenceMarker(priorBody);
+  if (stamped !== null) return stamped;
+  const signal = parseSignalMarker(priorBody) ?? parseSurfaceSignal(priorDoc);
+  if (signal === null) return null;
+  const legacy = roundRecordsToConvergenceRounds(parseRounds(priorBody));
+  // The legacy signal's round is the authoritative completed-round count; if a corrupt round was
+  // filtered from the rounds marker, keep that count on the trajectory's last entry so the next round
+  // never regresses (issue #141). An empty marker beside a signal becomes a single scoreless round.
+  const last = legacy[legacy.length - 1];
+  const rounds =
+    last === undefined
+      ? [{ round: signal.round }]
+      : last.round < signal.round
+        ? [...legacy.slice(0, -1), { ...last, round: signal.round }]
+        : legacy;
+  return { ...signal.convergence, rounds };
+};
+
 // Every surface-channel version this CLI recognizes: the versions a LEGACY surfaced blob declared
 // (which stripSurfaceFields peels back to the agent document, so a sticky written before issue #156
 // still seeds) plus the version the compact signal marker declares today. A dedicated list,
@@ -840,6 +974,9 @@ export const carryForwardMarkers = (body: string): string => {
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
   const reviewedRoute = ROUTE_RE.exec(body)?.[0];
+  // The compact convergence marker (issue #185 review) rides an oversized review's link-form blob, so
+  // the in-progress placeholder must carry it forward too or the trajectory is lost across the swap.
+  const convergence = CONVERGENCE_RE.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
   const signal = SIGNAL_RE.exec(body)?.[0];
   // The replaced sticky was a completed review — the placeholder must record that ancestry even
@@ -849,7 +986,7 @@ export const carryForwardMarkers = (body: string): string => {
       ? COMPLETED_ANCESTOR_MARKER
       : undefined;
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, rounds, signal]
+  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, convergence, rounds, signal]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
 };

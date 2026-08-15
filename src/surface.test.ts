@@ -22,6 +22,10 @@ import {
   convergenceScore,
   convergenceSummary,
   convergenceSignal,
+  buildConvergence,
+  parseConvergence,
+  carriedConvergence,
+  CONVERGENCE_TRAJECTORY_LIMIT,
   isBelowVisibilityFloor,
   priorBelowFloorNits,
   DEFAULT_NIT_VISIBILITY_FLOOR,
@@ -352,14 +356,18 @@ describe("rounds trajectory — issue #125", () => {
     expect(parseRounds(`<!-- code-review:rounds;base64 ${missingKey} -->`)).toEqual([]);
   });
 
-  it("renders the trajectory: emoji chips per round, 'clean' for a round with no findings", () => {
-    expect(roundsSummary([counts(1, 2, 0, 0), counts(0, 1, 0, 0), counts(0, 0, 0, 0)])).toBe(
-      "**Round 3** · 🔴1 🟠2 → 🟠1 → clean",
-    );
+  it("renders the trajectory as numeric per-round convergence scores (issue #174)", () => {
+    expect(
+      roundsSummary([
+        { round: 1, score: 2.4 },
+        { round: 2, score: 1.1 },
+        { round: 3, score: 0.42 },
+      ]),
+    ).toBe("**Round 3** · 2.40 → 1.10 → 0.42");
   });
 
   it("shows the round number even for the first round, and nothing when there is no history", () => {
-    expect(roundsSummary([counts(0, 0, 5, 0)])).toBe("**Round 1** · 🔵5");
+    expect(roundsSummary([{ round: 1, score: 0.5 }])).toBe("**Round 1** · 0.50");
     expect(roundsSummary([])).toBe("");
   });
 
@@ -397,17 +405,19 @@ describe("rounds trajectory — issue #125", () => {
   });
 
   it("caps the visible trajectory with a leading ellipsis while keeping the true round number", () => {
-    const many = Array.from({ length: 12 }, (_, i) => counts(0, 0, i + 1, 0));
+    const many = Array.from({ length: 12 }, (_, i) => ({ round: i + 1, score: (i + 1) / 10 }));
     const summary = roundsSummary(many);
     expect(summary.startsWith("**Round 12** · … → ")).toBe(true);
-    // Only the last 8 chips are shown; the earliest (🔵1) is elided.
-    expect(summary).toContain("🔵12");
-    expect(summary).not.toContain("🔵1 →");
+    // Only the last 8 scores are shown; the earliest (round 1, 0.10) is elided.
+    expect(summary).toContain("1.20");
+    expect(summary).not.toContain("0.10 →");
   });
 
-  it("labels the round from an explicit count when the history lost an entry — the trajectory and the blob's round stay equal (issue #141 review r3)", () => {
-    // The marker holds 1 parseable round, but the carried signal says round 3 was completed.
-    expect(roundsSummary([counts(0, 1, 0, 0)], 3)).toBe("**Round 3** · 🟠1");
+  it("labels the round from an explicit count, and renders — for a legacy round with no stored score (issue #174)", () => {
+    // A legacy rounds-marker round carries no score, so it renders "—", never a chip — the line never
+    // mixes units. The explicit count still labels the round even when the history lost entries.
+    expect(roundsSummary([{ round: 3 }], 3)).toBe("**Round 3** · —");
+    expect(roundsSummary([{ round: 1 }, { round: 2, score: 0.4 }])).toBe("**Round 2** · — → 0.40");
   });
 
   it("keeps the label when every marker entry was filtered — the carried count still claims the round (issue #141 review r4)", () => {
@@ -460,7 +470,9 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
 
   it("a nit never contributes, at any confidence", () => {
     expect(convergenceScore(docOf(["nit", 1], ["nit", 0.3]), 1)).toBe(0);
-    expect(convergenceSummary(docOf(["nit", 1]), 1)).toBe("**Convergence** 🏁 0 ≤ 1 — converged");
+    expect(convergenceSummary(docOf(["nit", 1]), 1)).toBe(
+      "**Convergence** 🏁 0.00 ≤ 1 — converged",
+    );
   });
 
   it("an open critical never converges — its floor exceeds the threshold even at confidence 0", () => {
@@ -481,29 +493,90 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
   it("rounds to 2 decimals and compares the boolean on that same rounded value", () => {
     // three minors at 0.1 + 0.9 × 0.26 = 0.334 each → raw 1.002, which rounds to 1.00 ≤ 1 (issue #178)
     expect(convergenceSummary(docOf(["minor", 0.26], ["minor", 0.26], ["minor", 0.26]), 1)).toBe(
-      "**Convergence** 🏁 1 ≤ 1 — converged",
+      "**Convergence** 🏁 1.00 ≤ 1 — converged",
     );
   });
 
   it("respects a raised threshold as the single tolerance knob", () => {
     expect(convergenceSummary(docOf(["minor", 1], ["minor", 1]), 3)).toBe(
-      "**Convergence** 🏁 2 ≤ 3 — converged",
+      "**Convergence** 🏁 2.00 ≤ 3 — converged",
     );
-    expect(convergenceSummary(docOf(["major", 1]), 3)).toBe("**Convergence** 🏁 2 ≤ 3 — converged");
+    expect(convergenceSummary(docOf(["major", 1]), 3)).toBe(
+      "**Convergence** 🏁 2.00 ≤ 3 — converged",
+    );
   });
 
   it("renders score and threshold exactly so the printed inequality matches the comparison (#135 review)", () => {
     expect(convergenceSummary(docOf(["minor", 1]), 1.5)).toBe(
-      "**Convergence** 🏁 1 ≤ 1.5 — converged",
+      "**Convergence** 🏁 1.00 ≤ 1.5 — converged",
     );
     expect(convergenceSummary(docOf(["minor", 1]), 0.95)).toBe(
-      "**Convergence** 🔄 1 > 0.95 — iterating",
+      "**Convergence** 🔄 1.00 > 0.95 — iterating",
     );
     // A threshold a lossy formatter (toFixed(1)) would round to "1.0" must print its true value, or
     // the converged line reads as a false inequality — the guard case from the pre-#162 suite.
     expect(convergenceSummary(docOf(["minor", 1]), 1.04)).toBe(
-      "**Convergence** 🏁 1 ≤ 1.04 — converged",
+      "**Convergence** 🏁 1.00 ≤ 1.04 — converged",
     );
+  });
+
+  it("round-trips convergence through the blob so the next round reads it back (#174)", () => {
+    // A completed round's stamp, appended to a prior trajectory, survives serialize -> parseFindingsMarker
+    // -> parseConvergence, and carriedConvergence reads the SAME stamp — the round -> notice -> round path,
+    // where the notice carries the prior convergence forward in its blob.
+    const conv = buildConvergence(docOf(["minor", 0.7]), 1, [{ round: 1, score: 2 }], 2, {});
+    expect(conv.rounds).toHaveLength(2);
+    const decoded = parseFindingsMarker(
+      findingsPointer({ ...docOf(["minor", 0.7]), convergence: conv }, undefined),
+    );
+    expect(parseConvergence(decoded)).toEqual(conv);
+    expect(carriedConvergence(decoded, "")).toEqual(conv);
+  });
+
+  it("bounds the stamped trajectory to the most recent rounds without renumbering (#174)", () => {
+    const prior = Array.from({ length: 70 }, (_, i) => ({ round: i + 1, score: i / 100 }));
+    const conv = buildConvergence(docOf(["minor", 0.7]), 1, prior, 71, {});
+    expect(conv.rounds).toHaveLength(CONVERGENCE_TRAJECTORY_LIMIT);
+    // This round is the last entry, numbered correctly; the oldest rounds are dropped, but the survivors
+    // keep their true round numbers — dropping never renumbers.
+    expect(conv.rounds?.[conv.rounds.length - 1]?.round).toBe(71);
+    expect(conv.rounds?.[0]?.round).toBe(71 - CONVERGENCE_TRAJECTORY_LIMIT + 1);
+  });
+
+  it("rejects a convergence with a non-finite score — Infinity serializes to null and would drop the trajectory (#185 review)", () => {
+    expect(
+      parseConvergence({
+        convergence: {
+          score: Infinity,
+          threshold: 1,
+          converged: false,
+          rounds: [{ round: 1, score: 1 }],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("treats a convergence with an empty trajectory as absent, so it can't reset the round count (#185 review)", () => {
+    expect(
+      parseConvergence({ convergence: { score: 0, threshold: 1, converged: true, rounds: [] } }),
+    ).toBeNull();
+  });
+
+  it("classifies a post-#174 notice carrying convergence only in its blob as full-review history (#185 review)", () => {
+    // A notice: no route marker, no legacy rounds marker — the trajectory rides only the convergence
+    // blob, so isFullReviewSticky must read it there or the empty-mechanic guard buries the review.
+    const doc: Findings = {
+      ...docOf(["minor", 0.7]),
+      convergence: {
+        score: 0.73,
+        threshold: 1,
+        converged: true,
+        rounds: [{ round: 1, score: 0.73 }],
+      },
+    };
+    const body = `<!-- code-review -->\n${findingsPointer(doc, undefined)}`;
+    expect(body).not.toContain("reviewed-route");
+    expect(isFullReviewSticky(body)).toBe(true);
   });
 });
 

@@ -9,13 +9,12 @@ import {
   severityEmoji,
   projectPatch,
   formatConfidence,
-  roundsMarker,
   roundsSummary,
   convergenceSummary,
+  convergenceBadge,
   computeSameRootNotes,
   metastasisNote,
-  signalForRound,
-  surfacedFindingsPointer,
+  findingsPointer,
   escapeCodeBackticks,
   DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
@@ -136,13 +135,18 @@ export const render = (input: RenderInput): string => {
   const effort = input.effort ?? input.envelope?.effort ?? null;
   const modelNames = input.envelope ? input.envelope.models.map((m) => m.model).join(", ") : "";
   const severityCounts = input.severityCounts ?? computeSeverityCounts(input.findings.findings);
-  const rounds = input.rounds ?? [];
+  // The pipeline-stamped convergence field (issue #174) is the source for the trajectory and the badge.
+  // `input.rounds` is a fallback only for callers that supply a legacy trajectory directly (tests, or a
+  // standalone render of a doc without convergence); its entries carry no score and render "—". Every
+  // production sticky carries convergence in the blob, so the fallback never fires there.
+  const convergence = input.findings.convergence;
+  const trajectory = convergence?.rounds ?? input.rounds ?? [];
   // The same-root annotation: post passes the explicit map computed from the PRIOR-round history it
   // parsed before appending this run's record; the standalone render command derives it from the
   // supplied history minus its last (current) round. Keyed by code, rendered under each finding that
   // carries it; empty when nothing recurs — no annotation.
   const sameRootNotes =
-    input.sameRootNotes ?? computeSameRootNotes(rounds.slice(0, -1), input.findings.findings);
+    input.sameRootNotes ?? computeSameRootNotes(trajectory.slice(0, -1), input.findings.findings);
   // The convergence badge is a property of a completed FULL-REVIEW round: render it only then, from
   // the completed round's counts. A CI-fix mechanic pass, a lost-envelope pass, and a notice each
   // append no round and declare no convergence verdict — a badge from the current findings would sit
@@ -157,7 +161,7 @@ export const render = (input: RenderInput): string => {
   // findings are also empty): an error doc that carries findings must still show no badge, never
   // "converged" beside the "no review verdict" badge.
   const isFullReviewRound =
-    (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && rounds.length > 0)) &&
+    (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && trajectory.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
 
   // The badge AND the compact signal marker both score THIS run's findings + systemic problems (issue
@@ -186,9 +190,11 @@ export const render = (input: RenderInput): string => {
     reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
     postedAt: input.postedAt ?? "",
     severityCounts,
-    convergenceSummary: isFullReviewRound
-      ? convergenceSummary(input.findings, input.convergenceThreshold)
-      : "",
+    convergenceSummary: !isFullReviewRound
+      ? ""
+      : convergence
+        ? convergenceBadge(convergence)
+        : convergenceSummary(input.findings, input.convergenceThreshold),
     strays: (input.strays ?? []).map((f) => sanitizeFinding(f, input.answeredNotes)),
     suppressedNits: (input.suppressedNits ?? []).map(sanitizeSuppressedNit),
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,
@@ -197,23 +203,13 @@ export const render = (input: RenderInput): string => {
     inlineDisposition: input.inlineDisposition ?? null,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
-    findingsPointer:
-      input.findingsPointer ??
-      surfacedFindingsPointer(
-        input.findings,
-        // The fallback embeds a signal exactly when the badge renders — never beside a suppressed
-        // badge, and scores the same findings the badge does. It assumes a post-style history (the
-        // caller appends this run's counts last), numbering the round exactly as the trajectory
-        // label does; post always supplies the marker, so this path cannot disagree with it in
-        // production (issue #141 review r4).
-        isFullReviewRound && rounds.length > 0
-          ? signalForRound(rounds.length, input.findings, input.convergenceThreshold)
-          : null,
-        input.jsonUrl,
-      ),
-    roundsMarker: roundsMarker(rounds),
-    roundsSummary: roundsSummary(rounds, input.roundCount),
-    metastasisNote: advisoryAllowed ? metastasisNote(rounds) : "",
+    // The blob is the agent's complete document with the pipeline-stamped convergence field inside it
+    // (issue #174) — no separate signal or rounds marker rides beside it. post always supplies the
+    // precomputed marker; the standalone `render` command falls back to encoding the doc here.
+    findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
+    roundsMarker: "",
+    roundsSummary: roundsSummary(trajectory, input.roundCount),
+    metastasisNote: advisoryAllowed ? metastasisNote(trajectory) : "",
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},
     answeredNotes: input.answeredNotes ?? {},
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",

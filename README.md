@@ -106,45 +106,55 @@ links to:
   The embedded document is the agent's **complete** findings document — the same `schema_version`
   0.9.0 contract the review agent is held to and
   [`schema/findings.schema.json`](schema/findings.schema.json) validates, and the same object the
-  comment is rendered from. It is embedded verbatim: no field is added or dropped, so the machine
-  channel can never carry less than, or drift from, the rendered prose.
+  comment is rendered from. The agent's fields are embedded verbatim; the pipeline stamps one field the
+  agent never writes — `convergence` (below) — so the whole review, findings and convergence signal
+  alike, travels as one JSON document with no side marker to drift from.
 
   ```json
   {
     "schema_version": "0.9.0",
     "verdict": "comment",
     "summary": "...",
-    "findings": []
+    "findings": [],
+    "convergence": {
+      "score": 0.42,
+      "threshold": 1,
+      "converged": true,
+      "rounds": [
+        { "round": 1, "score": 2.4 },
+        { "round": 2, "score": 1.1 },
+        { "round": 3, "score": 0.42 }
+      ]
+    }
   }
   ```
 
-  The deterministic **stop signal** for an iterating author-agent rides its own compact marker beside
-  the findings blob, `<!-- code-review:signal;base64 <base64> -->`, whose decoded payload is
-  `{ "schema_version": "0.8.0", "round": <n>, "convergence": { "score": <s>, "threshold": <t>, "converged": <bool> } }`.
-  `round` is the count of completed full-review rounds; `convergence.score` sums each finding and
-  systemic problem's `floor(severity) + max(0, ceiling − floor) × confidence × likelihood` (ceilings
-  critical 4 · major 2 · minor 1 · nit 0; floors critical `threshold + 0.01` · major 0.5 · minor 0.1
-  · nit 0). A **systemic problem is scored with `likelihood` = 1** — a structural observation has no
-  single triggering input, so it is never discounted by likelihood. Rounded to 2
-  decimals; `threshold` defaults to 1, and `converged` = score ≤ threshold as a literal
-  boolean — `converged: true` means the last completed round is at or below the tolerance, so another
-  iteration round is not warranted. The commenter computes the signal from the review's own severities
-  (the agent never writes it); it appears once at least one full-review round has completed and is
-  carried verbatim afterward — a mechanic (CI-fix) pass or an envelope-loss notice re-emits the last
-  completed round's signal rather than re-deriving it, so an operator changing `convergence_threshold`
-  mid-PR cannot flip a stored `converged`, and a notice never fabricates a stop signal for a run that
-  produced no review. Both markers survive the "review in progress" banner, which replaces only the
-  sticky's prose and carries them forward verbatim.
+  The **`convergence`** field is the deterministic stop signal AND the per-round trajectory for an
+  iterating author-agent, carried in the JSON document itself so a decoder reads one object.
+  `convergence.score` sums each finding and systemic problem's
+  `floor(severity) + max(0, ceiling − floor) × confidence × likelihood` (ceilings critical 4 · major 2
+  · minor 1 · nit 0; floors critical `threshold + 0.01` · major 0.5 · minor 0.1 · nit 0), rounded to 2
+  decimals. A **systemic problem is scored with `likelihood` = 1** — a structural observation has no
+  single triggering input, so it is never discounted by likelihood. `threshold` defaults to 1, and
+  `converged` = score ≤ threshold as a literal boolean — `converged: true` means the last completed
+  round is at or below the tolerance, so another iteration is not warranted. `score` and `threshold`
+  are both carried so the number is interpretable on its own. `convergence.rounds` is the trajectory,
+  oldest first: each entry's `score` is a historical snapshot carried **verbatim**, so changing
+  `convergence_threshold` mid-PR never rewrites a past round's number. The commenter computes
+  `convergence` from the review's own severities (the agent never writes it) and stamps it, overwriting
+  any value the agent echoed; it appears once at least one full-review round has completed and is carried
+  forward afterward — a mechanic (CI-fix) pass or an envelope-loss notice carries the last completed
+  round's convergence unchanged rather than re-deriving it, and a notice never fabricates a signal for a
+  run that produced no review. The convergence survives the "review in progress" banner, which replaces
+  only the sticky's prose and carries the blob forward verbatim.
 
-  Cross-round recurrence (the sticky's "Scope metastasis" warning) is carried structurally in the
-  `<!-- code-review:rounds;base64 <base64> -->` marker — per-round severity counts and mechanism
-  frequencies — from which the re-review seed re-derives the advisory `scope_metastasis` entry it
-  hands the next-round agent. It is deliberately NOT embedded in the findings blob: the blob is the
-  agent's own document, and a recurrence claim is round state the commenter owns. Each inline review
-  comment embeds only its own finding (a `schema_version` + one-finding fragment), and the
-  review-object body only links the sticky — so the **sticky is the sole documented decode surface**
-  for the whole-document marker; a decoding agent reads it there. The review body is written only after
-  the sticky exists (a failed sticky write aborts the run first), so it never carries the blob itself.
+  Cross-round recurrence (the sticky's "Scope metastasis" warning) is derived from the per-round
+  mechanism frequencies carried in `convergence.rounds` (each entry's `codes` map), from which the
+  re-review seed re-derives the advisory `scope_metastasis` entry it hands the next-round agent. Each
+  inline review comment embeds only its own finding (a `schema_version` + one-finding fragment), and the
+  review-object body only links the sticky — so the **sticky is the sole documented decode surface** for
+  the whole-document marker; a decoding agent reads it there. The review body is written only after the
+  sticky exists (a failed sticky write aborts the run first), so it never carries the blob itself.
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review
   phases. This is advisory/auditability only: it is never read by the comment job and never affects
   what gets posted.

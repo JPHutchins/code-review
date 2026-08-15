@@ -20,6 +20,18 @@
 <% if (it.convergenceSummary) { -%>
 <sub><%~ it.convergenceSummary %></sub>
 <% } -%>
+<% if (it.changeSummary) { -%>
+<sub>**Changes:** <%~ it.changeSummary %></sub>
+<% } -%>
+<% if (it.clocDiff) { -%>
+<details><summary>📏 cloc</summary>
+
+```
+<%~ it.clocDiff %>
+```
+
+</details>
+<% } -%>
 <% if (it.metastasisNote) { -%>
 <%~ it.metastasisNote %>
 <% } -%>

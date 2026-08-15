@@ -1464,6 +1464,65 @@ describe("render", () => {
     });
   });
 
+  describe("change-size breakdown + cloc collapsible (issue #182)", () => {
+    it("omits both when neither change_size nor clocDiff is provided", () => {
+      const result = render({
+        findings: mkFindings([]),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).not.toContain("**Changes:**");
+      expect(result).not.toContain("📏 cloc");
+    });
+
+    it("renders the Changes line from change_size, dropping an omitted role", () => {
+      const findings = mkFindings([], {
+        change_size: { code: { added: 240, removed: 80 }, docs: { added: 30, removed: 0 } },
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**Changes:** +240 / −80 code · +30 / −0 docs");
+      const changesLine = result.split("\n").find((l) => l.includes("**Changes:**")) ?? "";
+      expect(changesLine).not.toContain("tests");
+    });
+
+    it("renders the cloc table verbatim in a collapsible", () => {
+      const clocDiff = "Language      files    blank    code\nTypeScript        8        0      49";
+      const result = render({
+        findings: mkFindings([]),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        clocDiff,
+      });
+      expect(result).toContain("📏 cloc");
+      expect(result).toContain("TypeScript        8        0      49");
+    });
+
+    it("hides both on an incomplete review (chrome is for a completed round only)", () => {
+      const findings = mkFindings([], { change_size: { code: { added: 1, removed: 0 } } });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        clocDiff: "TypeScript 1 0 1",
+        incomplete: true,
+      });
+      expect(result).not.toContain("**Changes:**");
+      expect(result).not.toContain("📏 cloc");
+    });
+  });
+
   describe("empty models array", () => {
     it("renders successfully with no models entries", () => {
       const envelope: ResultEnvelope = {

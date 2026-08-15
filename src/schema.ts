@@ -240,6 +240,21 @@ const ConvergenceStrict = t.refinement(
 
 export const ConvergenceCodec = t.exact(ConvergenceStrict);
 
+// The change-size breakdown (issue #182): per-role added/removed line counts. UNLIKE
+// convergence/scope_metastasis (pipeline-stamped), this IS the agent's own judgment — a LOW-effort
+// path bucketing of the diff into code / tests / docs (a tests dir / *.test.* is tests, *.md / docs/
+// is docs, everything else is code; no file introspection). All roles optional and best-effort; an
+// absent role renders nothing. The deterministic cloc table beside it is pipeline-seeded, not here.
+const LineDelta = t.refinement(
+  t.number,
+  (n): n is number => Number.isInteger(n) && n >= 0,
+  "LineDelta",
+);
+const ChangeLinesCodec = t.exact(t.type({ added: LineDelta, removed: LineDelta }));
+export const ChangeSizeCodec = t.exact(
+  t.partial({ code: ChangeLinesCodec, tests: ChangeLinesCodec, docs: ChangeLinesCodec }),
+);
+
 export const FindingsCodec = t.exact(
   t.intersection([
     t.type({
@@ -254,6 +269,8 @@ export const FindingsCodec = t.exact(
       scope_metastasis: ScopeMetastasisCodec,
       // Pipeline-stamped only (issue #174); see ConvergenceCodec.
       convergence: ConvergenceCodec,
+      // Agent-written best-effort (issue #182); see ChangeSizeCodec.
+      change_size: ChangeSizeCodec,
     }),
   ]),
 );
@@ -341,6 +358,7 @@ export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;
 export type Findings = t.TypeOf<typeof FindingsCodec>;
 export type ScopeMetastasis = t.TypeOf<typeof ScopeMetastasisCodec>;
 export type Convergence = t.TypeOf<typeof ConvergenceCodec>;
+export type ChangeSize = t.TypeOf<typeof ChangeSizeCodec>;
 export type ConvergenceRound = t.TypeOf<typeof ConvergenceRoundCodec>;
 export type ConvergenceCore = t.TypeOf<typeof ConvergenceCoreShape>;
 export type Verdict = t.TypeOf<typeof VerdictCodec>;

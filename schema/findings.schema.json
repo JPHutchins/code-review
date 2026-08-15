@@ -172,6 +172,40 @@
         }
       }
     },
+    "change_size": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Best-effort (issue #182): the change's added/removed line counts bucketed by ROLE. Fill this with a LOW-effort path heuristic, no file introspection: a file under a tests directory or matching *.test.* / *_test.* is `tests`; a *.md file, anything under docs/, or a license/config doc is `docs`; everything else is `code`. Sum the diff's added and removed lines per bucket. Omit a role that did not change, or omit the whole field if you cannot estimate it. Chrome only — never affects the verdict or the convergence score. (The per-language cloc table shown beside it is supplied deterministically by the pipeline, not by you.)",
+      "properties": {
+        "code": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["added", "removed"],
+          "properties": {
+            "added": { "type": "integer", "minimum": 0 },
+            "removed": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "tests": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["added", "removed"],
+          "properties": {
+            "added": { "type": "integer", "minimum": 0 },
+            "removed": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "docs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["added", "removed"],
+          "properties": {
+            "added": { "type": "integer", "minimum": 0 },
+            "removed": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
     "findings": {
       "type": "array",
       "description": "Zero or more specific findings.",

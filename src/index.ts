@@ -62,7 +62,7 @@ import {
   parseAgentAllowlist,
   NOTICE_KINDS,
 } from "./notice.js";
-import { announce, post, reportIncomplete } from "./post.js";
+import { announce, loadClocDiff, post, reportIncomplete } from "./post.js";
 import { type CheckIntent, checkRun } from "./checkrun.js";
 import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.js";
 import { react, isReaction, REACTIONS } from "./react.js";
@@ -236,6 +236,9 @@ const resolvePrices = (pricesArg: string | undefined): PriceResolution => {
 const TEST_REPORT_DESCRIPTION =
   'Path to a JSON test summary: {"passed": number, "failed": number, "total": number, "failures"?: [{"name": string, "message"?: string}]}';
 
+const CLOC_DIFF_DESCRIPTION =
+  "Path to a raw `cloc --git --diff <base> <head>` table, rendered verbatim in the sticky's cloc collapsible. Best-effort: an absent, unreadable, or empty file omits the collapsible.";
+
 const CONVERGENCE_THRESHOLD_DESCRIPTION =
   "Advisory convergence tolerance: the per-finding convergence score (each finding's severity floor + confidence-and-likelihood-weighted headroom; ceilings critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged. The floor values and the systemic-likelihood rule are documented in the README and the findings schema (default: 1)";
 
@@ -285,6 +288,10 @@ const renderCmd = defineCommand({
       type: "string",
       description: TEST_REPORT_DESCRIPTION,
     },
+    "cloc-diff": {
+      type: "string",
+      description: CLOC_DIFF_DESCRIPTION,
+    },
     "convergence-threshold": {
       type: "string",
       description: CONVERGENCE_THRESHOLD_DESCRIPTION,
@@ -304,6 +311,7 @@ const renderCmd = defineCommand({
     const testReport = args["test-report"]
       ? decode(TestSummaryCodec.decode(readJSON(args["test-report"])), "test report")
       : undefined;
+    const clocDiff = args["cloc-diff"] ? loadClocDiff(args["cloc-diff"]) : undefined;
     // The render command renders ONE run with no PR history, so render's fallback (which requires a
     // completed round in the history) would show no convergence at all. A completed full-review run
     // IS round 1 of its conversation: pass its own counts as the history — the badge, the
@@ -338,6 +346,7 @@ const renderCmd = defineCommand({
       route: args.route,
       effort: args.effort,
       testReport,
+      clocDiff,
       convergenceThreshold: threshold,
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       convergenceRound: isRound,
@@ -1720,6 +1729,10 @@ const postCmd = defineCommand({
       type: "string",
       description: TEST_REPORT_DESCRIPTION,
     },
+    "cloc-diff": {
+      type: "string",
+      description: CLOC_DIFF_DESCRIPTION,
+    },
     "run-url": {
       type: "string",
       description:
@@ -1755,6 +1768,7 @@ const postCmd = defineCommand({
       headBranch: args["head-branch"],
       effort: args.effort,
       testReportPath: args["test-report"],
+      clocDiffPath: args["cloc-diff"],
       runUrl: args["run-url"],
       jsonUrl: args["json-url"],
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),

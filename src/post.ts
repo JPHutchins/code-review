@@ -66,6 +66,8 @@ export interface PostInput {
   readonly route?: string;
   readonly headBranch?: string;
   readonly testReportPath?: string;
+  // Raw `cloc --git --diff` table (issue #182), rendered verbatim in the sticky's cloc collapsible.
+  readonly clocDiffPath?: string;
   readonly effort?: string;
   readonly runUrl?: string;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
@@ -209,6 +211,22 @@ const loadTestReport = (path: string): TestSummary | undefined => {
     return undefined;
   }
   return decoded.right;
+};
+
+// The raw cloc --diff table (issue #182), best-effort like loadTestReport: an unreadable path warns
+// and omits the collapsible, and an empty/whitespace-only file (cloc ran but produced nothing, or a
+// placeholder left by a failed run) is treated as absent so no empty collapsible renders.
+export const loadClocDiff = (path: string): string | undefined => {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not read cloc diff at ${path}: ${errMsg(err)} — omitting the cloc collapsible\n`,
+    );
+    return undefined;
+  }
+  return raw.trim() === "" ? undefined : raw;
 };
 
 const parseHtmlUrl = (raw: string): string | undefined => {
@@ -838,6 +856,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
 
   const envelope = loadEnvelope(input.envelopePath);
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
+  const clocDiff = input.clocDiffPath ? loadClocDiff(input.clocDiffPath) : undefined;
 
   // The route the review job stamped, read the same way render does — `input.route` first, then the
   // envelope — so the workflow's --route passthrough and standalone callers both work, and the
@@ -887,6 +906,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         roundCount: priorRoundCount,
         convergenceRound: false,
         testReport,
+        clocDiff,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
@@ -1012,6 +1032,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     reviewedSha: input.headSha,
     effort: input.effort,
     testReport,
+    clocDiff,
     severityCounts: currentCounts,
     sameRootNotes,
     answeredNotes: reRaisedNotes,

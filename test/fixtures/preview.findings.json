@@ -1,5 +1,10 @@
 {
   "schema_version": "0.6.0",
+  "change_size": {
+    "code": { "added": 240, "removed": 80 },
+    "tests": { "added": 120, "removed": 10 },
+    "docs": { "added": 30, "removed": 0 }
+  },
   "summary": "The verdict is `changes`: the change is focused, but it lands a type widening existing callers cannot satisfy and a retry story that does not hold together across the touched files. The specific defects, their evidence, and the cross-cutting pattern are in the findings and systemic problems below.",
   "verdict": "changes",
   "systemic_problems": [

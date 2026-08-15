@@ -109,6 +109,21 @@ const stampedFindings = isFullReviewRound
 // (issue #174), built ONCE and shared by the sticky and the review body exactly like post.
 const marker = findingsPointer(stampedFindings, undefined);
 
+// A representative `cloc --git --diff base head` table (issue #182) — in production the pipeline
+// captures this; the fixture supplies one so the reference demonstrates the cloc collapsible.
+const previewClocDiff = [
+  "github.com/AlDanial/cloc v 1.98",
+  "-------------------------------------------------------------------------------",
+  "Language                     files          blank        comment           code",
+  "-------------------------------------------------------------------------------",
+  "TypeScript",
+  " added                           2              6             18            240",
+  " removed                         1              2              9             80",
+  "Markdown",
+  " added                           1              1              0             30",
+  "-------------------------------------------------------------------------------",
+].join("\n");
+
 const sticky = render({
   findings: stampedFindings,
   envelope,
@@ -118,6 +133,7 @@ const sticky = render({
   route: "full review",
   reviewedSha: REVIEWED_SHA,
   testReport,
+  clocDiff: previewClocDiff,
   strays,
   findingsPointer: marker,
   postedAt: formatUtc(new Date()),

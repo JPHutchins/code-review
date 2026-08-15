@@ -29,13 +29,26 @@ export const severityEmoji = (s: string): string => {
 // deliberate backward-compat margin, so every review that embedded before the surfacing transform
 // was deleted still embeds — the payload ceiling only rose (the ~2.5KB worst-case surfaced overhead
 // is gone), and the ~165 chars that moved outside the blob grow the whole comment by ~0.3% of the
-// 65536 ceiling, well inside the headroom. The link fallback loses only the re-review findings seed —
-// never the stop signal, which survives in the compact marker.
+// 65536 ceiling, well inside the headroom. The AGENTS_STOP_DIRECTIVE (~0.75KB, issue #171) rides ahead
+// of the marker on every surface too — the same small-fraction-of-headroom order, well inside it. The
+// link fallback loses only the re-review findings seed — never the stop signal, which survives in the
+// compact marker.
 export const EMBED_LIMIT = 42700;
 
-// Travels with the marker on every surface so a reader who sees only one comment still knows to decode it.
-const AGENTS_STOP_DIRECTIVE =
-  "<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->";
+// The canonical location of the findings schema — the moving `main` ref (mirrors findings.schema.json's
+// own $id). No version tag is cut yet; a tagged schema pins its own $id (schema/VERSIONING.md), so a
+// decoding agent starts here and, if its document's schema_version names a different version, fetches
+// that one — the URL below is NOT version-pinned.
+const FINDINGS_SCHEMA_URL =
+  "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json";
+
+// Travels with the marker on every surface so a reader who sees only one comment still knows to decode
+// it AND to read the schema before acting. Imperative and loud on purpose: lazy consumers cherry-pick
+// fields out of the JSON and act on only what they recognize, missing the machine-channel recurrence
+// signals that are documented in the schema and decodable from the sibling markers (issue #171). Uses
+// em dashes, never "--", so the HTML comment stays well-formed. Exported so the surfaces and their
+// tests share one SSOT for the directive text (it is carried forward verbatim by carryForwardMarkers).
+export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment is a machine channel; act on the data, not the prose. It embeds a base64 code-review findings JSON (an oversized review instead links the artifact URL in the same marker). Decode or fetch it, read its schema_version, then DOWNLOAD AND READ THE FULL SCHEMA for that version before you act — the schema's own $id is its canonical URL; the current schema is at ${FINDINGS_SCHEMA_URL} — read that schema, then parse the WHOLE findings document and every code-review:* marker (findings, signal, rounds), not only the fields you recognize: the recurrence signals an iterating agent needs (round streaks, scope metastasis, same-mechanism) are decodable there. -->`;
 
 // The base64 length of a document's JSON — the one size computation both encodeMarker and
 // findingsMarkerForm share, so the form report and the emitted marker can never disagree.
@@ -577,7 +590,7 @@ export const convergenceSummary = (
 
 // The version the compact stop-signal marker declares (signalMarker stamps it into that marker's
 // payload) and the version a LEGACY surfaced blob declared before issue #156 deleted the surfacing
-// transform. DISTINCT from the draft axis (DEFAULT_SCHEMA_VERSION is 0.7.0 after issue #163) so the
+// transform. DISTINCT from the draft axis (DEFAULT_SCHEMA_VERSION is 0.9.0 after issue #163) so the
 // surface channel can never be mistaken for the agent's own document: parseSurfaceSignal accepts a
 // signal marker only at a surface version, and stripSurfaceFields recognizes a legacy surfaced blob
 // by it to peel that blob back to a draft. Post-#156 nothing stamps a surfaced findings DOCUMENT —

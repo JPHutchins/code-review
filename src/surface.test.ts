@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateAgainstSchema } from "./validate.js";
@@ -10,7 +11,9 @@ import {
   parseCompletedAncestor,
   COMPLETED_ANCESTOR_MARKER,
   isFullReviewSticky,
+  AGENTS_STOP_DIRECTIVE,
   findingsPointer,
+  findingPointer,
   findingsMarkerForm,
   parseRounds,
   roundsMarker,
@@ -194,6 +197,46 @@ describe("findingsMarkerForm", () => {
   it("agrees with what findingsPointer actually emits (embedded form is the decodable one)", () => {
     expect(findingsMarkerForm(findings, undefined)).toBe("embedded");
     expect(findingsPointer(findings, undefined)).toContain("code-review:findings-json;base64");
+  });
+});
+
+describe("AGENTS stop directive — download-and-read-the-schema push (issue #171)", () => {
+  it("tells the agent to read schema_version, then DOWNLOAD AND READ THE FULL SCHEMA", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("schema_version");
+    expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).toContain("READ THE FULL SCHEMA");
+  });
+
+  it("embeds the schema's OWN $id, so the directive URL can't drift from the canonical location", () => {
+    // Derived from the schema file, not a hardcoded copy — the assertion FAILS if the two diverge,
+    // binding the directive's URL to findings.schema.json's $id as the single source of truth.
+    const schemaId = (JSON.parse(readFileSync(bundledSchemaPath, "utf-8")) as { $id: string }).$id;
+    expect(typeof schemaId).toBe("string");
+    expect(schemaId.length).toBeGreaterThan(0);
+    expect(AGENTS_STOP_DIRECTIVE).toContain(schemaId);
+    // The embedded URL is whitespace-bounded, never glued to punctuation — an agent that splits on
+    // whitespace to fetch it must not capture a trailing '.'.
+    expect(AGENTS_STOP_DIRECTIVE).toContain(`${schemaId} `);
+    expect(AGENTS_STOP_DIRECTIVE).not.toContain(`${schemaId}.`);
+  });
+
+  it("tells the agent to parse the whole document, not only recognized fields", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("WHOLE findings document");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("not only the fields you recognize");
+  });
+
+  it("stays a well-formed HTML comment — no bare '--' inside", () => {
+    expect(AGENTS_STOP_DIRECTIVE.startsWith("<!--")).toBe(true);
+    expect(AGENTS_STOP_DIRECTIVE.endsWith("-->")).toBe(true);
+    expect(AGENTS_STOP_DIRECTIVE.slice(4, -3)).not.toContain("--");
+  });
+
+  it("rides ahead of BOTH the whole-document and the per-finding inline markers", () => {
+    expect(findingsPointer(findings, undefined).startsWith(AGENTS_STOP_DIRECTIVE)).toBe(true);
+    expect(
+      findingPointer(findings.findings[0]!, findings.schema_version).startsWith(
+        AGENTS_STOP_DIRECTIVE,
+      ),
+    ).toBe(true);
   });
 });
 

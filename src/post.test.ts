@@ -5,7 +5,12 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
 import { post, announce, reportIncomplete } from "./post.js";
-import { findingPointer, parseRounds, parseSignalMarker } from "./surface.js";
+import {
+  AGENTS_STOP_DIRECTIVE,
+  findingPointer,
+  parseRounds,
+  parseSignalMarker,
+} from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -2441,8 +2446,7 @@ const mkAnnounceInput = (overrides: Partial<AnnounceInput> = {}): AnnounceInput 
   ...overrides,
 });
 
-const AGENTS_DIRECTIVE =
-  "<!-- AGENTS: STOP — do not parse the prose below; decode this findings JSON and read schema_version first. -->";
+const AGENTS_DIRECTIVE = AGENTS_STOP_DIRECTIVE;
 const FINDINGS_MARKER = "<!-- code-review:findings-json;base64 eyJhIjoxfQ== -->";
 const REVIEWED_SHA_MARKER = `<!-- reviewed-sha: ${"a".repeat(40)} -->`;
 

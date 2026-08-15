@@ -38,7 +38,7 @@
 ### 🔗 Systemic problems
 
 <% it.systemic.forEach(function(s) { -%>
-#### <%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <%= s.title %> · confidence <%= it.formatConfidence(s.confidence) %> · likelihood <%= it.formatConfidence(s.likelihood) %>
+#### <%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <%= s.title %> · confidence <%= it.formatConfidence(s.confidence) %>
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_codes && s.finding_codes.length > 0) { meta.push('Ties together: ' + s.finding_codes.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
 <%~ s.description %>

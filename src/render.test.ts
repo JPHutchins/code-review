@@ -590,9 +590,11 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template });
 
       expect(result).toContain("### 🔗 Systemic problems");
-      expect(result).toContain(
-        "#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80 · likelihood 1.00",
-      );
+      // Systemic likelihood is a hardcoded constant (1) in scoring — see the convergence-score change
+      // — so it carries no per-item information and is NOT surfaced on the systemic header; findings
+      // keep confidence + likelihood.
+      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80");
+      expect(result).not.toContain("Retry plumbing is inconsistent · confidence 0.80 · likelihood");
       expect(result).toContain("Three spots, three retry policies — the pattern is the problem.");
       expect(result).toContain("_Affects: `src/upload/config.ts`, `src/upload/client.ts`");
       expect(result).toContain("Ties together: `widened-type`");

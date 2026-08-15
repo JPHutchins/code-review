@@ -42,7 +42,8 @@
         "title": "timeout type changed from number to number | string",
         "description": "Widens the type; callers that assumed a number now need coercion.",
         "reasoning": "Callers doing arithmetic on the timeout now type-error or silently coerce; the diff widens the type without updating them.",
-        "confidence": 0.85
+        "confidence": 0.85,
+        "likelihood": 1
       }
     ]
   },

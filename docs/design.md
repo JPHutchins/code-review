@@ -257,7 +257,7 @@ to.
 extraction ladder above ([`src/extract.ts`](../src/extract.ts)); a version-aware schema registry that
 dispatches on a document's `schema_version` against a supported allowlist
 ([`src/registry.ts`](../src/registry.ts), [`schema/VERSIONING.md`](../schema/VERSIONING.md); findings
-schema is now `0.6.0`); a CLI with `render`/`inline`/`post`/`adapt`/`cost`/`validate`/`print-schema`/`extract`
+schema is now `0.9.0`); a CLI with `render`/`inline`/`post`/`adapt`/`cost`/`validate`/`print-schema`/`extract`
 subcommands ([`src/index.ts`](../src/index.ts)), published to npm as `@jphutchins/code-review` via OIDC
 trusted publishing ([`.github/workflows/release.yaml`](../.github/workflows/release.yaml)); and the
 single-file reference workflow ([`examples/workflows/review.yaml`](../examples/workflows/review.yaml)).

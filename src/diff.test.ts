@@ -27,6 +27,7 @@ const finding = (overrides: Partial<Finding>): Finding => ({
   description: "test description",
   reasoning: "test reasoning",
   confidence: 0.5,
+  likelihood: 1,
   ...overrides,
 });
 

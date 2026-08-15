@@ -20,6 +20,7 @@ const aFinding: Finding = {
   description: "d",
   reasoning: "r",
   confidence: 0.5,
+  likelihood: 1,
 };
 
 describe("notice findings verdict — issue #117", () => {

@@ -29,6 +29,7 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   description: "Test description content.",
   reasoning: "Test reasoning content.",
   confidence: 0.7,
+  likelihood: 1,
   ...overrides,
 });
 
@@ -324,6 +325,7 @@ describe("post — systemic problems (issue #134)", () => {
           severity: "major",
           reasoning: "Each file implements its own policy.",
           confidence: 0.8,
+          likelihood: 1,
           finding_codes: ["widened-type"],
           paths: ["src/foo.ts"],
         },
@@ -3418,7 +3420,14 @@ describe("post — convergence rounds (issue #125)", () => {
       JSON.stringify({
         ...mkFindings([mkFinding({ severity: "nit" })]),
         systemic_problems: [
-          { title: "t", description: "d", severity: "major", reasoning: "r", confidence: 0.8 },
+          {
+            title: "t",
+            description: "d",
+            severity: "major",
+            reasoning: "r",
+            confidence: 0.8,
+            likelihood: 1,
+          },
         ],
       }),
     );
@@ -3727,6 +3736,7 @@ describe("post — answered findings (issue #151)", () => {
             severity: "minor",
             reasoning: "r",
             confidence: 0.8,
+            likelihood: 1,
             finding_codes: ["recurring-a", "kept-code"],
             paths: ["src/foo.ts"],
           },

@@ -26,6 +26,7 @@ const LineNumber = t.refinement(
 );
 
 const Confidence = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Confidence");
+const Likelihood = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Likelihood");
 
 // Mirrors findings.schema.json's schema_version.pattern exactly, so resolve() never accepts a value
 // the ajv gate would reject (e.g. a truncated "0.2" or an over-long "0.2.0.0").
@@ -65,6 +66,7 @@ const FindingShape = t.intersection([
     description: t.string,
     reasoning: t.string,
     confidence: Confidence,
+    likelihood: Likelihood,
   }),
   FindingRuleCodec,
   t.partial({
@@ -91,6 +93,7 @@ const SystemicRequired = t.type({
   severity: SeverityCodec,
   reasoning: t.string,
   confidence: Confidence,
+  likelihood: Likelihood,
 });
 
 const SystemicOptional = t.partial({
@@ -258,7 +261,7 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.6.0";
+export const DEFAULT_SCHEMA_VERSION = "0.7.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;

@@ -88,6 +88,7 @@ const findings = {
       description: "d",
       reasoning: "r",
       confidence: 0.5,
+      likelihood: 1,
     },
   ],
 } as unknown as Findings;
@@ -370,12 +371,12 @@ describe("rounds trajectory — issue #125", () => {
 });
 
 describe("convergence score — per-finding weighting (issue #133 / #162)", () => {
-  const docOf = (...items: ReadonlyArray<readonly [Severity, number]>): Findings =>
+  const docOf = (...items: ReadonlyArray<readonly [Severity, number, number?]>): Findings =>
     ({
       schema_version: DEFAULT_SCHEMA_VERSION,
       summary: "s",
       verdict: "comment",
-      findings: items.map(([severity, confidence], i) => ({
+      findings: items.map(([severity, confidence, likelihood = 1], i) => ({
         path: "src/x.ts",
         start_line: i + 1,
         end_line: i + 1,
@@ -384,6 +385,7 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
         description: "d",
         reasoning: "r",
         confidence,
+        likelihood,
       })),
     }) as unknown as Findings;
 
@@ -396,6 +398,16 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(convergenceScore(docOf(["major", 0.5]), 1)).toBe(1.25);
     expect(convergenceScore(docOf(["minor", 0.4]), 1)).toBe(0.4);
     expect(convergenceScore(docOf(["minor", 1], ["minor", 1]), 1)).toBe(2);
+  });
+
+  it("likelihood modulates the contribution alongside confidence (issue #163)", () => {
+    // major, confidence 0.8, likelihood 0.5 → 0.5 + 1.5 × 0.8 × 0.5 = 1.1
+    expect(convergenceScore(docOf(["major", 0.8, 0.5]), 1)).toBe(1.1);
+    // a certain-but-never-triggered footgun (the `__slots__` case) is crushed toward its floor
+    expect(convergenceScore(docOf(["minor", 1, 0.02]), 1)).toBe(0.02);
+    // likelihood 0 zeroes the headroom entirely — only the floor survives
+    expect(convergenceScore(docOf(["critical", 1, 0]), 1)).toBe(1.01);
+    expect(convergenceScore(docOf(["minor", 1, 0]), 1)).toBe(0);
   });
 
   it("a nit never contributes, at any confidence", () => {
@@ -462,6 +474,7 @@ describe("mechanism frequency rounds — issue #145", () => {
     description: "d",
     reasoning: "r",
     confidence: 0.5,
+    likelihood: 1,
     ...overrides,
   });
   const coded = (c: SeverityCounts, codes: Record<string, number>): RoundRecord => ({
@@ -629,6 +642,7 @@ describe("mechanism frequency rounds — issue #145", () => {
         severity: "major" as const,
         reasoning: "r",
         confidence: 0.8,
+        likelihood: 1,
         code: "body-reconstruction",
         finding_codes: ["null-check-missing"],
       },
@@ -797,6 +811,7 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
           description: "d",
           reasoning: "r",
           confidence: 1,
+          likelihood: 1,
         })),
       ),
     }) as unknown as Findings;

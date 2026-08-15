@@ -862,6 +862,7 @@ describe("cli — validate-patches", () => {
           description: "d",
           reasoning: "r",
           confidence: 0.5,
+          likelihood: 1,
           ...finding,
         },
       ],
@@ -1157,6 +1158,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         description: "carried over from the prior review",
         reasoning: "still worth checking",
         confidence: 0.8,
+        likelihood: 1,
       },
     ],
   };
@@ -1222,8 +1224,8 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings;
-    // stripSurfaceFields restores the CURRENT draft version (0.6.0 after #134), not the surfaced 0.8.0.
-    expect(context.schema_version).toBe("0.6.0");
+    // stripSurfaceFields restores the CURRENT draft version (0.7.0 after #163), not the surfaced 0.8.0.
+    expect(context.schema_version).toBe("0.7.0");
     expect(context).not.toHaveProperty("convergence");
     expect(context).not.toHaveProperty("round");
     expect(context.findings).toHaveLength(1);
@@ -1251,7 +1253,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings & { scope_metastasis?: unknown };
-    expect(context.schema_version).toBe("0.6.0");
+    expect(context.schema_version).toBe("0.7.0");
     expect(context.scope_metastasis).toEqual(entry);
   });
 
@@ -1718,7 +1720,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ) as typeof priorFindings & {
       scope_metastasis?: unknown;
     };
-    expect(context.schema_version).toBe("0.6.0");
+    expect(context.schema_version).toBe("0.7.0");
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
       recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],

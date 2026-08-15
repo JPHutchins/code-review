@@ -528,10 +528,10 @@ export const computeSameRootNotes = (
 };
 
 // The convergence score and its advisory badge (score ≤ threshold), per finding/systemic problem:
-// floor(severity) + max(0, ceiling − floor) × confidence. The floor is the weight confidence cannot
-// erode; critical's is threshold-relative (CRITICAL_FLOOR_MARGIN) so an open critical is never converged
-// at any practical threshold (the margin degrades only where FP precision drops 0.01, i.e. thresholds
-// ≳ 1e14). ADVISORY ONLY: never alters the verdict.
+// floor(severity) + max(0, ceiling − floor) × confidence × likelihood. The floor is the weight the
+// modulation cannot erode; critical's is threshold-relative (CRITICAL_FLOOR_MARGIN) so an open critical
+// is never converged at any practical threshold (the margin degrades only where FP precision drops
+// 0.01, i.e. thresholds ≳ 1e14). ADVISORY ONLY: never alters the verdict.
 const CONVERGENCE_CEILINGS: SeverityCounts = { critical: 4, major: 2, minor: 1, nit: 0 };
 // > 0 so a lone critical fails `score ≤ threshold`; 0.01 survives round2 (a coarser round would erase it).
 const CRITICAL_FLOOR_MARGIN = 0.01;
@@ -545,10 +545,17 @@ const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 1
 // Findings AND systemic problems (issue #134 scope), rounded to 2 decimals.
 export const convergenceScore = (doc: Findings, threshold: number): number =>
   round2(
-    [...doc.findings, ...(doc.systemic_problems ?? [])].reduce((sum, { severity, confidence }) => {
-      const floor = convergenceFloor(severity, threshold);
-      return sum + floor + Math.max(0, CONVERGENCE_CEILINGS[severity] - floor) * confidence;
-    }, 0),
+    [...doc.findings, ...(doc.systemic_problems ?? [])].reduce(
+      (sum, { severity, confidence, likelihood }) => {
+        const floor = convergenceFloor(severity, threshold);
+        return (
+          sum +
+          floor +
+          Math.max(0, CONVERGENCE_CEILINGS[severity] - floor) * confidence * likelihood
+        );
+      },
+      0,
+    ),
   );
 
 // "**Convergence** 🏁 1 ≤ 1 — converged" / "**Convergence** 🔄 2 > 1 — iterating". The converged glyph
@@ -570,7 +577,7 @@ export const convergenceSummary = (
 
 // The version the compact stop-signal marker declares (signalMarker stamps it into that marker's
 // payload) and the version a LEGACY surfaced blob declared before issue #156 deleted the surfacing
-// transform. DISTINCT from the draft axis (DEFAULT_SCHEMA_VERSION is 0.6.0 after issue #134) so the
+// transform. DISTINCT from the draft axis (DEFAULT_SCHEMA_VERSION is 0.7.0 after issue #163) so the
 // surface channel can never be mistaken for the agent's own document: parseSurfaceSignal accepts a
 // signal marker only at a surface version, and stripSurfaceFields recognizes a legacy surfaced blob
 // by it to peel that blob back to a draft. Post-#156 nothing stamps a surfaced findings DOCUMENT —

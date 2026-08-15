@@ -13,6 +13,7 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   description: "The same description.",
   reasoning: "The same reasoning.",
   confidence: 0.8,
+  likelihood: 1,
   code: "recurring-a",
   ...overrides,
 });

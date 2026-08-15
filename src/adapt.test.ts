@@ -202,6 +202,7 @@ describe("adapt — claude-code — extraction ladder integration", () => {
             severity: "major",
             reasoning: "Each file implements its own policy.",
             confidence: 0.8,
+            likelihood: 1,
             finding_codes: ["widened-type"],
           },
         ],

@@ -43,8 +43,7 @@ jobs:
       api_base_url:  ${{ vars.API_BASE_URL }}
       model_full:    deepseek-v4-pro
       model_mechanic: deepseek-v4-pro
-      sonnet_model:  deepseek-v4-flash   # the agent's own tier picks stay cheap; unset they would
-      haiku_model:   deepseek-v4-flash   # follow model_full / model_mechanic, i.e. pro
+      subagent_model: deepseek-v4-flash   # finder fan-out runs on flash; the main agent adjudicates on model_full
       install_command: npm ci     # this repo is node-based; run its checks so the agent can validate
       scope:         ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README's first paragraph (#139)
     secrets:

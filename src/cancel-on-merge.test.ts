@@ -47,10 +47,15 @@ describe("cancel-on-merge concurrency group (#183)", () => {
   });
 
   for (const path of cancelWorkflows) {
-    it(`${path} targets that exact group`, () => {
-      const groups = reviewGroupLines(readWorkflow(path));
+    it(`${path} targets that exact group and actually cancels`, () => {
+      const yaml = readWorkflow(path);
+      const groups = reviewGroupLines(yaml);
       expect(groups).toHaveLength(1);
       expect(normalizeGroup(groups[0] ?? "")).toBe(expected);
+      // The matching group is inert without cancel-in-progress and the close trigger; dropping either
+      // is a silent no-op the group check alone would miss.
+      expect(yaml).toMatch(/cancel-in-progress:\s*true/);
+      expect(yaml).toMatch(/pull_request:\s*\n\s*types:\s*\[\s*closed\s*\]/);
     });
   }
 });

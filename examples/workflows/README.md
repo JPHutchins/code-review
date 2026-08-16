@@ -202,6 +202,21 @@ each in the *trusted* default-branch context (`issue_comment` runs there, never 
 The front-end's gate/ack jobs run only trusted code (the workflow + the CLI + the GitHub API), never
 PR code, so the egress lock stays where untrusted code executes — the reusable workflow's review job.
 
+## Cancel a review when the PR is merged or closed ([#183](../../../issues/183))
+
+A review is an expensive agentic run, and nobody iterates a merged PR — so a review left queued or
+running when its PR is **merged or closed** spends its tokens for nothing (worst case: a fast-merge
+whose review is still queued). The per-PR concurrency group cancels a review on a **new commit**, but
+merge/close pushes no commit, so it never fires.
+
+Copy [`review-cancel-on-merge.yaml`](review-cancel-on-merge.yaml) into `.github/workflows/`. On
+`pull_request: closed` it enters the review's per-PR concurrency group with `cancel-in-progress`,
+cancelling whatever review is queued or in flight — no token, no run lookup, no per-repo config (every
+consumer's copy is identical). It covers the full, mechanic, and on-comment routes (they share the
+group) and both merge and manual close. A review that only *starts* after the close (CI concluding
+post-merge) is not in the group to cancel, but the pipeline already skips a PR that is no longer open,
+so it costs the gather step, not a full review.
+
 ## Setup (both paths)
 
 1. **Add the workflow.** Copy-paste: drop `review.yaml` into `.github/workflows/`. Reusable: add the

@@ -54,8 +54,8 @@ on:
           skill would otherwise pick for them (exported as CLAUDE_CODE_SUBAGENT_MODEL, which takes
           precedence over a subagent's requested tier). Set a cheaper model here to keep the
           token-heavy exploration cheap while the main agent still synthesizes on the route model.
-          Empty ⇒ leave the subagent model to the skill's per-review discretion (the route model when
-          the skill requests no cheaper tier).
+          Empty ⇒ the finder fan-out defaults to model_mechanic (the fast-route model), so cheap
+          exploration is the default; set it to point subagents at a different or even cheaper model.
         type: string
         required: false
         default: ""
@@ -570,7 +570,7 @@ jobs:
           ANTHROPIC_BASE_URL: ${{ inputs.api_base_url }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
           ANTHROPIC_MODEL: ${{ steps.gather.outputs.conclusion == 'success' && inputs.model_full || inputs.model_mechanic }}
-          SUBAGENT_MODEL: ${{ inputs.subagent_model }} # exported to CLAUDE_CODE_SUBAGENT_MODEL below only when non-empty
+          SUBAGENT_MODEL: ${{ inputs.subagent_model != '' && inputs.subagent_model || inputs.model_mechanic }} # unset ⇒ the fast-route (mechanic) model; exported as CLAUDE_CODE_SUBAGENT_MODEL below
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.opus_model != '' && inputs.opus_model || inputs.model_full }} # tier aliases — what the agent's
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.sonnet_model != '' && inputs.sonnet_model || inputs.model_full }} # internal model picks resolve to
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model != '' && inputs.haiku_model || inputs.model_mechanic }}
@@ -732,8 +732,10 @@ jobs:
           # so post can apply the empty-mechanic precedence even when the result envelope is lost.
           echo "route=$ROUTE" >> "$GITHUB_OUTPUT"
           export CLAUDE_CODE_EFFORT_LEVEL="$EFFORT"
-          # Only override the subagent model when the consumer set one; otherwise subagents inherit
-          # the route model, matching the single-file workflow's default (env-unset) behavior.
+          # Finder subagents explore on the fast-route (mechanic) model by default — SUBAGENT_MODEL is
+          # coerced to model_mechanic above when no subagent_model is set — so the token-heavy fan-out
+          # is cheap by default; a caller points them at a different model via subagent_model. Guarded
+          # so a misconfigured empty never exports.
           if [ -n "${SUBAGENT_MODEL:-}" ]; then export CLAUDE_CODE_SUBAGENT_MODEL="$SUBAGENT_MODEL"; fi
           # Strip newlines from the caller-tunable effort before the group echo — a block-scalar value
           # could otherwise inject workflow commands (::endgroup::/::error::) into the run log.

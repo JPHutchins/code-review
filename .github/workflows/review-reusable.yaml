@@ -732,10 +732,7 @@ jobs:
           # so post can apply the empty-mechanic precedence even when the result envelope is lost.
           echo "route=$ROUTE" >> "$GITHUB_OUTPUT"
           export CLAUDE_CODE_EFFORT_LEVEL="$EFFORT"
-          # Finder subagents explore on the fast-route (mechanic) model by default — SUBAGENT_MODEL is
-          # coerced to model_mechanic above when no subagent_model is set — so the token-heavy fan-out
-          # is cheap by default; a caller points them at a different model via subagent_model. Guarded
-          # so a misconfigured empty never exports.
+          # Export the resolved subagent model (guarded so an empty model_mechanic can't export empty).
           if [ -n "${SUBAGENT_MODEL:-}" ]; then export CLAUDE_CODE_SUBAGENT_MODEL="$SUBAGENT_MODEL"; fi
           # Strip newlines from the caller-tunable effort before the group echo — a block-scalar value
           # could otherwise inject workflow commands (::endgroup::/::error::) into the run log.

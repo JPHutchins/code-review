@@ -72,7 +72,9 @@ on:
         type: string
         required: true
       subagent_model:
-        description: Override the fan-out subagent model (empty ⇒ inherit the route model)
+        description: >-
+          Forwarded to the review as its subagent model; empty ⇒ the review defaults the fan-out
+          finder subagents to model_mechanic (the fast-route model), keeping exploration cheap.
         type: string
         required: false
         default: ""

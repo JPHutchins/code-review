@@ -64,7 +64,10 @@ on:
         type: string
         required: true
       model_full:
-        description: Model for the comprehensive route and triage
+        description: >-
+          Model for the comprehensive route and triage. Append the agent CLI's `[1m]` suffix to any
+          model input here whose model really does have a 1M context window — see the same input on
+          review-reusable.yaml, which these are passed through to.
         type: string
         required: true
       model_mechanic:

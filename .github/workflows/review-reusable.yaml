@@ -41,7 +41,12 @@ on:
       model_full:
         # No default: api_base_url has none either, and a model only means something against a chosen
         # endpoint — pick both together rather than inheriting a vendor the endpoint may not serve.
-        description: Model for the comprehensive (CI-success) route and triage
+        description: >-
+          Model for the comprehensive (CI-success) route and triage. Append the agent CLI's `[1m]`
+          suffix (e.g. deepseek-v4-pro[1m]) to any model input here whose model really does have a
+          1M context window: the CLI assumes 200k for an id it does not recognize, so a long review
+          compacts away its own evidence early. The suffix is read by the CLI and stripped before the
+          request, so it never reaches your endpoint.
         type: string
         required: true
       model_mechanic:

@@ -17,6 +17,7 @@ permissions:
   actions: read
   pull-requests: write
   issues: write
+  checks: write            # the review's check-run attribution surface (announce/comment/finalize)
 
 jobs:
   chatops:

@@ -463,8 +463,12 @@ describe("weekend_slots — the Beijing weekend overrides the weekday map (issue
           { utc_from: "01:00", utc_to: "04:00", in: 2, out: 2, cache_read: 2, cache_write: 0 },
           { utc_from: "04:00", utc_to: "00:00", in: 1, out: 1, cache_read: 1, cache_write: 0 },
         ],
+        // A rate distinct from BOTH weekday rates, so an assertion can tell which MAP was chosen and
+        // not merely which rate happened to match. With the weekend rate equal to the weekday
+        // off-peak rate, every boundary assertion passes under a plain UTC-date check too — which is
+        // exactly the blind spot these tests exist to pin.
         weekend_slots: [
-          { utc_from: "00:00", utc_to: "00:00", in: 1, out: 1, cache_read: 1, cache_write: 0 },
+          { utc_from: "00:00", utc_to: "00:00", in: 3, out: 3, cache_read: 3, cache_write: 0 },
         ],
       },
     },
@@ -477,23 +481,27 @@ describe("weekend_slots — the Beijing weekend overrides the weekday map (issue
     expect(at("2026-08-24T02:00:00Z")).toBeCloseTo(2);
   });
 
-  it("bills the SAME clock time off-peak on a Beijing weekend day", () => {
+  it("bills the SAME clock time off the weekend map on a Beijing weekend day", () => {
     // 2026-08-23 is a Sunday; 02:00 UTC = Beijing Sunday 10:00 — the window #216 was filed for.
-    expect(at("2026-08-23T02:00:00Z")).toBeCloseTo(1);
+    expect(at("2026-08-23T02:00:00Z")).toBeCloseTo(3);
   });
 
+  // The four instants that separate a Beijing-date check from a UTC-date one. Each pair straddles
+  // 16:00 UTC, where the Beijing date has already rolled over: a UTC-date implementation gets both
+  // 16:30 cases wrong, in OPPOSITE directions.
   it("treats Friday 16:00 UTC onward as the weekend, because Beijing is already Saturday", () => {
-    // 2026-08-21 is a Friday. 16:30 UTC = Beijing Saturday 00:30.
-    expect(at("2026-08-21T16:30:00Z")).toBeCloseTo(1);
-    // 15:30 UTC the same day is still Beijing Friday, so the weekday map applies — and 15:30 falls in
-    // an off-peak weekday slot, so this asserts the map choice, not the rate.
+    // 2026-08-21 is a Friday. 16:30 UTC = Beijing Saturday 00:30 → weekend map.
+    expect(at("2026-08-21T16:30:00Z")).toBeCloseTo(3);
+    // 15:30 UTC the same day is still Beijing Friday → weekday map, off-peak slot.
     expect(at("2026-08-21T15:30:00Z")).toBeCloseTo(1);
   });
 
   it("treats Sunday 16:00 UTC onward as a weekday again, because Beijing is already Monday", () => {
-    // 2026-08-23 is a Sunday; 16:30 UTC = Beijing Monday 00:30, which the weekday map prices off-peak.
+    // 2026-08-23 is a Sunday. 15:30 UTC = Beijing Sunday 23:30 → still the weekend map.
+    expect(at("2026-08-23T15:30:00Z")).toBeCloseTo(3);
+    // 16:30 UTC = Beijing Monday 00:30 → weekday map, off-peak slot.
     expect(at("2026-08-23T16:30:00Z")).toBeCloseTo(1);
-    // And Monday 02:00 UTC (Beijing Monday 10:00) is peak — proving the weekend map is not sticky.
+    // And Monday 02:00 UTC (Beijing Monday 10:00) is peak — the weekend map is not sticky.
     expect(at("2026-08-24T02:00:00Z")).toBeCloseTo(2);
   });
 

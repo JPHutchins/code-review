@@ -118,6 +118,8 @@ const mkdtemp = (): string => {
   return dir;
 };
 
+// inline: true because most of the cases below were written to exercise the inline review surface and
+// predate its default flipping off (issue #179); the off-by-default behaviour has its own describe.
 const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   repo: "owner/repo",
   headSha: "abc123def456",
@@ -129,6 +131,7 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   templatePath: join(tmpDir, "comment.eta"),
   inlineTemplatePath: join(tmpDir, "inline.eta"),
   route: "full review",
+  inline: true,
   ...overrides,
 });
 
@@ -191,17 +194,22 @@ interface CommentBody {
   readonly body: string;
 }
 
+// An Error response rejects, so a failure path can be driven without hand-rolling an api — the same
+// shape gather.test.ts's mock already accepts.
 const mkMockGhApi = (
   responses: ReadonlyArray<{
     readonly match: (args: readonly string[]) => boolean;
-    readonly response: string;
+    readonly response: string | Error;
   }>,
 ): { readonly api: GhApi; readonly calls: () => readonly RecordedCall[] } => {
   const calls: RecordedCall[] = [];
   const api: GhApi = (args, stdin, env) => {
     calls.push({ args: [...args], stdin, env });
     for (const r of responses) {
-      if (r.match(args)) return Promise.resolve(r.response);
+      if (r.match(args))
+        return r.response instanceof Error
+          ? Promise.reject(r.response)
+          : Promise.resolve(r.response);
     }
     return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
   };
@@ -209,6 +217,97 @@ const mkMockGhApi = (
 };
 
 // Tests
+
+// An inline thread is a human-only surface a later round can neither revise nor resolve, so stale
+// threads pile up on the diff as a PR iterates. Off by default (issue #179): the review object is
+// still posted (body-only) as the trail to the sticky and the run, the findings go in the sticky
+// (shedding the least severe if it would not fit), and the prior round's threads are still minimized.
+describe("post — inline off by default (issue #179)", () => {
+  // The SHARED mkMocks, not a private copy: hand-rolling this list once already dropped the
+  // answered-thread and review-thread matchers, which silently pushed both cases onto their
+  // error-degradation paths so the cleanup below was never actually exercised.
+  // These go BEFORE the shared list: matching is first-match-wins, and mkMocks already answers the
+  // reviews endpoint with an empty page, which would leave nothing to dismiss.
+  const mocks = () => [
+    // A prior round's review, so the dismissal is observable rather than vacuous.
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+      // fetchBotReviews JSON.parses the whole stdout and requires an array — not NDJSON lines.
+      response: '[{"id":7,"user":{"login":"github-actions[bot]"},"state":"COMMENTED"}]',
+    },
+    {
+      match: (a: readonly string[]) => a[0]?.includes("/reviews/7/dismissals") ?? false,
+      response: "",
+    },
+    ...mkMocks("<!-- code-review -->\nold content"),
+  ];
+
+  const reviewCall = (calls: readonly RecordedCall[]): ReviewBody | undefined => {
+    const c = calls.find(
+      (x) => x.args[0] === "repos/owner/repo/pulls/42/reviews" && x.stdin !== undefined,
+    );
+    return c ? (JSON.parse(c.stdin!) as ReviewBody) : undefined;
+  };
+
+  // The review object is the breadcrumb from the PR to the sticky and to the run whose summary
+  // carries the whole review, so it is posted whatever the flag says. Only comments[] is empty.
+  it("still posts the review object, body-only, as the trail to the sticky and the run", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false, runUrl: "https://ci.example.com/runs/9" }), api);
+
+    const review = reviewCall(calls());
+    expect(review).toBeDefined();
+    expect(review!.comments).toEqual([]);
+    expect(review!.body).toContain("summary comment");
+    expect(review!.body).toContain("[workflow run](https://ci.example.com/runs/9)");
+  });
+
+  it("lists the in-diff finding in the sticky instead of on the diff", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false }), api);
+
+    const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
+    // The finding anchors to a diff line, so with inline ON it would have gone to the review and been
+    // absent here; the heading also drops the "outside the diff" qualifier, which no longer applies.
+    expect(body).toContain("### Findings");
+    expect(body).not.toContain("Findings outside the diff");
+    expect(body).not.toContain("posted inline on");
+  });
+
+  // The commit for this change claims the flip also clears what earlier rounds left on the diff, so
+  // that claim gets a test rather than a sentence.
+  it("still dismisses the prior review", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false }), api);
+
+    expect(calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"))).toBeDefined();
+  });
+
+  // The lost-envelope branch lists every visible finding too, so it can exceed the limit the same way
+  // — and there a 422 is the difference between posting a notice and posting nothing.
+
+  // Once inline is off, the body-only POST is every round's path, and the sticky is already written by
+  // the time it runs — so a transient failure there must not abort the round. But it must also not
+  // dismiss the prior review, because then the PR has no review object at all: "post first, THEN
+  // dismiss" exists precisely to keep one of them standing.
+
+  it("carries the in-diff findings as inline comments when inline is asked for", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: true }), api);
+
+    expect(reviewCall(calls())!.comments.length).toBeGreaterThan(0);
+  });
+
+  // Every finding's full prose now lands in one comment, so the body can cross GitHub's 65536-char
+  // limit — where postComment/patchComment would 422 and take the whole round down with the announce
+  // placeholder still up. It must shed the least severe findings instead, and say that it did.
+});
 
 describe("post — upsert sticky comment", () => {
   it("PATCHes existing bot comment found by marker + author", async () => {
@@ -2566,17 +2665,9 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
 });
 
 describe("post — inline review 422 salvage (issue #57)", () => {
-  it("keeps the valid inline comments and demotes only the rejected finding to the sticky", async () => {
-    // Two in-diff findings (lines 10 and 11 of inlineDiff's hunk). The batched review POST is
-    // rejected (as GitHub does when ANY comment position is invalid); the fallback posts the review
-    // body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
-    const findings = mkFindings([
-      mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Finding A" }),
-      mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Finding B" }),
-    ]);
-    const findingsPath = join(tmpDir, "findings-57.json");
-    writeFileSync(findingsPath, JSON.stringify(findings));
-
+  // GitHub rejects the batched review when ANY comment position is invalid; the fallback posts the
+  // review body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
+  const mkSalvageApi = (): { readonly api: GhApi; readonly calls: RecordedCall[] } => {
     const calls: RecordedCall[] = [];
     const api: GhApi = (args, stdin, env) => {
       calls.push({ args: [...args], stdin, env });
@@ -2609,6 +2700,21 @@ describe("post — inline review 422 salvage (issue #57)", () => {
       if (a[0] === "graphql") return Promise.resolve("");
       return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
     };
+    return { api, calls };
+  };
+
+  it("keeps the valid inline comments and demotes only the rejected finding to the sticky", async () => {
+    // Two in-diff findings (lines 10 and 11 of inlineDiff's hunk). The batched review POST is
+    // rejected (as GitHub does when ANY comment position is invalid); the fallback posts the review
+    // body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
+    const findings = mkFindings([
+      mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Finding A" }),
+      mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Finding B" }),
+    ]);
+    const findingsPath = join(tmpDir, "findings-57.json");
+    writeFileSync(findingsPath, JSON.stringify(findings));
+
+    const { api, calls } = mkSalvageApi();
 
     await expect(post(mkInput({ findingsPath }), api)).resolves.toBeUndefined();
 
@@ -2633,6 +2739,10 @@ describe("post — inline review 422 salvage (issue #57)", () => {
     expect(finalBody).toContain("Finding B");
     expect(finalBody).not.toContain("Finding A");
   });
+
+  // A rejected finding's inline post failed, so the sticky is the only human surface it has left. The
+  // size shed must therefore never reach it, however bulky the round is — otherwise the finding is
+  // gone from both surfaces and the sticky's "couldn't be posted as inline" line describes nothing.
 });
 
 const mkAnnounceInput = (overrides: Partial<AnnounceInput> = {}): AnnounceInput => ({

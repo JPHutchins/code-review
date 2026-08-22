@@ -209,6 +209,15 @@ on:
         type: string
         required: false
         default: block
+      inline:
+        description: >-
+          Also render each in-diff finding as an inline review comment. Default false: an inline thread
+          is a human-only surface that no later round can revise or resolve, so on an iterating PR the
+          stale ones pile up on the diff. The review object is posted either way; with this off the
+          sticky lists the findings instead. Turning it on moves the in-diff findings onto the diff lines.
+        type: boolean
+        required: false
+        default: false
       claude_code_version:
         description: >-
           Claude Code CLI version to install; only the pinned default has been validated against this
@@ -1101,6 +1110,7 @@ jobs:
           CONVERGENCE_THRESHOLD: ${{ inputs.convergence_threshold }}
           NIT_VISIBILITY_FLOOR: ${{ inputs.nit_visibility_floor }}
           REVIEW_ROUTE: ${{ needs.review.outputs.route }}
+          INLINE: ${{ inputs.inline }}
         run: |
           set -euo pipefail
 
@@ -1128,11 +1138,29 @@ jobs:
 
           # The deterministic cloc table the review job captured. Passed only when the file exists AND
           # the installed CLI supports the flag: in the merge-to-release window the pinned
-          # CODE_REVIEW_VERSION predates --cloc-diff, and post would error on an unknown option
-          # (issue #182 review). An absent table (or an older CLI) just omits the collapsible.
+          # CODE_REVIEW_VERSION predates --cloc-diff (issue #182 review). An unknown option is
+          # ignored rather than rejected, so without the probe the table would silently not appear;
+          # an absent table (or an older CLI) just omits the collapsible.
           CLOC_ARGS=()
-          if [ -f findings/cloc-diff.txt ] && code-review post --help 2>/dev/null | grep -q -- '--cloc-diff'; then
+          if [ -f findings/cloc-diff.txt ] && code-review post --help 2>/dev/null | grep -qE -- '--cloc-diff([[:space:]]|`|$)'; then
             CLOC_ARGS=(--cloc-diff findings/cloc-diff.txt)
+          fi
+
+          # Inline review comments, off unless the caller asks — and probed exactly like --cloc-diff
+          # above, because CODE_REVIEW_VERSION pins the PUBLISHED CLI: between this merging and the
+          # next release it names a CLI that predates the flag. citty ignores an unknown option
+          # silently, so an unguarded --inline would make `inline: true` a no-op that looks like a
+          # deliberate choice. Warn instead, so the unfulfilled opt-in is visible in the log.
+          INLINE_ARGS=()
+          if [ "$INLINE" = "true" ]; then
+            # Anchored on a terminator: a bare '--inline' also matches --inline-template, which every
+            # published CLI has, so the probe would pass against the very versions it detects. The
+            # backtick is accepted too, in case a future help renderer quotes option names.
+            if code-review post --help 2>/dev/null | grep -qE -- '--inline([[:space:]]|`|$)'; then
+              INLINE_ARGS=(--inline)
+            else
+              echo "::warning::inline: true was requested, but the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --inline; posting findings to the summary comment only"
+            fi
           fi
 
           # route/effort come from the envelope the review job stamped — not re-derived here.
@@ -1147,7 +1175,8 @@ jobs:
             "${ROUTE_ARGS[@]}" \
             "${CLOC_ARGS[@]}" \
             "${JSON_URL_ARGS[@]}" \
-            "${PRICES_ARGS[@]}"
+            "${PRICES_ARGS[@]}" \
+            "${INLINE_ARGS[@]}"
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is
       # informational, it must not fail a required-checks branch protection). always() so a failed

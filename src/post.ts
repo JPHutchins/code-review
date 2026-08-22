@@ -51,7 +51,7 @@ import {
   answeredRegistryFrom,
   fetchThreadComments,
 } from "./answered.js";
-import { errMsg, tryParseJson, asRecord } from "./util.js";
+import { asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
   readonly repo: string;
@@ -71,6 +71,12 @@ export interface PostInput {
   readonly clocDiffPath?: string;
   readonly effort?: string;
   readonly runUrl?: string;
+  // Render findings as inline review comments on the diff. Omitted/false ⇒ the review object is
+  // posted body-only and the findings are listed in the sticky instead (shedding the least severe if
+  // that body would exceed GitHub's size limit), which is the default
+  // because an inline thread is a human-only surface that cannot be revised: a later round can neither
+  // update nor resolve it, so stale threads accumulate on the diff (issue #179).
+  readonly inline?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
   // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
@@ -86,6 +92,7 @@ export interface PostInput {
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
+
 const EMPTY_MECHANIC_LEAVE_MESSAGE =
   "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n";
 const MAX_SUGGESTION_LINES = 10;
@@ -444,6 +451,7 @@ const dismissReviews = async (
           "--input",
           "-",
         ],
+        // GitHub caps a dismissal message at 140 chars.
         JSON.stringify({ message: "Superseded by a new review for an updated commit." }),
       );
     } catch (err) {
@@ -890,6 +898,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     // A lost envelope is not a completed round, so the prior convergence is carried forward in the
     // blob unchanged rather than a new round being built (issue #174).
     const stampedFindings = stampConvergence(findings, priorConv);
+    // This branch lists every visible finding, exactly like the inline-off default, so it can exceed
+    // GitHub's comment limit the same way — and here a 422 is the difference between a notice and
+    // nothing at all.
     const body = formatMarkdown(
       render({
         findings: stampedFindings,
@@ -926,6 +937,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
+    if (input.inline === true) {
+      process.stderr.write(
+        "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky only\n",
+      );
+    }
     process.stderr.write(
       "Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review\n",
     );
@@ -962,18 +978,23 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ? computeSameRootNotes(priorTraj, findings.findings, input.headSha.slice(0, 12))
     : {};
 
+  // With inline off there is no diff-anchored surface, so the split does not apply: every visible
+  // finding is a stray and the sticky carries them, shedding the least severe if the body would
+  // exceed GitHub's size limit — exactly as it does when the envelope is lost.
   const {
     comments: rawComments,
     strays,
     inDiff,
-  } = buildInlineComments(visibleFindings, diff, {
-    inlineTemplate,
-    models: envelope.models.map((m) => m.model),
-    findings,
-    jsonUrl: input.jsonUrl,
-    sameRootNotes,
-    answeredNotes: reRaisedNotes,
-  });
+  } = input.inline
+    ? buildInlineComments(visibleFindings, diff, {
+        inlineTemplate,
+        models: envelope.models.map((m) => m.model),
+        findings,
+        jsonUrl: input.jsonUrl,
+        sameRootNotes,
+        answeredNotes: reRaisedNotes,
+      })
+    : { comments: [], strays: visibleFindings, inDiff: [] };
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
     process.stderr.write(
@@ -986,8 +1007,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const botReviews = await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi);
 
   // The "posted" disposition is only ever built from the actual post result below, never optimistically.
-  const initialDisposition: InlineDisposition | undefined =
-    comments.length === 0 && strays.length > 0 ? { kind: "none-in-diff" } : undefined;
+  const initialDisposition: InlineDisposition | undefined = !input.inline
+    ? { kind: "disabled" }
+    : comments.length === 0 && strays.length > 0
+      ? { kind: "none-in-diff" }
+      : undefined;
 
   const currentCounts = computeSeverityCounts(findings.findings);
 
@@ -1081,6 +1105,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }) + longFilesNote,
     );
 
+  // GitHub rejects a comment body over 65536 chars, and postComment/patchComment let that 422
+  // propagate — so an oversized body fails the job with the announce placeholder still up and the
+  // round's only surface never written. That became reachable when inline stopped being the default:
+  // every finding's full prose now renders into this one comment, where the in-diff ones used to be
+  // separate posts. `keepAlways` is never shed: a finding GitHub rejected for its position has no
+  // other human surface left, so dropping its sticky entry too would lose it outright.
   // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,
@@ -1099,6 +1129,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   );
 
   // Post first, THEN dismiss: the PR is never left review-less if the process dies between the two.
+  // The review object is posted whatever `inline` says — it is the trail from the PR to the sticky and
+  // to the run. With inline off it is body-only; the dismiss and minimize below run either way, so
+  // flipping a repo to inline=false also clears the threads a previous round left on the diff.
   const {
     url: reviewUrl,
     inlinePosted,

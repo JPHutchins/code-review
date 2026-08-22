@@ -71,6 +71,11 @@ export interface PostInput {
   readonly clocDiffPath?: string;
   readonly effort?: string;
   readonly runUrl?: string;
+  // Post findings as inline review comments on the diff. Omitted/false ⇒ no review object at all and
+  // every visible finding is listed in the sticky, which is the default because an inline thread is a
+  // human-only surface that cannot be revised: a later round can neither update nor resolve it, so
+  // stale threads accumulate on the diff (issue #179). Prior threads are still minimized when off.
+  readonly inline?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
   // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
@@ -962,18 +967,22 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ? computeSameRootNotes(priorTraj, findings.findings, input.headSha.slice(0, 12))
     : {};
 
+  // With inline off there is no diff-anchored surface, so the split does not apply: every visible
+  // finding is a stray and the sticky carries all of them, exactly as it does when the envelope is lost.
   const {
     comments: rawComments,
     strays,
     inDiff,
-  } = buildInlineComments(visibleFindings, diff, {
-    inlineTemplate,
-    models: envelope.models.map((m) => m.model),
-    findings,
-    jsonUrl: input.jsonUrl,
-    sameRootNotes,
-    answeredNotes: reRaisedNotes,
-  });
+  } = input.inline
+    ? buildInlineComments(visibleFindings, diff, {
+        inlineTemplate,
+        models: envelope.models.map((m) => m.model),
+        findings,
+        jsonUrl: input.jsonUrl,
+        sameRootNotes,
+        answeredNotes: reRaisedNotes,
+      })
+    : { comments: [], strays: visibleFindings, inDiff: [] };
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
     process.stderr.write(
@@ -986,8 +995,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const botReviews = await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi);
 
   // The "posted" disposition is only ever built from the actual post result below, never optimistically.
-  const initialDisposition: InlineDisposition | undefined =
-    comments.length === 0 && strays.length > 0 ? { kind: "none-in-diff" } : undefined;
+  const initialDisposition: InlineDisposition | undefined = !input.inline
+    ? { kind: "disabled" }
+    : comments.length === 0 && strays.length > 0
+      ? { kind: "none-in-diff" }
+      : undefined;
 
   const currentCounts = computeSeverityCounts(findings.findings);
 
@@ -1099,24 +1111,30 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   );
 
   // Post first, THEN dismiss: the PR is never left review-less if the process dies between the two.
+  // With inline off no review object is created at all — but the dismiss and minimize below still run,
+  // so flipping a repo to inline=false also clears the threads a previous round left on the diff.
   const {
     url: reviewUrl,
     inlinePosted,
     unposted,
-  } = await postInlineReview(
-    {
-      repo: input.repo,
-      prNumber,
-      headSha: input.headSha,
-      stickyUrl: stickyRef?.url,
-      runUrl: input.runUrl,
-    },
-    comments,
-    inDiff,
-    ghApi,
-  );
+  } = input.inline
+    ? await postInlineReview(
+        {
+          repo: input.repo,
+          prNumber,
+          headSha: input.headSha,
+          stickyUrl: stickyRef?.url,
+          runUrl: input.runUrl,
+        },
+        comments,
+        inDiff,
+        ghApi,
+      )
+    : { url: undefined, inlinePosted: 0, unposted: [] as readonly Finding[] };
   process.stderr.write(
-    `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`,
+    input.inline
+      ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
+      : `Inline comments are off — all ${String(strays.length)} visible finding(s) are in the sticky on PR #${String(prNumber)}\n`,
   );
 
   // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.

@@ -1775,6 +1775,11 @@ const postCmd = defineCommand({
       type: "string",
       description: NIT_VISIBILITY_FLOOR_DESCRIPTION,
     },
+    inline: {
+      type: "boolean",
+      description:
+        "Also post findings as inline review comments on the diff. Off by default: an inline thread cannot be revised by a later round, so stale threads accumulate, and the sticky carries every finding either way",
+    },
   },
   run: async ({ args }) => {
     const priceResolution = resolvePrices(args.prices);
@@ -1797,6 +1802,7 @@ const postCmd = defineCommand({
       jsonUrl: args["json-url"],
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
+      inline: args.inline,
       postedAt: formatUtc(new Date()),
       pricedAt: new Date(),
     });

@@ -856,6 +856,9 @@ jobs:
           fi
 
           # route/effort come from the envelope the review job stamped — not re-derived here.
+          # Findings land in the sticky comment. Add --inline to also post the in-diff ones as inline
+          # review comments; off by default because no later round can revise or resolve an inline
+          # thread, so on an iterating PR the stale ones accumulate on the diff.
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
             --repo "$REPO" \

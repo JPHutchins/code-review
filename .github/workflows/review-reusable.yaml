@@ -209,6 +209,15 @@ on:
         type: string
         required: false
         default: block
+      inline:
+        description: >-
+          Also post each in-diff finding as an inline review comment. Default false: an inline thread
+          is a human-only surface that no later round can revise or resolve, so on an iterating PR the
+          stale ones pile up on the diff, and the sticky lists every finding either way. Turning this
+          on moves the in-diff findings out of the sticky and onto the diff lines.
+        type: boolean
+        required: false
+        default: false
       claude_code_version:
         description: >-
           Claude Code CLI version to install; only the pinned default has been validated against this
@@ -1101,6 +1110,7 @@ jobs:
           CONVERGENCE_THRESHOLD: ${{ inputs.convergence_threshold }}
           NIT_VISIBILITY_FLOOR: ${{ inputs.nit_visibility_floor }}
           REVIEW_ROUTE: ${{ needs.review.outputs.route }}
+          INLINE: ${{ inputs.inline }}
         run: |
           set -euo pipefail
 
@@ -1135,6 +1145,13 @@ jobs:
             CLOC_ARGS=(--cloc-diff findings/cloc-diff.txt)
           fi
 
+          # Inline review comments, off unless the caller asks. No --help probe as above: the flag and
+          # the CLI that understands it are pinned in this same file, so they cannot arrive apart.
+          INLINE_ARGS=()
+          if [ "$INLINE" = "true" ]; then
+            INLINE_ARGS=(--inline)
+          fi
+
           # route/effort come from the envelope the review job stamped — not re-derived here.
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
@@ -1147,7 +1164,8 @@ jobs:
             "${ROUTE_ARGS[@]}" \
             "${CLOC_ARGS[@]}" \
             "${JSON_URL_ARGS[@]}" \
-            "${PRICES_ARGS[@]}"
+            "${PRICES_ARGS[@]}" \
+            "${INLINE_ARGS[@]}"
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is
       # informational, it must not fail a required-checks branch protection). always() so a failed

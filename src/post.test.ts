@@ -118,6 +118,8 @@ const mkdtemp = (): string => {
   return dir;
 };
 
+// inline: true because most of the cases below were written to exercise the inline review surface and
+// predate its default flipping off (issue #179); the off-by-default behaviour has its own describe.
 const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   repo: "owner/repo",
   headSha: "abc123def456",
@@ -129,6 +131,7 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   templatePath: join(tmpDir, "comment.eta"),
   inlineTemplatePath: join(tmpDir, "inline.eta"),
   route: "full review",
+  inline: true,
   ...overrides,
 });
 
@@ -209,6 +212,65 @@ const mkMockGhApi = (
 };
 
 // Tests
+
+// An inline thread is a human-only surface a later round can neither revise nor resolve, so stale
+// threads pile up on the diff as a PR iterates. Off by default (issue #179): no review object at all,
+// every visible finding in the sticky, and the prior round's threads still minimized on the way past.
+describe("post — inline off by default (issue #179)", () => {
+  const mocks = [
+    {
+      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+      response: inlineDiff,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      response: '{"id": 999, "body": "<!-- code-review -->\\nold content"}\n',
+    },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+      response: "",
+    },
+    { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
+  ];
+
+  it("creates no review object, and lists the in-diff finding in the sticky instead", async () => {
+    const { api, calls } = mkMockGhApi(mocks);
+
+    await post(mkInput({ inline: false }), api);
+
+    // The same endpoint is READ to dismiss prior reviews, so it is the call carrying a body that
+    // would create one.
+    const created = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect(created).toBeUndefined();
+
+    const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
+    // The finding anchors to a diff line, so with inline ON it would have gone to the review and been
+    // absent here; the heading also drops the "outside the diff" qualifier, which no longer applies.
+    expect(body).toContain("### Findings");
+    expect(body).not.toContain("Findings outside the diff");
+    expect(body).not.toContain("posted inline on");
+  });
+
+  it("still posts the review when inline is asked for — the switch is the only difference", async () => {
+    const { api, calls } = mkMockGhApi(mocks);
+
+    await post(mkInput({ inline: true }), api);
+
+    expect(
+      calls().find(
+        (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+      ),
+    ).toBeDefined();
+  });
+});
 
 describe("post — upsert sticky comment", () => {
   it("PATCHes existing bot comment found by marker + author", async () => {

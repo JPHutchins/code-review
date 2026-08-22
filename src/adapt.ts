@@ -9,6 +9,7 @@ import { resolve } from "./registry.js";
 import { extractStructured, describeLadderFailure } from "./extract.js";
 import { DEFAULT_SCHEMA_VERSION, incompleteFindings } from "./schema.js";
 import type { Findings, ModelUsageEntry, ResultEnvelope } from "./schema.js";
+import { modelIdentity } from "./util.js";
 
 // No value-level fp-ts import: a bare "fp-ts/Either" subpath import breaks under strict Node ESM
 // (fp-ts ships no "exports" map), so Either values are plain tagged literals, as in validate.ts.
@@ -45,14 +46,6 @@ export const ClaudeCodeEnvelopeCodec = t.intersection([
 
 type ClaudeCodeEnvelope = t.TypeOf<typeof ClaudeCodeEnvelopeCodec>;
 
-// The agent keys modelUsage by the CONFIGURED model id, so it carries any context-window suffix the
-// caller declared (`deepseek-v4-pro[1m]`). That suffix is a directive to the agent CLI — stripped
-// before the request and absent from the price map — so it is not part of the model's identity.
-// Carried through, it misses the price map and prices the run at $0, which also voids the spend
-// clamp that steers off these entries.
-const modelIdentity = (configuredModelId: string): string =>
-  configuredModelId.replace(/\[[12]m\]$/i, "");
-
 const sumUsage = (into: ModelUsageEntry, entry: ModelUsageEntry): ModelUsageEntry => ({
   ...into,
   input_tokens: into.input_tokens + entry.input_tokens,
@@ -65,19 +58,16 @@ const sumUsage = (into: ModelUsageEntry, entry: ModelUsageEntry): ModelUsageEntr
     : {}),
 });
 
-const withUsageAdded = (
-  entries: readonly ModelUsageEntry[],
-  entry: ModelUsageEntry,
-): readonly ModelUsageEntry[] =>
-  entries.some((seen) => seen.model === entry.model)
-    ? entries.map((seen) => (seen.model === entry.model ? sumUsage(seen, entry) : seen))
-    : [...entries, entry];
-
+// The agent keys modelUsage by the CONFIGURED model id, so it carries any context-window suffix the
+// caller declared. Keying the fold by the model's identity (see modelIdentity) both canonicalizes it
+// and folds together the rows a mixed configuration splits, in one pass; order follows first
+// appearance, as it did when this was a plain map.
 const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsageEntry[] => [
-  ...Object.entries(modelUsage).reduce<readonly ModelUsageEntry[]>(
-    (entries, [configuredModelId, entry]) =>
-      withUsageAdded(entries, {
-        model: modelIdentity(configuredModelId),
+  ...Object.entries(modelUsage)
+    .reduce<Map<string, ModelUsageEntry>>((byModel, [configuredModelId, entry]) => {
+      const model = modelIdentity(configuredModelId);
+      const mapped: ModelUsageEntry = {
+        model,
         input_tokens: entry.inputTokens,
         output_tokens: entry.outputTokens,
         ...(entry.cacheReadInputTokens !== undefined
@@ -86,9 +76,11 @@ const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsage
         ...(entry.cacheCreationInputTokens !== undefined
           ? { cache_write_tokens: entry.cacheCreationInputTokens }
           : {}),
-      }),
-    [],
-  ),
+      };
+      const prior = byModel.get(model);
+      return byModel.set(model, prior === undefined ? mapped : sumUsage(prior, mapped));
+    }, new Map())
+    .values(),
 ];
 
 export interface TranscriptTelemetry {

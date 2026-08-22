@@ -171,3 +171,32 @@ describe("readTranscriptTree", () => {
     expect(usage.turns).toBe(2);
   });
 });
+
+// The transcript is the fallback ingress a wall-kill leaves as the only source of spend. A model id
+// that reached it with a declared context-window suffix would miss the price map exactly there.
+describe("sumTranscriptUsage — declared context-window suffix", () => {
+  const assistant = (model: string, input: number, output: number): unknown => ({
+    type: "assistant",
+    message: {
+      id: `m-${model}-${String(input)}`,
+      model,
+      usage: { input_tokens: input, output_tokens: output },
+    },
+  });
+
+  it("keys usage by the model's identity, folding a suffixed and bare id together", () => {
+    const usage = sumTranscriptUsage([
+      assistant("deepseek-v4-pro[1m]", 10, 2),
+      assistant("deepseek-v4-pro", 1, 3),
+    ]);
+    expect(usage.models).toEqual([
+      {
+        model: "deepseek-v4-pro",
+        input_tokens: 11,
+        output_tokens: 5,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      },
+    ]);
+  });
+});

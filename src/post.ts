@@ -74,7 +74,8 @@ export interface PostInput {
   readonly effort?: string;
   readonly runUrl?: string;
   // Render findings as inline review comments on the diff. Omitted/false ⇒ the review object is
-  // posted body-only and every visible finding is listed in the sticky instead, which is the default
+  // posted body-only and the findings are listed in the sticky instead (shedding the least severe if
+  // that body would exceed GitHub's size limit), which is the default
   // because an inline thread is a human-only surface that cannot be revised: a later round can neither
   // update nor resolve it, so stale threads accumulate on the diff (issue #179).
   readonly inline?: boolean;
@@ -94,8 +95,8 @@ export interface PostInput {
 
 const DEFAULT_MARKER = "<!-- code-review -->";
 
-// GitHub's hard comment-body limit is 65536 chars; the margin absorbs the embedded findings blob
-// (~32KB before it degrades to a link) plus the notes appended after the render.
+// GitHub's hard comment-body limit is 65536 chars. The budget covers the whole rendered body, blob
+// and appended notes included, leaving ~5.5K of headroom under the limit.
 const MAX_COMMENT_BODY = 60_000;
 
 const SEVERITY_WEIGHT = new Map(SEVERITIES.map((s, i) => [s as string, SEVERITIES.length - i]));
@@ -510,7 +511,6 @@ const dismissReviews = async (
   repo: string,
   prNumber: number,
   ids: readonly number[],
-  message: string,
   ghApi: GhApi,
 ): Promise<void> => {
   for (const id of ids) {
@@ -523,7 +523,8 @@ const dismissReviews = async (
           "--input",
           "-",
         ],
-        JSON.stringify({ message }),
+        // GitHub caps a dismissal message at 140 chars.
+        JSON.stringify({ message: "Superseded by a new review for an updated commit." }),
       );
     } catch (err) {
       process.stderr.write(
@@ -1242,15 +1243,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.
   const priorReviewIds = botReviews.map((r) => r.id);
   if (priorReviewIds.length > 0) {
-    await dismissReviews(
-      input.repo,
-      prNumber,
-      priorReviewIds,
-      // A new review object is always posted, whatever `inline` says, so this reads true either way.
-      // (GitHub caps a dismissal message at 140 chars.)
-      "Superseded by a new review for an updated commit.",
-      ghApi,
-    );
+    await dismissReviews(input.repo, prNumber, priorReviewIds, ghApi);
   }
 
   // Minimize the pre-post snapshot (stale threads); the fresh comments were posted after it, untouched.

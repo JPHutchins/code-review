@@ -88,9 +88,11 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
 ### Where findings appear
 
-  By default every finding is listed in the review's sticky comment, and no inline comments are
-  posted. Set `inline: true` to also post the in-diff findings as inline review comments on the diff
-  lines — they then move out of the sticky and onto the diff.
+  By default the findings are listed in the review's sticky comment and no inline comments are posted
+  (if that body would exceed GitHub's comment size limit, the least severe are shed and the comment
+  says how many). Set `inline: true` to render the in-diff findings as inline comments on the diff
+  lines instead — they then move out of the sticky and onto the diff. The review object itself is
+  posted either way: it is the link from the PR to the sticky and to the run.
 
   The default is off because an inline thread is a human-only surface: a later round can neither
   revise nor resolve one, so on a PR that iterates, superseded threads accumulate on the diff. With

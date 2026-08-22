@@ -173,7 +173,7 @@ on:
         default: block
       inline:
         description: >-
-          Also post each in-diff finding as an inline review comment; forwarded to review-reusable.yaml,
+          Also render each in-diff finding as an inline review comment; forwarded to review-reusable.yaml,
           whose own input documents why it defaults to false.
         type: boolean
         required: false

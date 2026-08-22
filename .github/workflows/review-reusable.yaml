@@ -211,10 +211,11 @@ on:
         default: block
       inline:
         description: >-
-          Also post each in-diff finding as an inline review comment. Default false: an inline thread
+          Also render each in-diff finding as an inline review comment. Default false: an inline thread
           is a human-only surface that no later round can revise or resolve, so on an iterating PR the
-          stale ones pile up on the diff, and the sticky lists every finding either way. Turning this
-          on moves the in-diff findings out of the sticky and onto the diff lines.
+          stale ones pile up on the diff. The review object is posted either way; with this off the
+          sticky lists the findings instead, shedding the least severe if that body would exceed
+          GitHub's comment size limit. Turning it on moves the in-diff findings onto the diff lines.
         type: boolean
         required: false
         default: false

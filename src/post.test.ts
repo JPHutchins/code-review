@@ -215,8 +215,8 @@ const mkMockGhApi = (
 
 // An inline thread is a human-only surface a later round can neither revise nor resolve, so stale
 // threads pile up on the diff as a PR iterates. Off by default (issue #179): the review object is
-// still posted (body-only) as the trail to the sticky and the run, every visible finding goes in the
-// sticky, and the prior round's threads are still minimized on the way past.
+// still posted (body-only) as the trail to the sticky and the run, the findings go in the sticky
+// (shedding the least severe if it would not fit), and the prior round's threads are still minimized.
 describe("post — inline off by default (issue #179)", () => {
   // The SHARED mkMocks, not a private copy: hand-rolling this list once already dropped the
   // answered-thread and review-thread matchers, which silently pushed both cases onto their
@@ -281,6 +281,40 @@ describe("post — inline off by default (issue #179)", () => {
     await post(mkInput({ inline: false }), api);
 
     expect(calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"))).toBeDefined();
+  });
+
+  // The lost-envelope branch lists every visible finding too, so it can exceed the limit the same way
+  // — and there a 422 is the difference between posting a notice and posting nothing.
+  it("sheds in the lost-envelope branch too, where a 422 would leave no surface at all", async () => {
+    const filler = "z".repeat(9000);
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(
+        mkFindings([
+          mkFinding({ severity: "critical", title: "envelope-loss keeper", reasoning: filler }),
+          ...Array.from({ length: 12 }, (_, i) =>
+            mkFinding({
+              severity: "nit",
+              title: `envelope-loss nit ${String(i)}`,
+              reasoning: filler,
+            }),
+          ),
+        ]),
+      ),
+    );
+    writeFileSync(join(tmpDir, "envelope.json"), "not json at all");
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false }), api).catch(() => undefined);
+
+    const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
+    // Discriminating: only the lost-envelope render names the envelope in its findings heading, so
+    // this cannot pass by accident through the normal path, which sheds too.
+    expect(body).toContain("result envelope lost");
+    expect(body.length).toBeLessThanOrEqual(65536);
+    expect(body).toContain("envelope-loss keeper");
+    expect(body).toMatch(/finding\(s\) were left out of this comment/);
   });
 
   it("carries the in-diff findings as inline comments when inline is asked for", async () => {

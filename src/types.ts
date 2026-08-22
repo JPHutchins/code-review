@@ -62,7 +62,8 @@ export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
   | { readonly kind: "inline-unavailable" }
-  | { readonly kind: "no-envelope" };
+  | { readonly kind: "no-envelope" }
+  | { readonly kind: "disabled" };
 
 export interface RenderInput {
   readonly findings: Findings;
@@ -127,6 +128,9 @@ export interface RenderInput {
   // titles the section "Findings" and notes they couldn't be posted inline. Omitted/0 ⇒ all out-of-diff.
   readonly unanchoredCount?: number;
   readonly inlineDisposition?: InlineDisposition;
+  // Findings the caller had to leave out of this body for size, so the surfaces that promise a
+  // complete list can stop promising it.
+  readonly droppedForSize?: number;
   readonly runUrl?: string;
   // Findings-json marker's fallback when the embedded form is too large.
   readonly jsonUrl?: string;

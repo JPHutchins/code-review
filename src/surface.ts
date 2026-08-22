@@ -193,7 +193,7 @@ const ROUNDS_RE = /<!-- code-review:rounds;base64 ([A-Za-z0-9+/=]+) -->/;
 
 // The severity keys in descending weight/emphasis order, so every surface (counts validation, chips)
 // iterates them the same way from one source.
-const SEVERITIES = ["critical", "major", "minor", "nit"] as const;
+export const SEVERITIES = ["critical", "major", "minor", "nit"] as const;
 
 // Non-negative integers only: a crafted/corrupted marker with a negative count would render as a
 // false "clean" chip (filtered by `> 0`), and a fractional/huge one as a garbage chip. Rejecting them

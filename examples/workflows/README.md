@@ -84,7 +84,19 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
   See the reusable workflow's [`inputs:` block](../../.github/workflows/review-reusable.yaml) for the
   full set (tier aliases, per-route time limits + grace periods + USD caps, `extra_endpoints`,
-  `egress_policy`, `scope`).
+  `egress_policy`, `scope`, `inline`).
+
+### Where findings appear
+
+  By default the findings are listed in the review's sticky comment and no inline comments are posted
+  (if that body would exceed GitHub's comment size limit, the least severe are shed and the comment
+  says how many). Set `inline: true` to render the in-diff findings as inline comments on the diff
+  lines instead — they then move out of the sticky and onto the diff. The review object itself is
+  posted either way: it is the link from the PR to the sticky and to the run.
+
+  The default is off because an inline thread is a human-only surface: a later round can neither
+  revise nor resolve one, so on a PR that iterates, superseded threads accumulate on the diff. With
+  `inline: true` the pipeline still minimizes the previous round's threads, but it cannot resolve them.
 
 ### `scope` — tell the reviewer what the project accepts ([#139](../../../issues/139))
 

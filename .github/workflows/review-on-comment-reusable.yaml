@@ -171,6 +171,13 @@ on:
         type: string
         required: false
         default: block
+      inline:
+        description: >-
+          Also render each in-diff finding as an inline review comment; forwarded to review-reusable.yaml,
+          whose own input documents why it defaults to false.
+        type: boolean
+        required: false
+        default: false
       claude_code_version:
         description: >-
           Claude Code CLI version to install; only the pinned default has been validated. The model
@@ -319,6 +326,7 @@ jobs:
       extra_endpoints: ${{ inputs.extra_endpoints }}
       egress_policy:   ${{ inputs.egress_policy }}
       claude_code_version: ${{ inputs.claude_code_version }}
+      inline:          ${{ inputs.inline }}
       scope:           ${{ inputs.scope }}
       # Per-run overrides parsed from the comment (already clamped by the gate). Empty ⇒ review-reusable
       # keeps its configured defaults, so a bare `/code-review` just runs a normal review.

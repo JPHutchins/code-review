@@ -848,14 +848,19 @@ jobs:
 
           # The deterministic cloc table the review job captured. Passed only when the file exists AND
           # the installed CLI supports the flag: in the merge-to-release window the pinned
-          # CODE_REVIEW_VERSION predates --cloc-diff, and post would error on an unknown option
+          # CODE_REVIEW_VERSION predates --cloc-diff. An unknown option is ignored rather than
+          # rejected, so without the probe the table would silently not appear.
           # (issue #182 review). An absent table (or an older CLI) just omits the collapsible.
           CLOC_ARGS=()
-          if [ -f findings/cloc-diff.txt ] && code-review post --help 2>/dev/null | grep -q -- '--cloc-diff'; then
+          if [ -f findings/cloc-diff.txt ] && code-review post --help 2>/dev/null | grep -qE -- '--cloc-diff([[:space:]]|`|$)'; then
             CLOC_ARGS=(--cloc-diff findings/cloc-diff.txt)
           fi
 
           # route/effort come from the envelope the review job stamped — not re-derived here.
+          # Findings land in the sticky comment. Add --inline to also post the in-diff ones as inline
+          # review comments; off by default because no later round can revise or resolve an inline
+          # thread, so on an iterating PR the stale ones accumulate on the diff. The flag needs a CLI
+          # that has it: an older CODE_REVIEW_VERSION ignores it silently rather than failing.
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
             --repo "$REPO" \

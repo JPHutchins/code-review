@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/prices.schema.json",
-  "title": "Code Review \u2014 price map",
-  "description": "A date-stamped map of per-model token prices (USD per 1M tokens) the commenter uses to recompute canonical cost from the abstract result envelope's `models` array (SPEC \u00a76.1). The CLI's `vendor_cost_usd` is vendor-priced and wrong for non-Anthropic backends; this map is the recomputation source. Kept free of $ref/$defs to match the findings schema's house style (inlining is not strictly required here \u2014 the price map is never passed to a model \u2014 but consistency with findings.schema.json is preferred).",
+  "title": "Code Review — price map",
+  "description": "A date-stamped map of per-model token prices (USD per 1M tokens) the commenter uses to recompute canonical cost from the abstract result envelope's `models` array (SPEC §6.1). The CLI's `vendor_cost_usd` is vendor-priced and wrong for non-Anthropic backends; this map is the recomputation source. Kept free of $ref/$defs to match the findings schema's house style (inlining is not strictly required here — the price map is never passed to a model — but consistency with findings.schema.json is preferred).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,7 +13,7 @@
   "properties": {
     "_comment": {
       "type": "string",
-      "description": "Human note; not parsed. Should remind that prices drift and point at the cost formula (SPEC \u00a76.2)."
+      "description": "Human note; not parsed. Should remind that prices drift and point at the cost formula (SPEC §6.2)."
     },
     "_updated": {
       "type": "string",
@@ -25,7 +25,7 @@
     },
     "models": {
       "type": "object",
-      "description": "Map of model identifier \u2192 per-token prices. Keys are the model identifiers as they appear in the result envelope's `models[].model`. A model's value is EITHER a flat all-day price (unchanged) OR a set of UTC time-of-day slots (issue #170), for a provider with peak/off-peak rates.",
+      "description": "Map of model identifier → per-token prices. Keys are the model identifiers as they appear in the result envelope's `models[].model`. A model's value is EITHER a flat all-day price (unchanged) OR a set of UTC time-of-day slots (issue #170), optionally with a second `weekend_slots` partition (issue #216), for a provider with peak/off-peak rates.",
       "additionalProperties": {
         "oneOf": [
           {
@@ -66,7 +66,7 @@
             "required": [
               "slots"
             ],
-            "description": "UTC time-of-day pricing (issue #170). `slots` MUST partition the full 24h UTC day with no gap and no overlap: each is a half-open [utc_from, utc_to) window, and a slot whose utc_to <= utc_from wraps past midnight. `weekend_slots` is an optional second partition used on Saturdays and Sundays in BEIJING time (issue #216) \u2014 the Beijing weekend runs Friday 16:00 UTC to Sunday 16:00 UTC, so weekend-ness is NOT a property of the UTC date; it must partition the day exactly as `slots` does. A model with no `weekend_slots` uses `slots` every day. Cost recomputation selects the map first, then the one slot covering the run's UTC instant; a run's time-of-day matching zero or more than one slot is a misconfiguration that warns loudly and prices that model at $0 (never silently wrong).",
+            "description": "UTC time-of-day pricing (issue #170). `slots` MUST partition the full 24h UTC day with no gap and no overlap: each is a half-open [utc_from, utc_to) window, and a slot whose utc_to <= utc_from wraps past midnight. Slot times are always UTC and there is no timezone or DST field in the data. `weekend_slots` is an optional second partition (issue #216), selected on Saturdays and Sundays in BEIJING time — a day-of-week RULE, not a timezone axis: the Beijing weekend runs Friday 16:00 UTC to Sunday 16:00 UTC, so weekend-ness is NOT a property of the UTC date. It must partition the day exactly as `slots` does. Like every rate here it states CURRENT pricing, so recomputing an envelope from before a pricing change reprices it at today's rates rather than what was billed. A model with no `weekend_slots` uses `slots` every day. Cost recomputation selects the map first, then the one slot covering the run's UTC instant; a run's time-of-day matching zero or more than one slot is a misconfiguration that warns loudly and prices that model at $0 (never silently wrong).",
             "properties": {
               "slots": {
                 "type": "array",

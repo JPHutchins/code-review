@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { computeCost, parseInstant } from "./cost.js";
 import { PriceMapCodec } from "./schema.js";
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
@@ -432,6 +433,24 @@ describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
     ).toBe("Left");
   });
 
+  // Same rejections on the weekend axis: the ajv gate refuses each of these, and the two gates must
+  // agree or a map passes one surface and fails the other.
+  it("rejects an empty, null, or flat-hybrid weekend_slots exactly as it does for slots", () => {
+    const oneSlot = [
+      { utc_from: "00:00", utc_to: "00:00", in: 1, out: 1, cache_read: 1, cache_write: 1 },
+    ];
+    expect(PriceMapCodec.decode(wrap({ slots: oneSlot, weekend_slots: [] }))._tag).toBe("Left");
+    expect(PriceMapCodec.decode(wrap({ slots: oneSlot, weekend_slots: null }))._tag).toBe("Left");
+    expect(
+      PriceMapCodec.decode(
+        wrap({ in: 1, out: 1, cache_read: 1, cache_write: 1, weekend_slots: oneSlot }),
+      )._tag,
+    ).toBe("Left");
+    expect(PriceMapCodec.decode(wrap({ slots: oneSlot, weekend_slots: oneSlot }))._tag).toBe(
+      "Right",
+    );
+  });
+
   it("still accepts a flat map and a well-formed slotted map", () => {
     expect(PriceMapCodec.decode(wrap({ in: 1, out: 2, cache_read: 3, cache_write: 4 }))._tag).toBe(
       "Right",
@@ -505,6 +524,51 @@ describe("weekend_slots — the Beijing weekend overrides the weekday map (issue
     expect(at("2026-08-24T02:00:00Z")).toBeCloseTo(2);
   });
 
+  // The weekday partition is checked on every weekday run; a broken weekend one is silent until a
+  // weekend run reaches it, so the fail-loud invariant needs its own coverage on this branch.
+  it("warns and prices $0 when weekend_slots leave the weekend instant uncovered", () => {
+    const warn = vi.fn();
+    const gapped = {
+      ...prices,
+      models: {
+        m: {
+          slots: prices.models.m.slots,
+          weekend_slots: [
+            { utc_from: "00:00", utc_to: "01:00", in: 3, out: 3, cache_read: 3, cache_write: 0 },
+          ],
+        },
+      },
+    };
+    // Beijing Sunday 10:00 — inside the weekend map, outside its single row. The weekday map covers
+    // this instant, so a fallback-on-gap bug would price it at 2 rather than fail loudly.
+    expect(computeCost(usage, gapped, new Date("2026-08-23T02:00:00Z"), warn).totalCostUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("0 price slots in `weekend_slots`"));
+  });
+
+  it("names weekend_slots, not slots, in the warning it raises about them", () => {
+    const warn = vi.fn();
+    const overlapping = {
+      ...prices,
+      models: {
+        m: {
+          slots: prices.models.m.slots,
+          weekend_slots: [
+            { utc_from: "00:00", utc_to: "00:00", in: 3, out: 3, cache_read: 3, cache_write: 0 },
+            { utc_from: "00:00", utc_to: "00:00", in: 9, out: 9, cache_read: 9, cache_write: 0 },
+          ],
+        },
+      },
+    };
+    computeCost(usage, overlapping, new Date("2026-08-23T02:00:00Z"), warn);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("2 price slots in `weekend_slots`"));
+  });
+
+  it("still warns and prices $0 for a weekend-capable model when no instant is supplied", () => {
+    const warn = vi.fn();
+    expect(computeCost(usage, prices, undefined, warn).totalCostUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("no run instant was supplied"));
+  });
+
   it("falls back to the weekday map when a model declares no weekend override", () => {
     const noWeekend = {
       ...prices,
@@ -513,5 +577,33 @@ describe("weekend_slots — the Beijing weekend overrides the weekday map (issue
     const line = computeCost(usage, noWeekend, new Date("2026-08-23T02:00:00Z")).lines[0]!;
     // Beijing Sunday, but the map has no weekend rows, so the peak weekday slot still applies.
     expect(line.costUSD).toBeCloseTo(2);
+  });
+});
+
+// The two gates must agree on the map this repo actually ships, not only on fixtures: ajv validates it
+// in CI, and this is the codec half. A map that decodes Left makes `post` throw and takes the round
+// down, so the failure belongs here rather than in a review job.
+describe("the repo's own price map", () => {
+  it("decodes, and every slotted model partitions both of its days", () => {
+    const map = JSON.parse(readFileSync(".github/prices.json", "utf-8")) as unknown;
+    const decoded = PriceMapCodec.decode(map);
+    expect(decoded._tag).toBe("Right");
+    if (decoded._tag !== "Right") return;
+
+    const everyHalfHour = Array.from(
+      { length: 48 },
+      (_, i) => new Date(Date.UTC(2026, 0, 1) + i * 30 * 60_000),
+    );
+    for (const [model, prices] of Object.entries(decoded.right.models)) {
+      if (!("slots" in prices)) continue;
+      for (const instant of everyHalfHour) {
+        const warn = vi.fn();
+        // Sunday 2026-01-04 reaches weekend_slots; the same clock time on Monday reaches slots.
+        for (const day of [instant, new Date(instant.getTime() + 3 * 86_400_000)]) {
+          computeCost([{ model, input_tokens: 1, output_tokens: 0 }], decoded.right, day, warn);
+        }
+        expect(warn).not.toHaveBeenCalled();
+      }
+    }
   });
 });

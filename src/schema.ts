@@ -392,17 +392,21 @@ const NonEmptyPriceSlots = t.refinement(
 );
 // `weekend_slots` overrides `slots` on Saturdays and Sundays, BEIJING time — DeepSeek bills off-peak
 // all weekend from 2026-08-23 (issue #216). Optional and additive: a map without it behaves exactly as
-// before. Each array is independently a 24h partition, so the existing "exactly one covering slot"
-// check validates both without changing, which is why this is two arrays rather than a weekday field
-// on a slot — that shape would make a partition-with-a-Saturday-gap newly expressible.
-const SlottedShape = t.intersection([
-  t.type({ slots: NonEmptyPriceSlots }),
-  t.partial({ weekend_slots: NonEmptyPriceSlots }),
+// before. Two arrays rather than a weekday field on a slot, because that shape would make a
+// partition-with-a-Saturday-gap newly expressible. Each array is independently a 24h partition and the
+// existing "exactly one covering slot" check applies unchanged — but only to whichever array a given
+// run selects, so a broken `weekend_slots` stays quiet until a weekend run reaches it. The warning
+// names the array it consulted for that reason.
+const SlottedRequired = t.type({ slots: NonEmptyPriceSlots });
+const SlottedOptional = t.partial({ weekend_slots: NonEmptyPriceSlots });
+const SlottedShape = t.intersection([SlottedRequired, SlottedOptional]);
+const SLOTTED_KEYS = new Set([
+  ...Object.keys(SlottedRequired.props),
+  ...Object.keys(SlottedOptional.props),
 ]);
 const SlottedModelPricesStrict = t.refinement(
   SlottedShape,
-  (s): s is t.TypeOf<typeof SlottedShape> =>
-    Object.keys(s).every((k) => k === "slots" || k === "weekend_slots"),
+  (s): s is t.TypeOf<typeof SlottedShape> => Object.keys(s).every((k) => SLOTTED_KEYS.has(k)),
   "SlottedModelPricesStrict",
 );
 const SlottedModelPricesCodec = t.exact(SlottedModelPricesStrict);

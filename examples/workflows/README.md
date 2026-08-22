@@ -76,7 +76,8 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
         trigger_event: ${{ github.event.workflow_run.event }}
         api_base_url:  ${{ vars.API_BASE_URL }}
         model_full:    deepseek-v4-pro[1m]     # required — pick alongside api_base_url
-        model_mechanic: deepseek-v4-pro[1m]    # required
+        model_mechanic: deepseek-v4-pro[1m]    # required — `[1m]` on EVERY model input whose model
+                                               # really has a 1M window; the CLI assumes 200k otherwise
       secrets:
         MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
   ```

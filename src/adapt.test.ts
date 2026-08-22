@@ -65,6 +65,43 @@ describe("adapt — claude-code", () => {
     expect(flash).not.toHaveProperty("cache_write_tokens");
   });
 
+  // A caller declares a 1M window to the agent CLI by suffixing the model id; the CLI then keys its
+  // own usage telemetry by that configured id. The price map is keyed by model, so carrying the
+  // suffix through would report every model as unknown and price the review at $0.
+  it("strips a declared context-window suffix from the configured model id", () => {
+    const result = adapt("claude-code", {
+      ...(nativeFixture as Record<string, unknown>),
+      modelUsage: { "deepseek-v4-pro[1m]": { inputTokens: 10, outputTokens: 2 } },
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+
+    expect(result.right.models).toEqual([
+      { model: "deepseek-v4-pro", input_tokens: 10, output_tokens: 2 },
+    ]);
+  });
+
+  it("folds a model configured both with and without the suffix into one entry", () => {
+    const result = adapt("claude-code", {
+      ...(nativeFixture as Record<string, unknown>),
+      modelUsage: {
+        "deepseek-v4-pro[1m]": { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 5 },
+        "deepseek-v4-pro": { inputTokens: 1, outputTokens: 3 },
+      },
+    });
+    expect(result._tag).toBe("Right");
+    if (result._tag !== "Right") return;
+
+    expect(result.right.models).toEqual([
+      {
+        model: "deepseek-v4-pro",
+        input_tokens: 11,
+        output_tokens: 5,
+        cache_read_tokens: 5,
+      },
+    ]);
+  });
+
   it("maps turns from num_turns and duration_ms unchanged", () => {
     const result = adapt("claude-code", nativeFixture);
     expect(result._tag).toBe("Right");

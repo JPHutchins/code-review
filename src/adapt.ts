@@ -45,18 +45,51 @@ export const ClaudeCodeEnvelopeCodec = t.intersection([
 
 type ClaudeCodeEnvelope = t.TypeOf<typeof ClaudeCodeEnvelopeCodec>;
 
-const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsageEntry[] =>
-  Object.entries(modelUsage).map(([model, entry]) => ({
-    model,
-    input_tokens: entry.inputTokens,
-    output_tokens: entry.outputTokens,
-    ...(entry.cacheReadInputTokens !== undefined
-      ? { cache_read_tokens: entry.cacheReadInputTokens }
-      : {}),
-    ...(entry.cacheCreationInputTokens !== undefined
-      ? { cache_write_tokens: entry.cacheCreationInputTokens }
-      : {}),
-  }));
+// The agent keys modelUsage by the CONFIGURED model id, so it carries any context-window suffix the
+// caller declared (`deepseek-v4-pro[1m]`). That suffix is a directive to the agent CLI — stripped
+// before the request and absent from the price map — so it is not part of the model's identity.
+// Carried through, it misses the price map and prices the run at $0, which also voids the spend
+// clamp that steers off these entries.
+const modelIdentity = (configuredModelId: string): string =>
+  configuredModelId.replace(/\[[12]m\]$/i, "");
+
+const sumUsage = (into: ModelUsageEntry, entry: ModelUsageEntry): ModelUsageEntry => ({
+  ...into,
+  input_tokens: into.input_tokens + entry.input_tokens,
+  output_tokens: into.output_tokens + entry.output_tokens,
+  ...(into.cache_read_tokens !== undefined || entry.cache_read_tokens !== undefined
+    ? { cache_read_tokens: (into.cache_read_tokens ?? 0) + (entry.cache_read_tokens ?? 0) }
+    : {}),
+  ...(into.cache_write_tokens !== undefined || entry.cache_write_tokens !== undefined
+    ? { cache_write_tokens: (into.cache_write_tokens ?? 0) + (entry.cache_write_tokens ?? 0) }
+    : {}),
+});
+
+const withUsageAdded = (
+  entries: readonly ModelUsageEntry[],
+  entry: ModelUsageEntry,
+): readonly ModelUsageEntry[] =>
+  entries.some((seen) => seen.model === entry.model)
+    ? entries.map((seen) => (seen.model === entry.model ? sumUsage(seen, entry) : seen))
+    : [...entries, entry];
+
+const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsageEntry[] => [
+  ...Object.entries(modelUsage).reduce<readonly ModelUsageEntry[]>(
+    (entries, [configuredModelId, entry]) =>
+      withUsageAdded(entries, {
+        model: modelIdentity(configuredModelId),
+        input_tokens: entry.inputTokens,
+        output_tokens: entry.outputTokens,
+        ...(entry.cacheReadInputTokens !== undefined
+          ? { cache_read_tokens: entry.cacheReadInputTokens }
+          : {}),
+        ...(entry.cacheCreationInputTokens !== undefined
+          ? { cache_write_tokens: entry.cacheCreationInputTokens }
+          : {}),
+      }),
+    [],
+  ),
+];
 
 export interface TranscriptTelemetry {
   readonly models: readonly ModelUsageEntry[];

@@ -43,14 +43,16 @@ on:
         # endpoint — pick both together rather than inheriting a vendor the endpoint may not serve.
         description: >-
           Model for the comprehensive (CI-success) route and triage. Append the agent CLI's `[1m]`
-          suffix (e.g. deepseek-v4-pro[1m]) to any model input here whose model really does have a
+          suffix (e.g. deepseek-v4-pro[1m]) to EVERY model input here whose model really does have a
           1M context window: the CLI assumes 200k for an id it does not recognize, so a long review
-          compacts away its own evidence early. The suffix is read by the CLI and stripped before the
-          request, so it never reaches your endpoint.
+          compacts away its own evidence early, and each input reaches the CLI on its own — suffixing
+          only this one leaves the mechanic and subagent routes capped. The suffix is resolved by the
+          pinned CLI (claude_code_version), which strips it before the request and sends the vendor's
+          long-context beta in its place, so it never reaches your endpoint as part of the model id.
         type: string
         required: true
       model_mechanic:
-        description: Model for the fast fix (CI-failure) route
+        description: Model for the fast fix (CI-failure) route; same `[1m]` rule as model_full
         type: string
         required: true
       subagent_model:
@@ -61,21 +63,22 @@ on:
           token-heavy exploration cheap while the main agent still synthesizes on the route model.
           Empty ⇒ the finder fan-out defaults to model_mechanic (the fast-route model), so cheap
           exploration is the default; set it to point subagents at a different or even cheaper model.
+          Same `[1m]` rule as model_full, and this is the route where a 200k cap costs most.
         type: string
         required: false
         default: ""
       opus_model:
-        description: What the agent's internal 'opus' tier resolves to (empty ⇒ model_full)
+        description: What the agent's internal 'opus' tier resolves to (empty ⇒ model_full); same `[1m]` rule
         type: string
         required: false
         default: ""
       sonnet_model:
-        description: What the agent's internal 'sonnet' tier resolves to (empty ⇒ model_full)
+        description: What the agent's internal 'sonnet' tier resolves to (empty ⇒ model_full); same `[1m]` rule
         type: string
         required: false
         default: ""
       haiku_model:
-        description: What the agent's internal 'haiku' tier resolves to (empty ⇒ model_mechanic)
+        description: What the agent's internal 'haiku' tier resolves to (empty ⇒ model_mechanic); same `[1m]` rule
         type: string
         required: false
         default: ""
@@ -207,7 +210,10 @@ on:
         required: false
         default: block
       claude_code_version:
-        description: Claude Code CLI version to install; only the pinned default has been validated against this workflow — override at your own risk
+        description: >-
+          Claude Code CLI version to install; only the pinned default has been validated against this
+          workflow — override at your own risk. The model inputs' `[1m]` context-window suffix is
+          resolved by THIS binary, so an older one may pass the suffix through to your endpoint.
         type: string
         required: false
         default: 2.1.197

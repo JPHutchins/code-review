@@ -69,7 +69,7 @@
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
 <% if (findingsTotal > 0) { %>
 <% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
-**Findings:** <%~ parts.join(' · ') %>
+**Findings:** <%~ parts.join(' · ') %><% if (it.droppedForSize > 0) { %> · <%= it.droppedForSize %> not shown below<% } %>
 <% } else if (!it.incomplete && it.systemic.length === 0 && !it.answeredReRaiseNote) { %>
 _No findings — clean review._
 <% } %>
@@ -77,7 +77,7 @@ _No findings — clean review._
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'posted') { %>
 → <%= it.inlineDisposition.count %> comment<%= it.inlineDisposition.count === 1 ? '' : 's' %> posted inline on `<%= it.inlineDisposition.sha.slice(0, 7) %>` — <% if (it.reviewUrl) { %>[see the review](<%~ it.reviewUrl %>)<% } else { %>see the review<% } %>.
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'none-in-diff') { %>
-→ No inline comments — <% if (it.droppedForSize > 0) { %>the findings are outside the diff; the largest are listed below<% } else { %>all findings are outside the diff (listed below)<% } %>.
+→ No inline comments — <% if (it.droppedForSize > 0) { %>the findings are outside the diff; the most severe are listed below<% } else { %>all findings are outside the diff (listed below)<% } %>.
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'inline-unavailable') { %>
 → ⚠️ Inline comments couldn't be posted for this review (GitHub rejected a comment's position) — <% if (it.droppedForSize > 0) { %>the rejected findings are listed below, with the rest noted at the end<% } else { %>every finding is listed below instead<% } %>.
 <% } %>

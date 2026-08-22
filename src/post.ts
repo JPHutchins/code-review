@@ -116,40 +116,66 @@ const keepMostSevere = (findings: readonly Finding[], keep: number): readonly Fi
 
 // Where the shed findings can still be read depends on what the findings marker degraded to: the
 // embedded blob carries them, the link form points at the artifact, and the omitted form has neither.
+// Where a reader can still find what the comment could not hold. Shared by the size note and the
+// dismissal message so the two can never name different places.
+const shedRefuge = (marker: FindingsMarkerForm, jsonUrl: string | undefined): string =>
+  marker === "embedded"
+    ? "the findings JSON in that comment"
+    : marker === "link" && jsonUrl !== undefined
+      ? "the linked findings JSON"
+      : "the run's findings artifact";
+
+// No ranking claim: the shed takes the least severe first, but when everything ties (the all-nits
+// case) the dropped findings are no lower in severity than the kept ones.
 const sizeNote = (
   dropped: number,
   marker: FindingsMarkerForm,
   jsonUrl: string | undefined,
-): string => {
-  if (dropped <= 0) return "";
-  const where =
-    marker === "embedded"
-      ? "All of them are in the findings JSON below."
-      : marker === "link" && jsonUrl !== undefined
-        ? `All of them are in the [findings JSON](${jsonUrl}).`
-        : "The full set is in the run's findings artifact.";
-  return `\n\n---\n\n> **Note:** ${String(dropped)} lower-severity finding(s) were left out of this comment to stay under GitHub's size limit. ${where}\n`;
-};
+): string =>
+  dropped <= 0
+    ? ""
+    : `\n\n---\n\n> **Note:** ${String(dropped)} finding(s) were left out of this comment to stay under GitHub's size limit — all of them are in ${
+        marker === "embedded"
+          ? "the findings JSON below"
+          : marker === "link" && jsonUrl !== undefined
+            ? `the [findings JSON](${jsonUrl})`
+            : "the run's findings artifact"
+      }.\n`;
 
 // Shed the least severe findings until the body fits GitHub's comment limit, reporting how many went
 // so every surface that describes the comment can describe it truthfully. One renderWith call site,
 // so the all-shed case cannot drift from the rest.
+type FittedBody = { readonly body: string; readonly dropped: number; readonly lean: boolean };
+
+// Shed the least severe findings until the body fits GitHub's comment limit, reporting how many went
+// so every surface describing the comment can describe it truthfully. Body length is monotone in the
+// number shed, so this bisects rather than re-rendering once per finding — an oversized round pays
+// log2(n) full renders, not n. Shedding findings is not always enough: the verbatim cloc table, the
+// test report and a caller's own template are all unbounded, so the last resort re-renders without
+// the optional blocks, which leaves only the summary and the (self-bounding) findings marker.
 const fitToCommentLimit = (
   listed: readonly Finding[],
-  renderWith: (kept: readonly Finding[], dropped: number) => string,
-): { readonly body: string; readonly dropped: number } => {
-  const attempt = (dropped: number): { readonly body: string; readonly dropped: number } => ({
-    body: renderWith(keepMostSevere(listed, listed.length - dropped), dropped),
+  renderWith: (kept: readonly Finding[], dropped: number, lean: boolean) => string,
+): FittedBody => {
+  const attempt = (dropped: number, lean: boolean): FittedBody => ({
+    body: renderWith(keepMostSevere(listed, listed.length - dropped), dropped, lean),
     dropped,
+    lean,
   });
-  let fitted = attempt(0);
-  for (
-    let dropped = 1;
-    fitted.body.length > MAX_COMMENT_BODY && dropped <= listed.length;
-    dropped += 1
-  )
-    fitted = attempt(dropped);
-  return fitted;
+  const bisect = (lean: boolean): FittedBody => {
+    const whole = attempt(0, lean);
+    if (whole.body.length <= MAX_COMMENT_BODY) return whole;
+    let tooMany = 0;
+    let enough = listed.length;
+    while (enough - tooMany > 1) {
+      const mid = Math.floor((tooMany + enough) / 2);
+      if (attempt(mid, lean).body.length <= MAX_COMMENT_BODY) enough = mid;
+      else tooMany = mid;
+    }
+    return attempt(enough, lean);
+  };
+  const fitted = bisect(false);
+  return fitted.body.length <= MAX_COMMENT_BODY ? fitted : bisect(true);
 };
 const EMPTY_MECHANIC_LEAVE_MESSAGE =
   "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n";
@@ -960,7 +986,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     // This branch lists every visible finding, exactly like the inline-off default, so it can exceed
     // GitHub's comment limit the same way — and here a 422 is the difference between a notice and
     // nothing at all.
-    const fittedEnvelopeless = fitToCommentLimit(visibleFindings, (kept, dropped) =>
+    const fittedEnvelopeless = fitToCommentLimit(visibleFindings, (kept, dropped, lean) =>
       formatMarkdown(
         render({
           findings: stampedFindings,
@@ -987,8 +1013,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
           answeredReRaiseNote: answeredDropNote,
           roundCount: priorRoundCount,
           convergenceRound: false,
-          testReport,
-          clocDiff,
+          droppedForSize: dropped,
+          ...(lean ? { testReport: undefined, clocDiff: undefined } : { testReport, clocDiff }),
           inlineDisposition: { kind: "no-envelope" },
           runUrl: input.runUrl,
           jsonUrl: input.jsonUrl,
@@ -1150,12 +1176,17 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     straysOverride?: readonly Finding[],
     unanchoredCount?: number,
     droppedForSize?: number,
+    lean?: boolean,
   ): string =>
     formatMarkdown(
       render({
         ...commonRenderInput,
         ...(straysOverride ? { strays: straysOverride } : {}),
         ...(unanchoredCount !== undefined ? { unanchoredCount } : {}),
+        // The last resort when shedding every finding still is not enough: the verbatim cloc table
+        // and the test report are the two unbounded blocks a caller can hand us.
+        ...(lean === true ? { testReport: undefined, clocDiff: undefined } : {}),
+        droppedForSize: droppedForSize ?? 0,
         inlineDisposition,
         reviewUrl,
       }) +
@@ -1175,9 +1206,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     keepAlways: readonly Finding[] = [],
     reviewUrl?: string,
     unanchoredCount?: number,
-  ): { readonly body: string; readonly dropped: number } =>
-    fitToCommentLimit(listed, (kept, dropped) =>
-      renderBody(disposition, reviewUrl, [...keepAlways, ...kept], unanchoredCount, dropped),
+  ): FittedBody =>
+    fitToCommentLimit(listed, (kept, dropped, lean) =>
+      renderBody(disposition, reviewUrl, [...keepAlways, ...kept], unanchoredCount, dropped, lean),
     );
 
   // Phase 2: writes — sticky first, inline second.
@@ -1235,7 +1266,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       input.inline
         ? "Superseded by a new review for an updated commit."
         : initialBody.dropped > 0
-          ? "Superseded — this review's findings are in the summary comment and the run's findings artifact; inline comments are off for this repository."
+          ? `Superseded — this review's findings are in the summary comment and ${shedRefuge(markerForm, input.jsonUrl)}; inline comments are off for this repository.`
           : "Superseded — this review's findings are in the summary comment; inline comments are off for this repository.",
       ghApi,
     );

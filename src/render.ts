@@ -203,6 +203,7 @@ export const render = (input: RenderInput): string => {
     systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,
+    droppedForSize: input.droppedForSize ?? 0,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
     // The blob is the agent's complete document with the pipeline-stamped convergence field inside it

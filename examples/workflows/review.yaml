@@ -271,7 +271,10 @@ jobs:
         env:
           ANTHROPIC_BASE_URL: ${{ vars.API_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
-          ANTHROPIC_MODEL: deepseek-v4-pro
+          # `[1m]` declares the model's real context window to the agent CLI, which otherwise assumes
+          # 200k for an id it does not recognize. The CLI strips it before the request and sends the
+          # vendor's context-1m beta header instead — worth knowing if your gateway rejects unknown betas.
+          ANTHROPIC_MODEL: deepseek-v4-pro[1m]
           CLAUDE_CODE_EFFORT_LEVEL: max
         run: |
           set -euo pipefail
@@ -346,11 +349,11 @@ jobs:
         env:
           ANTHROPIC_BASE_URL: ${{ vars.API_BASE_URL }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
-          ANTHROPIC_MODEL: ${{ steps.gather.outputs.conclusion == 'success' && 'deepseek-v4-pro' || 'deepseek-v4-pro' }}
-          # CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-flash # run the finder fan-out on a cheaper model (overrides the tier the skill picks); the main agent stays on ANTHROPIC_MODEL above
-          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro # tier aliases — what the agent's
-          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro # internal model picks resolve to
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-pro
+          ANTHROPIC_MODEL: deepseek-v4-pro[1m]   # route both CI conclusions to one model; split them here to differ
+          # CLAUDE_CODE_SUBAGENT_MODEL: deepseek-v4-flash[1m] # run the finder fan-out on a cheaper model (overrides the tier the skill picks); the main agent stays on ANTHROPIC_MODEL above
+          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro[1m] # tier aliases — what the agent's
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro[1m] # internal model picks resolve to
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-pro[1m]
           # This review fans subagents into the BACKGROUND (the single-writer rule below). By default
           # `claude -p` kills still-running background tasks 600s after the MAIN turn ends — far short
           # of our wall+grace, silently cutting a mid-flight fan-out. 0 ⇒ wait indefinitely, so the

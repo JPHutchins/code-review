@@ -41,9 +41,9 @@ jobs:
       conclusion:    ${{ github.event.workflow_run.conclusion }}
       trigger_event: ${{ github.event.workflow_run.event }}
       api_base_url:  ${{ vars.API_BASE_URL }}
-      model_full:    deepseek-v4-pro
-      model_mechanic: deepseek-v4-pro
-      subagent_model: deepseek-v4-flash   # finder fan-out runs on flash; the main agent adjudicates on model_full
+      model_full:    deepseek-v4-pro[1m]
+      model_mechanic: deepseek-v4-pro[1m]
+      subagent_model: deepseek-v4-flash[1m]   # finder fan-out runs on flash; the main agent adjudicates on model_full
       install_command: npm ci     # this repo is node-based; run its checks so the agent can validate
       scope:         ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README's first paragraph (#139)
     secrets:

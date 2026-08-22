@@ -1,13 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve as resolvePath, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolvePath(__dirname, "..");
-
-const readWorkflow = (relativePath: string): string =>
-  readFileSync(resolvePath(repoRoot, relativePath), "utf-8");
+import { readRepoFile as readWorkflow } from "./test-util.js";
 
 const reviewGroupLines = (yaml: string): readonly string[] =>
   yaml

@@ -64,7 +64,10 @@ on:
         type: string
         required: true
       model_full:
-        description: Model for the comprehensive route and triage
+        description: >-
+          Model for the comprehensive route and triage. These model inputs are passed straight through
+          to review-reusable.yaml; its own model_full documents the `[1m]` context-window suffix that
+          every one of them needs.
         type: string
         required: true
       model_mechanic:
@@ -169,7 +172,10 @@ on:
         required: false
         default: block
       claude_code_version:
-        description: Claude Code CLI version to install; only the pinned default has been validated
+        description: >-
+          Claude Code CLI version to install; only the pinned default has been validated. The model
+          inputs' `[1m]` context-window suffix is resolved by THIS binary, so an older one may pass
+          the suffix through to your endpoint.
         type: string
         required: false
         default: 2.1.197

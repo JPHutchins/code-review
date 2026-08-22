@@ -5,7 +5,7 @@
 import { readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ModelUsageEntry } from "./schema.js";
-import { asRecord, readFileOrNull } from "./util.js";
+import { asRecord, modelIdentity, readFileOrNull } from "./util.js";
 
 export interface TranscriptUsage {
   readonly models: readonly ModelUsageEntry[];
@@ -52,7 +52,7 @@ const messageUsage = (entry: unknown): MessageUsage | null => {
   const id = msg["id"];
   return {
     id: typeof id === "string" ? id : null,
-    model,
+    model: modelIdentity(model),
     input: numField(usage, "input_tokens"),
     output: numField(usage, "output_tokens"),
     cacheRead: numField(usage, "cache_read_input_tokens"),

@@ -10,6 +10,15 @@ export const errMsg = (e: unknown): string => (e instanceof Error ? e.message : 
 // Collapse line breaks so an untrusted interpolation (e.g. `gh` stderr) can't break out of one.
 export const annotationSafe = (msg: string): string => msg.replaceAll(/[\r\n]+/g, " ");
 
+// A caller declares a model's real context window to the agent CLI by suffixing the id it configures
+// (`deepseek-v4-pro[1m]`). The CLI strips that before the request and it is absent from the price
+// map, so it is a directive rather than part of the model's identity — but the CLI does key its own
+// usage telemetry by the configured id. Every ingress that reads a model id from the agent
+// canonicalizes it here: carried through, it misses the price map, prices the run at $0, and voids
+// the spend clamp that steers off those same entries.
+export const modelIdentity = (configuredModelId: string): string =>
+  configuredModelId.replace(/\[[12]m\]$/i, "");
+
 export type ParseResult = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
 
 // Clip a body to `max` chars without splitting a code point (a lone high surrogate at the cut is

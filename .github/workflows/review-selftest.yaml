@@ -3,6 +3,8 @@
 # you dispatch from) against a real PR, without waiting for the workflow_run chain — which only ever
 # runs the DEFAULT branch's workflow and so can't test a branch's reusable-workflow changes.
 # Also doubles as an on-demand re-review. Dispatch:  gh workflow run review-selftest.yaml --ref <branch> -f pr=<PR#>
+# Run these one at a time: a selftest shares the review's per-PR concurrency group
+# (cancel-in-progress), so dispatching one while a branch's organic dogfood is in flight cancels it.
 name: Code review (self-test)
 
 on:

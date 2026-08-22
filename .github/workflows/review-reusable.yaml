@@ -1142,7 +1142,7 @@ jobs:
           # ignored rather than rejected, so without the probe the table would silently not appear;
           # an absent table (or an older CLI) just omits the collapsible.
           CLOC_ARGS=()
-          if [ -f findings/cloc-diff.txt ] && code-review post --help 2>/dev/null | grep -q -- '--cloc-diff'; then
+          if [ -f findings/cloc-diff.txt ] && code-review post --help 2>/dev/null | grep -qE -- '--cloc-diff([[:space:]]|`|$)'; then
             CLOC_ARGS=(--cloc-diff findings/cloc-diff.txt)
           fi
 

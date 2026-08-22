@@ -73,10 +73,10 @@ export interface PostInput {
   readonly clocDiffPath?: string;
   readonly effort?: string;
   readonly runUrl?: string;
-  // Post findings as inline review comments on the diff. Omitted/false ⇒ no review object at all and
-  // every visible finding is listed in the sticky, which is the default because an inline thread is a
-  // human-only surface that cannot be revised: a later round can neither update nor resolve it, so
-  // stale threads accumulate on the diff (issue #179). Prior threads are still minimized when off.
+  // Render findings as inline review comments on the diff. Omitted/false ⇒ the review object is
+  // posted body-only and every visible finding is listed in the sticky instead, which is the default
+  // because an inline thread is a human-only surface that cannot be revised: a later round can neither
+  // update nor resolve it, so stale threads accumulate on the diff (issue #179).
   readonly inline?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
@@ -100,26 +100,27 @@ const MAX_COMMENT_BODY = 60_000;
 
 const SEVERITY_WEIGHT = new Map(SEVERITIES.map((s, i) => [s as string, SEVERITIES.length - i]));
 
-// The `keep` most severe findings, restored to the order the agent reported them in — the selection is
-// by severity, the presentation is not.
-const keepMostSevere = (findings: readonly Finding[], keep: number): readonly Finding[] =>
-  findings
-    .map((finding, index) => ({ finding, index }))
-    .sort(
-      (a, b) =>
-        (SEVERITY_WEIGHT.get(b.finding.severity) ?? 0) -
-          (SEVERITY_WEIGHT.get(a.finding.severity) ?? 0) || a.index - b.index,
-    )
-    .slice(0, keep)
-    .sort((a, b) => a.index - b.index)
-    .map(({ finding }) => finding);
+// The `keep` most severe findings, in the order the agent reported them — the selection is by
+// severity, the presentation is not. Array.prototype.sort is stable, so ranking by severity alone
+// already preserves report order within a severity, and a filter restores it across severities.
+const keepMostSevere = (findings: readonly Finding[], keep: number): readonly Finding[] => {
+  if (keep >= findings.length) return findings;
+  const kept = new Set(
+    [...findings]
+      .sort(
+        (a, b) => (SEVERITY_WEIGHT.get(b.severity) ?? 0) - (SEVERITY_WEIGHT.get(a.severity) ?? 0),
+      )
+      .slice(0, keep),
+  );
+  return findings.filter((finding) => kept.has(finding));
+};
 
 // Where the shed findings can still be read depends on what the findings marker degraded to: the
 // embedded blob carries them, the link form points at the artifact, and the omitted form has neither.
 // Where a reader can still find what the comment could not hold.
 const shedRefuge = (marker: FindingsMarkerForm, jsonUrl: string | undefined): string =>
   marker === "embedded"
-    ? "the findings JSON below"
+    ? "the findings JSON in this comment"
     : marker === "link" && jsonUrl !== undefined
       ? `the [findings JSON](${jsonUrl})`
       : "the run's findings artifact";
@@ -135,9 +136,6 @@ const sizeNote = (
     ? ""
     : `\n\n---\n\n> **Note:** ${String(dropped)} finding(s) were left out of this comment to stay under GitHub's size limit — all of them are in ${shedRefuge(marker, jsonUrl)}.\n`;
 
-// Shed the least severe findings until the body fits GitHub's comment limit, reporting how many went
-// so every surface that describes the comment can describe it truthfully. One renderWith call site,
-// so the all-shed case cannot drift from the rest.
 type FittedBody = { readonly body: string; readonly dropped: number };
 
 // Shed the least severe findings until the body fits GitHub's comment limit, reporting how many went
@@ -157,13 +155,14 @@ const fitToCommentLimit = (
   const whole = attempt(0);
   if (whole.body.length <= MAX_COMMENT_BODY) return whole;
   let tooMany = 0;
-  let enough = listed.length;
-  while (enough - tooMany > 1) {
-    const mid = Math.floor((tooMany + enough) / 2);
-    if (attempt(mid).body.length <= MAX_COMMENT_BODY) enough = mid;
+  let fits = attempt(listed.length);
+  while (fits.dropped - tooMany > 1) {
+    const mid = Math.floor((tooMany + fits.dropped) / 2);
+    const candidate = attempt(mid);
+    if (candidate.body.length <= MAX_COMMENT_BODY) fits = candidate;
     else tooMany = mid;
   }
-  return attempt(enough);
+  return fits;
 };
 const EMPTY_MECHANIC_LEAVE_MESSAGE =
   "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n";
@@ -1217,8 +1216,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   );
 
   // Post first, THEN dismiss: the PR is never left review-less if the process dies between the two.
-  // With inline off no review object is created at all — but the dismiss and minimize below still run,
-  // so flipping a repo to inline=false also clears the threads a previous round left on the diff.
+  // The review object is posted whatever `inline` says — it is the trail from the PR to the sticky and
+  // to the run. With inline off it is body-only; the dismiss and minimize below run either way, so
+  // flipping a repo to inline=false also clears the threads a previous round left on the diff.
   const {
     url: reviewUrl,
     inlinePosted,

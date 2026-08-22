@@ -214,8 +214,9 @@ const mkMockGhApi = (
 // Tests
 
 // An inline thread is a human-only surface a later round can neither revise nor resolve, so stale
-// threads pile up on the diff as a PR iterates. Off by default (issue #179): no review object at all,
-// every visible finding in the sticky, and the prior round's threads still minimized on the way past.
+// threads pile up on the diff as a PR iterates. Off by default (issue #179): the review object is
+// still posted (body-only) as the trail to the sticky and the run, every visible finding goes in the
+// sticky, and the prior round's threads are still minimized on the way past.
 describe("post — inline off by default (issue #179)", () => {
   // The SHARED mkMocks, not a private copy: hand-rolling this list once already dropped the
   // answered-thread and review-thread matchers, which silently pushed both cases onto their

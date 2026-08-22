@@ -1778,7 +1778,7 @@ const postCmd = defineCommand({
     inline: {
       type: "boolean",
       description:
-        "Also post findings as inline review comments on the diff. Off by default: an inline thread cannot be revised by a later round, so stale threads accumulate, and the sticky carries every finding either way",
+        "Also render findings as inline review comments on the diff. Off by default: an inline thread cannot be revised by a later round, so stale threads accumulate. The review object is posted either way; with this off the sticky lists the findings instead, shedding the least severe if it hits GitHub's comment size limit",
     },
   },
   run: async ({ args }) => {

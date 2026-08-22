@@ -1,10 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
-import { resolve as resolvePath, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolvePath(__dirname, "..");
+import { readRepoFile, repoFiles, WORKFLOW_EXTENSIONS } from "./test-util.js";
 
 // Every key that carries a model id into the agent CLI: the reusables' inputs, and the env vars a
 // standalone workflow sets directly.
@@ -20,35 +15,38 @@ const MODEL_CONFIG_KEYS = [
   "ANTHROPIC_DEFAULT_SONNET_MODEL",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "CLAUDE_CODE_SUBAGENT_MODEL",
+  "SUBAGENT_MODEL",
 ] as const;
 
 type ConfiguredModel = { readonly key: string; readonly value: string };
 
+// The ids a value can resolve to. A workflow expression forwards someone else's id — checked where
+// that id is written — but it can also embed literals, which are ids configured here. Comparison
+// operands are dropped first: in `conclusion == 'success' && 'a-model' || 'another'`, only the
+// branches can reach ANTHROPIC_MODEL.
+const modelIdsIn = (value: string): readonly string[] =>
+  value.startsWith("${{")
+    ? [...value.replace(/(?:==|!=)\s*'[^']*'/g, "").matchAll(/'([^']+)'/g)].flatMap((match) =>
+        match[1] === undefined ? [] : [match[1]],
+      )
+    : [value];
+
 // A literal assignment to one of those keys, whether live or commented out — a commented example is
-// config a consumer uncomments. An `${{ … }}` value forwards someone else's id and is checked where
-// that id is written.
-const configuredModel = (line: string): ConfiguredModel | null => {
-  const match = /^\s*(?:#\s*)?([A-Za-z_]+):[ \t]+(\S.*?)\s*(?:#.*)?$/.exec(line);
-  if (match === null) return null;
-  const [, key = "", value = ""] = match;
-  const isModelKey = MODEL_CONFIG_KEYS.some((modelKey) => modelKey === key);
-  return isModelKey && !value.startsWith("${{") ? { key, value } : null;
-};
-
+// config a consumer uncomments.
 const configuredModels = (relativePath: string): readonly ConfiguredModel[] =>
-  readFileSync(resolvePath(repoRoot, relativePath), "utf-8")
+  readRepoFile(relativePath)
     .split("\n")
-    .map(configuredModel)
-    .filter((configured): configured is ConfiguredModel => configured !== null);
-
-const filesIn = (directory: string, extensions: readonly string[]): readonly string[] =>
-  readdirSync(resolvePath(repoRoot, directory))
-    .filter((name) => extensions.some((extension) => name.endsWith(extension)))
-    .map((name) => `${directory}/${name}`);
+    .flatMap((line) => {
+      const match = /^\s*(?:#\s*)?([A-Za-z_]+):[ \t]+(\S.*?)\s*(?:#.*)?$/.exec(line);
+      const [, key = "", value = ""] = match ?? [];
+      return MODEL_CONFIG_KEYS.some((modelKey) => modelKey === key)
+        ? modelIdsIn(value).map((id) => ({ key, value: id }))
+        : [];
+    });
 
 const searched = [
-  ...filesIn(".github/workflows", [".yaml", ".yml"]),
-  ...filesIn("examples/workflows", [".yaml", ".yml", ".md"]),
+  ...repoFiles(".github/workflows"),
+  ...repoFiles("examples/workflows", [...WORKFLOW_EXTENSIONS, ".md"]),
 ] as const;
 
 const surfaces = searched.filter((path) => configuredModels(path).length > 0);
@@ -58,10 +56,18 @@ const surfaces = searched.filter((path) => configuredModels(path).length > 0);
 // that. The `[1m]` suffix is what corrects it, and dropping the suffix fails silently — no error,
 // just a reviewer with a shorter memory — so the declaration is pinned here rather than left to
 // review vigilance. Surfaces are discovered by scanning for the config keys, so a new workflow file
-// or a model from another family cannot slip past an allowlist.
+// or a model from another family cannot slip past an allowlist; the discovered set is then asserted,
+// so config going missing cannot quietly shrink the coverage either.
 describe("1M context window declaration (#157)", () => {
-  it("finds the model-config surfaces to police", () => {
-    expect(surfaces.length).toBeGreaterThan(0);
+  it("covers exactly the surfaces that configure a model", () => {
+    expect(surfaces).toEqual([
+      ".github/workflows/review-on-comment.yaml",
+      ".github/workflows/review-selftest.yaml",
+      ".github/workflows/review.yaml",
+      "examples/workflows/README.md",
+      "examples/workflows/review-on-comment.yaml",
+      "examples/workflows/review.yaml",
+    ]);
   });
 
   for (const path of surfaces) {

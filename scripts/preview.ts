@@ -141,6 +141,10 @@ const sticky = render({
   pricedAt: new Date(),
 });
 
-const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined);
+const reviewBody = reviewBodyPointer(
+  REVIEWED_SHA,
+  undefined,
+  "https://github.com/owner/repo/actions/runs/7",
+);
 
 process.stdout.write(buildPreviewDoc(sticky, reviewBody, comments));

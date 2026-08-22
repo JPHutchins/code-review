@@ -1411,9 +1411,9 @@ describe("signal marker — issue #141 (the legacy compact stop signal, still re
   });
 });
 
-describe("reviewBodyPointer — a bare pointer to the sticky, never the blob (issue #161)", () => {
+describe("reviewBodyPointer — a bare pointer to the sticky and the run, never the blob (issues #161, #204)", () => {
   it("links the sticky and embeds no blob when a URL is present", () => {
-    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky");
+    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky", undefined);
     expect(pointer).not.toContain("code-review:findings-json");
     expect(pointer).not.toContain("AGENTS: STOP");
     expect(pointer).toContain("[summary comment](https://example.com/sticky)");
@@ -1421,7 +1421,7 @@ describe("reviewBodyPointer — a bare pointer to the sticky, never the blob (is
   });
 
   it("emits an unlinked pointer — still no blob — when the sticky URL is unavailable", () => {
-    const pointer = reviewBodyPointer("abc1234def", undefined);
+    const pointer = reviewBodyPointer("abc1234def", undefined, undefined);
     expect(pointer).not.toContain("code-review:findings-json");
     expect(pointer).toContain("see the summary comment");
   });
@@ -1446,7 +1446,7 @@ describe("reviewBodyPointer — a bare pointer to the sticky, never the blob (is
   });
 
   it("says nothing about a run when no run URL is available", () => {
-    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky");
+    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky", undefined);
     expect(pointer).not.toContain("workflow run");
     expect(pointer).not.toContain("undefined");
   });

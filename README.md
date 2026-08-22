@@ -152,7 +152,7 @@ links to:
   mechanism frequencies carried in `convergence.rounds` (each entry's `codes` map), from which the
   re-review seed re-derives the advisory `scope_metastasis` entry it hands the next-round agent. Each
   inline review comment embeds only its own finding (a `schema_version` + one-finding fragment), and the
-  review-object body only links the sticky — so the **sticky is the sole documented decode surface** for
+  review-object body links the sticky and the workflow run — so the **sticky is the sole documented decode surface** for
   the whole-document marker; a decoding agent reads it there. The review body is written only after the
   sticky exists (a failed sticky write aborts the run first), so it never carries the blob itself.
 - **`code-review-transcript`** — the full Claude Code session transcripts for the triage and review

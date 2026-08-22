@@ -1760,7 +1760,7 @@ const postCmd = defineCommand({
     "run-url": {
       type: "string",
       description:
-        "Workflow run URL (transcript/traces), rendered as a link in the LLM Disclosure aside",
+        "Workflow run URL (transcript/traces), rendered as a link in the LLM Disclosure aside and in the review-object body",
     },
     "json-url": {
       type: "string",

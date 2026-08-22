@@ -172,7 +172,10 @@ on:
         required: false
         default: block
       claude_code_version:
-        description: Claude Code CLI version to install; only the pinned default has been validated
+        description: >-
+          Claude Code CLI version to install; only the pinned default has been validated. The model
+          inputs' `[1m]` context-window suffix is resolved by THIS binary, so an older one may pass
+          the suffix through to your endpoint.
         type: string
         required: false
         default: 2.1.197

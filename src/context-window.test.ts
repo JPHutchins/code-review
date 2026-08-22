@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import { readRepoFile, repoFiles, WORKFLOW_EXTENSIONS } from "./test-util.js";
 
 // Every key that carries a model id into the agent CLI: the reusables' inputs, and the env vars a
-// standalone workflow sets directly.
+// standalone workflow sets directly. This list and the scanned directories below are the guard's
+// closed boundary — a model id reaching the CLI through a key that is not named here, or from a
+// file outside those directories, is not policed. Add the key here when you add the wiring.
 const MODEL_CONFIG_KEYS = [
   "model_full",
   "model_mechanic",

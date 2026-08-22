@@ -88,21 +88,23 @@ const calledReusable = (job: Job): string | null => {
   return match?.[1] ?? null;
 };
 
-// What a caller has to hold for the run to start: everything the called reusable's own jobs request,
-// plus what the reusables it delegates to need in turn. A callee job with no `permissions:` of its
-// own requests nothing extra — it inherits whatever the caller granted.
-const requiredBy = (reusablePath: string, seen: readonly string[] = []): PermissionSet =>
-  seen.includes(reusablePath)
-    ? EMPTY
-    : union(
-        jobsOf(workflowOf(reusablePath)).flatMap((job) => {
-          const callee = calledReusable(job);
-          return [
-            ...(job.permissions !== undefined ? [asPermissionSet(job.permissions)] : []),
-            ...(callee !== null ? [requiredBy(callee, [...seen, reusablePath])] : []),
-          ];
-        }),
-      );
+// What a caller has to hold for the run to start: the called reusable's own workflow-level block and
+// everything its jobs request, plus what the reusables it delegates to need in turn. A callee that
+// declares nothing requests nothing extra — it inherits whatever the caller granted.
+const requiredBy = (reusablePath: string, seen: readonly string[] = []): PermissionSet => {
+  if (seen.includes(reusablePath)) return EMPTY;
+  const workflow = workflowOf(reusablePath);
+  return union([
+    ...(workflow.permissions !== undefined ? [asPermissionSet(workflow.permissions)] : []),
+    ...jobsOf(workflow).flatMap((job) => {
+      const callee = calledReusable(job);
+      return [
+        ...(job.permissions !== undefined ? [asPermissionSet(job.permissions)] : []),
+        ...(callee !== null ? [requiredBy(callee, [...seen, reusablePath])] : []),
+      ];
+    }),
+  ]);
+};
 
 // A calling job's own `permissions:` REPLACES the workflow-level grant rather than intersecting it,
 // so the grant is the job's block when it has one and the workflow's block otherwise.

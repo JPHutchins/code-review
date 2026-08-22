@@ -448,3 +448,62 @@ describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
     ).toBe("Right");
   });
 });
+
+// DeepSeek bills off-peak all day on Saturdays and Sundays, BEIJING time, from 2026-08-23 (#216). The
+// rule is stated in Beijing time, so weekend-ness is not a property of the UTC date: the Beijing
+// weekend runs Friday 16:00 UTC to Sunday 16:00 UTC.
+describe("weekend_slots — the Beijing weekend overrides the weekday map (issue #216)", () => {
+  const prices = {
+    _updated: "2026-08-22",
+    _unit: "USD per 1M tokens",
+    models: {
+      m: {
+        slots: [
+          { utc_from: "00:00", utc_to: "01:00", in: 1, out: 1, cache_read: 1, cache_write: 0 },
+          { utc_from: "01:00", utc_to: "04:00", in: 2, out: 2, cache_read: 2, cache_write: 0 },
+          { utc_from: "04:00", utc_to: "00:00", in: 1, out: 1, cache_read: 1, cache_write: 0 },
+        ],
+        weekend_slots: [
+          { utc_from: "00:00", utc_to: "00:00", in: 1, out: 1, cache_read: 1, cache_write: 0 },
+        ],
+      },
+    },
+  };
+  const usage = [{ model: "m", input_tokens: 1_000_000, output_tokens: 0 }];
+  const at = (iso: string) => computeCost(usage, prices, new Date(iso)).lines[0]!.costUSD;
+
+  it("bills a weekday peak instant at the peak rate", () => {
+    // 2026-08-24 is a Monday; 02:00 UTC = Beijing Monday 10:00.
+    expect(at("2026-08-24T02:00:00Z")).toBeCloseTo(2);
+  });
+
+  it("bills the SAME clock time off-peak on a Beijing weekend day", () => {
+    // 2026-08-23 is a Sunday; 02:00 UTC = Beijing Sunday 10:00 — the window #216 was filed for.
+    expect(at("2026-08-23T02:00:00Z")).toBeCloseTo(1);
+  });
+
+  it("treats Friday 16:00 UTC onward as the weekend, because Beijing is already Saturday", () => {
+    // 2026-08-21 is a Friday. 16:30 UTC = Beijing Saturday 00:30.
+    expect(at("2026-08-21T16:30:00Z")).toBeCloseTo(1);
+    // 15:30 UTC the same day is still Beijing Friday, so the weekday map applies — and 15:30 falls in
+    // an off-peak weekday slot, so this asserts the map choice, not the rate.
+    expect(at("2026-08-21T15:30:00Z")).toBeCloseTo(1);
+  });
+
+  it("treats Sunday 16:00 UTC onward as a weekday again, because Beijing is already Monday", () => {
+    // 2026-08-23 is a Sunday; 16:30 UTC = Beijing Monday 00:30, which the weekday map prices off-peak.
+    expect(at("2026-08-23T16:30:00Z")).toBeCloseTo(1);
+    // And Monday 02:00 UTC (Beijing Monday 10:00) is peak — proving the weekend map is not sticky.
+    expect(at("2026-08-24T02:00:00Z")).toBeCloseTo(2);
+  });
+
+  it("falls back to the weekday map when a model declares no weekend override", () => {
+    const noWeekend = {
+      ...prices,
+      models: { m: { slots: prices.models.m.slots } },
+    };
+    const line = computeCost(usage, noWeekend, new Date("2026-08-23T02:00:00Z")).lines[0]!;
+    // Beijing Sunday, but the map has no weekend rows, so the peak weekday slot still applies.
+    expect(line.costUSD).toBeCloseTo(2);
+  });
+});

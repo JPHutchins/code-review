@@ -1425,6 +1425,31 @@ describe("reviewBodyPointer — a bare pointer to the sticky, never the blob (is
     expect(pointer).not.toContain("code-review:findings-json");
     expect(pointer).toContain("see the summary comment");
   });
+
+  // Whichever surface a reader lands on should be one click from the run (issue #204): the run holds
+  // the log and the findings artifact, and outlives the sticky's overwritten body.
+  it("links the run alongside the sticky", () => {
+    const pointer = reviewBodyPointer(
+      "abc1234def",
+      "https://example.com/sticky",
+      "https://example.com/run/7",
+    );
+    expect(pointer).toContain("[summary comment](https://example.com/sticky)");
+    expect(pointer).toContain("[workflow run](https://example.com/run/7)");
+    expect(pointer).not.toContain("code-review:findings-json");
+  });
+
+  it("links the run even when the sticky URL is unavailable", () => {
+    const pointer = reviewBodyPointer("abc1234def", undefined, "https://example.com/run/7");
+    expect(pointer).toContain("see the summary comment");
+    expect(pointer).toContain("[workflow run](https://example.com/run/7)");
+  });
+
+  it("says nothing about a run when no run URL is available", () => {
+    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky");
+    expect(pointer).not.toContain("workflow run");
+    expect(pointer).not.toContain("undefined");
+  });
 });
 
 describe("changeSizeSummary — the change-size line (issue #182)", () => {

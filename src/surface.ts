@@ -959,9 +959,18 @@ export const formatConfidence = (n: number): string => n.toFixed(2);
 // only after upsertSticky returns (a genuinely failed sticky write throws and aborts post() first), so
 // the sticky always exists to carry the machine channel by the time this renders. SSOT shared by the
 // commenter (post.ts) and the `preview` command.
-export const reviewBodyPointer = (headSha: string, stickyUrl: string | undefined): string => {
+// A reader who lands on the review object gets no path back to the evidence unless this body carries
+// one: the run holds the job log, the findings artifact, and the transcript, and outlives the sticky's
+// overwritten text. Both links degrade to plain words when their URL is absent.
+export const reviewBodyPointer = (
+  headSha: string,
+  stickyUrl: string | undefined,
+  runUrl?: string,
+): string => {
   const sha7 = headSha.slice(0, 7);
-  return stickyUrl
-    ? `🤖 Automated code review for \`${sha7}\` — see the [summary comment](${stickyUrl}) for the verdict, walkthrough, and cost.`
-    : `🤖 Automated code review for \`${sha7}\` — see the summary comment for the verdict, walkthrough, and cost.`;
+  const summary = stickyUrl ? `the [summary comment](${stickyUrl})` : "the summary comment";
+  const run = runUrl
+    ? ` The [workflow run](${runUrl}) has the job log and the findings artifact.`
+    : "";
+  return `🤖 Automated code review for \`${sha7}\` — see ${summary} for the verdict, walkthrough, and cost.${run}`;
 };

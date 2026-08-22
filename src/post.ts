@@ -255,13 +255,14 @@ const postInlineReview = async (
   comments: readonly InlineComment[],
   inDiff: readonly Finding[],
   stickyUrl: string | undefined,
+  runUrl: string | undefined,
   ghApi: GhApi,
 ): Promise<{
   readonly url: string | undefined;
   readonly inlinePosted: number;
   readonly unposted: readonly Finding[];
 }> => {
-  const pointer = reviewBodyPointer(headSha, stickyUrl);
+  const pointer = reviewBodyPointer(headSha, stickyUrl, runUrl);
   const reviewBody = (withComments: boolean): string =>
     JSON.stringify({
       body: pointer,
@@ -1100,6 +1101,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     comments,
     inDiff,
     stickyRef?.url,
+    input.runUrl,
     ghApi,
   );
   process.stderr.write(

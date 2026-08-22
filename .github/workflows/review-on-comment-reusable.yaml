@@ -87,12 +87,12 @@ on:
         required: false
         default: ""
       sonnet_model:
-        description: What the agent's internal 'sonnet' tier resolves to (empty ⇒ model_full)
+        description: What the agent's internal 'sonnet' tier resolves to (empty ⇒ subagent_model, else model_mechanic — a cheap tier inherits the cheap model)
         type: string
         required: false
         default: ""
       haiku_model:
-        description: What the agent's internal 'haiku' tier resolves to (empty ⇒ model_mechanic)
+        description: What the agent's internal 'haiku' tier resolves to (empty ⇒ subagent_model, else model_mechanic — a cheap tier inherits the cheap model)
         type: string
         required: false
         default: ""

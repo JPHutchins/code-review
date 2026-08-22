@@ -73,12 +73,12 @@ on:
         required: false
         default: ""
       sonnet_model:
-        description: What the agent's internal 'sonnet' tier resolves to (empty ⇒ model_full); same `[1m]` rule
+        description: What the agent's internal 'sonnet' tier resolves to (empty ⇒ subagent_model, else model_mechanic — a cheap tier inherits the cheap model); same `[1m]` rule
         type: string
         required: false
         default: ""
       haiku_model:
-        description: What the agent's internal 'haiku' tier resolves to (empty ⇒ model_mechanic); same `[1m]` rule
+        description: What the agent's internal 'haiku' tier resolves to (empty ⇒ subagent_model, else model_mechanic — a cheap tier inherits the cheap model); same `[1m]` rule
         type: string
         required: false
         default: ""
@@ -582,9 +582,12 @@ jobs:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MODEL_API_KEY }}
           ANTHROPIC_MODEL: ${{ steps.gather.outputs.conclusion == 'success' && inputs.model_full || inputs.model_mechanic }}
           SUBAGENT_MODEL: ${{ inputs.subagent_model != '' && inputs.subagent_model || inputs.model_mechanic }} # unset ⇒ the fast-route (mechanic) model; exported as CLAUDE_CODE_SUBAGENT_MODEL below
-          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.opus_model != '' && inputs.opus_model || inputs.model_full }} # tier aliases — what the agent's
-          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.sonnet_model != '' && inputs.sonnet_model || inputs.model_full }} # internal model picks resolve to
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model != '' && inputs.haiku_model || inputs.model_mechanic }}
+          # Tier aliases — what the agent's internal model picks resolve to. Only 'opus' inherits the
+          # route model; the CHEAP tiers inherit the CHEAP model, on the same fallback chain
+          # SUBAGENT_MODEL uses, so a caller who names one cheap model gets it everywhere cheap.
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.opus_model != '' && inputs.opus_model || inputs.model_full }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.sonnet_model != '' && inputs.sonnet_model || (inputs.subagent_model != '' && inputs.subagent_model || inputs.model_mechanic) }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model != '' && inputs.haiku_model || (inputs.subagent_model != '' && inputs.subagent_model || inputs.model_mechanic) }}
           # This review fans subagents into the BACKGROUND (the single-writer rule below). By default
           # `claude -p` kills still-running background tasks 600s after the MAIN turn ends — far short
           # of our wall+grace, silently cutting a mid-flight fan-out. 0 ⇒ wait indefinitely, so the

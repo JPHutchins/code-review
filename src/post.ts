@@ -141,7 +141,9 @@ type FittedBody = { readonly body: string; readonly dropped: number };
 
 // Shed the least severe findings until the body fits GitHub's comment limit, reporting how many went
 // so every surface describing the comment can describe it truthfully. Body length is monotone in the
-// number shed, so this bisects rather than re-rendering once per finding — an oversized round pays
+// number shed FOR dropped >= 1 — shedding the first finding also adds the note, which can make
+// body(1) exceed body(0) when that finding's prose is shorter than the note — so the bisect searches
+// that monotone range and the untouched body is checked separately, first. An oversized round pays
 // log2(n) full renders, not n. This bounds the findings prose, which is what the inline-off default
 // moved into the comment; content a caller supplies (a verbatim cloc table, a custom template) is
 // unbounded by nature and is not addressed here.
@@ -358,8 +360,16 @@ const postInlineReview = async (
   } catch (err) {
     // The reviews endpoint is atomic — one rejected position fails the whole batch — so on rejection
     // post the body only, then re-post each comment individually, collecting the ones GitHub rejects.
-    // A body-only review that itself fails (no comments) is a genuine error and propagates.
-    if (comments.length === 0) throw err;
+    // With no comments there is no batch to salvage: the request that failed WAS the body-only one.
+    // That is every round's path once inline is off, and the sticky — the round's primary surface —
+    // is already posted by now, so a stale commit_id or a transient 5xx must not abort before the
+    // dismiss and minimize cleanup. Warn and carry on without the breadcrumb.
+    if (comments.length === 0) {
+      process.stderr.write(
+        `Warning: could not post the review object on PR #${String(pr.prNumber)} (${errMsg(err)}) — the review is on the sticky; continuing without the link from the diff view\n`,
+      );
+      return { url: undefined, inlinePosted: 0, unposted: [] };
+    }
     process.stderr.write(
       `Warning: the batched inline review on PR #${String(pr.prNumber)} was rejected (${errMsg(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
     );
@@ -1015,6 +1025,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       ),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, fittedEnvelopeless.body, ghApi);
+    if (input.inline === true) {
+      process.stderr.write(
+        "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky only\n",
+      );
+    }
     process.stderr.write(
       `Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review${fittedEnvelopeless.dropped > 0 ? `; ${String(fittedEnvelopeless.dropped)} finding(s) left out for size` : ""}\n`,
     );

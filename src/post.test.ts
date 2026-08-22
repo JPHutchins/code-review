@@ -194,17 +194,22 @@ interface CommentBody {
   readonly body: string;
 }
 
+// An Error response rejects, so a failure path can be driven without hand-rolling an api — the same
+// shape gather.test.ts's mock already accepts.
 const mkMockGhApi = (
   responses: ReadonlyArray<{
     readonly match: (args: readonly string[]) => boolean;
-    readonly response: string;
+    readonly response: string | Error;
   }>,
 ): { readonly api: GhApi; readonly calls: () => readonly RecordedCall[] } => {
   const calls: RecordedCall[] = [];
   const api: GhApi = (args, stdin, env) => {
     calls.push({ args: [...args], stdin, env });
     for (const r of responses) {
-      if (r.match(args)) return Promise.resolve(r.response);
+      if (r.match(args))
+        return r.response instanceof Error
+          ? Promise.reject(r.response)
+          : Promise.resolve(r.response);
     }
     return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
   };
@@ -315,6 +320,25 @@ describe("post — inline off by default (issue #179)", () => {
     expect(body.length).toBeLessThanOrEqual(65536);
     expect(body).toContain("envelope-loss keeper");
     expect(body).toMatch(/finding\(s\) were left out of this comment/);
+  });
+
+  // Once inline is off, the body-only POST is every round's path, and the sticky is already written by
+  // the time it runs — so a transient failure there must not abort before the cleanup.
+  it("keeps going when the review object cannot be posted, so the cleanup still runs", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--input"),
+        response: new Error("gh: Unprocessable Entity (HTTP 422)"),
+      },
+      ...mocks(),
+    ]);
+
+    await expect(post(mkInput({ inline: false }), api)).resolves.toBeUndefined();
+
+    // The sticky carried the review, and the prior round's review was still dismissed.
+    expect(calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")).toBeDefined();
+    expect(calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"))).toBeDefined();
   });
 
   it("carries the in-diff findings as inline comments when inline is asked for", async () => {

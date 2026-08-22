@@ -323,8 +323,10 @@ describe("post — inline off by default (issue #179)", () => {
   });
 
   // Once inline is off, the body-only POST is every round's path, and the sticky is already written by
-  // the time it runs — so a transient failure there must not abort before the cleanup.
-  it("keeps going when the review object cannot be posted, so the cleanup still runs", async () => {
+  // the time it runs — so a transient failure there must not abort the round. But it must also not
+  // dismiss the prior review, because then the PR has no review object at all: "post first, THEN
+  // dismiss" exists precisely to keep one of them standing.
+  it("keeps the round and the prior review when the review object cannot be posted", async () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a: readonly string[]) =>
@@ -336,9 +338,13 @@ describe("post — inline off by default (issue #179)", () => {
 
     await expect(post(mkInput({ inline: false }), api)).resolves.toBeUndefined();
 
-    // The sticky carried the review, and the prior round's review was still dismissed.
+    // The round completed and the sticky carries the review.
     expect(calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")).toBeDefined();
-    expect(calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"))).toBeDefined();
+    // The prior review survives, comments and all — a stale review beside a current sticky beats none.
+    expect(calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"))).toBeUndefined();
+    expect(
+      calls().find((c) => c.args[0] === "graphql" && c.stdin?.includes("minimize")),
+    ).toBeUndefined();
   });
 
   it("carries the in-diff findings as inline comments when inline is asked for", async () => {

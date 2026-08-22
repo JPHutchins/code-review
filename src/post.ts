@@ -53,7 +53,7 @@ import {
   answeredRegistryFrom,
   fetchThreadComments,
 } from "./answered.js";
-import { errMsg, tryParseJson, asRecord } from "./util.js";
+import { annotationSafe, asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
   readonly repo: string;
@@ -164,6 +164,15 @@ const fitToCommentLimit = (
     const candidate = attempt(mid);
     if (candidate.body.length <= MAX_COMMENT_BODY) fits = candidate;
     else tooMany = mid;
+  }
+  if (fits.body.length > MAX_COMMENT_BODY) {
+    // Shedding every finding was not enough. The floor is not only caller-supplied content: the
+    // embedded findings blob (up to EMBED_LIMIT), the agent's summary, the systemic section and the
+    // cloc table the workflow passes whenever it has one are all un-sheddable here. GitHub will
+    // reject this body, so say it as an annotation rather than leaving a 422 to explain itself.
+    process.stderr.write(
+      `::warning::${annotationSafe(`The review body is ${String(fits.body.length)} chars with every finding shed, over the ${String(MAX_COMMENT_BODY)} budget — GitHub will reject it`)}\n`,
+    );
   }
   return fits;
 };
@@ -344,6 +353,10 @@ const postInlineReview = async (
   readonly url: string | undefined;
   readonly inlinePosted: number;
   readonly unposted: readonly Finding[];
+  // False when no review object could be posted at all. The caller must not dismiss the prior review
+  // in that case: doing so leaves the PR with no diff-anchored review whatsoever, which is exactly
+  // what "post first, THEN dismiss" exists to prevent.
+  readonly posted: boolean;
 }> => {
   const pointer = reviewBodyPointer(pr.headSha, pr.stickyUrl, pr.runUrl);
   const reviewBody = (withComments: boolean): string =>
@@ -356,7 +369,7 @@ const postInlineReview = async (
   const reviewsEndpoint = [`repos/${pr.repo}/pulls/${String(pr.prNumber)}/reviews`, "--input", "-"];
   try {
     const stdout = await ghApi(reviewsEndpoint, reviewBody(true));
-    return { url: parseHtmlUrl(stdout), inlinePosted: comments.length, unposted: [] };
+    return { url: parseHtmlUrl(stdout), inlinePosted: comments.length, unposted: [], posted: true };
   } catch (err) {
     // The reviews endpoint is atomic — one rejected position fails the whole batch — so on rejection
     // post the body only, then re-post each comment individually, collecting the ones GitHub rejects.
@@ -368,12 +381,23 @@ const postInlineReview = async (
       process.stderr.write(
         `Warning: could not post the review object on PR #${String(pr.prNumber)} (${errMsg(err)}) — the review is on the sticky; continuing without the link from the diff view\n`,
       );
-      return { url: undefined, inlinePosted: 0, unposted: [] };
+      return { url: undefined, inlinePosted: 0, unposted: [], posted: false };
     }
     process.stderr.write(
       `Warning: the batched inline review on PR #${String(pr.prNumber)} was rejected (${errMsg(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
     );
-    const url = parseHtmlUrl(await ghApi(reviewsEndpoint, reviewBody(false)));
+    const url = await (async (): Promise<string | undefined> => {
+      try {
+        return parseHtmlUrl(await ghApi(reviewsEndpoint, reviewBody(false)));
+      } catch (bodyOnlyErr) {
+        // Same tolerance as the no-comments path above: the sticky already carries the review, so a
+        // transient failure here must not take the round down before the cleanup.
+        process.stderr.write(
+          `Warning: the body-only retry of the review on PR #${String(pr.prNumber)} also failed (${errMsg(bodyOnlyErr)}) — the review is on the sticky; continuing without it\n`,
+        );
+        return undefined;
+      }
+    })();
     const commentsEndpoint = [
       `repos/${pr.repo}/pulls/${String(pr.prNumber)}/comments`,
       "--input",
@@ -396,7 +420,7 @@ const postInlineReview = async (
         );
       }
     }
-    return { url, inlinePosted, unposted };
+    return { url, inlinePosted, unposted, posted: url !== undefined || inlinePosted > 0 };
   }
 };
 
@@ -1240,6 +1264,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     url: reviewUrl,
     inlinePosted,
     unposted,
+    posted: reviewPosted,
   } = await postInlineReview(
     {
       repo: input.repo,
@@ -1257,13 +1282,19 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   );
 
   // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.
-  const priorReviewIds = botReviews.map((r) => r.id);
+  // Gated on the replacement actually existing — dismissing when the POST failed would leave the PR
+  // with no review object at all, which is the exact state "post first, THEN dismiss" prevents. A
+  // permanently failing POST then shows up as a stale review beside a current sticky, which is a far
+  // better end state than none, and the warning above says why.
+  const priorReviewIds = reviewPosted ? botReviews.map((r) => r.id) : [];
   if (priorReviewIds.length > 0) {
     await dismissReviews(input.repo, prNumber, priorReviewIds, ghApi);
   }
 
   // Minimize the pre-post snapshot (stale threads); the fresh comments were posted after it, untouched.
-  await minimizeComments(prNumber, priorInlineComments, ghApi);
+  // Same gate as the dismissal: with no replacement review, the prior one is being KEPT, so hiding its
+  // comments would leave a review whose findings are collapsed out of sight.
+  if (reviewPosted) await minimizeComments(prNumber, priorInlineComments, ghApi);
 
   // Re-render the sticky to the truth: "posted N" is the count that ACTUALLY anchored, any
   // GitHub-rejected in-diff findings join the strays, and none-anchored says "inline unavailable",

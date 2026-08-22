@@ -2272,6 +2272,21 @@ describe("post — --run-url / --json-url threading", () => {
     expect(body).toContain("[view the run & traces](https://ci.example.com/runs/123)");
   });
 
+  // The surface tests cover reviewBodyPointer itself; this covers the plumbing that gets the URL to it
+  // (issue #204), which is the part a refactor can quietly drop.
+  it("threads --run-url into the review-object body too", async () => {
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ runUrl: "https://ci.example.com/runs/123" }), api);
+
+    const review = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    expect((JSON.parse(review!.stdin!) as ReviewBody).body).toContain(
+      "[workflow run](https://ci.example.com/runs/123)",
+    );
+  });
+
   it("embeds the whole-document marker on the sticky, and a per-finding marker on each inline comment, when small enough (issue #19 sticky, issue #31 inline)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 

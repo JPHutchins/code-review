@@ -249,27 +249,30 @@ const commentPayload = (c: InlineComment): Record<string, unknown> => ({
 // comments[i] is the rendered comment for inDiff[i] (1:1, same order). Returns the review url, the
 // count that actually posted, and the findings GitHub rejected (for the caller to surface in the sticky).
 const postInlineReview = async (
-  repo: string,
-  prNumber: number,
-  headSha: string,
+  pr: {
+    readonly repo: string;
+    readonly prNumber: number;
+    readonly headSha: string;
+    readonly stickyUrl: string | undefined;
+    readonly runUrl: string | undefined;
+  },
   comments: readonly InlineComment[],
   inDiff: readonly Finding[],
-  stickyUrl: string | undefined,
   ghApi: GhApi,
 ): Promise<{
   readonly url: string | undefined;
   readonly inlinePosted: number;
   readonly unposted: readonly Finding[];
 }> => {
-  const pointer = reviewBodyPointer(headSha, stickyUrl);
+  const pointer = reviewBodyPointer(pr.headSha, pr.stickyUrl, pr.runUrl);
   const reviewBody = (withComments: boolean): string =>
     JSON.stringify({
       body: pointer,
-      commit_id: headSha,
+      commit_id: pr.headSha,
       event: "COMMENT",
       comments: withComments ? comments.map(commentPayload) : [],
     });
-  const reviewsEndpoint = [`repos/${repo}/pulls/${String(prNumber)}/reviews`, "--input", "-"];
+  const reviewsEndpoint = [`repos/${pr.repo}/pulls/${String(pr.prNumber)}/reviews`, "--input", "-"];
   try {
     const stdout = await ghApi(reviewsEndpoint, reviewBody(true));
     return { url: parseHtmlUrl(stdout), inlinePosted: comments.length, unposted: [] };
@@ -279,15 +282,22 @@ const postInlineReview = async (
     // A body-only review that itself fails (no comments) is a genuine error and propagates.
     if (comments.length === 0) throw err;
     process.stderr.write(
-      `Warning: the batched inline review on PR #${String(prNumber)} was rejected (${errMsg(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
+      `Warning: the batched inline review on PR #${String(pr.prNumber)} was rejected (${errMsg(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
     );
     const url = parseHtmlUrl(await ghApi(reviewsEndpoint, reviewBody(false)));
-    const commentsEndpoint = [`repos/${repo}/pulls/${String(prNumber)}/comments`, "--input", "-"];
+    const commentsEndpoint = [
+      `repos/${pr.repo}/pulls/${String(pr.prNumber)}/comments`,
+      "--input",
+      "-",
+    ];
     const unposted: Finding[] = [];
     let inlinePosted = 0;
     for (const [i, c] of comments.entries()) {
       try {
-        await ghApi(commentsEndpoint, JSON.stringify({ commit_id: headSha, ...commentPayload(c) }));
+        await ghApi(
+          commentsEndpoint,
+          JSON.stringify({ commit_id: pr.headSha, ...commentPayload(c) }),
+        );
         inlinePosted += 1;
       } catch (e) {
         const finding = inDiff[i];
@@ -1094,12 +1104,15 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     inlinePosted,
     unposted,
   } = await postInlineReview(
-    input.repo,
-    prNumber,
-    input.headSha,
+    {
+      repo: input.repo,
+      prNumber,
+      headSha: input.headSha,
+      stickyUrl: stickyRef?.url,
+      runUrl: input.runUrl,
+    },
     comments,
     inDiff,
-    stickyRef?.url,
     ghApi,
   );
   process.stderr.write(

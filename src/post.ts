@@ -1223,24 +1223,20 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     url: reviewUrl,
     inlinePosted,
     unposted,
-  } = input.inline
-    ? await postInlineReview(
-        {
-          repo: input.repo,
-          prNumber,
-          headSha: input.headSha,
-          stickyUrl: stickyRef?.url,
-          runUrl: input.runUrl,
-        },
-        comments,
-        inDiff,
-        ghApi,
-      )
-    : { url: undefined, inlinePosted: 0, unposted: [] as readonly Finding[] };
+  } = await postInlineReview(
+    {
+      repo: input.repo,
+      prNumber,
+      headSha: input.headSha,
+      stickyUrl: stickyRef?.url,
+      runUrl: input.runUrl,
+    },
+    comments,
+    inDiff,
+    ghApi,
+  );
   process.stderr.write(
-    input.inline
-      ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
-      : `Inline comments are off — ${String(strays.length - initialBody.dropped)} of ${String(strays.length)} visible finding(s) are in the sticky on PR #${String(prNumber)}${initialBody.dropped > 0 ? `; ${String(initialBody.dropped)} were left out for size` : ""}\n`,
+    `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`,
   );
 
   // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.
@@ -1250,13 +1246,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       input.repo,
       prNumber,
       priorReviewIds,
-      input.inline
-        ? "Superseded by a new review for an updated commit."
-        : // GitHub caps a dismissal message at 140 chars, so this one stays short and lets the sticky
-          // itself carry the detail.
-          initialBody.dropped > 0
-          ? "Superseded — findings are in the summary comment and the findings JSON; inline comments are off here."
-          : "Superseded — findings are in the summary comment; inline comments are off here.",
+      // A new review object is always posted, whatever `inline` says, so this reads true either way.
+      // (GitHub caps a dismissal message at 140 chars.)
+      "Superseded by a new review for an updated commit.",
       ghApi,
     );
   }

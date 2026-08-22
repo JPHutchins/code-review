@@ -237,17 +237,31 @@ describe("post — inline off by default (issue #179)", () => {
     ...mkMocks("<!-- code-review -->\nold content"),
   ];
 
-  it("creates no review object, and lists the in-diff finding in the sticky instead", async () => {
+  const reviewCall = (calls: readonly RecordedCall[]): ReviewBody | undefined => {
+    const c = calls.find(
+      (x) => x.args[0] === "repos/owner/repo/pulls/42/reviews" && x.stdin !== undefined,
+    );
+    return c ? (JSON.parse(c.stdin!) as ReviewBody) : undefined;
+  };
+
+  // The review object is the breadcrumb from the PR to the sticky and to the run whose summary
+  // carries the whole review, so it is posted whatever the flag says. Only comments[] is empty.
+  it("still posts the review object, body-only, as the trail to the sticky and the run", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false, runUrl: "https://ci.example.com/runs/9" }), api);
+
+    const review = reviewCall(calls());
+    expect(review).toBeDefined();
+    expect(review!.comments).toEqual([]);
+    expect(review!.body).toContain("summary comment");
+    expect(review!.body).toContain("[workflow run](https://ci.example.com/runs/9)");
+  });
+
+  it("lists the in-diff finding in the sticky instead of on the diff", async () => {
     const { api, calls } = mkMockGhApi(mocks());
 
     await post(mkInput({ inline: false }), api);
-
-    // The same endpoint is READ to dismiss prior reviews, so it is the call carrying a body that
-    // would create one.
-    const created = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
-    );
-    expect(created).toBeUndefined();
 
     const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
     const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
@@ -260,16 +274,20 @@ describe("post — inline off by default (issue #179)", () => {
 
   // The commit for this change claims the flip also clears what earlier rounds left on the diff, so
   // that claim gets a test rather than a sentence.
-  it("still dismisses the prior review, and says why, with no new review to supersede it", async () => {
+  it("still dismisses the prior review", async () => {
     const { api, calls } = mkMockGhApi(mocks());
 
     await post(mkInput({ inline: false }), api);
 
-    const dismissal = calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"));
-    expect(dismissal).toBeDefined();
-    expect((JSON.parse(dismissal!.stdin!) as { readonly message: string }).message).toContain(
-      "inline comments are off",
-    );
+    expect(calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"))).toBeDefined();
+  });
+
+  it("carries the in-diff findings as inline comments when inline is asked for", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: true }), api);
+
+    expect(reviewCall(calls())!.comments.length).toBeGreaterThan(0);
   });
 
   // Every finding's full prose now lands in one comment, so the body can cross GitHub's 65536-char
@@ -300,18 +318,6 @@ describe("post — inline off by default (issue #179)", () => {
     expect(body.length).toBeLessThanOrEqual(65536);
     expect(body).toContain("keep me");
     expect(body).toMatch(/finding\(s\) were left out of this comment/);
-  });
-
-  it("still posts the review when inline is asked for — the switch is the only difference", async () => {
-    const { api, calls } = mkMockGhApi(mocks());
-
-    await post(mkInput({ inline: true }), api);
-
-    expect(
-      calls().find(
-        (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
-      ),
-    ).toBeDefined();
   });
 });
 

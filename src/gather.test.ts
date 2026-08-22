@@ -186,6 +186,7 @@ describe("gather — PR resolution", () => {
       baseSha: "base",
       // A success-route run never looks for failing-job logs.
       stagedJobLogs: 0,
+      failingJobs: 0,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -761,7 +762,7 @@ describe("gather — failing-job logs", () => {
 
     const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
 
-    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 20 });
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 20, failingJobs: 25 });
     expect(hasOutFile("job_20.log")).toBe(true);
     expect(hasOutFile("job_21.log")).toBe(false);
     expect(calls().filter((c) => logsMatch(c.args))).toHaveLength(20);
@@ -909,7 +910,7 @@ describe("renderOutputs", () => {
     expect(renderOutputs({ kind: "skip" })).toBe("skip=true\n");
   });
 
-  it("renders pr, conclusion, diff_size, stacked, base_sha, staged_job_logs for the gathered case", () => {
+  it("renders pr, conclusion, diff_size, stacked, base_sha, staged_job_logs, failing_jobs for the gathered case", () => {
     expect(
       renderOutputs({
         kind: "gathered",
@@ -919,9 +920,10 @@ describe("renderOutputs", () => {
         stacked: false,
         baseSha: "abc1234",
         stagedJobLogs: 0,
+        failingJobs: 0,
       }),
     ).toBe(
-      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\n",
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\n",
     );
   });
 });

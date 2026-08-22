@@ -46,6 +46,10 @@ export type GatherResult =
       // Failing-job logs actually written for the fast-fix route to read. Zero means that route has
       // nothing but the diff, which every downstream surface has to say rather than imply (#154).
       readonly stagedJobLogs: number;
+      // Failing jobs the run reported, which the cap can leave larger than stagedJobLogs. Carried so
+      // the fast-fix route is TOLD it is reading a subset, rather than reporting the break fixed on
+      // the strength of the logs it happened to get.
+      readonly failingJobs: number;
     };
 
 export const renderOutputs = (result: GatherResult): string => {
@@ -53,7 +57,7 @@ export const renderOutputs = (result: GatherResult): string => {
     case "skip":
       return "skip=true\n";
     case "gathered":
-      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\nstaged_job_logs=${String(result.stagedJobLogs)}\n`;
+      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\nstaged_job_logs=${String(result.stagedJobLogs)}\nfailing_jobs=${String(result.failingJobs)}\n`;
   }
 };
 
@@ -347,7 +351,7 @@ const downloadFailingJobLogs = async (
   runId: string,
   outDir: string,
   ghApi: GhApi,
-): Promise<number> => {
+): Promise<{ readonly staged: number; readonly failing: number }> => {
   const rows = parseJsonl(
     await ghApi([`repos/${repo}/actions/runs/${runId}/jobs`, "--paginate", "--jq", JOBS_JQ]),
   );
@@ -371,7 +375,7 @@ const downloadFailingJobLogs = async (
   }
   if (failing.length > selected.length) {
     process.stderr.write(
-      `::warning::${annotationSafe(`${String(failing.length)} failing job(s) in run ${runId}; staged the first ${String(selected.length)} log(s) — the review does not see the rest`)}\n`,
+      `::warning::${annotationSafe(`${String(failing.length)} failing job(s) in run ${runId}; staged ${String(staged)} of the first ${String(selected.length)} log(s) — the review does not see the rest`)}\n`,
     );
   }
   if (staged === 0) {
@@ -383,7 +387,7 @@ const downloadFailingJobLogs = async (
       `::warning::${annotationSafe(`No failing-job logs could be staged for run ${runId} (${String(failing.length)} failing job(s) reported) — the review has only the diff to work from`)}\n`,
     );
   }
-  return staged;
+  return { staged, failing: failing.length };
 };
 
 export const gather = async (
@@ -479,10 +483,10 @@ export const gather = async (
     }),
   );
 
-  const stagedJobLogs =
+  const jobLogs =
     input.conclusion === "failure"
       ? await downloadFailingJobLogs(input.repo, input.runId, input.outDir, ghApi)
-      : 0;
+      : { staged: 0, failing: 0 };
 
   return {
     kind: "gathered",
@@ -491,6 +495,7 @@ export const gather = async (
     diffSize: Buffer.byteLength(prDiff, "utf8"),
     stacked,
     baseSha: meta.base_sha,
-    stagedJobLogs,
+    stagedJobLogs: jobLogs.staged,
+    failingJobs: jobLogs.failing,
   };
 };

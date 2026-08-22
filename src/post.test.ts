@@ -288,13 +288,31 @@ describe("post — inline off by default (issue #179)", () => {
     expect(calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"))).toBeDefined();
   });
 
-  // The lost-envelope branch lists every visible finding too, so it can exceed the limit the same way
-  // — and there a 422 is the difference between posting a notice and posting nothing.
+  // A round that never asked for inline comments lost none when the envelope went missing, so the
+  // sticky must not report a lost inline review — the envelope's real casualty is the usage/cost data.
+  it("does not blame a missing envelope for absent inline comments when inline was off", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
 
-  // Once inline is off, the body-only POST is every round's path, and the sticky is already written by
-  // the time it runs — so a transient failure there must not abort the round. But it must also not
-  // dismiss the prior review, because then the PR has no review object at all: "post first, THEN
-  // dismiss" exists precisely to keep one of them standing.
+    await expect(
+      post(mkInput({ inline: false, envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("process.exit");
+
+    const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
+    expect(body).toContain("### Findings");
+    expect(body).not.toContain("result envelope lost");
+    expect(body).not.toContain("no inline review");
+  });
+
+  // The inline template is the inline path's input alone; reading it up front made an unreadable path
+  // fail a round that would never have opened the file.
+  it("posts without reading the inline template", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false, inlineTemplatePath: join(tmpDir, "absent.eta") }), api);
+
+    expect(reviewCall(calls())).toBeDefined();
+  });
 
   it("carries the in-diff findings as inline comments when inline is asked for", async () => {
     const { api, calls } = mkMockGhApi(mocks());
@@ -303,10 +321,6 @@ describe("post — inline off by default (issue #179)", () => {
 
     expect(reviewCall(calls())!.comments.length).toBeGreaterThan(0);
   });
-
-  // Every finding's full prose now lands in one comment, so the body can cross GitHub's 65536-char
-  // limit — where postComment/patchComment would 422 and take the whole round down with the announce
-  // placeholder still up. It must shed the least severe findings instead, and say that it did.
 });
 
 describe("post — upsert sticky comment", () => {

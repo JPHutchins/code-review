@@ -72,10 +72,9 @@ export interface PostInput {
   readonly effort?: string;
   readonly runUrl?: string;
   // Render findings as inline review comments on the diff. Omitted/false ⇒ the review object is
-  // posted body-only and the findings are listed in the sticky instead (shedding the least severe if
-  // that body would exceed GitHub's size limit), which is the default
-  // because an inline thread is a human-only surface that cannot be revised: a later round can neither
-  // update nor resolve it, so stale threads accumulate on the diff (issue #179).
+  // posted body-only and the findings are listed in the sticky instead, which is the default because
+  // an inline thread is a human-only surface that cannot be revised: a later round can neither update
+  // nor resolve it, so stale threads accumulate on the diff (issue #179).
   readonly inline?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
@@ -734,7 +733,6 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     throw new Error(`Price map at ${input.pricesPath} does not match the expected shape`);
   }
   const template = readFileSync(input.templatePath, "utf-8");
-  const inlineTemplate = readFileSync(input.inlineTemplatePath, "utf-8");
 
   const renderNotice = (message: string): string => {
     // The notice carries the prior convergence forward IN its blob so the trajectory + last score
@@ -929,7 +927,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         convergenceRound: false,
         testReport,
         clocDiff,
-        inlineDisposition: { kind: "no-envelope" },
+        inlineDisposition: input.inline === true ? { kind: "no-envelope" } : { kind: "disabled" },
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(stampedFindings),
@@ -979,15 +977,14 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     : {};
 
   // With inline off there is no diff-anchored surface, so the split does not apply: every visible
-  // finding is a stray and the sticky carries them, shedding the least severe if the body would
-  // exceed GitHub's size limit — exactly as it does when the envelope is lost.
+  // finding is a stray and the sticky carries them all, exactly as it does when the envelope is lost.
   const {
     comments: rawComments,
     strays,
     inDiff,
   } = input.inline
     ? buildInlineComments(visibleFindings, diff, {
-        inlineTemplate,
+        inlineTemplate: readFileSync(input.inlineTemplatePath, "utf-8"),
         models: envelope.models.map((m) => m.model),
         findings,
         jsonUrl: input.jsonUrl,
@@ -1105,12 +1102,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }) + longFilesNote,
     );
 
-  // GitHub rejects a comment body over 65536 chars, and postComment/patchComment let that 422
-  // propagate — so an oversized body fails the job with the announce placeholder still up and the
-  // round's only surface never written. That became reachable when inline stopped being the default:
-  // every finding's full prose now renders into this one comment, where the in-diff ones used to be
-  // separate posts. `keepAlways` is never shed: a finding GitHub rejected for its position has no
-  // other human surface left, so dropping its sticky entry too would lose it outright.
+  // The body is posted unshed: GitHub rejects one over 65536 chars, and postComment/patchComment let
+  // that 422 propagate, so an oversized body fails the job with the announce placeholder still up.
+  // Inline off makes that reachable — every finding's prose now renders into this one comment, where
+  // the in-diff ones used to be separate posts. Shedding is issue #214; tolerating a failed write
+  // after the sticky is up is issue #223. Issue #217 removes the embedded blob, which is the largest
+  // fixed cost in the body.
   // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,

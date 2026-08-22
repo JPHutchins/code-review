@@ -957,9 +957,9 @@ export const formatConfidence = (n: number): string => n.toFixed(2);
 // The review-object body: a bare one-line pointer to the sticky, where the findings-json blob lives —
 // the sole documented decode surface (issue #161) — and to the run that produced the review (issue
 // #204), so a reader who lands here has a path back to the evidence. It never embeds the blob: the
-// review body is written only after upsertSticky returns (a genuinely failed sticky write throws and
-// aborts post() first), so the sticky always exists to carry the machine channel by the time this
-// renders. SSOT shared by the commenter (post.ts) and the `preview` command.
+// review body is written only after upsertSticky returns — a genuinely failed sticky write throws and
+// aborts post() first, and a response it cannot parse leaves these words unlinked rather than
+// embedding the blob here. SSOT shared by the commenter (post.ts) and the `preview` command.
 // The two links degrade differently: no sticky URL leaves the words unlinked, no run URL omits the run
 // sentence entirely. The run sentence names what the link is FOR rather than what the run still holds —
 // retention prunes logs and artifacts while the review object persists.

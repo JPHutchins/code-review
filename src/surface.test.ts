@@ -1426,8 +1426,9 @@ describe("reviewBodyPointer — a bare pointer to the sticky and the run, never 
     expect(pointer).toContain("see the summary comment");
   });
 
-  // Whichever surface a reader lands on should be one click from the run (issue #204): the run holds
-  // the log and the findings artifact, and outlives the sticky's overwritten body.
+  // Whichever surface a reader lands on should be one click from the run (issue #204) — the run page
+  // outlasts the sticky's overwritten body, and the link is what the reader needs, whatever retention
+  // has since pruned behind it.
   it("links the run alongside the sticky", () => {
     const pointer = reviewBodyPointer(
       "abc1234def",

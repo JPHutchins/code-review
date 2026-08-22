@@ -27,6 +27,8 @@ import type { InlineComment } from "../src/types.js";
 const root = resolve(import.meta.dirname, "..");
 const fx = (name: string): string => resolve(root, "test/fixtures", name);
 const REVIEWED_SHA = "1a2b3c4d5e6f70819aabbccddeeff00112233445";
+// One fixture URL for both surfaces, so the reference cannot show them disagreeing.
+const PREVIEW_RUN_URL = "https://github.com/owner/repo/actions/runs/7";
 
 const orThrow = <A>(v: Validation<A>, what: string): A => {
   if (v._tag === "Left") throw new Error(`preview: invalid ${what} fixture`);
@@ -137,14 +139,11 @@ const sticky = render({
   clocDiff: previewClocDiff,
   strays,
   findingsPointer: marker,
+  runUrl: PREVIEW_RUN_URL,
   postedAt: formatUtc(new Date()),
   pricedAt: new Date(),
 });
 
-const reviewBody = reviewBodyPointer(
-  REVIEWED_SHA,
-  undefined,
-  "https://github.com/owner/repo/actions/runs/7",
-);
+const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined, PREVIEW_RUN_URL);
 
 process.stdout.write(buildPreviewDoc(sticky, reviewBody, comments));

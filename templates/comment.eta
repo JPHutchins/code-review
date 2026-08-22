@@ -82,7 +82,7 @@ _No findings — clean review._
 → ⚠️ Inline comments couldn't be posted for this review (GitHub rejected a comment's position) — <% if (it.droppedForSize > 0) { %>the rejected findings are listed below, with the rest noted at the end<% } else { %>every finding is listed below instead<% } %>.
 <% } %>
 
-<% if (it.strays.length > 0) { %>
+<% if (it.strays.length > 0 || it.droppedForSize > 0) { %>
 ### <% if (it.inlineDisposition && it.inlineDisposition.kind === 'disabled') { %>Findings<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>
 _<% if (it.droppedForSize > 0) { %>The findings below are what fits — the inline review<% } else { %>Every finding is listed below — the inline review<% } %> could not be built because the result envelope was missing._

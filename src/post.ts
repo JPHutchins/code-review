@@ -124,7 +124,7 @@ const shedRefuge = (marker: FindingsMarkerForm, jsonUrl: string | undefined): st
     ? "the findings JSON in this comment"
     : marker === "link" && jsonUrl !== undefined
       ? `the [findings JSON](${jsonUrl})`
-      : "the run's findings artifact";
+      : "the findings artifact, when the run uploaded one";
 
 // No ranking claim: the shed takes the least severe first, but when everything ties (the all-nits
 // case) the dropped findings are no lower in severity than the kept ones.
@@ -1052,7 +1052,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     : {};
 
   // With inline off there is no diff-anchored surface, so the split does not apply: every visible
-  // finding is a stray and the sticky carries all of them, exactly as it does when the envelope is lost.
+  // finding is a stray and the sticky carries them, shedding the least severe if the body would
+  // exceed GitHub's size limit — exactly as it does when the envelope is lost.
   const {
     comments: rawComments,
     strays,

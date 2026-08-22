@@ -779,54 +779,49 @@ describe("gather — failing-job logs", () => {
   // The fast-fix route exists to read the failing logs; with none staged it reasons from the diff
   // alone, which is the thing it replaces. That has to be said out loud, not left for a reader to
   // notice in the agent's prose (issue #154).
+  // One failing job whose log download either works or doesn't — the only axis these two care about.
+  const oneFailingJob = (log: string | Error) => [
+    {
+      match: candidatesMatch,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    { match: metaMatch(42), response: mkMeta() },
+    { match: diffMatch(42), response: sampleDiff },
+    { match: commentsMatch(42), response: "" },
+    { match: jobsMatch, response: JSON.stringify({ jobs: [{ id: 11, conclusion: "failure" }] }) },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
+      response: log,
+    },
+  ];
+
   it("counts the logs it staged, and says nothing extra when it got them", async () => {
-    const { api } = mkMockGhApi([
-      {
-        match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-      },
-      { match: metaMatch(42), response: mkMeta() },
-      { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "" },
-      { match: jobsMatch, response: JSON.stringify({ jobs: [{ id: 11, conclusion: "failure" }] }) },
-      { match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs", response: "LOG 11" },
-    ]);
-    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const { api } = mkMockGhApi(oneFailingJob("LOG 11"));
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
 
     expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1 });
-    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("::warning::"));
+    expect(stderrSpy).not.toHaveBeenCalledWith(expect.stringContaining("::warning::"));
 
-    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
   });
 
-  it("annotates a ::warning:: when a failing run stages no logs at all", async () => {
-    const { api } = mkMockGhApi([
-      {
-        match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-      },
-      { match: metaMatch(42), response: mkMeta() },
-      { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "" },
-      { match: jobsMatch, response: JSON.stringify({ jobs: [{ id: 11, conclusion: "failure" }] }) },
-      {
-        match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
-        response: new Error("403"),
-      },
-    ]);
+  // On STDERR, not stdout: this command's stdout is the step's $GITHUB_OUTPUT, so an annotation
+  // written there would never render AND would corrupt the outputs — failing the step in exactly the
+  // case this warning exists for.
+  it("annotates a ::warning:: on stderr when a failing run stages no logs at all", async () => {
+    const { api } = mkMockGhApi(oneFailingJob(new Error("403")));
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
 
     expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 0 });
-    expect(stdoutSpy).toHaveBeenCalledWith(
+    expect(stderrSpy).toHaveBeenCalledWith(
       expect.stringContaining("::warning::No failing-job logs could be staged"),
     );
-    // The review still happens — the diff is worth reviewing, it just must not look verified.
-    expect(result.kind).toBe("gathered");
+    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("::warning::"));
 
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();

@@ -716,7 +716,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     const dropNote = answeredDropNote;
     const body = formatMarkdown(
       noticeBody(
-        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
+        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\`${
+          input.unverifiedNoLogs === true
+            ? ' — **but no failing-job logs were available**, so it had only the diff to work from and "no findings" is not evidence of none'
+            : ""
+        } — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
         sticky.body,
       ),
     );

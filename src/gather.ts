@@ -342,26 +342,25 @@ const downloadFailingJobLogs = async (
     throw new Error(`Jobs list for run ${runId} did not match the expected shape`);
   }
   const failing = decoded.right.jobs.filter((j) => j.conclusion === "failure");
-  const staged = await failing.reduce<Promise<number>>(async (countSoFar, job) => {
-    const count = await countSoFar;
+  let staged = 0;
+  for (const job of failing) {
     try {
       const log = await ghApi([`repos/${repo}/actions/jobs/${String(job.id)}/logs`]);
       writeFileSync(join(outDir, `job_${String(job.id)}.log`), log);
-      return count + 1;
+      staged += 1;
     } catch (err) {
       process.stderr.write(
         `Warning: failed to download logs for job ${String(job.id)}: ${errMsg(err)} — continuing with the logs retrieved so far\n`,
       );
-      return count;
     }
-  }, Promise.resolve(0));
+  }
   if (staged === 0) {
-    // ::warning:: rather than stderr: this is the one line that says the fast-fix route is about to
-    // reason from the diff alone, which is the thing it exists to replace.
-    process.stdout.write(
-      annotationSafe(
-        `::warning::No failing-job logs could be staged for run ${runId} (${String(failing.length)} failing job(s) listed) — the review has only the diff to work from\n`,
-      ),
+    // stderr, like every other annotation here: this command's STDOUT is the step's $GITHUB_OUTPUT,
+    // so a line written there would not render as an annotation and would corrupt the outputs.
+    // ::warning:: rather than a plain line because this says the fast-fix route is about to reason
+    // from the diff alone, which is the thing it exists to replace.
+    process.stderr.write(
+      `::warning::${annotationSafe(`No failing-job logs could be staged for run ${runId} (${String(failing.length)} failing job(s) reported) — the review has only the diff to work from`)}\n`,
     );
   }
   return staged;

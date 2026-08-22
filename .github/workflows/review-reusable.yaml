@@ -1142,12 +1142,14 @@ jobs:
           fi
 
           # route/effort come from the envelope the review job stamped — not re-derived here.
-          # Zero staged logs is normal on the success route — there are no failing jobs to read — so
-          # this only marks the review unverified when the run actually failed. Probed like the flags
-          # above: CODE_REVIEW_VERSION pins the published CLI, which may predate the option, and an
-          # unknown option is ignored silently rather than rejected.
+          # The caveat is about ONE route reasoning without the logs it exists to read, so all three
+          # conditions matter: the run failed, nothing was staged, and the fast-fix route actually ran.
+          # Without the route check the aside would also land above a triage-blocked or error notice,
+          # where no review happened at all. Probed like the flags above: CODE_REVIEW_VERSION pins the
+          # published CLI, which may predate the option, and an unknown option is ignored silently.
           UNVERIFIED_ARGS=()
           if [ "$RUN_CONCLUSION" = "failure" ] && [ "${STAGED_JOB_LOGS:-0}" = "0" ] \
+             && [ "$REVIEW_ROUTE" = "mechanic" ] \
              && code-review post --help 2>/dev/null | grep -qE -- '--unverified-no-logs([[:space:]]|`|$)'; then
             UNVERIFIED_ARGS=(--unverified-no-logs)
           fi

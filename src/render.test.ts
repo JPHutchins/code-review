@@ -143,10 +143,10 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
     );
   });
 
-  // The aside says "every finding below" — with no findings it describes nothing, and a notice
-  // surface (checkout failure, agent crash, no-output) can reach here with the flag set because the
-  // route is stamped before the agent ever runs.
-  it("says nothing when there are no findings to caveat", () => {
+  // The aside says "every finding below", which describes nothing when there are none — but a pass
+  // that found nothing BECAUSE it could not read the logs is the case where silence is worst. So the
+  // aside goes and the clean-review line carries it instead.
+  it("replaces the clean-review claim rather than going silent when there are no findings", () => {
     const out = render({
       findings: mkFindings([]),
       envelope: baseEnvelope,
@@ -155,7 +155,11 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       route: "mechanic",
       unverifiedNoLogs: true,
     });
-    expect(out).not.toContain("no failing-job logs");
+    // The disclosure block is a [!WARNING] too, so match the aside's own lead, not the alert marker.
+    expect(out).not.toContain("Unverified — no failing-job logs were available");
+    expect(out).not.toContain("clean review");
+    expect(out).toContain("no failing-job logs were staged");
+    expect(out).toContain('"No findings" is not evidence of none');
   });
 
   it("says nothing when the logs were there", () => {

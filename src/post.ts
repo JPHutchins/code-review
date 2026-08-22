@@ -757,7 +757,6 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         roundCount: priorRoundCount,
         convergenceRound: false,
         runUrl: input.runUrl,
-        unverifiedNoLogs: input.unverifiedNoLogs,
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(findings),
         postedAt: input.postedAt,

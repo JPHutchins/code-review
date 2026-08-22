@@ -141,7 +141,10 @@ const compareDiffMatch = (a: readonly string[]): boolean =>
 const compareCommitsMatch = (a: readonly string[]): boolean =>
   (a[0]?.startsWith("repos/owner/repo/compare/main...") ?? false) && a.includes("--jq");
 const jobsMatch = (a: readonly string[]): boolean =>
-  a[0] === "repos/owner/repo/actions/runs/RUN1/jobs";
+  a[0] === "repos/owner/repo/actions/runs/RUN1/jobs" && a.includes("--paginate");
+// What `gh api --paginate --jq '.jobs[] | …'` actually emits: one job per line, across all pages.
+const jobRows = (...jobs: ReadonlyArray<{ id: number; conclusion: string | null }>): string =>
+  jobs.map((j) => JSON.stringify(j)).join("\n") + "\n";
 const logsMatch = (a: readonly string[]): boolean =>
   (a[0]?.startsWith("repos/owner/repo/actions/jobs/") ?? false) &&
   (a[0]?.endsWith("/logs") ?? false);
@@ -717,13 +720,11 @@ describe("gather — failing-job logs", () => {
       { match: commentsMatch(42), response: "" },
       {
         match: jobsMatch,
-        response: JSON.stringify({
-          jobs: [
-            { id: 11, conclusion: "failure" },
-            { id: 22, conclusion: "success" },
-            { id: 33, conclusion: "failure" },
-          ],
-        }),
+        response: jobRows(
+          { id: 11, conclusion: "failure" },
+          { id: 22, conclusion: "success" },
+          { id: 33, conclusion: "failure" },
+        ),
       },
       { match: logsMatch, response: "LOG for job" },
     ]);
@@ -747,12 +748,7 @@ describe("gather — failing-job logs", () => {
       { match: commentsMatch(42), response: "" },
       {
         match: jobsMatch,
-        response: JSON.stringify({
-          jobs: [
-            { id: 11, conclusion: "failure" },
-            { id: 33, conclusion: "failure" },
-          ],
-        }),
+        response: jobRows({ id: 11, conclusion: "failure" }, { id: 33, conclusion: "failure" }),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
@@ -788,7 +784,7 @@ describe("gather — failing-job logs", () => {
     { match: metaMatch(42), response: mkMeta() },
     { match: diffMatch(42), response: sampleDiff },
     { match: commentsMatch(42), response: "" },
-    { match: jobsMatch, response: JSON.stringify({ jobs: [{ id: 11, conclusion: "failure" }] }) },
+    { match: jobsMatch, response: jobRows({ id: 11, conclusion: "failure" }) },
     {
       match: (a: readonly string[]) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
       response: log,

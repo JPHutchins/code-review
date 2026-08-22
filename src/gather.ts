@@ -90,7 +90,12 @@ const IssueCommentCodec = t.intersection([
 type IssueComment = t.TypeOf<typeof IssueCommentCodec>;
 
 const JobCodec = t.type({ id: t.number, conclusion: t.union([t.string, t.null]) });
-const JobsResponseCodec = t.type({ jobs: t.array(JobCodec) });
+
+// One job per row across all pages, for the same reason the conversation fetches project with --jq:
+// `--paginate` alone concatenates each page into an invalid `{..}{..}` stream. Unpaginated, a failing
+// job past the first page is invisible — and everything this route reports (the staged count, the
+// "(N failing job(s) reported)" line, the unverified stamp) would be computed from a truncated list.
+const JOBS_JQ = ".jobs[] | {id: .id, conclusion: .conclusion}";
 
 const fetchPrMeta = async (repo: string, prNumber: number, ghApi: GhApi): Promise<PrMeta> => {
   const stdout = await ghApi([
@@ -336,12 +341,14 @@ const downloadFailingJobLogs = async (
   outDir: string,
   ghApi: GhApi,
 ): Promise<number> => {
-  const stdout = await ghApi([`repos/${repo}/actions/runs/${runId}/jobs`]);
-  const decoded = JobsResponseCodec.decode(JSON.parse(stdout) as unknown);
+  const rows = parseJsonl(
+    await ghApi([`repos/${repo}/actions/runs/${runId}/jobs`, "--paginate", "--jq", JOBS_JQ]),
+  );
+  const decoded = t.array(JobCodec).decode(rows);
   if (decoded._tag === "Left") {
     throw new Error(`Jobs list for run ${runId} did not match the expected shape`);
   }
-  const failing = decoded.right.jobs.filter((j) => j.conclusion === "failure");
+  const failing = decoded.right.filter((j) => j.conclusion === "failure");
   let staged = 0;
   for (const job of failing) {
     try {

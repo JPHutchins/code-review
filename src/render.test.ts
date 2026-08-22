@@ -117,6 +117,41 @@ describe("formatConfidence (issue #26 — always 2 decimal places)", () => {
   });
 });
 
+// The fast-fix route reads the failing job's log to name the failure. With none staged it reasons
+// from the diff alone — the thing that route replaces — and a reader must be told that before the
+// findings, not left to notice a caveat in the agent's prose (issue #154).
+describe("unverified aside — no failing-job logs (issue #154)", () => {
+  const renderWith = (over: Partial<Parameters<typeof render>[0]> = {}): string =>
+    render({
+      findings: mkFindings([mkFinding({ title: "A guess from the diff" })]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "mechanic",
+      // The sticky lists findings from strays, so the aside has something to sit above.
+      strays: [mkFinding({ title: "A guess from the diff" })],
+      ...over,
+    });
+
+  it("warns above the findings when the run staged no logs", () => {
+    const out = renderWith({ unverifiedNoLogs: true });
+    expect(out).toContain("> [!WARNING]");
+    expect(out).toContain("no failing-job logs were available");
+    // Before the findings, so it cannot be read as a footnote to them.
+    expect(out.indexOf("no failing-job logs were available")).toBeLessThan(
+      out.indexOf("A guess from the diff"),
+    );
+  });
+
+  it("says nothing when the logs were there", () => {
+    expect(renderWith({ unverifiedNoLogs: false })).not.toContain("no failing-job logs");
+  });
+
+  it("says nothing when the caller does not mention it at all", () => {
+    expect(renderWith()).not.toContain("no failing-job logs");
+  });
+});
+
 describe("suppressed-nit aside — issue #164", () => {
   const nit = (over: Partial<Finding> = {}): Finding =>
     mkFinding({ severity: "nit", confidence: 0.5, likelihood: 0.4, ...over });

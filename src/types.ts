@@ -127,6 +127,9 @@ export interface RenderInput {
   // titles the section "Findings" and notes they couldn't be posted inline. Omitted/0 ⇒ all out-of-diff.
   readonly unanchoredCount?: number;
   readonly inlineDisposition?: InlineDisposition;
+  // The fast-fix route ran with no failing-job logs staged, so its findings were reasoned from the
+  // diff alone — the thing that route exists to replace (issue #154).
+  readonly unverifiedNoLogs?: boolean;
   readonly runUrl?: string;
   // Findings-json marker's fallback when the embedded form is too large.
   readonly jsonUrl?: string;

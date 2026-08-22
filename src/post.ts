@@ -71,6 +71,10 @@ export interface PostInput {
   readonly clocDiffPath?: string;
   readonly effort?: string;
   readonly runUrl?: string;
+  // The fast-fix route ran with no failing-job logs staged (issue #154). The caller knows this and
+  // post does not: the logs are staged in the review job, and this runs in the comment job with only
+  // the findings artifacts.
+  readonly unverifiedNoLogs?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
   // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
@@ -748,6 +752,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         roundCount: priorRoundCount,
         convergenceRound: false,
         runUrl: input.runUrl,
+        unverifiedNoLogs: input.unverifiedNoLogs,
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(findings),
         postedAt: input.postedAt,
@@ -920,6 +925,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         clocDiff,
         inlineDisposition: { kind: "no-envelope" },
         runUrl: input.runUrl,
+        unverifiedNoLogs: input.unverifiedNoLogs,
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(stampedFindings),
         postedAt: input.postedAt,
@@ -1055,6 +1061,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     strays,
     suppressedNits,
     runUrl: input.runUrl,
+    unverifiedNoLogs: input.unverifiedNoLogs,
     jsonUrl: input.jsonUrl,
     findingsPointer: findingsMarker,
     postedAt: input.postedAt,

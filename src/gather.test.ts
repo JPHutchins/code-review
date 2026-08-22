@@ -181,6 +181,8 @@ describe("gather — PR resolution", () => {
       diffSize: Buffer.byteLength(sampleDiff, "utf8"),
       stacked: false,
       baseSha: "base",
+      // A success-route run never looks for failing-job logs.
+      stagedJobLogs: 0,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -774,6 +776,62 @@ describe("gather — failing-job logs", () => {
     stderrSpy.mockRestore();
   });
 
+  // The fast-fix route exists to read the failing logs; with none staged it reasons from the diff
+  // alone, which is the thing it replaces. That has to be said out loud, not left for a reader to
+  // notice in the agent's prose (issue #154).
+  it("counts the logs it staged, and says nothing extra when it got them", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: JSON.stringify({ jobs: [{ id: 11, conclusion: "failure" }] }) },
+      { match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs", response: "LOG 11" },
+    ]);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1 });
+    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("::warning::"));
+
+    stdoutSpy.mockRestore();
+  });
+
+  it("annotates a ::warning:: when a failing run stages no logs at all", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: JSON.stringify({ jobs: [{ id: 11, conclusion: "failure" }] }) },
+      {
+        match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
+        response: new Error("403"),
+      },
+    ]);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 0 });
+    expect(stdoutSpy).toHaveBeenCalledWith(
+      expect.stringContaining("::warning::No failing-job logs could be staged"),
+    );
+    // The review still happens — the diff is worth reviewing, it just must not look verified.
+    expect(result.kind).toBe("gathered");
+
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
   it("never calls the jobs endpoint when conclusion is success", async () => {
     const { api, calls } = mkMockGhApi([
       {
@@ -827,7 +885,7 @@ describe("renderOutputs", () => {
     expect(renderOutputs({ kind: "skip" })).toBe("skip=true\n");
   });
 
-  it("renders pr, conclusion, diff_size, stacked, base_sha for the gathered case", () => {
+  it("renders pr, conclusion, diff_size, stacked, base_sha, staged_job_logs for the gathered case", () => {
     expect(
       renderOutputs({
         kind: "gathered",
@@ -836,8 +894,11 @@ describe("renderOutputs", () => {
         diffSize: 1234,
         stacked: false,
         baseSha: "abc1234",
+        stagedJobLogs: 0,
       }),
-    ).toBe("pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\n");
+    ).toBe(
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\n",
+    );
   });
 });
 

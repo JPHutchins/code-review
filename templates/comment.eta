@@ -67,6 +67,14 @@
 ---
 
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
+<% if (it.unverifiedNoLogs) { %>
+> [!WARNING]
+> **Unverified — no failing-job logs were available.** This route reads the failing CI job's log to
+> name the failure; none could be staged for this run, so every finding below was reasoned from the
+> diff alone. Treat them as hypotheses until the log is checked.
+
+<% } %>
+
 <% if (findingsTotal > 0) { %>
 <% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
 **Findings:** <%~ parts.join(' · ') %>

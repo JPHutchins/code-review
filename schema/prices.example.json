@@ -1,14 +1,38 @@
 {
-  "_comment": "USD per 1,000,000 tokens. PRICES DRIFT — keep _updated current. cost = sum over models of (input*in + output*out + cache_read*cache_read + cache_write*cache_write) / 1e6. A model's value is EITHER a flat all-day price OR a { \"slots\": [...] } set of UTC time-of-day slots for peak/off-peak pricing (issue #170) — see schema/prices.schema.json for the rules: each slot is a half-open [utc_from, utc_to) UTC window, a slot whose utc_to <= utc_from wraps past midnight, and a model's slots must partition the 24h day with no gap or overlap. The CLI's vendor_cost_usd is vendor-priced and will be wrong for non-Anthropic backends; recompute from this map using the `models` array in the abstract result envelope (SPEC §6.1). Fill the zeros from your provider's pricing page.",
+  "_comment": "USD per 1,000,000 tokens. PRICES DRIFT — keep _updated current. cost = sum over models of (input*in + output*out + cache_read*cache_read + cache_write*cache_write) / 1e6. A model's value is EITHER a flat all-day price OR a { \"slots\": [...] } set of UTC time-of-day slots for peak/off-peak pricing (issue #170), optionally with a \"weekend_slots\" partition for a provider that prices weekends differently (issue #216) — see schema/prices.schema.json, whose field descriptions are the spec: each slot is a half-open [utc_from, utc_to) UTC window, a slot whose utc_to <= utc_from wraps past midnight, and a model's slots must partition the 24h day with no gap or overlap. The CLI's vendor_cost_usd is vendor-priced and will be wrong for non-Anthropic backends; recompute from this map using the `models` array in the abstract result envelope (SPEC §6.1). Fill the zeros from your provider's pricing page.",
   "_updated": "2026-07-03",
   "_unit": "USD per 1M tokens",
   "models": {
-    "deepseek-v4-pro": { "in": 0.0, "out": 0.0, "cache_read": 0.0, "cache_write": 0.0 },
-    "deepseek-v4-flash": { "in": 0.0, "out": 0.0, "cache_read": 0.0, "cache_write": 0.0 },
+    "deepseek-v4-pro": {
+      "in": 0.0,
+      "out": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
+    "deepseek-v4-flash": {
+      "in": 0.0,
+      "out": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+    },
     "example-time-slotted-model": {
       "slots": [
-        { "utc_from": "10:00", "utc_to": "01:00", "in": 0.0, "out": 0.0, "cache_read": 0.0, "cache_write": 0.0 },
-        { "utc_from": "01:00", "utc_to": "10:00", "in": 0.0, "out": 0.0, "cache_read": 0.0, "cache_write": 0.0 }
+        {
+          "utc_from": "10:00",
+          "utc_to": "01:00",
+          "in": 0.0,
+          "out": 0.0,
+          "cache_read": 0.0,
+          "cache_write": 0.0
+        },
+        {
+          "utc_from": "01:00",
+          "utc_to": "10:00",
+          "in": 0.0,
+          "out": 0.0,
+          "cache_read": 0.0,
+          "cache_write": 0.0
+        }
       ]
     }
   }

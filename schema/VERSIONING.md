@@ -107,12 +107,39 @@ policy; the `main` `$id` tracks latest, tagged releases pin to the version. Its 
 | Version | Status | Notes |
 |---|---|---|
 | `v0.1.0` | superseded | Initial price-map schema. Per-model `in`/`out`/`cache_read`/`cache_write` (USD per 1M tokens); `_updated` date; `_unit`. |
-| `v0.2.0` | **current** | A model's value is now a `oneOf` (issue #170): the flat shape above, OR `{ "slots": [ { "utc_from", "utc_to", "in", "out", "cache_read", "cache_write" } ] }` — UTC time-of-day pricing (half-open `[utc_from, utc_to)` windows; `utc_to <= utc_from` wraps past midnight; slots must partition the 24h day). Additive/backward-compatible: every flat map keeps validating. |
+| `v0.2.0` | superseded | A model's value is now a `oneOf` (issue #170): the flat shape above, OR `{ "slots": [ { "utc_from", "utc_to", "in", "out", "cache_read", "cache_write" } ] }` — UTC time-of-day pricing (half-open `[utc_from, utc_to)` windows; `utc_to <= utc_from` wraps past midnight; slots must partition the 24h day). Additive/backward-compatible: every flat map keeps validating. |
+| `v0.3.0` | **current** | Optional `weekend_slots` beside `slots` (issue #216): a second partition, same shape and same 24h-partition requirement, selected on Saturdays and Sundays in **Beijing** time (Friday 16:00 UTC → Sunday 16:00 UTC — a day-of-week rule, not a timezone axis). A model without it uses `slots` every day. Additive for readers that know the key; see the delivery rule below for readers that do not. |
 
 The `_updated` field inside a price-map instance tracks **price drift** (a data concern) and is
 distinct from the schema's semver version (a **contract** concern). Adding a new price field (e.g. a
 future `cache_write_5m`) is a MINOR schema bump; updating a price value is only an `_updated`
 change.
+
+Every rate in a map states **current** pricing. Recomputing an old envelope reprices it at today's
+rates, so a cost recomputed long after the run is not a record of what was billed — this applies to
+the `weekend_slots` axis exactly as it applies to the numbers.
+
+#### Adding a key to a shipped map: the delivery-order rule
+
+A price map and the CLI that reads it travel by **different routes**. `.github/prices.json` is read
+from the default-branch checkout and takes effect the moment it merges; the CLI is installed from
+npm at the pinned `CODE_REVIEW_VERSION` and takes effect only when a release ships. The price codecs
+are strict-keyed by design (`SlottedModelPricesStrict` requires every key to be `slots`), so a map
+carrying a key the pinned CLI predates does not degrade — `PriceMapCodec` returns `Left` and `post`
+throws, taking down every review between the merge and the release.
+
+So a map key MUST NOT reach the default branch before the CLI that parses it:
+
+1. Merge the codec, schema, and tests on their own — safe in any order, since a newer CLI reads
+   every older map.
+2. Put the **data** change in the release commit itself, beside the `CODE_REVIEW_VERSION` bump, so
+   the map and the CLI that understands it land in the same commit and the same tag.
+3. Only then roll consumers — pin and map together, one commit each (a consumer's map is copied
+   from the tag).
+
+Verify before merging a map change: install the pinned version and decode the new map with it —
+`npx @jphutchins/code-review@$CODE_REVIEW_VERSION cost <envelope> --prices <new-map>` prints a cost
+if the pinned CLI accepts it and `prices does not match expected shape` if it does not.
 
 ## Compatibility with CLI structured-output enforcement
 

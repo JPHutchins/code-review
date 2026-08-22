@@ -68,6 +68,16 @@ const slotCovers = (slot: PriceSlot, minute: number): boolean => {
 // covers it (an overlap) — or a slotted model priced with no instant supplied — is a misconfiguration:
 // warn LOUDLY (like the unknown-model path) and return null so cost falls back to $0 for that model,
 // never crashing and never silently mis-pricing.
+// Weekend-ness is a property of the BEIJING date, not the UTC one — the provider states the rule in
+// Beijing time (see the schema's weekend_slots description, which is the spec). Beijing keeps no
+// daylight saving, so a fixed +8 is exact rather than an approximation (issue #216).
+const BEIJING_OFFSET_MINUTES = 8 * 60;
+
+const isBeijingWeekend = (instant: Date): boolean => {
+  const day = new Date(instant.getTime() + BEIJING_OFFSET_MINUTES * 60_000).getUTCDay();
+  return day === 0 || day === 6;
+};
+
 const resolveFlatPrices = (
   model: string,
   p: ModelPrices,
@@ -82,10 +92,13 @@ const resolveFlatPrices = (
     return null;
   }
   const minute = utcMinuteOfDay(pricedAt);
-  const covering = p.slots.filter((s) => slotCovers(s, minute));
+  const weekendSlots = p.weekend_slots;
+  const useWeekend = weekendSlots != null && isBeijingWeekend(pricedAt);
+  const slots = useWeekend ? weekendSlots : p.slots;
+  const covering = slots.filter((s) => slotCovers(s, minute));
   if (covering.length === 1) return covering[0] ?? null;
   warn(
-    `code-review cost: model "${model}" — ${String(covering.length)} price slots cover ${hhmmOf(minute)} UTC (expected exactly 1); a model's slots must partition the 24h day with no gap or overlap; cost for this model set to $0`,
+    `code-review cost: model "${model}" — ${String(covering.length)} price slots in \`${useWeekend ? "weekend_slots" : "slots"}\` cover ${hhmmOf(minute)} UTC (expected exactly 1); that array must partition the 24h day with no gap or overlap; cost for this model set to $0`,
   );
   return null;
 };

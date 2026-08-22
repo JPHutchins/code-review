@@ -141,7 +141,10 @@ const compareDiffMatch = (a: readonly string[]): boolean =>
 const compareCommitsMatch = (a: readonly string[]): boolean =>
   (a[0]?.startsWith("repos/owner/repo/compare/main...") ?? false) && a.includes("--jq");
 const jobsMatch = (a: readonly string[]): boolean =>
-  a[0] === "repos/owner/repo/actions/runs/RUN1/jobs";
+  a[0] === "repos/owner/repo/actions/runs/RUN1/jobs" && a.includes("--paginate");
+// What `gh api --paginate --jq '.jobs[] | …'` actually emits: one job per line, across all pages.
+const jobRows = (...jobs: ReadonlyArray<{ id: number; conclusion: string | null }>): string =>
+  jobs.map((j) => JSON.stringify(j)).join("\n") + "\n";
 const logsMatch = (a: readonly string[]): boolean =>
   (a[0]?.startsWith("repos/owner/repo/actions/jobs/") ?? false) &&
   (a[0]?.endsWith("/logs") ?? false);
@@ -181,6 +184,8 @@ describe("gather — PR resolution", () => {
       diffSize: Buffer.byteLength(sampleDiff, "utf8"),
       stacked: false,
       baseSha: "base",
+      // A success-route run never looks for failing-job logs.
+      stagedJobLogs: 0,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -715,13 +720,11 @@ describe("gather — failing-job logs", () => {
       { match: commentsMatch(42), response: "" },
       {
         match: jobsMatch,
-        response: JSON.stringify({
-          jobs: [
-            { id: 11, conclusion: "failure" },
-            { id: 22, conclusion: "success" },
-            { id: 33, conclusion: "failure" },
-          ],
-        }),
+        response: jobRows(
+          { id: 11, conclusion: "failure" },
+          { id: 22, conclusion: "success" },
+          { id: 33, conclusion: "failure" },
+        ),
       },
       { match: logsMatch, response: "LOG for job" },
     ]);
@@ -745,12 +748,7 @@ describe("gather — failing-job logs", () => {
       { match: commentsMatch(42), response: "" },
       {
         match: jobsMatch,
-        response: JSON.stringify({
-          jobs: [
-            { id: 11, conclusion: "failure" },
-            { id: 33, conclusion: "failure" },
-          ],
-        }),
+        response: jobRows({ id: 11, conclusion: "failure" }, { id: 33, conclusion: "failure" }),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
@@ -771,6 +769,57 @@ describe("gather — failing-job logs", () => {
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("failed to download logs"));
     expect(result.kind).toBe("gathered");
 
+    stderrSpy.mockRestore();
+  });
+
+  // The fast-fix route exists to read the failing logs; with none staged it reasons from the diff
+  // alone, which is the thing it replaces. That has to be said out loud, not left for a reader to
+  // notice in the agent's prose (issue #154).
+  // One failing job whose log download either works or doesn't — the only axis these two care about.
+  const oneFailingJob = (log: string | Error) => [
+    {
+      match: candidatesMatch,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    { match: metaMatch(42), response: mkMeta() },
+    { match: diffMatch(42), response: sampleDiff },
+    { match: commentsMatch(42), response: "" },
+    { match: jobsMatch, response: jobRows({ id: 11, conclusion: "failure" }) },
+    {
+      match: (a: readonly string[]) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
+      response: log,
+    },
+  ];
+
+  it("counts the logs it staged, and says nothing extra when it got them", async () => {
+    const { api } = mkMockGhApi(oneFailingJob("LOG 11"));
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1 });
+    expect(stderrSpy).not.toHaveBeenCalledWith(expect.stringContaining("::warning::"));
+
+    stderrSpy.mockRestore();
+  });
+
+  // On STDERR, not stdout: this command's stdout is the step's $GITHUB_OUTPUT, so an annotation
+  // written there would never render AND would corrupt the outputs — failing the step in exactly the
+  // case this warning exists for.
+  it("annotates a ::warning:: on stderr when a failing run stages no logs at all", async () => {
+    const { api } = mkMockGhApi(oneFailingJob(new Error("403")));
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 0 });
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("::warning::No failing-job logs could be staged"),
+    );
+    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("::warning::"));
+
+    stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   });
 
@@ -827,7 +876,7 @@ describe("renderOutputs", () => {
     expect(renderOutputs({ kind: "skip" })).toBe("skip=true\n");
   });
 
-  it("renders pr, conclusion, diff_size, stacked, base_sha for the gathered case", () => {
+  it("renders pr, conclusion, diff_size, stacked, base_sha, staged_job_logs for the gathered case", () => {
     expect(
       renderOutputs({
         kind: "gathered",
@@ -836,8 +885,11 @@ describe("renderOutputs", () => {
         diffSize: 1234,
         stacked: false,
         baseSha: "abc1234",
+        stagedJobLogs: 0,
       }),
-    ).toBe("pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\n");
+    ).toBe(
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\n",
+    );
   });
 });
 

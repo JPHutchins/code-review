@@ -14,7 +14,7 @@ import {
   ThreadCommentCodec,
   THREAD_COMMENT_JQ,
 } from "./answered.js";
-import { clipText, errMsg } from "./util.js";
+import { annotationSafe, clipText, errMsg } from "./util.js";
 
 export interface GatherInput {
   readonly repo: string;
@@ -43,6 +43,9 @@ export type GatherResult =
       // The review-scope base commit (the pr.diff endpoint), exposed so a downstream step can run
       // `cloc --git --diff <baseSha> <head>` over exactly the PR's own change (issue #182).
       readonly baseSha: string;
+      // Failing-job logs actually written for the fast-fix route to read. Zero means that route has
+      // nothing but the diff, which every downstream surface has to say rather than imply (#154).
+      readonly stagedJobLogs: number;
     };
 
 export const renderOutputs = (result: GatherResult): string => {
@@ -50,7 +53,7 @@ export const renderOutputs = (result: GatherResult): string => {
     case "skip":
       return "skip=true\n";
     case "gathered":
-      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\n`;
+      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\nstaged_job_logs=${String(result.stagedJobLogs)}\n`;
   }
 };
 
@@ -87,7 +90,12 @@ const IssueCommentCodec = t.intersection([
 type IssueComment = t.TypeOf<typeof IssueCommentCodec>;
 
 const JobCodec = t.type({ id: t.number, conclusion: t.union([t.string, t.null]) });
-const JobsResponseCodec = t.type({ jobs: t.array(JobCodec) });
+
+// One job per row across all pages, for the same reason the conversation fetches project with --jq:
+// `--paginate` alone concatenates each page into an invalid `{..}{..}` stream. Unpaginated, a failing
+// job past the first page is invisible — and everything this route reports (the staged count, the
+// "(N failing job(s) reported)" line, the unverified stamp) would be computed from a truncated list.
+const JOBS_JQ = ".jobs[] | {id: .id, conclusion: .conclusion}";
 
 const fetchPrMeta = async (repo: string, prNumber: number, ghApi: GhApi): Promise<PrMeta> => {
   const stdout = await ghApi([
@@ -324,28 +332,45 @@ const reviewsFrom = (reviews: readonly Review[], botLogin: string) =>
   }));
 
 // Jobs-list failure is fatal; a per-log download failure degrades — logs are advisory, and partial
-// logs plus the diff beat a dead review.
+// logs plus the diff beat a dead review. Returns how many landed: on the fast-fix route the logs are
+// the whole premise, so zero of them is worth saying out loud rather than leaving the agent to infer
+// it from an empty directory (issue #154).
 const downloadFailingJobLogs = async (
   repo: string,
   runId: string,
   outDir: string,
   ghApi: GhApi,
-): Promise<void> => {
-  const stdout = await ghApi([`repos/${repo}/actions/runs/${runId}/jobs`]);
-  const decoded = JobsResponseCodec.decode(JSON.parse(stdout) as unknown);
+): Promise<number> => {
+  const rows = parseJsonl(
+    await ghApi([`repos/${repo}/actions/runs/${runId}/jobs`, "--paginate", "--jq", JOBS_JQ]),
+  );
+  const decoded = t.array(JobCodec).decode(rows);
   if (decoded._tag === "Left") {
     throw new Error(`Jobs list for run ${runId} did not match the expected shape`);
   }
-  for (const job of decoded.right.jobs.filter((j) => j.conclusion === "failure")) {
+  const failing = decoded.right.filter((j) => j.conclusion === "failure");
+  let staged = 0;
+  for (const job of failing) {
     try {
       const log = await ghApi([`repos/${repo}/actions/jobs/${String(job.id)}/logs`]);
       writeFileSync(join(outDir, `job_${String(job.id)}.log`), log);
+      staged += 1;
     } catch (err) {
       process.stderr.write(
         `Warning: failed to download logs for job ${String(job.id)}: ${errMsg(err)} — continuing with the logs retrieved so far\n`,
       );
     }
   }
+  if (staged === 0) {
+    // stderr, like every other annotation here: this command's STDOUT is the step's $GITHUB_OUTPUT,
+    // so a line written there would not render as an annotation and would corrupt the outputs.
+    // ::warning:: rather than a plain line because this says the fast-fix route is about to reason
+    // from the diff alone, which is the thing it exists to replace.
+    process.stderr.write(
+      `::warning::${annotationSafe(`No failing-job logs could be staged for run ${runId} (${String(failing.length)} failing job(s) reported) — the review has only the diff to work from`)}\n`,
+    );
+  }
+  return staged;
 };
 
 export const gather = async (
@@ -441,9 +466,10 @@ export const gather = async (
     }),
   );
 
-  if (input.conclusion === "failure") {
-    await downloadFailingJobLogs(input.repo, input.runId, input.outDir, ghApi);
-  }
+  const stagedJobLogs =
+    input.conclusion === "failure"
+      ? await downloadFailingJobLogs(input.repo, input.runId, input.outDir, ghApi)
+      : 0;
 
   return {
     kind: "gathered",
@@ -452,5 +478,6 @@ export const gather = async (
     diffSize: Buffer.byteLength(prDiff, "utf8"),
     stacked,
     baseSha: meta.base_sha,
+    stagedJobLogs,
   };
 };

@@ -342,6 +342,10 @@ jobs:
       has_findings: ${{ steps.assemble.outputs.has_findings }}
       findings_artifact_id: ${{ steps.upload-findings.outputs.artifact-id }}
       route: ${{ steps.review.outputs.route }}
+      # Failing-job logs actually staged for the fast-fix route to read; the comment job marks the
+      # review unverified when a failed run produced none (issue #154).
+      staged_job_logs: ${{ steps.gather.outputs.staged_job_logs }}
+      run_conclusion: ${{ steps.gather.outputs.conclusion }}
     permissions:
       contents: read        # no write — the agent runs untrusted PR code
       actions: read          # download CI artifacts (logs)
@@ -1101,6 +1105,8 @@ jobs:
           CONVERGENCE_THRESHOLD: ${{ inputs.convergence_threshold }}
           NIT_VISIBILITY_FLOOR: ${{ inputs.nit_visibility_floor }}
           REVIEW_ROUTE: ${{ needs.review.outputs.route }}
+          STAGED_JOB_LOGS: ${{ needs.review.outputs.staged_job_logs }}
+          RUN_CONCLUSION: ${{ needs.review.outputs.run_conclusion }}
         run: |
           set -euo pipefail
 
@@ -1136,6 +1142,18 @@ jobs:
           fi
 
           # route/effort come from the envelope the review job stamped — not re-derived here.
+          # The caveat is about ONE route reasoning without the logs it exists to read, so all three
+          # conditions matter: the run failed, nothing was staged, and the fast-fix route actually ran.
+          # Without the route check the aside would also land above a triage-blocked or error notice,
+          # where no review happened at all. Probed like the flags above: CODE_REVIEW_VERSION pins the
+          # published CLI, which may predate the option, and an unknown option is ignored silently.
+          UNVERIFIED_ARGS=()
+          if [ "$RUN_CONCLUSION" = "failure" ] && [ "${STAGED_JOB_LOGS:-0}" = "0" ] \
+             && [ "$REVIEW_ROUTE" = "mechanic" ] \
+             && code-review post --help 2>/dev/null | grep -qE -- '--unverified-no-logs([[:space:]]|`|$)'; then
+            UNVERIFIED_ARGS=(--unverified-no-logs)
+          fi
+
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
             --repo "$REPO" \
@@ -1147,7 +1165,8 @@ jobs:
             "${ROUTE_ARGS[@]}" \
             "${CLOC_ARGS[@]}" \
             "${JSON_URL_ARGS[@]}" \
-            "${PRICES_ARGS[@]}"
+            "${PRICES_ARGS[@]}" \
+            "${UNVERIFIED_ARGS[@]}"
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is
       # informational, it must not fail a required-checks branch protection). always() so a failed

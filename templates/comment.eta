@@ -67,7 +67,7 @@
 ---
 
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
-<% if (it.unverifiedNoLogs) { %>
+<% if (it.unverifiedNoLogs && findingsTotal > 0) { %>
 > [!WARNING]
 > **Unverified — no failing-job logs were available.** This route reads the failing CI job's log to
 > name the failure; none could be staged for this run, so every finding below was reasoned from the

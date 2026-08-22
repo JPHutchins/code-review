@@ -143,6 +143,21 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
     );
   });
 
+  // The aside says "every finding below" — with no findings it describes nothing, and a notice
+  // surface (checkout failure, agent crash, no-output) can reach here with the flag set because the
+  // route is stamped before the agent ever runs.
+  it("says nothing when there are no findings to caveat", () => {
+    const out = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "mechanic",
+      unverifiedNoLogs: true,
+    });
+    expect(out).not.toContain("no failing-job logs");
+  });
+
   it("says nothing when the logs were there", () => {
     expect(renderWith({ unverifiedNoLogs: false })).not.toContain("no failing-job logs");
   });

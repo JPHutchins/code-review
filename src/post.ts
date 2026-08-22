@@ -71,9 +71,10 @@ export interface PostInput {
   readonly clocDiffPath?: string;
   readonly effort?: string;
   readonly runUrl?: string;
-  // The fast-fix route ran with no failing-job logs staged (issue #154). The caller knows this and
-  // post does not: the logs are staged in the review job, and this runs in the comment job with only
-  // the findings artifacts.
+  // The fast-fix route ran with no failing-job logs staged (issue #154). Passed as a flag because
+  // this runs in the comment job, where the staged logs are not: the review job counted them. It
+  // could equally ride the envelope, which `adapt` stamps with route and effort after the agent —
+  // the flag is the same channel `--route` already uses, and works when the envelope is lost.
   readonly unverifiedNoLogs?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;

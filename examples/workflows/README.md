@@ -89,9 +89,15 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 ### Where findings appear
 
   By default the findings are listed in the review's sticky comment and no inline comments are
-  posted. Set `inline: true` to render the in-diff findings as inline comments on the diff lines
-  instead — they then move out of the sticky and onto the diff. The review object itself is
-  posted either way: it is the link from the PR to the sticky and to the run.
+  posted. Set `inline: true` **on the reusable workflow** to render the in-diff findings as inline
+  comments on the diff lines instead — they then move out of the sticky and onto the diff. The review
+  object itself is posted either way: it is the link from the PR to the sticky and to the run.
+
+  The self-contained [`review.yaml`](review.yaml) in this directory has no `inline` input: it calls
+  `code-review post` directly, so add `--inline` to that invocation to opt in. Check first that the
+  CLI version it pins accepts the flag (`code-review post --help`) — an unknown option is ignored
+  silently, so a hand-added flag against an older pin does nothing and says nothing. The reusable
+  workflow probes for exactly that and warns; the copy-paste variant cannot.
 
   The default is off because an inline thread is a human-only surface: a later round can neither
   revise nor resolve one, so on a PR that iterates, superseded threads accumulate on the diff. With

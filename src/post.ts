@@ -733,6 +733,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     throw new Error(`Price map at ${input.pricesPath} does not match the expected shape`);
   }
   const template = readFileSync(input.templatePath, "utf-8");
+  // Read up front when it is going to be used, so an unreadable path fails before anything is
+  // written rather than at the branch far below — but not read at all on the default path, where the
+  // file is never opened and a missing one is not an error.
+  const inlineTemplate =
+    input.inline === true ? readFileSync(input.inlineTemplatePath, "utf-8") : "";
 
   const renderNotice = (message: string): string => {
     // The notice carries the prior convergence forward IN its blob so the trajectory + last score
@@ -941,7 +946,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       );
     }
     process.stderr.write(
-      "Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review\n",
+      "Result envelope missing or malformed — posted sticky summary without usage/cost data\n",
     );
     process.exit(0);
   }
@@ -984,7 +989,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     inDiff,
   } = input.inline
     ? buildInlineComments(visibleFindings, diff, {
-        inlineTemplate: readFileSync(input.inlineTemplatePath, "utf-8"),
+        inlineTemplate,
         models: envelope.models.map((m) => m.model),
         findings,
         jsonUrl: input.jsonUrl,
@@ -1146,7 +1151,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ghApi,
   );
   process.stderr.write(
-    `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`,
+    input.inline === true
+      ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
+      : `Posted a body-only review on PR #${String(prNumber)}; the findings are in the sticky\n`,
   );
 
   // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.

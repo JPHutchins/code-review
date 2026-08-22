@@ -217,29 +217,28 @@ const mkMockGhApi = (
 // threads pile up on the diff as a PR iterates. Off by default (issue #179): no review object at all,
 // every visible finding in the sticky, and the prior round's threads still minimized on the way past.
 describe("post — inline off by default (issue #179)", () => {
-  const mocks = [
-    {
-      match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-    },
-    {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
-      response: inlineDiff,
-    },
+  // The SHARED mkMocks, not a private copy: hand-rolling this list once already dropped the
+  // answered-thread and review-thread matchers, which silently pushed both cases onto their
+  // error-degradation paths so the cleanup below was never actually exercised.
+  // These go BEFORE the shared list: matching is first-match-wins, and mkMocks already answers the
+  // reviews endpoint with an empty page, which would leave nothing to dismiss.
+  const mocks = () => [
+    // A prior round's review, so the dismissal is observable rather than vacuous.
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-      response: '{"id": 999, "body": "<!-- code-review -->\\nold content"}\n',
+        a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+      // fetchBotReviews JSON.parses the whole stdout and requires an array — not NDJSON lines.
+      response: '[{"id":7,"user":{"login":"github-actions[bot]"},"state":"COMMENTED"}]',
     },
     {
-      match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+      match: (a: readonly string[]) => a[0]?.includes("/reviews/7/dismissals") ?? false,
       response: "",
     },
-    { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
+    ...mkMocks("<!-- code-review -->\nold content"),
   ];
 
   it("creates no review object, and lists the in-diff finding in the sticky instead", async () => {
-    const { api, calls } = mkMockGhApi(mocks);
+    const { api, calls } = mkMockGhApi(mocks());
 
     await post(mkInput({ inline: false }), api);
 
@@ -259,8 +258,52 @@ describe("post — inline off by default (issue #179)", () => {
     expect(body).not.toContain("posted inline on");
   });
 
+  // The commit for this change claims the flip also clears what earlier rounds left on the diff, so
+  // that claim gets a test rather than a sentence.
+  it("still dismisses the prior review, and says why, with no new review to supersede it", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false }), api);
+
+    const dismissal = calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"));
+    expect(dismissal).toBeDefined();
+    expect((JSON.parse(dismissal!.stdin!) as { readonly message: string }).message).toContain(
+      "inline comments are off",
+    );
+  });
+
+  // Every finding's full prose now lands in one comment, so the body can cross GitHub's 65536-char
+  // limit — where postComment/patchComment would 422 and take the whole round down with the announce
+  // placeholder still up. It must shed the least severe findings instead, and say that it did.
+  it("sheds the least severe findings rather than exceeding GitHub's comment limit", async () => {
+    const filler = "x".repeat(9000);
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(
+        mkFindings([
+          mkFinding({ severity: "critical", title: "keep me", reasoning: filler }),
+          ...Array.from({ length: 12 }, (_, i) =>
+            mkFinding({ severity: "nit", title: `bulky nit ${String(i)}`, reasoning: filler }),
+          ),
+        ]),
+      ),
+    );
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false }), api);
+
+    const body = (
+      JSON.parse(
+        calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+      ) as CommentBody
+    ).body;
+    expect(body.length).toBeLessThanOrEqual(65536);
+    expect(body).toContain("keep me");
+    expect(body).toMatch(/finding\(s\) were left out of this comment/);
+  });
+
   it("still posts the review when inline is asked for — the switch is the only difference", async () => {
-    const { api, calls } = mkMockGhApi(mocks);
+    const { api, calls } = mkMockGhApi(mocks());
 
     await post(mkInput({ inline: true }), api);
 

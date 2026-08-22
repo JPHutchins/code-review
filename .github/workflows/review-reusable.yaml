@@ -1145,11 +1145,18 @@ jobs:
             CLOC_ARGS=(--cloc-diff findings/cloc-diff.txt)
           fi
 
-          # Inline review comments, off unless the caller asks. No --help probe as above: the flag and
-          # the CLI that understands it are pinned in this same file, so they cannot arrive apart.
+          # Inline review comments, off unless the caller asks — and probed exactly like --cloc-diff
+          # above, because CODE_REVIEW_VERSION pins the PUBLISHED CLI: between this merging and the
+          # next release it names a CLI that predates the flag. citty ignores an unknown option
+          # silently, so an unguarded --inline would make `inline: true` a no-op that looks like a
+          # deliberate choice. Warn instead, so the unfulfilled opt-in is visible in the log.
           INLINE_ARGS=()
           if [ "$INLINE" = "true" ]; then
-            INLINE_ARGS=(--inline)
+            if code-review post --help 2>/dev/null | grep -q -- '--inline'; then
+              INLINE_ARGS=(--inline)
+            else
+              echo "::warning::inline: true was requested, but the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --inline; posting findings to the summary comment only"
+            fi
           fi
 
           # route/effort come from the envelope the review job stamped — not re-derived here.

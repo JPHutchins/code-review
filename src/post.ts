@@ -28,6 +28,7 @@ import {
   parseReviewedSha,
   priorTrajectory,
   reviewBodyPointer,
+  SEVERITIES,
 } from "./surface.js";
 import {
   ResultEnvelopeCodec,
@@ -91,6 +92,31 @@ export interface PostInput {
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
+
+// GitHub's hard comment-body limit is 65536 chars; the margin absorbs the embedded findings blob
+// (~32KB before it degrades to a link) plus the notes appended after the render.
+const MAX_COMMENT_BODY = 60_000;
+
+const SEVERITY_WEIGHT = new Map(SEVERITIES.map((s, i) => [s as string, SEVERITIES.length - i]));
+
+// The `keep` most severe findings, restored to the order the agent reported them in — the selection is
+// by severity, the presentation is not.
+const keepMostSevere = (findings: readonly Finding[], keep: number): readonly Finding[] =>
+  findings
+    .map((finding, index) => ({ finding, index }))
+    .sort(
+      (a, b) =>
+        (SEVERITY_WEIGHT.get(b.finding.severity) ?? 0) -
+          (SEVERITY_WEIGHT.get(a.finding.severity) ?? 0) || a.index - b.index,
+    )
+    .slice(0, keep)
+    .sort((a, b) => a.index - b.index)
+    .map(({ finding }) => finding);
+
+const sizeNote = (dropped?: number): string =>
+  dropped !== undefined && dropped > 0
+    ? `\n\n---\n\n> **Note:** ${String(dropped)} lower-severity finding(s) were left out of this comment to stay under GitHub's size limit. All of them are in the findings JSON below and in the run's artifact.\n`
+    : "";
 const EMPTY_MECHANIC_LEAVE_MESSAGE =
   "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n";
 const MAX_SUGGESTION_LINES = 10;
@@ -437,6 +463,7 @@ const dismissReviews = async (
   repo: string,
   prNumber: number,
   ids: readonly number[],
+  message: string,
   ghApi: GhApi,
 ): Promise<void> => {
   for (const id of ids) {
@@ -449,7 +476,7 @@ const dismissReviews = async (
           "--input",
           "-",
         ],
-        JSON.stringify({ message: "Superseded by a new review for an updated commit." }),
+        JSON.stringify({ message }),
       );
     } catch (err) {
       process.stderr.write(
@@ -1082,6 +1109,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     reviewUrl?: string,
     straysOverride?: readonly Finding[],
     unanchoredCount?: number,
+    droppedForSize?: number,
   ): string =>
     formatMarkdown(
       render({
@@ -1090,15 +1118,41 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         ...(unanchoredCount !== undefined ? { unanchoredCount } : {}),
         inlineDisposition,
         reviewUrl,
-      }) + longFilesNote,
+      }) +
+        longFilesNote +
+        sizeNote(droppedForSize),
     );
+
+  // GitHub rejects a comment body over 65536 chars, and postComment/patchComment let that 422
+  // propagate — so an oversized body fails the job with the announce placeholder still up and the
+  // round's only surface never written. That became reachable when inline stopped being the default:
+  // every finding's full prose now renders into this one comment, where the in-diff ones used to be
+  // separate posts. Drop the least severe findings until it fits and say how many were cut; nothing
+  // is lost, since the machine blob (which degrades to a link on its own) still carries all of them.
+  const bodyWithinLimit = (
+    disposition: InlineDisposition | undefined,
+    listed: readonly Finding[],
+    reviewUrl?: string,
+    unanchoredCount?: number,
+  ): string =>
+    listed.reduce<string | null>((fitted, _, dropped) => {
+      if (fitted !== null) return fitted;
+      const body = renderBody(
+        disposition,
+        reviewUrl,
+        keepMostSevere(listed, listed.length - dropped),
+        unanchoredCount,
+        dropped,
+      );
+      return body.length <= MAX_COMMENT_BODY ? body : null;
+    }, null) ?? renderBody(disposition, reviewUrl, [], unanchoredCount, listed.length);
 
   // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,
     prNumber,
     existingSticky,
-    renderBody(initialDisposition),
+    bodyWithinLimit(initialDisposition, strays),
     ghApi,
   );
 
@@ -1140,7 +1194,15 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.
   const priorReviewIds = botReviews.map((r) => r.id);
   if (priorReviewIds.length > 0) {
-    await dismissReviews(input.repo, prNumber, priorReviewIds, ghApi);
+    await dismissReviews(
+      input.repo,
+      prNumber,
+      priorReviewIds,
+      input.inline
+        ? "Superseded by a new review for an updated commit."
+        : "Superseded — this review's findings are in the summary comment; inline comments are off for this repository.",
+      ghApi,
+    );
   }
 
   // Minimize the pre-post snapshot (stale threads); the fresh comments were posted after it, untouched.
@@ -1160,7 +1222,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount),
+        bodyWithinLimit(finalDisposition, finalStrays, reviewUrl, unanchoredCount),
         ghApi,
       );
       process.stderr.write(

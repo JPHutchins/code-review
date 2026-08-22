@@ -7,6 +7,7 @@ import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { formatMarkdown } from "./format.js";
+import type { FindingsMarkerForm } from "./surface.js";
 import {
   buildConvergence,
   carriedConvergence,
@@ -113,10 +114,43 @@ const keepMostSevere = (findings: readonly Finding[], keep: number): readonly Fi
     .sort((a, b) => a.index - b.index)
     .map(({ finding }) => finding);
 
-const sizeNote = (dropped?: number): string =>
-  dropped !== undefined && dropped > 0
-    ? `\n\n---\n\n> **Note:** ${String(dropped)} lower-severity finding(s) were left out of this comment to stay under GitHub's size limit. All of them are in the findings JSON below and in the run's artifact.\n`
-    : "";
+// Where the shed findings can still be read depends on what the findings marker degraded to: the
+// embedded blob carries them, the link form points at the artifact, and the omitted form has neither.
+const sizeNote = (
+  dropped: number,
+  marker: FindingsMarkerForm,
+  jsonUrl: string | undefined,
+): string => {
+  if (dropped <= 0) return "";
+  const where =
+    marker === "embedded"
+      ? "All of them are in the findings JSON below."
+      : marker === "link" && jsonUrl !== undefined
+        ? `All of them are in the [findings JSON](${jsonUrl}).`
+        : "The full set is in the run's findings artifact.";
+  return `\n\n---\n\n> **Note:** ${String(dropped)} lower-severity finding(s) were left out of this comment to stay under GitHub's size limit. ${where}\n`;
+};
+
+// Shed the least severe findings until the body fits GitHub's comment limit, reporting how many went
+// so every surface that describes the comment can describe it truthfully. One renderWith call site,
+// so the all-shed case cannot drift from the rest.
+const fitToCommentLimit = (
+  listed: readonly Finding[],
+  renderWith: (kept: readonly Finding[], dropped: number) => string,
+): { readonly body: string; readonly dropped: number } => {
+  const attempt = (dropped: number): { readonly body: string; readonly dropped: number } => ({
+    body: renderWith(keepMostSevere(listed, listed.length - dropped), dropped),
+    dropped,
+  });
+  let fitted = attempt(0);
+  for (
+    let dropped = 1;
+    fitted.body.length > MAX_COMMENT_BODY && dropped <= listed.length;
+    dropped += 1
+  )
+    fitted = attempt(dropped);
+  return fitted;
+};
 const EMPTY_MECHANIC_LEAVE_MESSAGE =
   "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n";
 const MAX_SUGGESTION_LINES = 10;
@@ -922,44 +956,50 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     // A lost envelope is not a completed round, so the prior convergence is carried forward in the
     // blob unchanged rather than a new round being built (issue #174).
     const stampedFindings = stampConvergence(findings, priorConv);
-    const body = formatMarkdown(
-      render({
-        findings: stampedFindings,
-        envelope: null,
-        incomplete: envelopelessIncomplete,
-        prices: decodedPrices.right,
-        pricesProvided: input.pricesProvided,
-        template,
-        route: effectiveRoute,
-        reviewedSha: input.headSha,
-        effort: input.effort,
-        sameRootNotes: {},
-        // The answered-state honesty rules apply on EVERY surface that renders the filtered
-        // findings — the lost-envelope branch lists every VISIBLE finding (no inline review exists to
-        // carry them) so the kept re-raises' annotations actually render, and names the drops
-        // exactly like the main path (issues #151 review r1 + r2). The nit visibility floor applies
-        // here too (issue #164): below-floor nits are hidden from the human list and shown only in the
-        // collapsed aside — the floor is a human-visibility policy, not an inline-comment policy, so it
-        // must hold on the surface that lists findings without an inline review.
-        strays: visibleFindings,
-        suppressedNits,
-        nitVisibilityFloor: input.nitVisibilityFloor,
-        answeredNotes: reRaisedNotes,
-        answeredReRaiseNote: answeredDropNote,
-        roundCount: priorRoundCount,
-        convergenceRound: false,
-        testReport,
-        clocDiff,
-        inlineDisposition: { kind: "no-envelope" },
-        runUrl: input.runUrl,
-        jsonUrl: input.jsonUrl,
-        findingsPointer: findingsBlob(stampedFindings),
-        postedAt: input.postedAt,
-      }),
+    const envelopelessMarker = findingsMarkerForm(stampedFindings, input.jsonUrl);
+    // This branch lists every visible finding, exactly like the inline-off default, so it can exceed
+    // GitHub's comment limit the same way — and here a 422 is the difference between a notice and
+    // nothing at all.
+    const fittedEnvelopeless = fitToCommentLimit(visibleFindings, (kept, dropped) =>
+      formatMarkdown(
+        render({
+          findings: stampedFindings,
+          envelope: null,
+          incomplete: envelopelessIncomplete,
+          prices: decodedPrices.right,
+          pricesProvided: input.pricesProvided,
+          template,
+          route: effectiveRoute,
+          reviewedSha: input.headSha,
+          effort: input.effort,
+          sameRootNotes: {},
+          // The answered-state honesty rules apply on EVERY surface that renders the filtered
+          // findings — the lost-envelope branch lists every VISIBLE finding (no inline review exists to
+          // carry them) so the kept re-raises' annotations actually render, and names the drops
+          // exactly like the main path (issues #151 review r1 + r2). The nit visibility floor applies
+          // here too (issue #164): below-floor nits are hidden from the human list and shown only in the
+          // collapsed aside — the floor is a human-visibility policy, not an inline-comment policy, so it
+          // must hold on the surface that lists findings without an inline review.
+          strays: kept,
+          suppressedNits,
+          nitVisibilityFloor: input.nitVisibilityFloor,
+          answeredNotes: reRaisedNotes,
+          answeredReRaiseNote: answeredDropNote,
+          roundCount: priorRoundCount,
+          convergenceRound: false,
+          testReport,
+          clocDiff,
+          inlineDisposition: { kind: "no-envelope" },
+          runUrl: input.runUrl,
+          jsonUrl: input.jsonUrl,
+          findingsPointer: findingsBlob(stampedFindings),
+          postedAt: input.postedAt,
+        }) + sizeNote(dropped, envelopelessMarker, input.jsonUrl),
+      ),
     );
-    await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
+    await upsertSticky(input.repo, prNumber, existingSticky, fittedEnvelopeless.body, ghApi);
     process.stderr.write(
-      "Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review\n",
+      `Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review${fittedEnvelopeless.dropped > 0 ? `; ${String(fittedEnvelopeless.dropped)} finding(s) left out for size` : ""}\n`,
     );
     process.exit(0);
   }
@@ -1120,39 +1160,33 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         reviewUrl,
       }) +
         longFilesNote +
-        sizeNote(droppedForSize),
+        sizeNote(droppedForSize ?? 0, markerForm, input.jsonUrl),
     );
 
   // GitHub rejects a comment body over 65536 chars, and postComment/patchComment let that 422
   // propagate — so an oversized body fails the job with the announce placeholder still up and the
   // round's only surface never written. That became reachable when inline stopped being the default:
   // every finding's full prose now renders into this one comment, where the in-diff ones used to be
-  // separate posts. Drop the least severe findings until it fits and say how many were cut; nothing
-  // is lost, since the machine blob (which degrades to a link on its own) still carries all of them.
+  // separate posts. `keepAlways` is never shed: a finding GitHub rejected for its position has no
+  // other human surface left, so dropping its sticky entry too would lose it outright.
   const bodyWithinLimit = (
     disposition: InlineDisposition | undefined,
     listed: readonly Finding[],
+    keepAlways: readonly Finding[] = [],
     reviewUrl?: string,
     unanchoredCount?: number,
-  ): string =>
-    listed.reduce<string | null>((fitted, _, dropped) => {
-      if (fitted !== null) return fitted;
-      const body = renderBody(
-        disposition,
-        reviewUrl,
-        keepMostSevere(listed, listed.length - dropped),
-        unanchoredCount,
-        dropped,
-      );
-      return body.length <= MAX_COMMENT_BODY ? body : null;
-    }, null) ?? renderBody(disposition, reviewUrl, [], unanchoredCount, listed.length);
+  ): { readonly body: string; readonly dropped: number } =>
+    fitToCommentLimit(listed, (kept, dropped) =>
+      renderBody(disposition, reviewUrl, [...keepAlways, ...kept], unanchoredCount, dropped),
+    );
 
   // Phase 2: writes — sticky first, inline second.
+  const initialBody = bodyWithinLimit(initialDisposition, strays);
   const stickyRef = await upsertSticky(
     input.repo,
     prNumber,
     existingSticky,
-    bodyWithinLimit(initialDisposition, strays),
+    initialBody.body,
     ghApi,
   );
 
@@ -1188,7 +1222,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   process.stderr.write(
     input.inline
       ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
-      : `Inline comments are off — all ${String(strays.length)} visible finding(s) are in the sticky on PR #${String(prNumber)}\n`,
+      : `Inline comments are off — ${String(strays.length - initialBody.dropped)} of ${String(strays.length)} visible finding(s) are in the sticky on PR #${String(prNumber)}${initialBody.dropped > 0 ? `; ${String(initialBody.dropped)} were left out for size` : ""}\n`,
   );
 
   // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.
@@ -1200,7 +1234,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       priorReviewIds,
       input.inline
         ? "Superseded by a new review for an updated commit."
-        : "Superseded — this review's findings are in the summary comment; inline comments are off for this repository.",
+        : initialBody.dropped > 0
+          ? "Superseded — this review's findings are in the summary comment and the run's findings artifact; inline comments are off for this repository."
+          : "Superseded — this review's findings are in the summary comment; inline comments are off for this repository.",
       ghApi,
     );
   }
@@ -1212,7 +1248,6 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // GitHub-rejected in-diff findings join the strays, and none-anchored says "inline unavailable",
   // never a false "posted". Best-effort — the sticky and review are already posted.
   const unanchoredCount = unposted.length;
-  const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
   if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
     const finalDisposition: InlineDisposition =
       inlinePosted > 0
@@ -1222,7 +1257,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       await patchComment(
         input.repo,
         stickyRef.id,
-        bodyWithinLimit(finalDisposition, finalStrays, reviewUrl, unanchoredCount),
+        // The rejected findings are kept whatever the size costs — the shed only touches the strays.
+        bodyWithinLimit(finalDisposition, strays, unposted, reviewUrl, unanchoredCount).body,
         ghApi,
       );
       process.stderr.write(

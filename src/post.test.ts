@@ -2671,17 +2671,9 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
 });
 
 describe("post — inline review 422 salvage (issue #57)", () => {
-  it("keeps the valid inline comments and demotes only the rejected finding to the sticky", async () => {
-    // Two in-diff findings (lines 10 and 11 of inlineDiff's hunk). The batched review POST is
-    // rejected (as GitHub does when ANY comment position is invalid); the fallback posts the review
-    // body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
-    const findings = mkFindings([
-      mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Finding A" }),
-      mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Finding B" }),
-    ]);
-    const findingsPath = join(tmpDir, "findings-57.json");
-    writeFileSync(findingsPath, JSON.stringify(findings));
-
+  // GitHub rejects the batched review when ANY comment position is invalid; the fallback posts the
+  // review body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
+  const mkSalvageApi = (): { readonly api: GhApi; readonly calls: RecordedCall[] } => {
     const calls: RecordedCall[] = [];
     const api: GhApi = (args, stdin, env) => {
       calls.push({ args: [...args], stdin, env });
@@ -2714,6 +2706,21 @@ describe("post — inline review 422 salvage (issue #57)", () => {
       if (a[0] === "graphql") return Promise.resolve("");
       return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
     };
+    return { api, calls };
+  };
+
+  it("keeps the valid inline comments and demotes only the rejected finding to the sticky", async () => {
+    // Two in-diff findings (lines 10 and 11 of inlineDiff's hunk). The batched review POST is
+    // rejected (as GitHub does when ANY comment position is invalid); the fallback posts the review
+    // body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
+    const findings = mkFindings([
+      mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Finding A" }),
+      mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Finding B" }),
+    ]);
+    const findingsPath = join(tmpDir, "findings-57.json");
+    writeFileSync(findingsPath, JSON.stringify(findings));
+
+    const { api, calls } = mkSalvageApi();
 
     await expect(post(mkInput({ findingsPath }), api)).resolves.toBeUndefined();
 
@@ -2737,6 +2744,51 @@ describe("post — inline review 422 salvage (issue #57)", () => {
     expect(finalBody).toContain("couldn't be posted as inline");
     expect(finalBody).toContain("Finding B");
     expect(finalBody).not.toContain("Finding A");
+  });
+
+  // A rejected finding's inline post failed, so the sticky is the only human surface it has left. The
+  // size shed must therefore never reach it, however bulky the round is — otherwise the finding is
+  // gone from both surfaces and the sticky's "couldn't be posted as inline" line describes nothing.
+  it("never sheds a rejected finding, even when the body has to shrink", async () => {
+    const filler = "y".repeat(9000);
+    const findingsPath = join(tmpDir, "findings-57-bulky.json");
+    writeFileSync(
+      findingsPath,
+      JSON.stringify(
+        mkFindings([
+          mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Finding A" }),
+          mkFinding({
+            path: "src/foo.ts",
+            start_line: 11,
+            end_line: 11,
+            title: "Finding B",
+            severity: "nit",
+            reasoning: filler,
+          }),
+          ...Array.from({ length: 10 }, (_, i) =>
+            mkFinding({
+              path: "src/other.ts",
+              start_line: 99,
+              end_line: 99,
+              severity: "nit",
+              title: `bulky stray ${String(i)}`,
+              reasoning: filler,
+            }),
+          ),
+        ]),
+      ),
+    );
+    const { api, calls } = mkSalvageApi();
+
+    await expect(post(mkInput({ findingsPath }), api)).resolves.toBeUndefined();
+
+    const stickyPatches = calls.filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const finalBody = (JSON.parse(stickyPatches[stickyPatches.length - 1]!.stdin!) as CommentBody)
+      .body;
+    expect(finalBody.length).toBeLessThanOrEqual(65536);
+    // Shedding happened, and the rejected finding survived it anyway.
+    expect(finalBody).toMatch(/finding\(s\) were left out of this comment/);
+    expect(finalBody).toContain("Finding B");
   });
 });
 

@@ -830,7 +830,7 @@ describe("render", () => {
       expect(rec).toBeLessThan(reasoning);
     });
 
-    it("orders a stray's suggestion block between the recommended fix and the reasoning fold (issue #42)", () => {
+    it("orders a stray's patch block between the recommended fix and the reasoning fold (issue #42)", () => {
       const findings = mkFindings([]);
       const strays = [
         mkFinding({
@@ -842,7 +842,7 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const rec = result.indexOf("**Recommended fix:**");
-      const fence = result.indexOf("```suggestion");
+      const fence = result.indexOf("```patch");
       const reasoning = result.indexOf("<details><summary>Reasoning (");
       expect(rec).toBeGreaterThanOrEqual(0);
       expect(fence).toBeGreaterThanOrEqual(0);
@@ -872,7 +872,9 @@ describe("render", () => {
       expect(withoutRec).not.toContain("Recommended fix:");
     });
 
-    it("projects a stray's patch into a ```suggestion block", () => {
+    // The sticky is an issue comment, where a ```suggestion has no Apply button and shows the
+    // replacement lines without the lines they replace. The patch keeps both, and is a patch.
+    it("projects a stray's patch into a ```patch block, never a dead ```suggestion", () => {
       const findings = mkFindings([]);
       const strays = [
         mkFinding({
@@ -881,8 +883,10 @@ describe("render", () => {
         }),
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result).toContain("```suggestion");
-      expect(result).toContain("fixed line");
+      expect(result).toContain("```patch");
+      expect(result).not.toContain("```suggestion");
+      expect(result).toContain("-old");
+      expect(result).toContain("+fixed line");
     });
 
     it("keeps every line of a multi-paragraph reasoning inside the [!TIP] blockquote fold", () => {

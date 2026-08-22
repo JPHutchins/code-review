@@ -24,7 +24,7 @@ const renderCommentBody = (
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   eta.renderString(template, {
     ...f,
-    patchProjection: projectPatch(f.patch),
+    patchProjection: projectPatch(f.patch, "diff-anchored"),
     severityEmoji,
     formatConfidence,
     modelsText,

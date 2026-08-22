@@ -944,9 +944,16 @@ export type PatchProjection =
   | { readonly kind: "patch"; readonly raw: string }
   | { readonly kind: "none" };
 
-export const projectPatch = (patch: string | undefined): PatchProjection => {
+// GitHub renders a ```suggestion as an Apply button ONLY in a review comment anchored to diff lines.
+// In an issue comment — which is what the sticky is — the same block is inert, and worse than inert:
+// it shows the replacement text stripped of the lines it replaces, so the reader sees the fix with no
+// indication of what it displaces. The raw patch is a hunk and reads as one, so a comment-body
+// surface keeps it rather than lowering it to a suggestion that surface cannot honour.
+export type PatchSurface = "diff-anchored" | "comment-body";
+
+export const projectPatch = (patch: string | undefined, surface: PatchSurface): PatchProjection => {
   if (patch === undefined) return { kind: "none" };
-  const lowered = patchToSuggestion(patch);
+  const lowered = surface === "diff-anchored" ? patchToSuggestion(patch) : undefined;
   return typeof lowered === "string"
     ? { kind: "suggestion", text: escapeFence(lowered) }
     : { kind: "patch", raw: escapeFence(patch) };

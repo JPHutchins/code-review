@@ -737,6 +737,39 @@ describe("gather — failing-job logs", () => {
     expect(result).toMatchObject({ kind: "gathered", conclusion: "failure" });
   });
 
+  // Uncapped, a matrix that fails in hundreds of jobs downloads hundreds of logs one at a time into
+  // the step that precedes the fast-fix route — the route that exists to be fast, in a step the
+  // workflow does not wrap in a timeout.
+  it("caps the staged logs and says how many it left behind", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: jobRows(
+          ...Array.from({ length: 25 }, (_, i) => ({ id: i + 1, conclusion: "failure" })),
+        ),
+      },
+      { match: logsMatch, response: "LOG" },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 20 });
+    expect(hasOutFile("job_20.log")).toBe(true);
+    expect(hasOutFile("job_21.log")).toBe(false);
+    expect(calls().filter((c) => logsMatch(c.args))).toHaveLength(20);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("::warning::25 failing job(s)"));
+
+    stderrSpy.mockRestore();
+  });
+
   it("degrades on a per-job log download failure — warns, keeps the rest, still gathers", async () => {
     const { api } = mkMockGhApi([
       {

@@ -345,7 +345,6 @@ jobs:
       # Failing-job logs actually staged for the fast-fix route to read; the comment job marks the
       # review unverified when a failed run produced none (issue #154).
       staged_job_logs: ${{ steps.gather.outputs.staged_job_logs }}
-      run_conclusion: ${{ steps.gather.outputs.conclusion }}
     permissions:
       contents: read        # no write — the agent runs untrusted PR code
       actions: read          # download CI artifacts (logs)
@@ -1106,7 +1105,6 @@ jobs:
           NIT_VISIBILITY_FLOOR: ${{ inputs.nit_visibility_floor }}
           REVIEW_ROUTE: ${{ needs.review.outputs.route }}
           STAGED_JOB_LOGS: ${{ needs.review.outputs.staged_job_logs }}
-          RUN_CONCLUSION: ${{ needs.review.outputs.run_conclusion }}
         run: |
           set -euo pipefail
 
@@ -1136,21 +1134,24 @@ jobs:
           # the installed CLI supports the flag: in the merge-to-release window the pinned
           # CODE_REVIEW_VERSION predates --cloc-diff, and post would error on an unknown option
           # (issue #182 review). An absent table (or an older CLI) just omits the collapsible.
+          POST_HELP="$(code-review post --help 2>/dev/null || true)"
+
           CLOC_ARGS=()
-          if [ -f findings/cloc-diff.txt ] && code-review post --help 2>/dev/null | grep -q -- '--cloc-diff'; then
+          if [ -f findings/cloc-diff.txt ] && printf '%s' "$POST_HELP" | grep -q -- '--cloc-diff'; then
             CLOC_ARGS=(--cloc-diff findings/cloc-diff.txt)
           fi
 
           # route/effort come from the envelope the review job stamped — not re-derived here.
-          # The caveat is about ONE route reasoning without the logs it exists to read, so all three
-          # conditions matter: the run failed, nothing was staged, and the fast-fix route actually ran.
-          # Without the route check the aside would also land above a triage-blocked or error notice,
-          # where no review happened at all. Probed like the flags above: CODE_REVIEW_VERSION pins the
-          # published CLI, which may predate the option, and an unknown option is ignored silently.
+          # The caveat is about ONE route reasoning without the logs it exists to read: the fast-fix
+          # route ran and nothing was staged. The route check also keeps the aside off a triage-blocked
+          # or error notice, where no review happened at all. The run's conclusion is NOT re-checked —
+          # the review job only emits route=mechanic on the failure branch, so a conclusion test can
+          # add no true positive, and an empty output would silence exactly the case this exists for.
+          # Probed like the flag above: CODE_REVIEW_VERSION pins the published CLI, which may predate
+          # the option, and an unknown option is ignored silently.
           UNVERIFIED_ARGS=()
-          if [ "$RUN_CONCLUSION" = "failure" ] && [ "${STAGED_JOB_LOGS:-0}" = "0" ] \
-             && [ "$REVIEW_ROUTE" = "mechanic" ] \
-             && code-review post --help 2>/dev/null | grep -qE -- '--unverified-no-logs([[:space:]]|`|$)'; then
+          if [ "${STAGED_JOB_LOGS:-0}" = "0" ] && [ "$REVIEW_ROUTE" = "mechanic" ] \
+             && printf '%s' "$POST_HELP" | grep -qE -- '--unverified-no-logs([[:space:]]|`|$)'; then
             UNVERIFIED_ARGS=(--unverified-no-logs)
           fi
 

@@ -335,6 +335,13 @@ const reviewsFrom = (reviews: readonly Review[], botLogin: string) =>
 // logs plus the diff beat a dead review. Returns how many landed: on the fast-fix route the logs are
 // the whole premise, so zero of them is worth saying out loud rather than leaving the agent to infer
 // it from an empty directory (issue #154).
+// A matrix build can fail in hundreds of jobs, and each log is a separate sequential API call whose
+// bytes land on disk before the review starts — uncapped, that turns a gather step with no timeout
+// into minutes of downloading for a route that exists to be fast. The first failures in run order are
+// kept because a matrix usually fails from one root, and the earliest job to hit it is the one whose
+// log still shows the original error rather than a cascade.
+const MAX_STAGED_JOB_LOGS = 20;
+
 const downloadFailingJobLogs = async (
   repo: string,
   runId: string,
@@ -349,8 +356,9 @@ const downloadFailingJobLogs = async (
     throw new Error(`Jobs list for run ${runId} did not match the expected shape`);
   }
   const failing = decoded.right.filter((j) => j.conclusion === "failure");
+  const selected = failing.slice(0, MAX_STAGED_JOB_LOGS);
   let staged = 0;
-  for (const job of failing) {
+  for (const job of selected) {
     try {
       const log = await ghApi([`repos/${repo}/actions/jobs/${String(job.id)}/logs`]);
       writeFileSync(join(outDir, `job_${String(job.id)}.log`), log);
@@ -360,6 +368,11 @@ const downloadFailingJobLogs = async (
         `Warning: failed to download logs for job ${String(job.id)}: ${errMsg(err)} — continuing with the logs retrieved so far\n`,
       );
     }
+  }
+  if (failing.length > selected.length) {
+    process.stderr.write(
+      `::warning::${annotationSafe(`${String(failing.length)} failing job(s) in run ${runId}; staged the first ${String(selected.length)} log(s) — the review does not see the rest`)}\n`,
+    );
   }
   if (staged === 0) {
     // stderr, like every other annotation here: this command's STDOUT is the step's $GITHUB_OUTPUT,

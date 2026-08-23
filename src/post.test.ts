@@ -223,18 +223,19 @@ const mkMockGhApi = (
 // the inline comments took off the sticky (issue #205).
 describe("post — run summary (issue #205)", () => {
   const summaryPath = (): string => join(tmpDir, "step-summary.md");
-  const ambientSummary = process.env["GITHUB_STEP_SUMMARY"];
+  // Back to the suite-wide state, which src/test-setup.ts made "unset" before this file was even
+  // collected — so there is no ambient value to capture and restore.
   const setSummaryEnv = (value: string | undefined): void => {
     if (value === undefined) delete process.env["GITHUB_STEP_SUMMARY"];
     else process.env["GITHUB_STEP_SUMMARY"] = value;
   };
   afterEach(() => {
-    setSummaryEnv(ambientSummary);
+    setSummaryEnv(undefined);
   });
   const runWithSummary = async (
     seed: string,
     input: PostInput = mkInlineInput(),
-  ): Promise<{ summary: string; inline: string }> => {
+  ): Promise<{ summary: string; inline: string; stickyBody: string }> => {
     writeFileSync(summaryPath(), seed);
     setSummaryEnv(summaryPath());
     const { api, calls } = mkMockGhApi(mkMocks(""));
@@ -242,9 +243,13 @@ describe("post — run summary (issue #205)", () => {
     const review = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
     );
+    const stickyPatch = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
     return {
       summary: readFileSync(summaryPath(), "utf-8"),
       inline: (JSON.parse(review!.stdin!) as ReviewBody).comments[0]?.body ?? "",
+      stickyBody: (JSON.parse(stickyPatch!.stdin!) as CommentBody).body,
     };
   };
 
@@ -258,11 +263,14 @@ describe("post — run summary (issue #205)", () => {
   // The one deliberate difference: an in-diff finding lives on the diff and is left out of the sticky,
   // but the summary has no diff to put it on, so it must carry it.
   it("carries an in-diff finding, which the sticky leaves on the diff", async () => {
-    const { summary, inline } = await runWithSummary("");
+    const { summary, inline, stickyBody } = await runWithSummary("");
     const anchoredTitle = /\*\*(.+?)\*\*/.exec(inline)?.[1];
 
     expect(anchoredTitle).toBeTruthy();
     expect(summary).toContain(anchoredTitle!);
+    // The other half of the divergence, which the title claims and nothing was checking: the sticky
+    // leaves that finding on the diff.
+    expect(stickyBody).not.toContain(anchoredTitle!);
   });
 
   it("appends — a summary another step already wrote is not clobbered", async () => {
@@ -293,6 +301,24 @@ describe("post — run summary (issue #205)", () => {
   // vitest step's job summary.
   it("is unset for the rest of the suite, so no other test can write a summary", () => {
     expect(process.env["GITHUB_STEP_SUMMARY"]).toBeUndefined();
+  });
+
+  // The findings document is written most-severe-first, and the sticky preserves that. Reassembling
+  // the summary from the in-diff/stray partition put every in-diff finding above every out-of-diff
+  // one, so a nit on a changed line outranked a critical elsewhere in the durable record.
+  it("keeps the document's severity order rather than the diff partition's", async () => {
+    const findings = mkFindings([
+      mkFinding({ severity: "critical", title: "Critical elsewhere", path: "src/other.ts" }),
+      mkFinding({ severity: "nit", title: "Nit on the diff", path: "src/foo.ts", start_line: 10 }),
+    ]);
+    const findingsPath = join(tmpDir, "findings-summary-order.json");
+    writeFileSync(findingsPath, JSON.stringify(findings));
+
+    const { summary } = await runWithSummary("", mkInlineInput({ findingsPath }));
+
+    expect(summary).toContain("Critical elsewhere");
+    expect(summary).toContain("Nit on the diff");
+    expect(summary.indexOf("Critical elsewhere")).toBeLessThan(summary.indexOf("Nit on the diff"));
   });
 
   // A round with no verdict is still a record of the run, but it is not a review — and the sticky

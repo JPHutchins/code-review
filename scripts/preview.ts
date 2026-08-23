@@ -144,6 +144,6 @@ const sticky = render({
   pricedAt: new Date(),
 });
 
-const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined, PREVIEW_RUN_URL);
+const reviewBody = reviewBodyPointer(REVIEWED_SHA, undefined, PREVIEW_RUN_URL, true);
 
 process.stdout.write(buildPreviewDoc(sticky, reviewBody, comments));

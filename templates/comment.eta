@@ -89,7 +89,7 @@
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'inline-unavailable') { %>
 → ⚠️ Inline comments couldn't be posted for this review (GitHub rejected a comment's position) — every finding is listed below instead.
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'whole-document') { %>
-→ This run's <%= it.incomplete ? 'review record' : 'complete review' %><% if (it.reviewUrl) { %> — <%~ it.reviewUrl %><% } %>.
+→ This run's <%= it.incomplete ? 'review record' : 'complete review' %><% if (it.reviewUrl) { %> — [see the review](<%~ it.reviewUrl %>)<% } %>.
 <% } %>
 
 <% if (it.strays.length > 0) { %>

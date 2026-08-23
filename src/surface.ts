@@ -972,18 +972,21 @@ export const formatConfidence = (n: number): string => n.toFixed(2);
 // embedding the blob here. SSOT shared by the commenter (post.ts) and the `preview` command.
 // The two links degrade differently: no sticky URL leaves the words unlinked, no run URL omits the run
 // sentence entirely. The run sentence names what the link is FOR rather than what the run still holds —
-// retention prunes logs and artifacts while the review object persists, but the run's SUMMARY is the
-// review rendered whole (issue #205) and is what a reader following this link is after: the sticky
-// shows the latest round, the summaries show each round as it stood.
+// retention prunes logs and artifacts while the review object persists. The run's SUMMARY is the
+// review rendered whole (issue #205) — the sticky shows the latest round, the summaries show each
+// round as it stood — so the sentence names it, but only when there is one: `post` run outside
+// Actions writes no summary, and a pointer promising a document that was never written is worse than
+// one that promises less.
 export const reviewBodyPointer = (
   headSha: string,
   stickyUrl: string | undefined,
   runUrl: string | undefined,
+  runHasSummary: boolean,
 ): string => {
   const sha7 = headSha.slice(0, 7);
   const summary = stickyUrl ? `the [summary comment](${stickyUrl})` : "the summary comment";
   const run = runUrl
-    ? ` See the [workflow run](${runUrl}) for this round's review in full, its job log, and the findings artifact.`
+    ? ` See the [workflow run](${runUrl}) for ${runHasSummary ? "this round's review in full, its job log," : "the job log"} and the findings artifact.`
     : "";
   return `🤖 Automated code review for \`${sha7}\` — see ${summary} for the verdict, walkthrough, and cost.${run}`;
 };

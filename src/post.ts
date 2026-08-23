@@ -275,7 +275,12 @@ const postInlineReview = async (
   readonly inlinePosted: number;
   readonly unposted: readonly Finding[];
 }> => {
-  const pointer = reviewBodyPointer(pr.headSha, pr.stickyUrl, pr.runUrl);
+  const pointer = reviewBodyPointer(
+    pr.headSha,
+    pr.stickyUrl,
+    pr.runUrl,
+    (process.env["GITHUB_STEP_SUMMARY"] ?? "") !== "",
+  );
   const reviewBody = (withComments: boolean): string =>
     JSON.stringify({
       body: pointer,
@@ -967,7 +972,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => body);
     if (inlineRequested) {
       process.stderr.write(
-        "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky only\n",
+        "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky and the run summary instead\n",
       );
     }
     process.stderr.write(
@@ -1232,7 +1237,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     renderBody(
       { kind: "whole-document", inlineCount: inlinePosted, rejectedCount: unanchoredCount },
       reviewUrl,
-      [...inDiff, ...strays],
+      visibleFindings,
     ),
   );
 };

@@ -37,11 +37,7 @@ npx @jphutchins/code-review <subcommand>
 
 | Subcommand | What it does |
 | --- | --- |
-<<<<<<< HEAD
-| `post` | Post a complete review (inline comments + sticky summary) from findings + envelope + diff — the one-call path. Also renders the review into `$GITHUB_STEP_SUMMARY`: the sticky is overwritten each round, the run summary keeps each round as it stood |
-=======
-| `post` | Post a complete review from findings + envelope + diff — the one-call path. The findings are listed in the sticky summary; `--inline` renders the in-diff ones as comments on the diff instead |
->>>>>>> origin/main
+| `post` | Post a complete review from findings + envelope + diff — the one-call path. The findings are listed in the sticky summary; `--inline` renders the in-diff ones as comments on the diff instead. Also renders the review into `$GITHUB_STEP_SUMMARY`: the sticky is overwritten each round, the run summary keeps each round as it stood |
 | `gather` | Resolve the PR from the CI head SHA and gather the review inputs (diff with git-diff fallback, PR context, prior bot review, the prior review's answered-findings registry, failing-job logs) into the workspace for the agent |
 | `parse-command` | Resolve a PR's head from its number and parse a ChatOps trigger comment (`/code-review [24m] [$1.00] <instructions>`) into review overrides — the on-demand comment trigger |
 | `react` | Add/remove a GitHub comment reaction — the ChatOps acknowledgement (👀 on receipt, 🚀 on completion) |

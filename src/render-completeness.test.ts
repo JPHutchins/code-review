@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { render } from "./render.js";
 import { repoRoot } from "./test-util.js";
-import type { Findings, ResultEnvelope, PriceMap } from "./schema.js";
+import type { Findings } from "./schema.js";
 
 // The comment must carry every field the findings document does. That was slack while the document
 // rode along as base64; once it moved to the artifact (issue #217) every field the render drops is a
@@ -123,40 +123,35 @@ const rendered = (): string =>
       models: [{ model: "m", input_tokens: 1, output_tokens: 1 }],
       turns: 1,
       duration_ms: 1,
-    } as unknown as ResultEnvelope,
+    },
     prices: {
       _updated: "x",
       _unit: "y",
       models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
-    } as unknown as PriceMap,
+    },
     template: readFileSync(`${repoRoot}/templates/comment.eta`, "utf-8"),
-    strays: [findings.findings[0]!],
-    suppressedNits: [findings.findings[1]!],
+    strays: findings.findings.slice(0, 1),
+    suppressedNits: findings.findings.slice(1, 2),
     route: "full review",
     convergenceRound: true,
     nitVisibilityFloor: 0.25,
     jsonUrl: "https://example.com/artifact.zip",
-  } as never);
+  });
 
 describe("the comment carries every field of the findings document (issue #217)", () => {
   it("renders a sentinel for every schema leaf except the documented exclusions", () => {
     const out = rendered();
-    const expected = leafPaths(schema).filter((l) => !DOCUMENTED_EXCLUSIONS.includes(l));
-    const carried = expected.filter((l) => out.includes(sentinel(l)));
+    const fixture = JSON.stringify(findings);
+    // Only the leaves the fixture actually carries a sentinel for; numeric and boolean leaves are
+    // asserted by value in the cases below.
+    const expected = leafPaths(schema)
+      .filter((l) => !DOCUMENTED_EXCLUSIONS.includes(l))
+      .filter((l) => fixture.includes(sentinel(l)));
     const missing = expected.filter((l) => !out.includes(sentinel(l)));
 
-    // Only string leaves carry a sentinel; numeric/boolean ones are asserted below.
-    expect(carried.length).toBeGreaterThan(8);
-    expect(missing.filter((l) => out.includes(sentinel(l)) === false && sentinel(l) in {})).toEqual(
-      [],
-    );
-    for (const leaf of expected) {
-      if (!sentinel(leaf).startsWith("S_")) continue;
-      if (!JSON.stringify(findings).includes(sentinel(leaf))) continue;
-      expect(out, `schema leaf ${leaf} is absent from the rendered comment`).toContain(
-        sentinel(leaf),
-      );
-    }
+    // A schema whose leaves stopped resolving would make this vacuously pass, so the count is pinned.
+    expect(expected.length).toBeGreaterThan(8);
+    expect(missing, "schema leaves absent from the rendered comment").toEqual([]);
   });
 
   // A hidden nit is a VISIBILITY decision. The projection used to keep 5 of 14 fields, so its

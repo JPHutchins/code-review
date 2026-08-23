@@ -973,7 +973,7 @@ export const reviewBodyPointer = (
   const sha7 = headSha.slice(0, 7);
   const summary = stickyUrl ? `the [summary comment](${stickyUrl})` : "the summary comment";
   const run = runUrl
-    ? ` See the [workflow run](${runUrl}) for this round's full review, its job log, and the findings artifact.`
+    ? ` See the [workflow run](${runUrl}) for this round's review in full, its job log, and the findings artifact.`
     : "";
   return `🤖 Automated code review for \`${sha7}\` — see ${summary} for the verdict, walkthrough, and cost.${run}`;
 };

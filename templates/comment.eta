@@ -89,7 +89,7 @@ _No findings — clean review._
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>
 _Every finding is listed below — the inline review could not be built because the result envelope was missing._
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'whole-document') { %>
-_Every finding from this run<% if (it.inlineDisposition.inlineCount > 0) { %>, including the <%= it.inlineDisposition.inlineCount %> posted as inline comment<%= it.inlineDisposition.inlineCount === 1 ? '' : 's' %> on the diff<% } %>._
+_Every finding from this run<% if (it.inlineDisposition.inlineCount > 0) { %>, including the <%= it.inlineDisposition.inlineCount %> posted as inline comment<%= it.inlineDisposition.inlineCount === 1 ? '' : 's' %> on the diff<% } %><% if (it.inlineDisposition.rejectedCount > 0) { %>; <%= it.inlineDisposition.rejectedCount %> could not be anchored (GitHub rejected the position)<% } %>._
 <% } else if (it.unanchoredCount && it.unanchoredCount > 0) { %>
 _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> below couldn't be posted as inline comment<%= it.unanchoredCount === 1 ? '' : 's' %> (GitHub rejected the position)<% if (it.strays.length > it.unanchoredCount) { %>; the rest are outside the diff<% } %>._
 <% } %>

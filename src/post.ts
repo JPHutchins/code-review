@@ -382,8 +382,12 @@ const postComment = async (
 // a parameter rather than an environment read, so the effect is the only thing here that is not pure.
 const appendRunSummary = (summaryPath: string | undefined, body: () => string): void => {
   if (summaryPath === undefined || summaryPath === "") return;
+  // Rendered OUTSIDE the catch: a failing template is a defect that should surface, and the sticky
+  // rendered from the same input a moment earlier, so this throwing means something is genuinely
+  // wrong. Only the write is best-effort — a record that cannot be written must not fail the round.
+  const rendered = body();
   try {
-    appendFileSync(summaryPath, `\n${body()}\n`);
+    appendFileSync(summaryPath, `\n${rendered}\n`);
   } catch (err) {
     process.stderr.write(`Warning: could not write the run summary: ${errMsg(err)}\n`);
   }
@@ -1176,10 +1180,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // summary would otherwise list each of them twice. The disposition says which document this is, so
   // the headings do not describe the sticky's contents over the summary's.
   appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () =>
-    renderBody({ kind: "whole-document", inlineCount: inlinePosted }, reviewUrl, [
-      ...inDiff,
-      ...strays,
-    ]),
+    renderBody(
+      { kind: "whole-document", inlineCount: inlinePosted, rejectedCount: unanchoredCount },
+      reviewUrl,
+      [...inDiff, ...strays],
+    ),
   );
 };
 

@@ -270,6 +270,37 @@ describe("post — run summary (issue #205)", () => {
     expect(summary).toMatch(/including the \d+ posted as inline comment/);
   });
 
+  // Under this repo's own CI the variable points at a real file, and most of this suite drives
+  // post() — so without the suite-wide unset, every such test would append a rendered review to the
+  // vitest step's job summary.
+  it("is unset for the rest of the suite, so no other test can write a summary", () => {
+    expect(process.env["GITHUB_STEP_SUMMARY"]).toBeUndefined();
+  });
+
+  // A round with no verdict is still a record of the run, but it is not a review — and the sticky
+  // already says so with its own badge. The two surfaces must not disagree about the same round.
+  it("calls an incomplete round a review record, not a complete review", async () => {
+    const envelopePath = join(tmpDir, "envelope-incomplete-summary.json");
+    writeFileSync(envelopePath, JSON.stringify({ ...baseEnvelope, models: [], incomplete: true }));
+    writeFileSync(summaryPath(), "");
+    setSummaryEnv(summaryPath());
+    const { api } = mkMockGhApi(mkMocks(""));
+
+    await post(mkInput({ envelopePath }), api);
+    const summary = readFileSync(summaryPath(), "utf-8");
+
+    expect(summary).toContain("This run's review record");
+    expect(summary).not.toContain("complete review");
+  });
+
+  // The sticky says GitHub refused a position; the durable record must not be the surface that
+  // quietly drops that.
+  it("says how many findings could not be anchored", async () => {
+    const summary = await runRejectionRound();
+
+    expect(summary).toMatch(/1 could not be anchored \(GitHub rejected the position\)/);
+  });
+
   it("is a no-op outside Actions, where the variable is unset", async () => {
     setSummaryEnv(undefined);
     const { api } = mkMockGhApi(mkMocks(""));
@@ -288,7 +319,7 @@ describe("post — run summary (issue #205)", () => {
 
   // GitHub rejecting a position makes the sticky adopt that finding as a stray, so it is in `inDiff`
   // AND in `finalStrays`. Rendering the summary from `finalStrays` listed it twice.
-  it("lists a GitHub-rejected in-diff finding exactly once", async () => {
+  const runRejectionRound = async (): Promise<string> => {
     const findings = mkFindings([
       mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Anchored A" }),
       mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Rejected B" }),
@@ -298,20 +329,11 @@ describe("post — run summary (issue #205)", () => {
     writeFileSync(summaryPath(), "");
     setSummaryEnv(summaryPath());
 
-    const api: GhApi = (args, stdin) => {
+    // Only the two rejection behaviours are bespoke; everything else delegates to the shared mock,
+    // so a new route added there is not silently missing from this test.
+    const { api: shared } = mkMockGhApi(mkMocks(""));
+    const api: GhApi = (args, stdin, env) => {
       const a = [...args];
-      if (a[0]?.startsWith("repos/owner/repo/commits/"))
-        return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
-      if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
-        return Promise.resolve(inlineDiff);
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))
-        return Promise.resolve("");
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
-        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
-      if (a[0] === "repos/owner/repo/issues/comments/999")
-        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
-      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"))
-        return Promise.resolve("[]");
       if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--input"))
         return (JSON.parse(stdin ?? "{}") as ReviewBody).comments.length > 0
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
@@ -320,12 +342,18 @@ describe("post — run summary (issue #205)", () => {
         return (JSON.parse(stdin ?? "{}") as { line: number }).line === 11
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
           : Promise.resolve('{"id": 1, "html_url": "https://gh/comment"}\n');
+      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
       if (a[0] === "graphql") return Promise.resolve("");
-      return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
+      return shared(args, stdin, env);
     };
 
     await post(mkInput({ findingsPath }), api);
-    const summary = readFileSync(summaryPath(), "utf-8");
+    return readFileSync(summaryPath(), "utf-8");
+  };
+
+  it("lists a GitHub-rejected in-diff finding exactly once", async () => {
+    const summary = await runRejectionRound();
     const occurrences = (needle: string): number => summary.split(needle).length - 1;
 
     // Both findings are present, and the rejected one is not duplicated by the sticky's fallback.

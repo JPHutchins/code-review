@@ -66,9 +66,16 @@ export type InlineDisposition =
   // The render that carries every finding regardless of where it was posted — the run summary, which
   // has no diff to anchor anything to (issue #205). The sticky's headings all describe a document
   // that is missing the in-diff findings; this one is not, and must not borrow them. `inlineCount` is
-  // how many findings went to the diff, so the note can say the list includes them without asserting
-  // it on a round where none did.
-  | { readonly kind: "whole-document"; readonly inlineCount: number };
+  // how many of those findings' comments GitHub actually ANCHORED — not how many were in the diff,
+  // which is larger whenever a position was rejected — so the note can say the list includes them
+  // without asserting it on a round where none posted.
+  | {
+      readonly kind: "whole-document";
+      readonly inlineCount: number;
+      // Findings whose comment GitHub refused to anchor. The sticky says so in its own words; the
+      // durable record must not be the one surface that quietly drops it.
+      readonly rejectedCount: number;
+    };
 
 export interface RenderInput {
   readonly findings: Findings;

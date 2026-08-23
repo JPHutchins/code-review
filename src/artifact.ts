@@ -47,10 +47,13 @@ export const readArtifactFindings = (
         maxBuffer: 4 * 1024 * 1024,
         timeout: STEP_TIMEOUT_MS,
       });
+      // Shortest match wins, so a root-level member is preferred over a nested one if an archive ever
+      // holds both — the pipeline uploads a single directory, so today there is exactly one.
       const member = listing
         .split("\n")
         .map((l) => l.trim())
-        .find((l) => l === "findings.json" || l.endsWith("/findings.json"));
+        .filter((l) => l === "findings.json" || l.endsWith("/findings.json"))
+        .sort((a, b) => a.length - b.length)[0];
       if (member === undefined) return null;
       // maxBuffer because a findings document on a long PR is comfortably past node's 1MiB default.
       const { stdout } = await run("unzip", ["-p", zip, member], {

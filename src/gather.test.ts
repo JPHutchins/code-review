@@ -443,6 +443,40 @@ describe("gather — prior review", () => {
     expect(outFile("prior_findings.json")).toBe("null");
   });
 
+  // The other half of the route gate, and the routine case: a CI-fix round following a completed
+  // review. The workflow's mechanic branch invokes seed-draft with no --prior-findings at all, so
+  // resolving here would download and unzip an artifact nothing is ever handed.
+  it("stages no prior findings when THIS run is a mechanic pass", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: jobsMatch, response: jobRows({ id: 11, conclusion: "success" }) },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          {
+            id: 7,
+            body: "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/9/zip -->",
+            user: { login: "github-actions[bot]" },
+          },
+        ]),
+      },
+    ]);
+
+    const consulted: string[] = [];
+    await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git, (url) => {
+      consulted.push(url);
+      return Promise.resolve("{}");
+    });
+
+    expect(consulted).toEqual([]);
+    expect(outFile("prior_findings.json")).toBe("null");
+  });
+
   it("resolves and stages the prior findings when the prior sticky WAS a full review", async () => {
     const doc = { schema_version: "0.9.0", summary: "prior", verdict: "comment", findings: [] };
     const { api } = mkMockGhApi([

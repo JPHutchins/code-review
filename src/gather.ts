@@ -470,13 +470,19 @@ export const gather = async (
   // THIS step has and the agentic-review step deliberately does not: that step runs the jailed agent
   // over untrusted PR code, so handing it a repo token to read an artifact would be a bad trade. A
   // failed resolve stages null and the seed degrades to no prior context, exactly like a first round.
-  // Gated on the prior being a FULL REVIEW: seed-draft discards the document otherwise (the seed chain
-  // is route-aware — a CI-fix pass's findings are not the previous round's), so fetching on a mechanic
-  // round would spend a download and an unzip on a document nothing reads.
-  const priorFindings =
-    prior === null || prior.body === null || parseReviewedRoute(prior.body) !== "full review"
-      ? null
-      : await resolvePriorFindings(prior.body, readArtifact);
+  // Two gates, because the seed chain is route-aware on both sides. THIS run must be a full review —
+  // the workflow's mechanic branch invokes seed-draft with no --prior-findings at all, so a CI-fix
+  // round following a completed review (the routine case that route exists for) would otherwise
+  // download and unzip an artifact nothing is ever handed. And the PRIOR must be a full review, since
+  // seed-draft discards a mechanic pass's findings: they are not the previous round's.
+  const seedsFromPrior =
+    input.conclusion === "success" &&
+    prior !== null &&
+    prior.body !== null &&
+    parseReviewedRoute(prior.body) === "full review";
+  const priorFindings = seedsFromPrior
+    ? await resolvePriorFindings(prior.body, readArtifact)
+    : null;
   writeFileSync(
     join(input.outDir, "prior_findings.json"),
     priorFindings === null ? "null" : JSON.stringify(priorFindings),

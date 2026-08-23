@@ -66,7 +66,7 @@ const VISIBLE_LEAF_VALUES: Readonly<Record<string, string>> = {
   "findings.severity": "(major)",
   "findings.confidence": "0.91",
   "findings.likelihood": "0.92",
-  "systemic_problems.severity": "(major)",
+  "systemic_problems.severity": "(critical)",
   "systemic_problems.confidence": "0.81",
   "change_size.code.added": "111",
   "change_size.code.removed": "222",

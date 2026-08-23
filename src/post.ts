@@ -1,7 +1,7 @@
 // Ordering invariant: all reads, decodes, and rendering complete before the first API write; then
 // the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync } from "node:fs";
 import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
@@ -275,7 +275,12 @@ const postInlineReview = async (
   readonly inlinePosted: number;
   readonly unposted: readonly Finding[];
 }> => {
-  const pointer = reviewBodyPointer(pr.headSha, pr.stickyUrl, pr.runUrl);
+  const pointer = reviewBodyPointer(
+    pr.headSha,
+    pr.stickyUrl,
+    pr.runUrl,
+    (process.env["GITHUB_STEP_SUMMARY"] ?? "") !== "",
+  );
   const reviewBody = (withComments: boolean): string =>
     JSON.stringify({
       body: pointer,
@@ -383,6 +388,23 @@ const postComment = async (
     JSON.stringify({ body }),
   );
   return parseCommentRef(stdout);
+};
+
+// The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
+// while each run's summary keeps the review as it stood for that run (issue #205). Best-effort — the
+// record must never fail the round — and append, so it joins whatever else the job wrote. The path is
+// a parameter rather than an environment read, so the effect is the only thing here that is not pure.
+const appendRunSummary = (summaryPath: string | undefined, body: () => string): void => {
+  if (summaryPath === undefined || summaryPath === "") return;
+  // Rendered OUTSIDE the catch: a failing template is a defect that should surface, and the sticky
+  // rendered from the same input a moment earlier, so this throwing means something is genuinely
+  // wrong. Only the write is best-effort — a record that cannot be written must not fail the round.
+  const rendered = body();
+  try {
+    appendFileSync(summaryPath, `\n${rendered}\n`);
+  } catch (err) {
+    process.stderr.write(`Warning: could not write the run summary: ${errMsg(err)}\n`);
+  }
 };
 
 // Trust by author identity (bot login), not the marker alone. Returns null only when a NEW comment's
@@ -946,9 +968,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
+    // A complete review, just without usage data — so it earns a run summary like any other.
+    appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => body);
     if (inlineRequested) {
       process.stderr.write(
-        "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky only\n",
+        "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky and the run summary instead\n",
       );
     }
     process.stderr.write(
@@ -1203,6 +1227,20 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       );
     }
   }
+
+  // Same findings, same options, same template — the run summary differs from the sticky in one
+  // thing: it carries every finding, because it has no diff to anchor any of them to. That set is
+  // `visibleFindings`, which the in-diff/stray split partitions and neither half holds: taking it
+  // whole keeps the document's severity order, and cannot list a rejected finding twice. The
+  // disposition says which document this is, so the headings do not describe the sticky's contents
+  // over the summary's.
+  appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () =>
+    renderBody(
+      { kind: "whole-document", inlineCount: inlinePosted, rejectedCount: unanchoredCount },
+      reviewUrl,
+      visibleFindings,
+    ),
+  );
 };
 
 export interface AnnounceInput {

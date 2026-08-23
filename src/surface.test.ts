@@ -1413,7 +1413,7 @@ describe("signal marker — issue #141 (the legacy compact stop signal, still re
 
 describe("reviewBodyPointer — a bare pointer to the sticky and the run, never the blob (issues #161, #204)", () => {
   it("links the sticky and embeds no blob when a URL is present", () => {
-    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky", undefined);
+    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky", undefined, true);
     expect(pointer).not.toContain("code-review:findings-json");
     expect(pointer).not.toContain("AGENTS: STOP");
     expect(pointer).toContain("[summary comment](https://example.com/sticky)");
@@ -1421,7 +1421,7 @@ describe("reviewBodyPointer — a bare pointer to the sticky and the run, never 
   });
 
   it("emits an unlinked pointer — still no blob — when the sticky URL is unavailable", () => {
-    const pointer = reviewBodyPointer("abc1234def", undefined, undefined);
+    const pointer = reviewBodyPointer("abc1234def", undefined, undefined, true);
     expect(pointer).not.toContain("code-review:findings-json");
     expect(pointer).toContain("see the summary comment");
   });
@@ -1434,6 +1434,7 @@ describe("reviewBodyPointer — a bare pointer to the sticky and the run, never 
       "abc1234def",
       "https://example.com/sticky",
       "https://example.com/run/7",
+      true,
     );
     expect(pointer).toContain("[summary comment](https://example.com/sticky)");
     expect(pointer).toContain("[workflow run](https://example.com/run/7)");
@@ -1441,13 +1442,30 @@ describe("reviewBodyPointer — a bare pointer to the sticky and the run, never 
   });
 
   it("links the run even when the sticky URL is unavailable", () => {
-    const pointer = reviewBodyPointer("abc1234def", undefined, "https://example.com/run/7");
+    const pointer = reviewBodyPointer("abc1234def", undefined, "https://example.com/run/7", true);
     expect(pointer).toContain("see the summary comment");
     expect(pointer).toContain("[workflow run](https://example.com/run/7)");
   });
 
+  // `post` outside Actions writes no run summary, so the sentence must not send the reader there for
+  // a document that was never written.
+  it("promises the run's review only when a summary was written", () => {
+    const withSummary = reviewBodyPointer(
+      "abc1234def",
+      undefined,
+      "https://example.com/run/7",
+      true,
+    );
+    const without = reviewBodyPointer("abc1234def", undefined, "https://example.com/run/7", false);
+
+    expect(withSummary).toContain("this round's review in full");
+    expect(without).not.toContain("review in full");
+    expect(without).toContain("[workflow run](https://example.com/run/7)");
+    expect(without).toContain("findings artifact");
+  });
+
   it("says nothing about a run when no run URL is available", () => {
-    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky", undefined);
+    const pointer = reviewBodyPointer("abc1234def", "https://example.com/sticky", undefined, true);
     expect(pointer).not.toContain("workflow run");
     expect(pointer).not.toContain("undefined");
   });

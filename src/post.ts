@@ -968,7 +968,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
-    // A complete review, just without usage data — so it earns a run summary like any other.
+    // This branch renders whatever the round produced — a full review without its usage data, or a
+    // did-not-complete record when the findings document is an error-verdict one — and either way it
+    // is this run's durable record.
     appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => body);
     if (inlineRequested) {
       process.stderr.write(

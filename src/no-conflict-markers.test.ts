@@ -21,9 +21,19 @@ describe("the working tree", () => {
         return readFileSync(`${repoRoot}/${path}`, "utf-8");
       } catch (err) {
         const code = (err as { code?: string }).code;
-        // Absent from this worktree (sparse checkout) or a submodule's gitlink: nothing to read, and
-        // nothing withheld. Any other failure is a file the gate could not open, which is the signal.
-        return code === "ENOENT" || code === "EISDIR" ? "" : null;
+        // A directory (a submodule's gitlink) has no content to scan. A path missing from the
+        // worktree does — the index still holds its blob, and a staged conflicted file's markers live
+        // exactly there — so fall back to the index rather than clearing it unread. Anything else is
+        // a file the gate could not open, which is the signal.
+        if (code === "EISDIR") return "";
+        if (code === "ENOENT") {
+          try {
+            return execFileSync("git", ["show", `:${path}`], { cwd: repoRoot, encoding: "utf-8" });
+          } catch {
+            return null;
+          }
+        }
+        return null;
       }
     };
     const results = trackedFiles().map((path) => ({ path, content: read(path) }));

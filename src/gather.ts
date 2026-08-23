@@ -6,6 +6,7 @@ import * as t from "io-ts";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
+import { ghArtifactReader, resolvePriorFindings } from "./artifact.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { parseJsonl } from "./transcript.js";
 import {
@@ -461,6 +462,19 @@ export const gather = async (
   writeFileSync(
     join(input.outDir, "prior_review.json"),
     prior === null ? "null" : JSON.stringify(prior),
+  );
+  // The prior round's findings document, RESOLVED here rather than by seed-draft. The sticky names an
+  // artifact instead of carrying the document (issue #217), and fetching it needs the token — which
+  // THIS step has and the agentic-review step deliberately does not: that step runs the jailed agent
+  // over untrusted PR code, so handing it a repo token to read an artifact would be a bad trade. A
+  // failed resolve stages null and the seed degrades to no prior context, exactly like a first round.
+  const priorFindings =
+    prior === null || prior.body === null
+      ? null
+      : await resolvePriorFindings(prior.body, ghArtifactReader);
+  writeFileSync(
+    join(input.outDir, "prior_findings.json"),
+    priorFindings === null ? "null" : JSON.stringify(priorFindings),
   );
   // The "already answered" registry (issue #151): the prior inline findings whose threads a human
   // reply answered — staged for seed-draft to deliver beside the prior context, so the next-round

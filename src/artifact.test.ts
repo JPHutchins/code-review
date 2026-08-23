@@ -36,6 +36,16 @@ describe("findingsArtifactUrl", () => {
 });
 
 describe("resolvePriorFindings", () => {
+  // The fetch lives in gather, which holds the repo token; the agentic-review step deliberately has
+  // none, because it runs the jailed agent over untrusted PR code. A tokenless `gh api` 401s, the
+  // reader returns null, and the seed would go cold on every round with nothing in the log — which is
+  // why the resolve happens where the token is and the document is staged to a file.
+  it("returns null when the fetch is unauthorized, rather than throwing", async () => {
+    const unauthorized = (): Promise<string | null> => Promise.resolve(null);
+
+    expect(await resolvePriorFindings(linkSticky, unauthorized)).toBeNull();
+  });
+
   it("fetches and parses the document a link names", async () => {
     const doc = { schema_version: "0.9.0", summary: "from the artifact", findings: [] };
     const read = (url: string): Promise<string | null> => {

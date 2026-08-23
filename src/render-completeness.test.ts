@@ -54,34 +54,49 @@ const sentinel = (leaf: string): string => `S_${leaf.replace(/\./g, "_")}`;
 // schema walk accepts, and the values are what the render must contain — so a leaf cannot be listed
 // here to excuse it from the walk without also being asserted. Listing without asserting was the third
 // hole this guard has had; deriving both from one table is what closes it structurally.
-const NUMERIC_LEAF_VALUES: Readonly<Record<string, string>> = {
-  verdict: "comment",
-  "findings.start_line": "10",
-  "findings.end_line": "12",
+// Values a search can only satisfy by the leaf actually rendering. The previous version used values
+// the render produces for OTHER reasons — `verdict: "comment"` matched the word "comment" inside the
+// directive's own static text, and the convergence values matched prose derived from the same object —
+// so several entries passed without the leaf being carried at all.
+const VISIBLE_LEAF_VALUES: Readonly<Record<string, string>> = {
+  verdict: "💬 comment",
+  "findings.start_line": ":10",
+  "findings.end_line": "–12",
   "findings.side": "RIGHT",
-  "findings.severity": "major",
+  "findings.severity": "(major)",
   "findings.confidence": "0.91",
   "findings.likelihood": "0.92",
-  "systemic_problems.severity": "major",
+  "systemic_problems.severity": "(major)",
   "systemic_problems.confidence": "0.81",
-  "convergence.score": "0.71",
-  "convergence.threshold": "1",
-  "convergence.converged": "converged",
-  "convergence.rounds.round": "Round 1",
-  "convergence.rounds.score": "0.71",
-  "convergence.rounds.codes": "sys-code",
-  "convergence.rounds.sha": "abc123d",
   "change_size.code.added": "111",
   "change_size.code.removed": "222",
   "change_size.tests.added": "333",
   "change_size.tests.removed": "444",
   "change_size.docs.added": "555",
   "change_size.docs.removed": "666",
-  "scope_metastasis.recurring.code": "recurring-code",
   "scope_metastasis.recurring.consecutive_rounds": "3",
-  "scope_metastasis.recurring.start_round": "1",
 };
-const NUMERIC_LEAVES = Object.keys(NUMERIC_LEAF_VALUES);
+
+// These live ONLY in the compact convergence marker, so they are asserted against its decoded JSON.
+// Searching the whole comment would match prose derived from the same object — which is exactly how
+// the previous version passed without checking the marker at all.
+const CONVERGENCE_LEAF_VALUES: Readonly<Record<string, string>> = {
+  "convergence.score": '"score":0.71',
+  "convergence.threshold": '"threshold":1',
+  "convergence.converged": '"converged":true',
+  "convergence.rounds.round": '"round":1',
+  "convergence.rounds.score": '"score":0.71',
+  "convergence.rounds.codes": '"sys-code"',
+  "convergence.rounds.sha": '"sha":"abc123def456"',
+  "scope_metastasis.recurring.start_round": '"round":1',
+  // Derived from the trajectory's codes rather than rendered as prose, so the marker is where it lives.
+  "scope_metastasis.recurring.code": '"recurring-code"',
+};
+
+const NUMERIC_LEAVES = [
+  ...Object.keys(VISIBLE_LEAF_VALUES),
+  ...Object.keys(CONVERGENCE_LEAF_VALUES),
+];
 
 const findings = {
   schema_version: "0.9.0",
@@ -91,7 +106,7 @@ const findings = {
     {
       title: sentinel("systemic_problems.title"),
       description: sentinel("systemic_problems.description"),
-      severity: "major",
+      severity: "critical",
       reasoning: sentinel("systemic_problems.reasoning"),
       confidence: 0.81,
       likelihood: 0.82,
@@ -160,11 +175,12 @@ const findings = {
 // Everything the comment carries, machine channels included: the compact convergence marker is
 // base64, so a literal search of the rendered text alone reports its contents missing when they are
 // simply encoded. Decoding it here is why the guard can tell "absent" from "encoded".
-const carriedText = (): string => {
-  const out = rendered();
-  const conv = /code-review:convergence;base64 (\S+) -->/.exec(out)?.[1];
-  return conv === undefined ? out : `${out}\n${Buffer.from(conv, "base64").toString("utf-8")}`;
+const decodedConvergence = (): string => {
+  const conv = /code-review:convergence;base64 (\S+) -->/.exec(rendered())?.[1];
+  return conv === undefined ? "" : Buffer.from(conv, "base64").toString("utf-8");
 };
+
+const carriedText = (): string => `${rendered()}\n${decodedConvergence()}`;
 
 const rendered = (): string =>
   render({
@@ -217,12 +233,22 @@ describe("the comment carries every field of the findings document (issue #217)"
   // The numeric and boolean leaves, which cannot carry a string sentinel — asserted by value, and
   // listed by name so the walk above can tell "covered numerically" from "not covered at all".
   it("renders a value for every leaf the allowlist excuses from the sentinel walk", () => {
-    const out = carriedText();
+    const out = rendered();
 
-    const absent = Object.entries(NUMERIC_LEAF_VALUES)
+    const absent = Object.entries(VISIBLE_LEAF_VALUES)
       .filter(([, value]) => !out.includes(value))
       .map(([leaf, value]) => `${leaf} (${value})`);
     expect(absent, "leaves listed in the allowlist but absent from the comment").toEqual([]);
+  });
+
+  it("carries every convergence leaf in the compact marker itself", () => {
+    const decoded = decodedConvergence();
+    const absent = Object.entries(CONVERGENCE_LEAF_VALUES)
+      .filter(([, value]) => !decoded.includes(value))
+      .map(([leaf, value]) => `${leaf} (${value})`);
+
+    expect(decoded, "no compact convergence marker in the comment").not.toBe("");
+    expect(absent, "convergence leaves absent from the compact marker").toEqual([]);
   });
 
   // A hidden nit is a VISIBILITY decision. The projection used to keep 5 of 14 fields, so its

@@ -31,9 +31,23 @@ export const readArtifactFindings = (
     const zip = join(dir, "findings.zip");
     try {
       await ghApiPath(zipUrl, zip);
-      // `unzip -p` streams one member to stdout. maxBuffer because a findings document on a long PR
-      // is comfortably past node's 1MiB default.
-      const { stdout } = await run("unzip", ["-p", zip, "findings.json"], {
+      // The member is located by NAME, not assumed at the root. `unzip -p <zip> findings.json`
+      // pattern-matches the full stored path, so it exits 11 ("filename not matched") if the archive
+      // ever nests as `findings/findings.json` — and that failure is silent: the catch below returns
+      // null, so every re-review would seed cold and the nit stickiness would always fail open with
+      // nothing in the log. Today's upload-artifact strips the directory prefix (verified against a
+      // real archive), but that is its behaviour, not ours.
+      const { stdout: listing } = await run("unzip", ["-Z1", zip], {
+        encoding: "utf-8",
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      const member = listing
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l === "findings.json" || l.endsWith("/findings.json"));
+      if (member === undefined) return null;
+      // maxBuffer because a findings document on a long PR is comfortably past node's 1MiB default.
+      const { stdout } = await run("unzip", ["-p", zip, member], {
         encoding: "utf-8",
         maxBuffer: 64 * 1024 * 1024,
       });

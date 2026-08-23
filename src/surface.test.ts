@@ -217,44 +217,54 @@ describe("findingsMarkerForm", () => {
   });
 });
 
-describe("AGENTS stop directive — read the prose, not the blob (issues #171, #217)", () => {
-  // The directive used to open by telling the agent to decode. The prose became the review, so
-  // decoding reaches the same content the long way round — but only WHERE the comment is a review.
-  it("sends the agent to the prose only when the comment renders a review", () => {
-    expect(AGENTS_STOP_DIRECTIVE).toContain("when this comment renders a review");
+describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)", () => {
+  // It used to open by telling the agent to decode. The prose became the review, so decoding reaches
+  // the same content the long way round — but only WHERE the comment is a review.
+  it("sends the agent to the prose only where the prose is the review", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("Read the prose when it is there");
     expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).not.toContain("DECODE OR FETCH IT");
     expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).not.toContain("DOWNLOAD AND READ THE FULL SCHEMA");
   });
 
-  // This directive also rides the in-progress placeholder, the did-not-complete notice, and the
-  // empty-diff notice — surfaces whose prose is a status line and whose marker is the ONLY copy of
-  // the last real review. Telling an agent to read the prose there would lose it.
-  it("tells the agent to decode on the surfaces whose prose is a status line", () => {
-    expect(AGENTS_STOP_DIRECTIVE).toContain("STATUS line");
-    expect(AGENTS_STOP_DIRECTIVE).toContain("only copy of the last real review");
-    expect(AGENTS_STOP_DIRECTIVE).toContain("decoding it is the correct action");
+  // This constant also rides the in-progress placeholder, the did-not-complete notice and the
+  // empty-diff notice, whose prose is a status line. Telling an agent to read the prose there loses
+  // the review, so the directive has to name that case.
+  it("tells the agent to decode where the prose is not the review", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("Decode the marker when the prose is not the review");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("status notice");
   });
 
-  // The prose is the cheaper read, not a superset: below-floor nits, finding codes, and the
-  // recurrence signals are deliberately absent from it, and the directive must not deny that.
-  it("does not claim the prose carries everything the document does", () => {
-    expect(AGENTS_STOP_DIRECTIVE).toContain("leaves out by design");
-    expect(AGENTS_STOP_DIRECTIVE).toContain("below-visibility-floor nits");
-    expect(AGENTS_STOP_DIRECTIVE).not.toContain("everything the JSON does");
+  // Every inventory of what the prose holds was false on some surface: the cost is absent when the
+  // envelope is lost, the convergence badge is suppressed on a CI-fix pass, and the prose DOES render
+  // derived recurrence notes. So the directive states the rule and enumerates neither side.
+  it("makes no claim about what either side contains", () => {
+    for (const inventory of [
+      "the cost",
+      "convergence score",
+      "recurrence signals",
+      "below-visibility-floor nits",
+      "everything the JSON does",
+    ]) {
+      expect(AGENTS_STOP_DIRECTIVE).not.toContain(inventory);
+    }
+    expect(AGENTS_STOP_DIRECTIVE).toContain("a field the prose does not render");
   });
 
-  // Inline comments carry this directive verbatim and render no run link at all, so it must name the
-  // summary without promising a link that is not on every surface.
-  it("names the run summary without promising a link this surface may not have", () => {
-    expect(AGENTS_STOP_DIRECTIVE).toContain("anchors findings to diff lines");
+  // Inline comments carry this verbatim and render no run link, so the summary is named without
+  // promising a link this surface may not have.
+  it("names the run summary for the rounds the prose carries only in part", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("anchored to diff lines");
     expect(AGENTS_STOP_DIRECTIVE).toContain("too large to embed");
     expect(AGENTS_STOP_DIRECTIVE).toContain("workflow run's summary");
     expect(AGENTS_STOP_DIRECTIVE).not.toContain("linked at the foot");
   });
 
-  it("keeps the machine form on offer, with its schema", () => {
+  // A carried blob may declare an older schema_version than the current file; resolving to THAT
+  // version is what stops a decoder validating it against the wrong schema.
+  it("resolves the schema by the document's own version, not the current URL alone", () => {
     expect(AGENTS_STOP_DIRECTIVE).toContain("schema_version");
-    expect(AGENTS_STOP_DIRECTIVE).toContain("Decode the marker below");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("for THAT version");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("WHOLE findings document");
   });
 
   it("embeds the schema's OWN $id, so the directive URL can't drift from the canonical location", () => {
@@ -270,9 +280,9 @@ describe("AGENTS stop directive — read the prose, not the blob (issues #171, #
     expect(AGENTS_STOP_DIRECTIVE).not.toContain(`${schemaId}.`);
   });
 
-  it("tells the agent to parse the whole document, not only recognized fields", () => {
-    expect(AGENTS_STOP_DIRECTIVE).toContain("WHOLE findings document");
-    expect(AGENTS_STOP_DIRECTIVE).toContain("not only the fields you recognize");
+  // It rides EVERY per-finding inline comment, so its size is paid N times on an inline round.
+  it("stays small enough to ride every inline comment", () => {
+    expect(AGENTS_STOP_DIRECTIVE.length).toBeLessThan(1000);
   });
 
   it("stays a well-formed HTML comment — no bare '--' inside", () => {

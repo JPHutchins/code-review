@@ -305,6 +305,27 @@ describe("post — inline off by default (issue #179)", () => {
 
   // The inline template is the inline path's input alone; reading it up front made an unreadable path
   // fail a round that would never have opened the file.
+  // The other half of the disposition split: a round that DID ask for inline and lost its envelope
+  // genuinely lost the inline review, and the sticky says so.
+  it("does say the envelope loss cost the inline review, when inline was asked for", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(
+      post(mkInlineInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("process.exit");
+
+    const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
+    expect(body).toContain("result envelope lost");
+    expect(body).toContain("Every finding is listed below");
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("inline comments cannot be built"),
+    );
+
+    stderrSpy.mockRestore();
+  });
+
   it("posts without reading the inline template", async () => {
     const { api, calls } = mkMockGhApi(mocks());
 

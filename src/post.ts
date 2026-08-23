@@ -742,11 +742,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     throw new Error(`Price map at ${input.pricesPath} does not match the expected shape`);
   }
   const template = readFileSync(input.templatePath, "utf-8");
-  // Read up front when it is going to be used, so an unreadable path fails before anything is
-  // written rather than at the branch far below — but not read at all on the default path, where the
-  // file is never opened and a missing one is not an error.
-  const inlineTemplate =
-    input.inline === true ? readFileSync(input.inlineTemplatePath, "utf-8") : "";
+  const inlineRequested = input.inline === true;
 
   const renderNotice = (message: string): string => {
     // The notice carries the prior convergence forward IN its blob so the trajectory + last score
@@ -941,7 +937,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         convergenceRound: false,
         testReport,
         clocDiff,
-        inlineDisposition: input.inline === true ? { kind: "no-envelope" } : { kind: "disabled" },
+        inlineDisposition: inlineRequested ? { kind: "no-envelope" } : { kind: "disabled" },
         runUrl: input.runUrl,
         unverifiedNoLogs: input.unverifiedNoLogs,
         jsonUrl: input.jsonUrl,
@@ -950,7 +946,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
-    if (input.inline === true) {
+    if (inlineRequested) {
       process.stderr.write(
         "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky only\n",
       );
@@ -960,6 +956,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     );
     process.exit(0);
   }
+
+  // Read once the lost-envelope branch has passed — that branch posts and exits, and an ENOENT here
+  // would have taken its notice with it — but still before anything on THIS path is written, so a
+  // misconfigured template fails loudly rather than half-way through posting.
+  const inlineTemplate = inlineRequested ? readFileSync(input.inlineTemplatePath, "utf-8") : "";
 
   // A completed review carries real telemetry; adapt (and the workflow's notice wrap) flag a run that
   // produced only a notice. Don't let such a notice bury an existing completed review or post a stray
@@ -997,7 +998,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     comments: rawComments,
     strays,
     inDiff,
-  } = input.inline === true
+  } = inlineRequested
     ? buildInlineComments(visibleFindings, diff, {
         inlineTemplate,
         models: envelope.models.map((m) => m.model),
@@ -1019,7 +1020,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const botReviews = await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi);
 
   // The "posted" disposition is only ever built from the actual post result below, never optimistically.
-  const initialDisposition: InlineDisposition | undefined = !input.inline
+  const initialDisposition: InlineDisposition | undefined = !inlineRequested
     ? { kind: "disabled" }
     : comments.length === 0 && strays.length > 0
       ? { kind: "none-in-diff" }
@@ -1162,7 +1163,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ghApi,
   );
   process.stderr.write(
-    input.inline === true
+    inlineRequested
       ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
       : `Posted a body-only review on PR #${String(prNumber)}; the findings are in the sticky\n`,
   );

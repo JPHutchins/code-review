@@ -863,19 +863,22 @@ jobs:
 
           # The deterministic cloc table the review job captured. Passed only when the file exists AND
           # the installed CLI supports the flag: in the merge-to-release window the pinned
-          # CODE_REVIEW_VERSION predates --cloc-diff (issue #182 review). An unknown option is
-          # ignored rather than rejected, so without the probe the table would silently not appear;
-          # an absent table (or an older CLI) just omits the collapsible.
-          # Captured once and grepped below, and only when one of the flags could be wanted: a
-          # success-route run with no cloc table and no inline needs none, and the probe costs a
-          # node start.
+          # CODE_REVIEW_VERSION pins the PUBLISHED CLI, so between a flag merging and the next
+          # release the installed `post` predates it — and citty ignores an unknown option silently,
+          # which would turn a requested feature into a no-op that looks deliberate. Every optional
+          # flag is therefore probed before it is passed. One capture (the probe costs a node start,
+          # and a run wanting no flag pays nothing) and one matcher, anchored on a terminator so a
+          # bare flag name cannot match a longer option that merely starts with it.
+          # This variant has no inline knob — it calls `post` directly, so add --inline there and to
+          # this capture's condition if you want it — which is why there is no INLINE term below.
           POST_HELP=""
           if [ -f findings/cloc-diff.txt ] || [ "$REVIEW_ROUTE" = "mechanic" ]; then
             POST_HELP="$(code-review post --help 2>/dev/null || true)"
           fi
+          post_accepts() { printf '%s' "$POST_HELP" | grep -qE -- "--$1([[:space:]]|\`|$)"; }
 
           CLOC_ARGS=()
-          if [ -f findings/cloc-diff.txt ] && printf '%s' "$POST_HELP" | grep -qE -- '--cloc-diff([[:space:]]|`|$)'; then
+          if [ -f findings/cloc-diff.txt ] && post_accepts cloc-diff; then
             CLOC_ARGS=(--cloc-diff findings/cloc-diff.txt)
           fi
 
@@ -889,11 +892,9 @@ jobs:
           # or error notice, where no review happened at all. The run's conclusion is NOT re-checked —
           # the review job only emits route=mechanic on the failure branch, so a conclusion test can
           # add no true positive, and an empty output would silence exactly the case this exists for.
-          # Probed like the flag above: CODE_REVIEW_VERSION pins the published CLI, which may predate
-          # the option, and an unknown option is ignored silently.
           UNVERIFIED_ARGS=()
           if [ "${STAGED_JOB_LOGS:-0}" = "0" ] && [ "$REVIEW_ROUTE" = "mechanic" ] \
-             && printf '%s' "$POST_HELP" | grep -qE -- '--unverified-no-logs([[:space:]]|`|$)'; then
+             && post_accepts unverified-no-logs; then
             UNVERIFIED_ARGS=(--unverified-no-logs)
           fi
 

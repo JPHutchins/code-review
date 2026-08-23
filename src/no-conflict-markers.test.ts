@@ -24,6 +24,7 @@ export const readTracked = (
   path: string,
   fromDisk: (p: string) => string,
   fromIndex: (p: string) => string,
+  onUnreadable: (path: string, reason: string) => void = () => {},
 ): string | null => {
   try {
     return fromDisk(path);
@@ -34,10 +35,14 @@ export const readTracked = (
     // content, and a staged conflicted file's markers live exactly there, so read it rather than
     // clear it unread. Anything else is a file this gate could not open.
     if (code === "EISDIR") return "";
-    if (code !== "ENOENT") return null;
+    if (code !== "ENOENT") {
+      onUnreadable(path, err instanceof Error ? err.message : String(err));
+      return null;
+    }
     try {
       return fromIndex(path);
-    } catch {
+    } catch (indexErr) {
+      onUnreadable(path, indexErr instanceof Error ? indexErr.message : String(indexErr));
       return null;
     }
   }
@@ -64,20 +69,22 @@ const firstMarkerLine = (content: string): number =>
 
 describe("the working tree", () => {
   it("has no unresolved conflict markers in any tracked file", () => {
+    const causes: string[] = [];
     const results = trackedFiles().map((path) => ({
       path,
-      content: readTracked(path, diskReader, indexReader),
+      content: readTracked(path, diskReader, indexReader, (p, reason) =>
+        causes.push(`${p}: ${reason.split("\n")[0] ?? reason}`),
+      ),
     }));
-    const unreadable = results.filter((r) => r.content === null).map((r) => r.path);
-    const offenders = results.flatMap(({ path, content }) =>
-      content === null || firstMarkerLine(content) === -1
-        ? []
-        : [`${path}:${String(firstMarkerLine(content) + 1)}`],
-    );
+    const offenders = results.flatMap(({ path, content }) => {
+      const hit = content === null ? -1 : firstMarkerLine(content);
+      return hit === -1 ? [] : [`${path}:${String(hit + 1)}`];
+    });
 
     expect(offenders).toEqual([]);
-    // A file this gate could not open is not a file it cleared.
-    expect(unreadable).toEqual([]);
+    // A file this gate could not open is not a file it cleared — and the reason travels, so the
+    // failure says WHY (a gitlink, an unmerged entry and an oversized blob look identical without it).
+    expect(causes).toEqual([]);
   });
 
   it("reads a meaningful number of tracked files", () => {
@@ -92,12 +99,20 @@ describe("the working tree", () => {
     };
 
     expect(readTracked("gone.md", enoent, () => "<<<<<<< HEAD\nstaged\n")).toContain("<<<<<<<");
-    // The index cannot produce it either — unreadable, which the gate must FAIL on, not clear.
+    // The index cannot produce it either — unreadable, which the gate must FAIL on, not clear. And the
+    // reason travels, so the gate's own failure says which of the several causes it was.
+    const causes: string[] = [];
     expect(
-      readTracked("gone.md", enoent, () => {
-        throw new Error("fatal: path does not exist");
-      }),
+      readTracked(
+        "gone.md",
+        enoent,
+        () => {
+          throw new Error("fatal: bad object");
+        },
+        (path, reason) => causes.push(`${path}: ${reason}`),
+      ),
     ).toBeNull();
+    expect(causes).toEqual(["gone.md: fatal: bad object"]);
   });
 
   it("treats a directory as empty and any other error as unreadable", () => {
@@ -123,28 +138,31 @@ describe("the working tree", () => {
   // The `:./` prefix is the whole point of this reader and the injected-reader tests cannot see it,
   // so this one drives real git against a real index — the case that motivated it is a filename git
   // would otherwise parse as an index-stage spec.
-  it("reads the named file from the index, not a same-suffix stage spec", () => {
-    const repo = mkdtempSync(join(tmpdir(), "conflict-gate-"));
-    const git = (...args: readonly string[]): void => {
-      execFileSync("git", [...args], { cwd: repo, encoding: "utf-8" });
-    };
-    try {
-      git("init", "-q", ".");
-      git("config", "user.email", "t@example.com");
-      git("config", "user.name", "t");
-      // `1:notes.md` and `notes.md`: `git show :1:notes.md` reads the SECOND as stage 1.
-      writeFileSync(join(repo, "1:notes.md"), "<<<<<<< HEAD\nthe staged one\n");
-      writeFileSync(join(repo, "notes.md"), "a different file\n");
-      git("add", "-A");
-      git("commit", "-qm", "x");
-      rmSync(join(repo, "1:notes.md"));
+  it.skipIf(process.platform === "win32")(
+    "reads the named file from the index, not a same-suffix stage spec",
+    () => {
+      const repo = mkdtempSync(join(tmpdir(), "conflict-gate-"));
+      const git = (...args: readonly string[]): void => {
+        execFileSync("git", [...args], { cwd: repo, encoding: "utf-8" });
+      };
+      try {
+        git("init", "-q", ".");
+        git("config", "user.email", "t@example.com");
+        git("config", "user.name", "t");
+        // `1:notes.md` and `notes.md`: `git show :1:notes.md` reads the SECOND as stage 1.
+        writeFileSync(join(repo, "1:notes.md"), "<<<<<<< HEAD\nthe staged one\n");
+        writeFileSync(join(repo, "notes.md"), "a different file\n");
+        git("add", "-A");
+        git("commit", "-qm", "x");
+        rmSync(join(repo, "1:notes.md"));
 
-      expect(indexReaderIn(repo)("1:notes.md")).toContain("the staged one");
-      expect(indexReaderIn(repo)("1:notes.md")).not.toContain("a different file");
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
-  });
+        expect(indexReaderIn(repo)("1:notes.md")).toContain("the staged one");
+        expect(indexReaderIn(repo)("1:notes.md")).not.toContain("a different file");
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("recognises each marker form", () => {
     expect(CONFLICT_MARKER.test("<<<<<<< HEAD")).toBe(true);

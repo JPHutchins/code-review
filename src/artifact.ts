@@ -7,6 +7,11 @@ import { parseFindingsMarker } from "./surface.js";
 
 const run = promisify(execFile);
 
+// A hung `gh api` or a stalled `unzip` would wait forever, in a gather step the workflow deliberately
+// leaves without a job-level cap. The seed degrades to "no prior findings" on timeout, which is the
+// same state as a first round — strictly better than a stuck job.
+const STEP_TIMEOUT_MS = 60_000;
+
 // The sticky's marker names the findings artifact rather than carrying it (issue #217). Anything that
 // needs a PRIOR round's findings — the re-review seed, the nit-visibility-floor stickiness — resolves
 // it through here.
@@ -40,6 +45,7 @@ export const readArtifactFindings = (
       const { stdout: listing } = await run("unzip", ["-Z1", zip], {
         encoding: "utf-8",
         maxBuffer: 4 * 1024 * 1024,
+        timeout: STEP_TIMEOUT_MS,
       });
       const member = listing
         .split("\n")
@@ -50,6 +56,7 @@ export const readArtifactFindings = (
       const { stdout } = await run("unzip", ["-p", zip, member], {
         encoding: "utf-8",
         maxBuffer: 64 * 1024 * 1024,
+        timeout: STEP_TIMEOUT_MS,
       });
       return stdout;
     } catch {
@@ -65,6 +72,7 @@ export const ghArtifactReader = readArtifactFindings(async (url, outPath) => {
   const { stdout } = await run("gh", ["api", url], {
     encoding: "buffer",
     maxBuffer: 256 * 1024 * 1024,
+    timeout: STEP_TIMEOUT_MS,
   });
   await writeFile(outPath, stdout);
 });

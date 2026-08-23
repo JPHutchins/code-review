@@ -6,7 +6,8 @@ import * as t from "io-ts";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
-import { ghArtifactReader, resolvePriorFindings } from "./artifact.js";
+import { ghArtifactReader, resolvePriorFindings, type ArtifactReader } from "./artifact.js";
+import { parseReviewedRoute } from "./surface.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { parseJsonl } from "./transcript.js";
 import {
@@ -395,6 +396,7 @@ export const gather = async (
   input: GatherInput,
   ghApi: GhApi = runGhApi,
   gitRun: GitRun = runGit,
+  readArtifact: ArtifactReader = ghArtifactReader,
 ): Promise<GatherResult> => {
   const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
   const resolution = resolvePr(candidates, input.headBranch);
@@ -468,10 +470,13 @@ export const gather = async (
   // THIS step has and the agentic-review step deliberately does not: that step runs the jailed agent
   // over untrusted PR code, so handing it a repo token to read an artifact would be a bad trade. A
   // failed resolve stages null and the seed degrades to no prior context, exactly like a first round.
+  // Gated on the prior being a FULL REVIEW: seed-draft discards the document otherwise (the seed chain
+  // is route-aware — a CI-fix pass's findings are not the previous round's), so fetching on a mechanic
+  // round would spend a download and an unzip on a document nothing reads.
   const priorFindings =
-    prior === null || prior.body === null
+    prior === null || prior.body === null || parseReviewedRoute(prior.body) !== "full review"
       ? null
-      : await resolvePriorFindings(prior.body, ghArtifactReader);
+      : await resolvePriorFindings(prior.body, readArtifact);
   writeFileSync(
     join(input.outDir, "prior_findings.json"),
     priorFindings === null ? "null" : JSON.stringify(priorFindings),

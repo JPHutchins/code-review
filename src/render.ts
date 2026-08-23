@@ -1,6 +1,7 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
+import { clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
@@ -98,12 +99,21 @@ const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   carried: carriedLines(f),
 });
 
+// Each carried field is clipped. Every below-floor nit's full finding rides in the sticky body, and
+// that body is the one GitHub rejects over 65536 chars — which post deliberately does not shed, so an
+// oversized body 422s the round with the announce placeholder still up. Removing the ~32KB document
+// bought far more room than this spends, but "far more room" is not a bound. The cap matches the
+// conversation clip's, and clipText marks what it cut so a reader is never silently shown a fragment.
+const CARRIED_FIELD_CHARS = 4000;
+
 const carriedLines = (f: Finding): readonly string[] =>
   [
-    `description: ${f.description}`,
-    ...(f.recommendation !== undefined ? [`recommendation: ${f.recommendation}`] : []),
-    `reasoning: ${f.reasoning}`,
-    ...(f.patch !== undefined ? ["patch:", f.patch] : []),
+    `description: ${clipText(f.description, CARRIED_FIELD_CHARS)}`,
+    ...(f.recommendation !== undefined
+      ? [`recommendation: ${clipText(f.recommendation, CARRIED_FIELD_CHARS)}`]
+      : []),
+    `reasoning: ${clipText(f.reasoning, CARRIED_FIELD_CHARS)}`,
+    ...(f.patch !== undefined ? ["patch:", clipText(f.patch, CARRIED_FIELD_CHARS)] : []),
   ]
     .flatMap((block) => commentSafe(block).split("\n"))
     .map((line) => line.trimEnd());

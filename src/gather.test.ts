@@ -405,6 +405,75 @@ describe("gather — prior review", () => {
     });
   });
 
+  // The prior DOCUMENT is resolved here, where the token is — the agentic-review step has none by
+  // design (issue #217). It is gated on the prior being a full review, because seed-draft discards a
+  // mechanic pass's findings anyway: fetching there spends a download and an unzip on a document
+  // nothing reads.
+  it("stages no prior findings when the prior sticky was a mechanic pass", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          {
+            id: 7,
+            // A link-form marker: resolving it would need a fetch, so a fetch attempt here would fail
+            // the mock's "unexpected call" guard — which is exactly the assertion.
+            body: "<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/1/zip -->",
+            user: { login: "github-actions[bot]" },
+          },
+        ]),
+      },
+    ]);
+
+    // The reader must not be consulted at all — a fetch that merely FAILS also stages null, so
+    // observing the absence of the call is the only assertion that separates the two.
+    const consulted: string[] = [];
+    await gather(mkInput({}), api, mkMockGit([]).git, (url) => {
+      consulted.push(url);
+      return Promise.resolve(null);
+    });
+
+    expect(consulted).toEqual([]);
+    expect(outFile("prior_findings.json")).toBe("null");
+  });
+
+  it("resolves and stages the prior findings when the prior sticky WAS a full review", async () => {
+    const doc = { schema_version: "0.9.0", summary: "prior", verdict: "comment", findings: [] };
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          {
+            id: 7,
+            body: "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/9/zip -->",
+            user: { login: "github-actions[bot]" },
+          },
+        ]),
+      },
+    ]);
+
+    const consulted: string[] = [];
+    await gather(mkInput({}), api, mkMockGit([]).git, (url) => {
+      consulted.push(url);
+      return Promise.resolve(JSON.stringify(doc));
+    });
+
+    expect(consulted).toEqual(["https://api.github.com/repos/o/r/actions/artifacts/9/zip"]);
+    expect(JSON.parse(outFile("prior_findings.json")) as unknown).toEqual(doc);
+  });
+
   it("writes literal null when there is no bot comment", async () => {
     const { api } = mkMockGhApi([
       {

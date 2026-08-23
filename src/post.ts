@@ -695,8 +695,18 @@ export const post = async (
     ...doc,
     convergence: conv ?? undefined,
   });
-  const findingsBlob = (doc: Findings): string =>
-    findingsMarkerPair(input.jsonUrl, doc.convergence);
+  // The error rides HERE rather than at the main path's call site, so the notice and lost-envelope
+  // paths — which also post a body built from this — say it too. Once per post, not once per surface.
+  let warnedNoJsonUrl = false;
+  const findingsBlob = (doc: Findings): string => {
+    if (input.jsonUrl === undefined && !warnedNoJsonUrl) {
+      warnedNoJsonUrl = true;
+      process.stderr.write(
+        "::error::no --json-url was supplied, so this comment names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
+      );
+    }
+    return findingsMarkerPair(input.jsonUrl, doc.convergence);
+  };
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
   // TDZ ReferenceError and crashes the post (issue #151 review r4 — a real regression in r3). The
@@ -1080,16 +1090,6 @@ export const post = async (
   // convergence inside it (issues #156 + #174), reused across the sticky + review body; each inline
   // comment embeds only its own finding instead.
   const findingsMarker = findingsBlob(stampedFindings);
-
-  // No artifact URL means no machine channel at all: the convergence still rides its compact marker,
-  // but the findings are unreachable, so the next round cannot seed from this one and no decoder can
-  // reach the document. An ::error:: rather than a throw — the prose review is complete and posting it
-  // is strictly better than failing the job and leaving the announce placeholder standing.
-  if (input.jsonUrl === undefined) {
-    process.stderr.write(
-      "::error::no --json-url was supplied, so the sticky names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
-    );
-  }
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings: stampedFindings,

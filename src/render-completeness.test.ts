@@ -279,6 +279,40 @@ describe("the comment carries every field of the findings document (issue #217)"
     expect(out).not.toMatch(/confidence 0\.81 · likelihood/);
   });
 
+  // Carrying every hidden nit's whole finding puts unbounded text in the ONE comment whose 65536-char
+  // limit post deliberately does not shed — an oversized body 422s the round with the announce
+  // placeholder still up. Removing the ~32KB document bought far more room than this spends, but that
+  // is not a bound, so each field is clipped and the clip is visible rather than silent.
+  it("clips a carried field instead of putting unbounded text in the comment", () => {
+    const huge = {
+      ...findings,
+      findings: [findings.findings[0]!, { ...findings.findings[1]!, reasoning: "z".repeat(9000) }],
+    } as unknown as Findings;
+    const out = render({
+      findings: huge,
+      envelope: {
+        schema_version: "0.4.0",
+        findings: huge,
+        models: [{ model: "m", input_tokens: 1, output_tokens: 1 }],
+        turns: 1,
+        duration_ms: 1,
+      },
+      prices: {
+        _updated: "x",
+        _unit: "y",
+        models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
+      },
+      template: readFileSync(`${repoRoot}/templates/comment.eta`, "utf-8"),
+      strays: huge.findings.slice(0, 1),
+      suppressedNits: huge.findings.slice(1, 2),
+      nitVisibilityFloor: 0.25,
+      jsonUrl: "https://example.com/artifact.zip",
+    });
+
+    expect(out).toContain("… [truncated]");
+    expect(out.split("z".repeat(500)).length - 1).toBeLessThan(9000 / 500);
+  });
+
   it("keeps the machine channel a well-formed HTML comment", () => {
     const out = rendered();
     const blocks = out.match(/<!-- code-review:suppressed-nit[\s\S]*?-->/g) ?? [];

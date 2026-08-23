@@ -40,40 +40,48 @@ const leafPaths = (node: unknown, path = ""): readonly string[] => {
 //   systemic header deliberately shows confidence alone.
 //
 // Anything else absent is a bug. Adding to this list is a decision to defend, not a way to pass.
-const DOCUMENTED_EXCLUSIONS = ["scope_metastasis.decision_prompt", "systemic_problems.likelihood"];
+const DOCUMENTED_EXCLUSIONS = [
+  "scope_metastasis.decision_prompt",
+  "systemic_problems.likelihood",
+  // Metadata about the machine document rather than review content: the document in the artifact
+  // carries it, and the directive tells a reader to take the version FROM that document.
+  "schema_version",
+];
 
 const sentinel = (leaf: string): string => `S_${leaf.replace(/\./g, "_")}`;
 
-// Leaves whose type cannot carry a string sentinel. Naming them keeps the walk honest: a new leaf is
-// either sentinel-covered, listed here and asserted by value, or a failure.
-const NUMERIC_LEAVES = [
-  "findings.start_line",
-  "findings.end_line",
-  "findings.confidence",
-  "findings.likelihood",
-  "systemic_problems.confidence",
-  "systemic_problems.severity",
-  "findings.severity",
-  "findings.side",
-  "verdict",
-  "schema_version",
-  "convergence.score",
-  "convergence.threshold",
-  "convergence.converged",
-  "convergence.rounds.round",
-  "convergence.rounds.score",
-  "convergence.rounds.codes",
-  "convergence.rounds.sha",
-  "change_size.code.added",
-  "change_size.code.removed",
-  "change_size.tests.added",
-  "change_size.tests.removed",
-  "change_size.docs.added",
-  "change_size.docs.removed",
-  "scope_metastasis.recurring.code",
-  "scope_metastasis.recurring.consecutive_rounds",
-  "scope_metastasis.recurring.start_round",
-];
+// Leaves whose type cannot carry a string sentinel. This is ONE table: the keys are the allowlist the
+// schema walk accepts, and the values are what the render must contain — so a leaf cannot be listed
+// here to excuse it from the walk without also being asserted. Listing without asserting was the third
+// hole this guard has had; deriving both from one table is what closes it structurally.
+const NUMERIC_LEAF_VALUES: Readonly<Record<string, string>> = {
+  verdict: "comment",
+  "findings.start_line": "10",
+  "findings.end_line": "12",
+  "findings.side": "RIGHT",
+  "findings.severity": "major",
+  "findings.confidence": "0.91",
+  "findings.likelihood": "0.92",
+  "systemic_problems.severity": "major",
+  "systemic_problems.confidence": "0.81",
+  "convergence.score": "0.71",
+  "convergence.threshold": "1",
+  "convergence.converged": "converged",
+  "convergence.rounds.round": "Round 1",
+  "convergence.rounds.score": "0.71",
+  "convergence.rounds.codes": "sys-code",
+  "convergence.rounds.sha": "abc123d",
+  "change_size.code.added": "111",
+  "change_size.code.removed": "222",
+  "change_size.tests.added": "333",
+  "change_size.tests.removed": "444",
+  "change_size.docs.added": "555",
+  "change_size.docs.removed": "666",
+  "scope_metastasis.recurring.code": "recurring-code",
+  "scope_metastasis.recurring.consecutive_rounds": "3",
+  "scope_metastasis.recurring.start_round": "1",
+};
+const NUMERIC_LEAVES = Object.keys(NUMERIC_LEAF_VALUES);
 
 const findings = {
   schema_version: "0.9.0",
@@ -101,7 +109,11 @@ const findings = {
     score: 0.71,
     threshold: 1,
     converged: true,
-    rounds: [{ round: 1, score: 0.71, codes: { "sys-code": 1 }, sha: "abc123def456" }],
+    // The recurring code MUST appear in the trajectory's codes: scope_metastasis is derived from the
+    // round history, so a recurring code that appears in no round is a fixture that cannot happen.
+    rounds: [
+      { round: 1, score: 0.71, codes: { "sys-code": 1, "recurring-code": 3 }, sha: "abc123def456" },
+    ],
   },
   change_size: {
     code: { added: 111, removed: 222 },
@@ -145,6 +157,15 @@ const findings = {
   ],
 } as unknown as Findings;
 
+// Everything the comment carries, machine channels included: the compact convergence marker is
+// base64, so a literal search of the rendered text alone reports its contents missing when they are
+// simply encoded. Decoding it here is why the guard can tell "absent" from "encoded".
+const carriedText = (): string => {
+  const out = rendered();
+  const conv = /code-review:convergence;base64 (\S+) -->/.exec(out)?.[1];
+  return conv === undefined ? out : `${out}\n${Buffer.from(conv, "base64").toString("utf-8")}`;
+};
+
 const rendered = (): string =>
   render({
     findings,
@@ -171,7 +192,7 @@ const rendered = (): string =>
 
 describe("the comment carries every field of the findings document (issue #217)", () => {
   it("renders a sentinel for every schema leaf except the documented exclusions", () => {
-    const out = rendered();
+    const out = carriedText();
     const fixture = JSON.stringify(findings);
     const inScope = leafPaths(schema).filter((l) => !DOCUMENTED_EXCLUSIONS.includes(l));
 
@@ -195,26 +216,13 @@ describe("the comment carries every field of the findings document (issue #217)"
 
   // The numeric and boolean leaves, which cannot carry a string sentinel — asserted by value, and
   // listed by name so the walk above can tell "covered numerically" from "not covered at all".
-  it("renders every numeric leaf's value", () => {
-    const out = rendered();
+  it("renders a value for every leaf the allowlist excuses from the sentinel walk", () => {
+    const out = carriedText();
 
-    for (const [leaf, value] of [
-      ["findings.start_line", "10"],
-      ["findings.end_line", "12"],
-      ["findings.confidence", "0.91"],
-      ["findings.likelihood", "0.92"],
-      ["systemic_problems.confidence", "0.81"],
-      ["convergence.score", "0.71"],
-      ["convergence.threshold", "1"],
-      ["convergence.rounds.round", "1"],
-      ["change_size.code.added", "111"],
-      ["change_size.code.removed", "222"],
-      ["change_size.tests.added", "333"],
-      ["change_size.docs.added", "555"],
-      ["scope_metastasis.recurring.consecutive_rounds", "3"],
-    ] as const) {
-      expect(out, `numeric leaf ${leaf} is absent from the rendered comment`).toContain(value);
-    }
+    const absent = Object.entries(NUMERIC_LEAF_VALUES)
+      .filter(([, value]) => !out.includes(value))
+      .map(([leaf, value]) => `${leaf} (${value})`);
+    expect(absent, "leaves listed in the allowlist but absent from the comment").toEqual([]);
   });
 
   // A hidden nit is a VISIBILITY decision. The projection used to keep 5 of 14 fields, so its

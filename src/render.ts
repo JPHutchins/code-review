@@ -15,8 +15,7 @@ import {
   changeSizeSummary,
   computeSameRootNotes,
   metastasisNote,
-  convergenceMarker,
-  findingsPointer,
+  findingsMarkerPair,
   escapeCodeBackticks,
   escapeFence,
   DEFAULT_NIT_VISIBILITY_FLOOR,
@@ -147,15 +146,6 @@ export const isConvergenceRound = (
   incomplete: boolean,
 ): boolean => route === "full review" && !incomplete;
 
-// The link plus the compact convergence beside it, for callers that do not precompute the pair.
-const selfBuiltPointer = (input: RenderInput): string => {
-  const marker = input.jsonUrl !== undefined ? findingsPointer(input.jsonUrl) : "";
-  const convergence = input.findings.convergence;
-  if (convergence === undefined) return marker;
-  const conv = convergenceMarker(convergence);
-  return marker === "" ? conv : `${marker}\n${conv}`;
-};
-
 export const render = (input: RenderInput): string => {
   const eta = new Eta({ autoTrim: false });
   const usageAvailable = input.envelope !== null;
@@ -257,7 +247,8 @@ export const render = (input: RenderInput): string => {
     // it needs its own compact marker beside the link or a trajectory would require a fetch to read
     // (issue #217). post precomputes both together in findingsBlob; the standalone `render` command
     // builds the same pair here, so neither path can emit a link with the convergence missing.
-    findingsPointer: input.findingsPointer ?? selfBuiltPointer(input),
+    findingsPointer:
+      input.findingsPointer ?? findingsMarkerPair(input.jsonUrl, input.findings.convergence),
     roundsSummary: roundsSummary(trajectory, input.roundCount),
     metastasisNote: advisoryAllowed ? metastasisNote(trajectory) : "",
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},

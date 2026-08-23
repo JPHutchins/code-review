@@ -13,8 +13,7 @@ import {
   carryForwardMarkers,
   computeCodeCounts,
   computeSameRootNotes,
-  convergenceMarker,
-  findingsPointer,
+  findingsMarkerPair,
   inProgressConvergence,
   nextRoundNumber,
   isBelowVisibilityFloor,
@@ -696,16 +695,8 @@ export const post = async (
     ...doc,
     convergence: conv ?? undefined,
   });
-  const findingsBlob = (doc: Findings): string => {
-    // The marker is a link, so the convergence no longer rides inside the comment — it ALWAYS needs its
-    // compact marker beside the link, or reading a trajectory or a stop signal would mean fetching an
-    // artifact. What used to be the oversized-review fallback (issue #185 review) is now the only path,
-    // which is what lets every convergence reader keep working without a fetch (issue #217).
-    const marker = input.jsonUrl !== undefined ? findingsPointer(input.jsonUrl) : "";
-    if (doc.convergence === undefined) return marker;
-    const conv = convergenceMarker(doc.convergence);
-    return marker === "" ? conv : `${marker}\n${conv}`;
-  };
+  const findingsBlob = (doc: Findings): string =>
+    findingsMarkerPair(input.jsonUrl, doc.convergence);
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
   // TDZ ReferenceError and crashes the post (issue #151 review r4 — a real regression in r3). The
@@ -1154,9 +1145,9 @@ export const post = async (
   // that 422 propagate, so an oversized body fails the job with the announce placeholder still up.
   // Inline off makes that reachable — every finding's prose now renders into this one comment, where
   // the in-diff ones used to be separate posts. Shedding is issue #214; tolerating a failed write
-  // after the sticky is up is issue #223. Issue #217 would remove the embedded blob — the largest
-  // fixed cost in the body — but has so far only changed what the directive tells an agent to do, so
-  // that cost is still here.
+  // after the sticky is up is issue #223. The embedded document is gone from this body (issue #217),
+  // which removed the largest fixed cost it had — an oversized round is now a matter of finding prose,
+  // not of a ~32KB blob.
   // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,

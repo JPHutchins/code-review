@@ -783,6 +783,21 @@ export const convergenceMarker = (convergence: Convergence): string =>
     "base64",
   )} -->`;
 
+// The marker pair every surface writes: the artifact link, and the compact convergence beside it. They
+// travel together because the document left the comment (issue #217) — a link alone would put a
+// trajectory and a stop signal behind a fetch. Built here rather than at each caller: post and render
+// each had their own copy, and a test had to catch one of them emitting a link with the convergence
+// missing.
+export const findingsMarkerPair = (
+  jsonUrl: string | undefined,
+  convergence: Convergence | undefined,
+): string => {
+  const marker = jsonUrl !== undefined ? findingsPointer(jsonUrl) : "";
+  if (convergence === undefined) return marker;
+  const conv = convergenceMarker(convergence);
+  return marker === "" ? conv : `${marker}\n${conv}`;
+};
+
 export const parseConvergenceMarker = (body: string): Convergence | null => {
   const b64 = CONVERGENCE_RE.exec(body)?.[1];
   return b64 === undefined ? null : validStampedConvergence(decodeBase64Json(b64));

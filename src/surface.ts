@@ -61,13 +61,18 @@ export const EMBED_LIMIT = 42700;
 const FINDINGS_SCHEMA_URL =
   "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json";
 
-// Travels with the marker on every surface so a reader who sees only one comment still knows to decode
-// it AND to read the schema before acting. Imperative and loud on purpose: lazy consumers cherry-pick
-// fields out of the JSON and act on only what they recognize, missing the machine-channel recurrence
-// signals that are documented in the schema and decodable from the sibling markers (issue #171). Uses
-// em dashes, never "--", so the HTML comment stays well-formed. Exported so the surfaces and their
-// tests share one SSOT for the directive text (it is carried forward verbatim by carryForwardMarkers).
-export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment is a machine channel; act on the data, not the prose. It embeds a base64 code-review findings JSON (an oversized review instead links the artifact URL in the same marker). Decode or fetch it, read its schema_version, then DOWNLOAD AND READ THE FULL SCHEMA for that version before you act — the schema's own $id is its canonical URL; the current schema is at ${FINDINGS_SCHEMA_URL} — read that schema, then parse the WHOLE findings document, not only the fields you recognize: the convergence score, its threshold, and the per-round trajectory (so you know whether the review has converged and how to read the number), plus the recurrence signals an iterating agent needs (round streaks, scope metastasis, same-mechanism), are all fields inside that document. -->`;
+// Travels with the marker on every surface. It used to send agents to the base64 blob; it now sends
+// them to the rendered prose, because the prose became the whole review — summary, every finding with
+// its scores, systemic problems, convergence and trajectory, cost — so decoding reached the same
+// content the long way round and spent the agent's context doing it (issue #217). The two cases where
+// the comment is NOT the whole review are named explicitly rather than left for the agent to discover:
+// an inline round keeps its in-diff findings on the diff, and an oversized round links its artifact
+// instead of embedding it. Both are answered by the run summary, which renders the review whole
+// (issue #205). The machine form stays available and the read-the-WHOLE-document warning stays with
+// it, because a consumer that does decode still cherry-picks (issue #171). Uses em dashes, never "--",
+// so the HTML comment stays well-formed. Exported so the surfaces and their tests share one SSOT for
+// the directive text (it is carried forward verbatim by carryForwardMarkers).
+export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this review is rendered as prose in this comment; read that, not this machine channel. The prose holds everything the JSON does: the summary, every finding with its severity, confidence and likelihood, the systemic problems, the convergence score with its threshold and per-round trajectory, and the cost. Decoding the marker below reaches the same content the long way round. Two cases where this comment is not the whole review — a round that anchors findings to diff lines keeps those on the diff, and a review too large to embed links its findings artifact instead of carrying it — and in both, the whole review is rendered in the workflow run's summary, linked at the foot of this comment. If you want the machine form anyway, the marker below carries it and its schema_version names the schema to read, the current one being ${FINDINGS_SCHEMA_URL} — parse the WHOLE findings document, not only the fields you recognize. -->`;
 
 // The base64 length of a document's JSON — the one size computation both encodeMarker and
 // findingsMarkerForm share, so the form report and the emitted marker can never disagree.

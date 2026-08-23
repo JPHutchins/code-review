@@ -217,10 +217,27 @@ describe("findingsMarkerForm", () => {
   });
 });
 
-describe("AGENTS stop directive — download-and-read-the-schema push (issue #171)", () => {
-  it("tells the agent to read schema_version, then DOWNLOAD AND READ THE FULL SCHEMA", () => {
+describe("AGENTS stop directive — read the prose, not the blob (issues #171, #217)", () => {
+  // The directive used to open by telling the agent to decode. The prose became the whole review, so
+  // decoding reaches the same content the long way round — and the directive now says so first.
+  it("sends the agent to the rendered prose, not to the machine channel", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("rendered as prose");
+    expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).not.toContain("DECODE OR FETCH IT");
+    expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).not.toContain("DOWNLOAD AND READ THE FULL SCHEMA");
+  });
+
+  // The two rounds where this comment is NOT the whole review, and the one surface that always is.
+  it("names the run summary for the rounds this comment does not carry whole", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("anchors findings to diff lines");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("too large to embed");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("workflow run's summary");
+  });
+
+  // Killing the push is not killing the channel: a consumer that still wants the machine form is
+  // told where it is and which schema governs it.
+  it("keeps the machine form on offer, with its schema", () => {
     expect(AGENTS_STOP_DIRECTIVE).toContain("schema_version");
-    expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).toContain("READ THE FULL SCHEMA");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("machine form");
   });
 
   it("embeds the schema's OWN $id, so the directive URL can't drift from the canonical location", () => {

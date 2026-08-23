@@ -62,7 +62,11 @@ export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
   | { readonly kind: "inline-unavailable" }
-  | { readonly kind: "no-envelope" };
+  | { readonly kind: "no-envelope" }
+  // The render that carries every finding regardless of where it was posted — the run summary, which
+  // has no diff to anchor anything to (issue #205). The sticky's headings all describe a document
+  // that is missing the in-diff findings; this one is not, and must not borrow them.
+  | { readonly kind: "whole-document" };
 
 export interface RenderInput {
   readonly findings: Findings;

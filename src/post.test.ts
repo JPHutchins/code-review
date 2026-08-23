@@ -215,15 +215,19 @@ const mkMockGhApi = (
 // the inline comments took off the sticky (issue #205).
 describe("post — run summary (issue #205)", () => {
   const summaryPath = (): string => join(tmpDir, "step-summary.md");
+  const ambientSummary = process.env["GITHUB_STEP_SUMMARY"];
+  const setSummaryEnv = (value: string | undefined): void => {
+    if (value === undefined) delete process.env["GITHUB_STEP_SUMMARY"];
+    else process.env["GITHUB_STEP_SUMMARY"] = value;
+  };
+  afterEach(() => {
+    setSummaryEnv(ambientSummary);
+  });
   const runWithSummary = async (seed: string): Promise<{ summary: string; inline: string }> => {
     writeFileSync(summaryPath(), seed);
-    process.env["GITHUB_STEP_SUMMARY"] = summaryPath();
+    setSummaryEnv(summaryPath());
     const { api, calls } = mkMockGhApi(mkMocks(""));
-    try {
-      await post(mkInput({}), api);
-    } finally {
-      delete process.env["GITHUB_STEP_SUMMARY"];
-    }
+    await post(mkInput({}), api);
     const review = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
     );
@@ -258,10 +262,66 @@ describe("post — run summary (issue #205)", () => {
   });
 
   it("is a no-op outside Actions, where the variable is unset", async () => {
-    delete process.env["GITHUB_STEP_SUMMARY"];
+    setSummaryEnv(undefined);
     const { api } = mkMockGhApi(mkMocks(""));
 
     await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+  });
+
+  // The heading the sticky uses says the list is what is NOT on the diff. The summary's list is
+  // everything, so it must not borrow that heading.
+  it("heads the list 'Findings', never 'outside the diff'", async () => {
+    const { summary } = await runWithSummary("");
+
+    expect(summary).toContain("### Findings");
+    expect(summary).not.toContain("Findings outside the diff");
+  });
+
+  // GitHub rejecting a position makes the sticky adopt that finding as a stray, so it is in `inDiff`
+  // AND in `finalStrays`. Rendering the summary from `finalStrays` listed it twice.
+  it("lists a GitHub-rejected in-diff finding exactly once", async () => {
+    const findings = mkFindings([
+      mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Anchored A" }),
+      mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Rejected B" }),
+    ]);
+    const findingsPath = join(tmpDir, "findings-summary-422.json");
+    writeFileSync(findingsPath, JSON.stringify(findings));
+    writeFileSync(summaryPath(), "");
+    setSummaryEnv(summaryPath());
+
+    const api: GhApi = (args, stdin) => {
+      const a = [...args];
+      if (a[0]?.startsWith("repos/owner/repo/commits/"))
+        return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
+      if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
+        return Promise.resolve(inlineDiff);
+      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))
+        return Promise.resolve("");
+      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
+      if (a[0] === "repos/owner/repo/issues/comments/999")
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
+      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"))
+        return Promise.resolve("[]");
+      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--input"))
+        return (JSON.parse(stdin ?? "{}") as ReviewBody).comments.length > 0
+          ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
+          : Promise.resolve('{"html_url": "https://gh/review"}\n');
+      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input"))
+        return (JSON.parse(stdin ?? "{}") as { line: number }).line === 11
+          ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
+          : Promise.resolve('{"id": 1, "html_url": "https://gh/comment"}\n');
+      if (a[0] === "graphql") return Promise.resolve("");
+      return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
+    };
+
+    await post(mkInput({ findingsPath }), api);
+    const summary = readFileSync(summaryPath(), "utf-8");
+    const occurrences = (needle: string): number => summary.split(needle).length - 1;
+
+    // Both findings are present, and the rejected one is not duplicated by the sticky's fallback.
+    expect(occurrences("Anchored A")).toBe(1);
+    expect(occurrences("Rejected B")).toBe(1);
   });
 });
 

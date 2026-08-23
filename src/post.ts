@@ -383,7 +383,7 @@ const postComment = async (
 const appendRunSummary = (summaryPath: string | undefined, body: string): void => {
   if (summaryPath === undefined || summaryPath === "") return;
   try {
-    appendFileSync(summaryPath, `${body}\n`);
+    appendFileSync(summaryPath, `\n${body}\n`);
   } catch (err) {
     process.stderr.write(`Warning: could not write the run summary: ${errMsg(err)}\n`);
   }
@@ -939,6 +939,8 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
+    // A complete review, just without usage data — so it earns a run summary like any other.
+    appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], body);
     process.stderr.write(
       "Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review\n",
     );
@@ -1146,20 +1148,16 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // never a false "posted". Best-effort — the sticky and review are already posted.
   const unanchoredCount = unposted.length;
   const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
-  // What the round settled on. Neither branch fires with inline off, and then the body the sticky was
-  // posted with IS the settled one — not a placeholder waiting to be corrected.
-  const settledDisposition: InlineDisposition | undefined =
-    inlinePosted > 0
-      ? { kind: "posted", count: inlinePosted, sha: input.headSha }
-      : unanchoredCount > 0
-        ? { kind: "inline-unavailable" }
-        : initialDisposition;
   if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
+    const finalDisposition: InlineDisposition =
+      inlinePosted > 0
+        ? { kind: "posted", count: inlinePosted, sha: input.headSha }
+        : { kind: "inline-unavailable" };
     try {
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(settledDisposition, reviewUrl, finalStrays, unanchoredCount),
+        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount),
         ghApi,
       );
       process.stderr.write(
@@ -1173,16 +1171,13 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   }
 
   // Same findings, same options, same template — the run summary differs from the sticky in one
-  // thing: it carries the findings the inline comments took off the sticky, because it has no diff to
-  // anchor them to. With inline off `inDiff` is empty and the two documents are identical.
+  // thing: it carries every finding, because it has no diff to anchor any of them to. `strays`, not
+  // `finalStrays`: the rejected in-diff findings the sticky adopts are already in `inDiff`, and the
+  // summary would otherwise list each of them twice. The disposition says which document this is, so
+  // the headings do not describe the sticky's contents over the summary's.
   appendRunSummary(
     process.env["GITHUB_STEP_SUMMARY"],
-    renderBody(
-      settledDisposition,
-      reviewUrl,
-      [...inDiff, ...finalStrays],
-      unanchoredCount > 0 ? unanchoredCount : undefined,
-    ),
+    renderBody({ kind: "whole-document" }, reviewUrl, [...inDiff, ...strays]),
   );
 };
 

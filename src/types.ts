@@ -62,7 +62,8 @@ export type InlineDisposition =
   | { readonly kind: "posted"; readonly count: number; readonly sha: string }
   | { readonly kind: "none-in-diff" }
   | { readonly kind: "inline-unavailable" }
-  | { readonly kind: "no-envelope" };
+  | { readonly kind: "no-envelope" }
+  | { readonly kind: "disabled" };
 
 export interface RenderInput {
   readonly findings: Findings;

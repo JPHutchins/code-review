@@ -44,7 +44,7 @@ const sanitizeFinding = (
     ...f,
     title: escapePipes(f.title),
     path: escapeCodeBackticks(f.path),
-    patchProjection: projectPatch(f.patch),
+    patchProjection: projectPatch(f.patch, "comment-body"),
     answeredNote:
       answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
         ? (answeredNotes[key] ?? "")

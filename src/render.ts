@@ -57,20 +57,57 @@ const sanitizeFinding = (
 // title or path would break out of it (the hazard escapeCodeBackticks documents — it collapses
 // newlines AND neutralizes backticks). `m` is the confidence × likelihood the floor compared against,
 // shown so a maintainer who expands the aside sees WHY each nit was shelved (issue #164).
+// A below-floor nit is HIDDEN from the human list by policy (issue #164) — that is a visibility
+// decision, and it must not become a content filter. The projection used to keep 5 of a finding's 14
+// fields, which meant description, recommendation, reasoning and patch existed nowhere in the comment;
+// harmless while the document rode along as base64, a real hole once the document moved to the
+// artifact (issue #217). Everything now travels: the summary line stays exactly as it was, and the
+// rest rides the machine channel beside it, where a hidden nit's detail belongs.
 type SuppressedNitView = {
   readonly title: string;
   readonly code?: string;
+  readonly codeUrl?: string;
   readonly path: string;
   readonly startLine: number;
+  readonly endLine: number;
+  readonly side?: string;
+  readonly severity: string;
+  readonly confidence: string;
+  readonly likelihood: string;
   readonly m: string;
+  // Pre-split into blockquote-safe lines: the aside is a `>` blockquote, so an unprefixed line would
+  // break out of it and spill a hidden nit's detail into the visible prose.
+  readonly carried: readonly string[];
 };
+
+// HTML comments cannot nest, so a `-->` inside a carried field would close the block early and spill
+// the rest into the visible prose.
+const commentSafe = (text: string): string => text.replace(/--+>/g, "-\u2011>");
+
 const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   title: escapeCodeBackticks(f.title),
   ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
+  ...(f.code_url !== undefined ? { codeUrl: f.code_url } : {}),
   path: escapeCodeBackticks(f.path),
   startLine: f.start_line,
+  endLine: f.end_line,
+  ...(f.side !== undefined ? { side: f.side } : {}),
+  severity: f.severity,
+  confidence: formatConfidence(f.confidence),
+  likelihood: formatConfidence(f.likelihood),
   m: formatConfidence(f.confidence * f.likelihood),
+  carried: carriedLines(f),
 });
+
+const carriedLines = (f: Finding): readonly string[] =>
+  [
+    `description: ${f.description}`,
+    ...(f.recommendation !== undefined ? [`recommendation: ${f.recommendation}`] : []),
+    `reasoning: ${f.reasoning}`,
+    ...(f.patch !== undefined ? ["patch:", f.patch] : []),
+  ]
+    .flatMap((block) => commentSafe(block).split("\n"))
+    .map((line) => line.trimEnd());
 
 // The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
 // finding_codes render inside backticks too, so they get the same backtick escaping as paths.

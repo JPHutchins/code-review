@@ -203,10 +203,18 @@ describe("findingsPointer — one form, always the artifact link (issue #217)", 
     expect(JSON.stringify(huge).length).toBeGreaterThan(40000);
   });
 
-  it("gives a per-finding pointer the same whole-document artifact", () => {
-    const url = "https://api.github.com/repos/o/r/actions/artifacts/1/zip";
+  // The one payload that still travels in a comment, and deliberately: the answered registry
+  // identifies a thread by decoding the finding out of its root comment, and an answer given in round
+  // 1 must still close a verbatim re-raise in round 8 — a link to THIS round's artifact cannot do that,
+  // because round 1's finding is not in it.
+  it("keeps a per-finding payload on an inline comment, self-contained across rounds", () => {
+    const marker = findingPointer(findings.findings[0]!, findings.schema_version);
 
-    expect(findingPointer(url)).toBe(findingsPointer(url));
+    expect(marker).toContain("findings-json;base64");
+    expect(parseFindingsMarker(marker)).toEqual({
+      schema_version: findings.schema_version,
+      findings: [findings.findings[0]],
+    });
   });
 });
 
@@ -287,7 +295,11 @@ describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)
   it("rides ahead of BOTH the whole-document and the per-finding inline markers", () => {
     const url = "https://api.github.com/repos/o/r/actions/artifacts/1/zip";
     expect(findingsPointer(url).startsWith(AGENTS_STOP_DIRECTIVE)).toBe(true);
-    expect(findingPointer(url).startsWith(AGENTS_STOP_DIRECTIVE)).toBe(true);
+    expect(
+      findingPointer(findings.findings[0]!, findings.schema_version).startsWith(
+        AGENTS_STOP_DIRECTIVE,
+      ),
+    ).toBe(true);
   });
 });
 

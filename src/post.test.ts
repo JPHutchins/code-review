@@ -2639,13 +2639,11 @@ describe("post — --run-url / --json-url threading", () => {
     );
     const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     const commentBody = reviewBody.comments[0]?.body ?? "";
+    // An inline comment keeps its OWN finding as a payload: the answered registry decodes it to
+    // identify the thread, and that must still read in a later round whose artifact no longer contains
+    // it. Only the whole-document blob left the sticky (issue #217).
     expect(commentBody.startsWith("<!-- AGENTS: STOP")).toBe(true);
-    expect(commentBody).toContain("https://artifacts.example.com/findings.json");
-    expect(commentBody).not.toContain("findings-json;base64");
-
-    // An inline comment used to carry only its OWN finding as base64 (issue #31). It now names the same
-    // whole-document artifact as the sticky — there is no per-comment payload to scope.
-    expect(commentBody).toBe(commentBody.replace(/findings-json;base64 \S+/, "SHOULD-NOT-MATCH"));
+    expect(commentBody).toContain("findings-json;base64");
   });
 
   it("omits the run link when it isn't given, and names no artifact when no --json-url was given", async () => {

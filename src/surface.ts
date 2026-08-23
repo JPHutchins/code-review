@@ -77,10 +77,17 @@ const decodeBase64Json = (b64: string): unknown => {
 
 export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl);
 
-// Per-finding counterpart. It names the same whole-document artifact: a decoder that wants only this
-// finding has the prose beside it, and one that wants the machine form wants the whole document
-// anyway, so there is nothing left for a per-finding payload to carry.
-export const findingPointer = (jsonUrl: string): string => encodeMarker(jsonUrl);
+// Per-finding counterpart, and the ONE place a payload still travels in a comment. The answered
+// registry (issue #151) identifies a thread by decoding the finding out of its root comment, and it
+// must keep working across rounds: an answer given in round 1 still closes a verbatim re-raise in
+// round 8. A link cannot do that — this round's artifact does not contain round 1's finding — so the
+// thread carries its own finding, self-contained, exactly as before. It is one finding (~1KB), not the
+// whole document, and only on the opt-in inline surface (issue #217).
+export const findingPointer = (finding: Finding, schemaVersion: string): string =>
+  `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${Buffer.from(
+    JSON.stringify({ schema_version: schemaVersion, findings: [finding] }),
+    "utf-8",
+  ).toString("base64")} -->`;
 
 // null when the marker is absent or holds the all-zeros placeholder (no head SHA was stamped),
 // so callers treat an unknown prior commit as a new-commit re-review rather than asserting a match.

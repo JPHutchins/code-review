@@ -362,48 +362,49 @@ index abc..def 100644
     mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, ...overrides }),
   ];
 
-  /** The artifact URL a comment body's marker names. */
-  const markerUrl = (body: string): string | null =>
-    /<!-- code-review:findings-json (https?:\/\/\S+) -->/.exec(body)?.[1] ?? null;
+  /** Decode a comment body's per-finding payload. */
+  const decodeMarker = (body: string): { schema_version: string; findings: Finding[] } => {
+    const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(body);
+    expect(match).not.toBeNull();
+    return JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
+      schema_version: string;
+      findings: Finding[];
+    };
+  };
 
-  const ARTIFACT = "https://api.github.com/repos/o/r/actions/artifacts/1/zip";
-
-  it("names the findings artifact on the first line when a jsonUrl is given", () => {
+  it("puts the per-finding payload on the first line when a findings document is given", () => {
     const findings = findingAt({});
     const { comments } = buildInlineComments(findings, diff, {
       inlineTemplate: bundledInlineTemplate,
       findings: mkFindingsDoc(findings),
-      jsonUrl: ARTIFACT,
     });
 
     expect(comments[0]!.body.startsWith("<!-- AGENTS: STOP")).toBe(true);
-    expect(markerUrl(comments[0]!.body)).toBe(ARTIFACT);
-    expect(comments[0]!.body).not.toContain(";base64");
+    expect(comments[0]!.body).toContain("<!-- code-review:findings-json;base64 ");
   });
 
-  // Every inline comment used to carry its OWN finding as base64. It now names the whole-document
-  // artifact, which is the same URL on every comment — the per-finding payload had nothing left to
-  // carry once the prose beside it became the review (issue #217).
-  it("names the same whole-document artifact on every comment, carrying no payload", () => {
+  // The whole-document blob left the sticky (issue #217), but a thread keeps its OWN finding: the
+  // answered registry decodes it to identify the thread, and an answer from round 1 must still close a
+  // verbatim re-raise in round 8 — this round's artifact does not contain round 1's finding.
+  it("embeds ONLY its own finding, self-contained across rounds (issues #31, #217)", () => {
     const a = mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, title: "Finding A" });
     const b = mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, title: "Finding B" });
+    const doc = mkFindingsDoc([a, b]);
     const { comments } = buildInlineComments([a, b], diff, {
       inlineTemplate: bundledInlineTemplate,
-      findings: mkFindingsDoc([a, b]),
-      jsonUrl: ARTIFACT,
+      findings: doc,
     });
 
     expect(comments).toHaveLength(2);
-    expect(markerUrl(comments[0]!.body)).toBe(ARTIFACT);
-    expect(markerUrl(comments[1]!.body)).toBe(ARTIFACT);
-    for (const c of comments) expect(c.body).not.toContain(";base64");
+    expect(decodeMarker(comments[0]!.body).findings).toEqual([a]);
+    expect(decodeMarker(comments[1]!.body).findings).toEqual([b]);
+    expect(decodeMarker(comments[0]!.body).schema_version).toBe(doc.schema_version);
   });
 
-  it("omits the marker when no jsonUrl is given", () => {
+  it("omits the marker when no findings document is given", () => {
     const findings = findingAt({});
     const { comments } = buildInlineComments(findings, diff, {
       inlineTemplate: bundledInlineTemplate,
-      findings: mkFindingsDoc(findings),
     });
 
     expect(comments[0]!.body).not.toContain("code-review:findings-json");

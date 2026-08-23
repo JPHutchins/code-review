@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { repoRoot } from "./test-util.js";
+import { readRepoFile, repoRoot } from "./test-util.js";
 
 // Conflict markers in a .ts file fail typecheck, and in a workflow they fail actionlint — so the gate
 // already catches them everywhere it looks. It does not look at Markdown, JSON, or templates, and a
@@ -48,7 +48,7 @@ export const readTracked = (
   }
 };
 
-const diskReader = (path: string): string => readFileSync(`${repoRoot}/${path}`, "utf-8");
+const diskReader = readRepoFile;
 
 // `:./path` is git's relative-path form. Bare `:path` would parse a name like `1:notes.md` as an
 // index-stage spec and read a different file. maxBuffer because a tracked blob can exceed Node's 1MiB
@@ -73,7 +73,7 @@ describe("the working tree", () => {
     const results = trackedFiles().map((path) => ({
       path,
       content: readTracked(path, diskReader, indexReader, (p, reason) =>
-        causes.push(`${p}: ${reason.split("\n")[0] ?? reason}`),
+        causes.push(`${p}: ${reason.split("\n").join(" | ").trim()}`),
       ),
     }));
     const offenders = results.flatMap(({ path, content }) => {

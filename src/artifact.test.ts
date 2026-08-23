@@ -64,6 +64,31 @@ describe("resolvePriorFindings", () => {
     expect(await resolvePriorFindings(linkSticky, () => Promise.resolve(null))).toBeNull();
   });
 
+  // The pathological legacy body: a sticky written before the compact convergence marker existed
+  // (#185), so its convergence lives ONLY inside the embedded blob. Nothing beside it carries the
+  // trajectory, which is why the embedded branch has to win and has to return the whole document —
+  // resolving via the artifact instead would hand back the agent's unstamped copy and lose the
+  // trajectory for every such PR still open.
+  it("returns a pre-#185 sticky's convergence from the blob, with no compact marker present", async () => {
+    const doc = {
+      schema_version: "0.9.0",
+      summary: "old round",
+      findings: [],
+      convergence: {
+        score: 0.4,
+        threshold: 1,
+        converged: true,
+        rounds: [{ round: 7, score: 0.4 }],
+      },
+    };
+    const body = embeddedSticky(doc);
+    expect(body).not.toContain("code-review:convergence");
+
+    const resolved = (await resolvePriorFindings(body, never)) as typeof doc;
+    expect(resolved.convergence.rounds).toHaveLength(1);
+    expect(resolved.convergence.rounds[0]!.round).toBe(7);
+  });
+
   it("degrades to null when the fetched body is not JSON", async () => {
     expect(
       await resolvePriorFindings(linkSticky, () => Promise.resolve("<html>404</html>")),

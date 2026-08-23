@@ -380,10 +380,10 @@ const postComment = async (
 // while each run's summary keeps the review as it stood for that run (issue #205). Best-effort — the
 // record must never fail the round — and append, so it joins whatever else the job wrote. The path is
 // a parameter rather than an environment read, so the effect is the only thing here that is not pure.
-const appendRunSummary = (summaryPath: string | undefined, body: string): void => {
+const appendRunSummary = (summaryPath: string | undefined, body: () => string): void => {
   if (summaryPath === undefined || summaryPath === "") return;
   try {
-    appendFileSync(summaryPath, `\n${body}\n`);
+    appendFileSync(summaryPath, `\n${body()}\n`);
   } catch (err) {
     process.stderr.write(`Warning: could not write the run summary: ${errMsg(err)}\n`);
   }
@@ -940,7 +940,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
     // A complete review, just without usage data — so it earns a run summary like any other.
-    appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], body);
+    appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => body);
     process.stderr.write(
       "Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review\n",
     );
@@ -1175,9 +1175,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // `finalStrays`: the rejected in-diff findings the sticky adopts are already in `inDiff`, and the
   // summary would otherwise list each of them twice. The disposition says which document this is, so
   // the headings do not describe the sticky's contents over the summary's.
-  appendRunSummary(
-    process.env["GITHUB_STEP_SUMMARY"],
-    renderBody({ kind: "whole-document" }, reviewUrl, [...inDiff, ...strays]),
+  appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () =>
+    renderBody({ kind: "whole-document", inlineCount: inlinePosted }, reviewUrl, [
+      ...inDiff,
+      ...strays,
+    ]),
   );
 };
 

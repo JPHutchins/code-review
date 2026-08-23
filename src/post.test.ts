@@ -261,6 +261,15 @@ describe("post — run summary (issue #205)", () => {
     expect(summary).toContain("<!-- code-review -->");
   });
 
+  // The document must not claim inline comments it does not have: with no inline comments posted, the
+  // summary IS the only surface, and saying otherwise misdescribes the durable record.
+  it("claims inline comments only when there were some", async () => {
+    const { summary } = await runWithSummary("");
+
+    expect(summary).toContain("Every finding from this run");
+    expect(summary).toMatch(/including the \d+ posted as inline comment/);
+  });
+
   it("is a no-op outside Actions, where the variable is unset", async () => {
     setSummaryEnv(undefined);
     const { api } = mkMockGhApi(mkMocks(""));

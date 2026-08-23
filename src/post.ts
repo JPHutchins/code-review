@@ -885,8 +885,12 @@ export const post = async (
   // yields no keys, so stickiness fails open to visible.
   // Resolved rather than decoded: the prior sticky's marker names the findings artifact (issue #217),
   // so this fetches it — and still reads an embedded blob on a sticky written before that change.
+  // Gated on this round HAVING a nit: the keys only ever match a nit, and the resolve is a download
+  // plus an unzip subprocess on the critical path before the sticky write. A round with no nits paid
+  // that for a set it could not use.
+  const roundHasNit = findings.findings.some((f) => f.severity === "nit");
   const priorDocForNits =
-    existingSticky !== null && isFullReviewSticky(existingSticky.body)
+    roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body)
       ? await resolvePriorFindings(existingSticky.body, readArtifact)
       : null;
   const priorSuppressedKeys = new Set(

@@ -44,6 +44,37 @@ const DOCUMENTED_EXCLUSIONS = ["scope_metastasis.decision_prompt", "systemic_pro
 
 const sentinel = (leaf: string): string => `S_${leaf.replace(/\./g, "_")}`;
 
+// Leaves whose type cannot carry a string sentinel. Naming them keeps the walk honest: a new leaf is
+// either sentinel-covered, listed here and asserted by value, or a failure.
+const NUMERIC_LEAVES = [
+  "findings.start_line",
+  "findings.end_line",
+  "findings.confidence",
+  "findings.likelihood",
+  "systemic_problems.confidence",
+  "systemic_problems.severity",
+  "findings.severity",
+  "findings.side",
+  "verdict",
+  "schema_version",
+  "convergence.score",
+  "convergence.threshold",
+  "convergence.converged",
+  "convergence.rounds.round",
+  "convergence.rounds.score",
+  "convergence.rounds.codes",
+  "convergence.rounds.sha",
+  "change_size.code.added",
+  "change_size.code.removed",
+  "change_size.tests.added",
+  "change_size.tests.removed",
+  "change_size.docs.added",
+  "change_size.docs.removed",
+  "scope_metastasis.recurring.code",
+  "scope_metastasis.recurring.consecutive_rounds",
+  "scope_metastasis.recurring.start_round",
+];
+
 const findings = {
   schema_version: "0.9.0",
   summary: sentinel("summary"),
@@ -142,16 +173,48 @@ describe("the comment carries every field of the findings document (issue #217)"
   it("renders a sentinel for every schema leaf except the documented exclusions", () => {
     const out = rendered();
     const fixture = JSON.stringify(findings);
-    // Only the leaves the fixture actually carries a sentinel for; numeric and boolean leaves are
-    // asserted by value in the cases below.
-    const expected = leafPaths(schema)
-      .filter((l) => !DOCUMENTED_EXCLUSIONS.includes(l))
-      .filter((l) => fixture.includes(sentinel(l)));
-    const missing = expected.filter((l) => !out.includes(sentinel(l)));
+    const inScope = leafPaths(schema).filter((l) => !DOCUMENTED_EXCLUSIONS.includes(l));
 
-    // A schema whose leaves stopped resolving would make this vacuously pass, so the count is pinned.
-    expect(expected.length).toBeGreaterThan(8);
+    // FIRST: the fixture must cover the schema. Filtering the walk down to leaves the fixture happens
+    // to mention is how a field added next month dodges it — the hole my previous version had. A leaf
+    // with no sentinel and no numeric stand-in fails HERE, so the fixture cannot fall behind quietly.
+    const uncovered = inScope.filter(
+      (l) => !fixture.includes(sentinel(l)) && !NUMERIC_LEAVES.includes(l),
+    );
+    expect(uncovered, "schema leaves the fixture does not cover — add them to it").toEqual([]);
+
+    // A schema that stopped resolving would leave inScope empty and pass everything vacuously.
+    expect(inScope.length).toBeGreaterThan(20);
+
+    // THEN: every sentinel the fixture carries must reach the rendered comment.
+    const missing = inScope
+      .filter((l) => fixture.includes(sentinel(l)))
+      .filter((l) => !out.includes(sentinel(l)));
     expect(missing, "schema leaves absent from the rendered comment").toEqual([]);
+  });
+
+  // The numeric and boolean leaves, which cannot carry a string sentinel — asserted by value, and
+  // listed by name so the walk above can tell "covered numerically" from "not covered at all".
+  it("renders every numeric leaf's value", () => {
+    const out = rendered();
+
+    for (const [leaf, value] of [
+      ["findings.start_line", "10"],
+      ["findings.end_line", "12"],
+      ["findings.confidence", "0.91"],
+      ["findings.likelihood", "0.92"],
+      ["systemic_problems.confidence", "0.81"],
+      ["convergence.score", "0.71"],
+      ["convergence.threshold", "1"],
+      ["convergence.rounds.round", "1"],
+      ["change_size.code.added", "111"],
+      ["change_size.code.removed", "222"],
+      ["change_size.tests.added", "333"],
+      ["change_size.docs.added", "555"],
+      ["scope_metastasis.recurring.consecutive_rounds", "3"],
+    ] as const) {
+      expect(out, `numeric leaf ${leaf} is absent from the rendered comment`).toContain(value);
+    }
   });
 
   // A hidden nit is a VISIBILITY decision. The projection used to keep 5 of 14 fields, so its

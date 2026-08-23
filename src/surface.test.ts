@@ -231,7 +231,7 @@ describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)
   // empty-diff notice, whose prose is a status line. Telling an agent to read the prose there loses
   // the review, so the directive has to name that case.
   it("tells the agent to decode where the prose is not the review", () => {
-    expect(AGENTS_STOP_DIRECTIVE).toContain("Decode the marker when the prose is not the review");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("Fetch the document when the prose is not the review");
     expect(AGENTS_STOP_DIRECTIVE).toContain("status notice");
   });
 
@@ -253,9 +253,11 @@ describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)
 
   // Inline comments carry this verbatim and render no run link, so the summary is named without
   // promising a link this surface may not have.
-  it("names the run summary for the rounds the prose carries only in part", () => {
+  // After #217 nothing embeds at any size, so a directive describing a "too large to embed" fallback
+  // would name a form the pipeline no longer has.
+  it("names the run summary without describing a size fallback that no longer exists", () => {
     expect(AGENTS_STOP_DIRECTIVE).toContain("anchored to diff lines");
-    expect(AGENTS_STOP_DIRECTIVE).toContain("too large to embed");
+    expect(AGENTS_STOP_DIRECTIVE).not.toContain("too large to embed");
     expect(AGENTS_STOP_DIRECTIVE).toContain("workflow run's summary");
     expect(AGENTS_STOP_DIRECTIVE).not.toContain("linked at the foot");
   });

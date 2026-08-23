@@ -1147,8 +1147,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // that 422 propagate, so an oversized body fails the job with the announce placeholder still up.
   // Inline off makes that reachable — every finding's prose now renders into this one comment, where
   // the in-diff ones used to be separate posts. Shedding is issue #214; tolerating a failed write
-  // after the sticky is up is issue #223. Issue #217 removes the embedded blob, which is the largest
-  // fixed cost in the body.
+  // after the sticky is up is issue #223. Issue #217 would remove the embedded blob — the largest
+  // fixed cost in the body — but has so far only changed what the directive tells an agent to do, so
+  // that cost is still here.
   // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,

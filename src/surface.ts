@@ -61,17 +61,14 @@ export const EMBED_LIMIT = 42700;
 const FINDINGS_SCHEMA_URL =
   "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json";
 
-// Travels with the marker on every surface, so it must be true on every surface — a rendered review,
-// a one-line status notice, a single inline comment. It therefore states a RULE (read the prose where
-// it is the review; decode otherwise, or for what the prose does not render) and deliberately does
-// NOT enumerate what either side contains: every such inventory was false somewhere, because what the
-// prose carries varies by route, by envelope, and by round — the cost is absent when the envelope is
-// lost, the convergence badge is suppressed on a CI-fix pass, and the marker is a fresh document on a
-// notice rather than the prior review (issues #171, #217). Uses em dashes, never "--", so the HTML comment
+// One constant, carried onto every surface: a rendered review, a status notice, one inline comment.
+// It says nothing about what either side CONTAINS because that varies by route, envelope and round,
+// and three rounds of review found each such claim false somewhere (issues #171, #217). Read the
+// text; do not paraphrase it here. Uses em dashes, never "--", so the HTML comment
 // stays well-formed. Exported so the surfaces and their tests share one SSOT for the text (it is
 // carried forward verbatim by carryForwardMarkers) — the text below is that SSOT; do not restate it
 // here.
-export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — the marker below carries this round's code-review findings document, and the comment above it usually renders the same review as prose. Read the prose when it is there: it is the cheaper read. Decode the marker when the prose is not the review (this comment may be a status notice instead), when the prose is only part of it (findings anchored to diff lines stay on the diff, and a review too large to embed links its artifact here rather than carrying it — the workflow run's summary renders both of those whole), or when you need a field the prose does not render. Read the document's schema_version and fetch the schema for THAT version before acting — a schema's own $id is its canonical URL, and the current version is at ${FINDINGS_SCHEMA_URL} — then parse the WHOLE findings document, not only the fields you recognize. -->`;
+export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment carries a code-review findings document in the marker, and usually renders that same review as prose too. Read the prose when it is there: it is the cheaper read. Decode the marker when the prose is not the review (this comment may be a status notice instead), when the prose is only part of it (findings anchored to diff lines stay on the diff, and a review too large to embed links its artifact here rather than carrying it — the workflow run's summary renders both of those whole), or when you need a field the prose does not render. Read the document's schema_version and fetch the schema for THAT version before acting — a schema's own $id is its canonical URL, and the current version is at ${FINDINGS_SCHEMA_URL} — then parse the WHOLE findings document, not only the fields you recognize. -->`;
 
 // The base64 length of a document's JSON — the one size computation both encodeMarker and
 // findingsMarkerForm share, so the form report and the emitted marker can never disagree.

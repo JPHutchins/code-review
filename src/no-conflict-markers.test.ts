@@ -16,20 +16,24 @@ const CONFLICT_MARKER = /^(<{7}|={7}|>{7})(\s|$)/;
 
 describe("the working tree", () => {
   it("has no unresolved conflict markers in any tracked file", () => {
-    const offenders = trackedFiles().flatMap((path) => {
-      const content = (() => {
-        try {
-          return readFileSync(`${repoRoot}/${path}`, "utf-8");
-        } catch {
-          return "";
-        }
-      })();
-      const lines = content.split("\n");
-      const hit = lines.findIndex((line) => CONFLICT_MARKER.test(line));
+    const read = (path: string): string | null => {
+      try {
+        return readFileSync(`${repoRoot}/${path}`, "utf-8");
+      } catch {
+        return null;
+      }
+    };
+    const results = trackedFiles().map((path) => ({ path, content: read(path) }));
+    const unreadable = results.filter((r) => r.content === null).map((r) => r.path);
+    const offenders = results.flatMap(({ path, content }) => {
+      if (content === null) return [];
+      const hit = content.split("\n").findIndex((line) => CONFLICT_MARKER.test(line));
       return hit === -1 ? [] : [`${path}:${String(hit + 1)}`];
     });
 
     expect(offenders).toEqual([]);
+    // A file this gate could not open is not a file it cleared.
+    expect(unreadable).toEqual([]);
   });
 
   it("reads a meaningful number of tracked files", () => {

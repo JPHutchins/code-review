@@ -346,10 +346,21 @@ describe("post — run summary (issue #205)", () => {
   });
 
   it("is a no-op outside Actions, where the variable is unset", async () => {
+    // Two observables, because "no throw" is true of every path: the sentinel file is untouched, and
+    // nothing warned — an unset variable must return early, not attempt the write and report failing.
+    writeFileSync(summaryPath(), "untouched");
     setSummaryEnv(undefined);
     const { api } = mkMockGhApi(mkMocks(""));
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+    await post(mkInput({}), api);
+
+    expect(readFileSync(summaryPath(), "utf-8")).toBe("untouched");
+    expect(stderrSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("could not write the run summary"),
+    );
+
+    stderrSpy.mockRestore();
   });
 
   // The heading the sticky uses says the list is what is NOT on the diff. The summary's list is

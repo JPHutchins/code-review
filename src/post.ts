@@ -390,8 +390,6 @@ const postComment = async (
   return parseCommentRef(stdout);
 };
 
-// Trust by author identity (bot login), not the marker alone. Returns null only when a NEW comment's
-// response couldn't be parsed — there is then no id to re-patch with the review link.
 // The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
 // while each run's summary keeps the review as it stood for that run (issue #205). Best-effort — the
 // record must never fail the round — and append, so it joins whatever else the job wrote. The path is
@@ -409,6 +407,8 @@ const appendRunSummary = (summaryPath: string | undefined, body: () => string): 
   }
 };
 
+// Trust by author identity (bot login), not the marker alone. Returns null only when a NEW comment's
+// response couldn't be parsed — there is then no id to re-patch with the review link.
 const upsertSticky = async (
   repo: string,
   prNumber: number,
@@ -1229,10 +1229,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   }
 
   // Same findings, same options, same template — the run summary differs from the sticky in one
-  // thing: it carries every finding, because it has no diff to anchor any of them to. `strays`, not
-  // `finalStrays`: the rejected in-diff findings the sticky adopts are already in `inDiff`, and the
-  // summary would otherwise list each of them twice. The disposition says which document this is, so
-  // the headings do not describe the sticky's contents over the summary's.
+  // thing: it carries every finding, because it has no diff to anchor any of them to. That set is
+  // `visibleFindings`, which the in-diff/stray split partitions and neither half holds: taking it
+  // whole keeps the document's severity order, and cannot list a rejected finding twice. The
+  // disposition says which document this is, so the headings do not describe the sticky's contents
+  // over the summary's.
   appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () =>
     renderBody(
       { kind: "whole-document", inlineCount: inlinePosted, rejectedCount: unanchoredCount },

@@ -118,6 +118,9 @@ const mkdtemp = (): string => {
   return dir;
 };
 
+// The fixture is the shipping default (issue #179): a case that names no `inline` exercises what a
+// default round does. `mkInlineInput` below is the opt-in, for the cases that are about the inline
+// surface itself.
 const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   repo: "owner/repo",
   headSha: "abc123def456",
@@ -131,6 +134,11 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   route: "full review",
   ...overrides,
 });
+
+// The inline path is an opt-in for a caller and an opt-in here too, so a test that does not name it
+// exercises what a default round actually does.
+const mkInlineInput = (overrides: Partial<PostInput> = {}): PostInput =>
+  mkInput({ inline: true, ...overrides });
 
 const roundsMarkerFor = (n: number): string =>
   `<!-- code-review:rounds;base64 ${Buffer.from(
@@ -223,11 +231,14 @@ describe("post — run summary (issue #205)", () => {
   afterEach(() => {
     setSummaryEnv(ambientSummary);
   });
-  const runWithSummary = async (seed: string): Promise<{ summary: string; inline: string }> => {
+  const runWithSummary = async (
+    seed: string,
+    input: PostInput = mkInlineInput(),
+  ): Promise<{ summary: string; inline: string }> => {
     writeFileSync(summaryPath(), seed);
     setSummaryEnv(summaryPath());
     const { api, calls } = mkMockGhApi(mkMocks(""));
-    await post(mkInput({}), api);
+    await post(input, api);
     const review = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
     );
@@ -268,6 +279,13 @@ describe("post — run summary (issue #205)", () => {
 
     expect(summary).toContain("Every finding from this run");
     expect(summary).toMatch(/including the \d+ posted as inline comment/);
+  });
+
+  it("claims none on a default round, where nothing is posted inline", async () => {
+    const { summary } = await runWithSummary("", mkInput({}));
+
+    expect(summary).toContain("Every finding from this run.");
+    expect(summary).not.toContain("posted as inline comment");
   });
 
   // Under this repo's own CI the variable points at a real file, and most of this suite drives
@@ -348,7 +366,7 @@ describe("post — run summary (issue #205)", () => {
       return shared(args, stdin, env);
     };
 
-    await post(mkInput({ findingsPath }), api);
+    await post(mkInlineInput({ findingsPath }), api);
     return readFileSync(summaryPath(), "utf-8");
   };
 
@@ -359,6 +377,131 @@ describe("post — run summary (issue #205)", () => {
     // Both findings are present, and the rejected one is not duplicated by the sticky's fallback.
     expect(occurrences("Anchored A")).toBe(1);
     expect(occurrences("Rejected B")).toBe(1);
+  });
+});
+
+// An inline thread is a human-only surface a later round can neither revise nor resolve, so stale
+// threads pile up on the diff as a PR iterates. Off by default (issue #179): the review object is
+// still posted (body-only) as the trail to the sticky and the run, the findings go in the sticky, and
+// the prior round's threads are still minimized.
+describe("post — inline off by default (issue #179)", () => {
+  // The SHARED mkMocks, not a private copy: hand-rolling this list once already dropped the
+  // answered-thread and review-thread matchers, which silently pushed both cases onto their
+  // error-degradation paths so the cleanup below was never actually exercised.
+  // These go BEFORE the shared list: matching is first-match-wins, and mkMocks already answers the
+  // reviews endpoint with an empty page, which would leave nothing to dismiss.
+  const mocks = () => [
+    // A prior round's review, so the dismissal is observable rather than vacuous.
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+      // fetchBotReviews JSON.parses the whole stdout and requires an array — not NDJSON lines.
+      response: '[{"id":7,"user":{"login":"github-actions[bot]"},"state":"COMMENTED"}]',
+    },
+    {
+      match: (a: readonly string[]) => a[0]?.includes("/reviews/7/dismissals") ?? false,
+      response: "",
+    },
+    ...mkMocks("<!-- code-review -->\nold content"),
+  ];
+
+  const reviewCall = (calls: readonly RecordedCall[]): ReviewBody | undefined => {
+    const c = calls.find(
+      (x) => x.args[0] === "repos/owner/repo/pulls/42/reviews" && x.stdin !== undefined,
+    );
+    return c ? (JSON.parse(c.stdin!) as ReviewBody) : undefined;
+  };
+
+  // The review object is the breadcrumb from the PR to the sticky and to the run whose summary
+  // carries the whole review, so it is posted whatever the flag says. Only comments[] is empty.
+  it("still posts the review object, body-only, as the trail to the sticky and the run", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false, runUrl: "https://ci.example.com/runs/9" }), api);
+
+    const review = reviewCall(calls());
+    expect(review).toBeDefined();
+    expect(review!.comments).toEqual([]);
+    expect(review!.body).toContain("summary comment");
+    expect(review!.body).toContain("[workflow run](https://ci.example.com/runs/9)");
+  });
+
+  it("lists the in-diff finding in the sticky instead of on the diff", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false }), api);
+
+    const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
+    // The finding anchors to a diff line, so with inline ON it would have gone to the review and been
+    // absent here; the heading also drops the "outside the diff" qualifier, which no longer applies.
+    expect(body).toContain("### Findings");
+    expect(body).not.toContain("Findings outside the diff");
+  });
+
+  // The commit for this change claims the flip also clears what earlier rounds left on the diff, so
+  // that claim gets a test rather than a sentence.
+  it("still dismisses the prior review", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false }), api);
+
+    expect(calls().find((c) => c.args[0]?.includes("/reviews/7/dismissals"))).toBeDefined();
+  });
+
+  // A round that never asked for inline comments lost none when the envelope went missing, so the
+  // sticky must not report a lost inline review — the envelope's real casualty is the usage/cost data.
+  it("does not blame a missing envelope for absent inline comments when inline was off", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await expect(
+      post(mkInput({ inline: false, envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("process.exit");
+
+    const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
+    expect(body).toContain("### Findings");
+    expect(body).not.toContain("result envelope lost");
+    expect(body).not.toContain("no inline review");
+  });
+
+  // The inline template is the inline path's input alone; reading it up front made an unreadable path
+  // fail a round that would never have opened the file.
+  // The other half of the disposition split: a round that DID ask for inline and lost its envelope
+  // genuinely lost the inline review, and the sticky says so.
+  it("does say the envelope loss cost the inline review, when inline was asked for", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(
+      post(mkInlineInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("process.exit");
+
+    const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
+    expect(body).toContain("result envelope lost");
+    expect(body).toContain("Every finding is listed below");
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("inline comments cannot be built"),
+    );
+
+    stderrSpy.mockRestore();
+  });
+
+  it("posts without reading the inline template", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: false, inlineTemplatePath: join(tmpDir, "absent.eta") }), api);
+
+    expect(reviewCall(calls())).toBeDefined();
+  });
+
+  it("carries the in-diff findings as inline comments when inline is asked for", async () => {
+    const { api, calls } = mkMockGhApi(mocks());
+
+    await post(mkInput({ inline: true }), api);
+
+    expect(reviewCall(calls())!.comments.length).toBeGreaterThan(0);
   });
 });
 
@@ -623,7 +766,7 @@ describe("post — inline review", () => {
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -671,7 +814,7 @@ describe("post — inline review", () => {
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -722,7 +865,7 @@ describe("post — nit visibility floor (issue #164)", () => {
       ]),
     );
     const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nno prior blob"));
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const comments = inlineComments(calls());
     expect(comments).toHaveLength(1);
@@ -784,7 +927,7 @@ describe("post — nit visibility floor (issue #164)", () => {
       ]),
     );
     const { api, calls } = mkMockGhApi(mkMocks(mechanicSticky));
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     expect(inlineComments(calls())).toHaveLength(1);
     expect(stickyPatchBody(calls())).not.toContain("below the visibility floor");
@@ -807,7 +950,7 @@ describe("post — nit visibility floor (issue #164)", () => {
       ]),
     );
     const { api, calls } = mkMockGhApi(mkMocks(priorSticky));
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const comments = inlineComments(calls());
     expect(comments).toHaveLength(1);
@@ -829,7 +972,7 @@ describe("post — nit visibility floor (issue #164)", () => {
       ]),
     );
     const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nno prior"));
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     expect(inlineComments(calls())).toHaveLength(1);
     expect(stickyPatchBody(calls())).not.toContain("below the visibility floor");
@@ -903,7 +1046,7 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -951,7 +1094,7 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -999,7 +1142,7 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("exceeds"));
 
@@ -1515,7 +1658,7 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     // Two PATCHes land on the existing sticky: the initial pass (no disposition claim yet) and,
     // once the review is actually posted, the confirmed "posted inline" disposition (issue #21).
@@ -1902,7 +2045,7 @@ describe("post — --inline-template", () => {
 
     const { api, calls } = mkMockGhApi(inlineMocks);
 
-    await post(mkInput({ inlineTemplatePath }), api);
+    await post(mkInlineInput({ inlineTemplatePath }), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -1916,7 +2059,7 @@ describe("post — --inline-template", () => {
   it("uses the bundled inline.eta template — with its [!TIP] disclosure — when --inline-template is omitted (issue #22 regression)", async () => {
     const { api, calls } = mkMockGhApi(inlineMocks);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -2059,7 +2202,7 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
   it("renders a 'posted inline' pointer and NO per-finding findings table for in-diff findings", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const body = stickyBodyOf(calls());
     expect(body).toContain("posted inline");
@@ -2078,7 +2221,7 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
 
     const { api, calls } = mkMockGhApi(okMocks);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const body = stickyBodyOf(calls());
     expect(body).toContain("No inline comments");
@@ -2100,7 +2243,7 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
   it("gives the inline review a pointer body, not a duplicate of the walkthrough summary", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -2117,7 +2260,7 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
   it("does NOT duplicate the findings-json blob into the review body when a sticky exists — it links the sticky, the sole documented decode surface (issue #161 supersedes #19)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -2169,7 +2312,7 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -2216,7 +2359,7 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const patchCalls = calls().filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
     expect(patchCalls).toHaveLength(2);
@@ -2258,7 +2401,7 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -2312,7 +2455,7 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
 
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+    await expect(post(mkInlineInput({}), api)).resolves.toBeUndefined();
 
     expect(stderrSpy).toHaveBeenCalledWith(
       expect.stringContaining("failed to update the sticky summary"),
@@ -2357,7 +2500,7 @@ describe("post — issue #14: markdown formatting pass before posting", () => {
     );
     const { api, calls } = mkMockGhApi(okMocks);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const stickyCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
@@ -2374,7 +2517,7 @@ describe("post — issue #14: markdown formatting pass before posting", () => {
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(findings));
     const { api, calls } = mkMockGhApi(okMocks);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     const reviewCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -2442,7 +2585,7 @@ describe("post — --run-url / --json-url threading", () => {
   it("embeds the whole-document marker on the sticky, and a per-finding marker on each inline comment, when small enough (issue #19 sticky, issue #31 inline)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
-    await post(mkInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
+    await post(mkInlineInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
 
     // Findings are small enough to embed, so every surface prefers the embed over the link — see
     // the size-fallback case below for the jsonUrl link path.
@@ -2698,7 +2841,7 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
       },
     ]);
 
-    await post(mkInput({}), api);
+    await post(mkInlineInput({}), api);
 
     expect(minimizedIdsOf(calls())).toEqual(["C_prior_a", "C_prior_b"]);
   });
@@ -2707,7 +2850,7 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
     // No graphql match → the review-threads query rejects; minimize must swallow it, never fail post.
     const { api, calls } = mkMockGhApi(baseMocks);
 
-    await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+    await expect(post(mkInlineInput({}), api)).resolves.toBeUndefined();
 
     const reviewPost = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -2718,17 +2861,9 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
 });
 
 describe("post — inline review 422 salvage (issue #57)", () => {
-  it("keeps the valid inline comments and demotes only the rejected finding to the sticky", async () => {
-    // Two in-diff findings (lines 10 and 11 of inlineDiff's hunk). The batched review POST is
-    // rejected (as GitHub does when ANY comment position is invalid); the fallback posts the review
-    // body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
-    const findings = mkFindings([
-      mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Finding A" }),
-      mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Finding B" }),
-    ]);
-    const findingsPath = join(tmpDir, "findings-57.json");
-    writeFileSync(findingsPath, JSON.stringify(findings));
-
+  // GitHub rejects the batched review when ANY comment position is invalid; the fallback posts the
+  // review body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
+  const mkSalvageApi = (): { readonly api: GhApi; readonly calls: RecordedCall[] } => {
     const calls: RecordedCall[] = [];
     const api: GhApi = (args, stdin, env) => {
       calls.push({ args: [...args], stdin, env });
@@ -2761,8 +2896,23 @@ describe("post — inline review 422 salvage (issue #57)", () => {
       if (a[0] === "graphql") return Promise.resolve("");
       return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
     };
+    return { api, calls };
+  };
 
-    await expect(post(mkInput({ findingsPath }), api)).resolves.toBeUndefined();
+  it("keeps the valid inline comments and demotes only the rejected finding to the sticky", async () => {
+    // Two in-diff findings (lines 10 and 11 of inlineDiff's hunk). The batched review POST is
+    // rejected (as GitHub does when ANY comment position is invalid); the fallback posts the review
+    // body-only, then each comment individually — line 10 is accepted, line 11 is rejected.
+    const findings = mkFindings([
+      mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "Finding A" }),
+      mkFinding({ path: "src/foo.ts", start_line: 11, end_line: 11, title: "Finding B" }),
+    ]);
+    const findingsPath = join(tmpDir, "findings-57.json");
+    writeFileSync(findingsPath, JSON.stringify(findings));
+
+    const { api, calls } = mkSalvageApi();
+
+    await expect(post(mkInlineInput({ findingsPath }), api)).resolves.toBeUndefined();
 
     // The batched review was attempted, then a body-only review posted, then each comment individually.
     const reviewPosts = calls.filter(
@@ -4214,7 +4364,7 @@ describe("post — answered findings (issue #151)", () => {
     });
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([changed])));
     const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
-    await post(mkInput({ route: "full review" }), api);
+    await post(mkInlineInput({ route: "full review" }), api);
     const body = patchedBody(calls());
     // The finding is in-diff, so it posts inline — the sticky shows the count, never the drop note.
     expect(body).toContain("**Findings:** 🔵 1");
@@ -4239,7 +4389,7 @@ describe("post — answered findings (issue #151)", () => {
     });
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
     const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
-    await post(mkInput({ route: "full review" }), api);
+    await post(mkInlineInput({ route: "full review" }), api);
     const body = patchedBody(calls());
     expect(body).toContain("**Findings:** 🔴 1");
     expect(body).not.toContain("treated as answered");
@@ -4314,7 +4464,7 @@ describe("post — answered findings (issue #151)", () => {
         (m) => !m.match(["repos/owner/repo/pulls/42/comments", "--paginate"]),
       ),
     );
-    await post(mkInput({ route: "full review" }), api);
+    await post(mkInlineInput({ route: "full review" }), api);
     const body = patchedBody(calls());
     expect(body).not.toContain("treated as answered");
     // The finding posts normally, prose inline (the sticky's in-diff finding lives in the review).

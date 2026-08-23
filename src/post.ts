@@ -51,7 +51,7 @@ import {
   answeredRegistryFrom,
   fetchThreadComments,
 } from "./answered.js";
-import { errMsg, tryParseJson, asRecord } from "./util.js";
+import { asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
   readonly repo: string;
@@ -71,6 +71,16 @@ export interface PostInput {
   readonly clocDiffPath?: string;
   readonly effort?: string;
   readonly runUrl?: string;
+  // Render findings as inline review comments on the diff. Omitted/false ⇒ the review object is
+  // posted body-only and the findings are listed in the sticky instead, which is the default because
+  // an inline thread is a human-only surface that cannot be revised: a later round can neither update
+  // nor resolve it, so stale threads accumulate on the diff (issue #179).
+  readonly inline?: boolean;
+  // The fast-fix route ran with no failing-job logs staged (issue #154). Passed as a flag because
+  // this runs in the comment job, where the staged logs are not: the review job counted them. It
+  // could equally ride the envelope, which `adapt` stamps with route and effort after the agent —
+  // the flag is the same channel `--route` already uses, and works when the envelope is lost.
+  readonly unverifiedNoLogs?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
   // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
@@ -86,6 +96,7 @@ export interface PostInput {
 }
 
 const DEFAULT_MARKER = "<!-- code-review -->";
+
 const EMPTY_MECHANIC_LEAVE_MESSAGE =
   "The CI-fix pass found no issues and the sticky already reflects a completed full review — leaving it in place\n";
 const MAX_SUGGESTION_LINES = 10;
@@ -461,6 +472,7 @@ const dismissReviews = async (
           "--input",
           "-",
         ],
+        // GitHub caps a dismissal message at 140 chars.
         JSON.stringify({ message: "Superseded by a new review for an updated commit." }),
       );
     } catch (err) {
@@ -729,7 +741,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     const dropNote = answeredDropNote;
     const body = formatMarkdown(
       noticeBody(
-        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
+        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\`${
+          input.unverifiedNoLogs === true
+            ? ' — **but no failing-job logs were available**, so it had only the diff to work from and "no findings" is not evidence of none'
+            : ""
+        } — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
         sticky.body,
       ),
     );
@@ -743,7 +759,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     throw new Error(`Price map at ${input.pricesPath} does not match the expected shape`);
   }
   const template = readFileSync(input.templatePath, "utf-8");
-  const inlineTemplate = readFileSync(input.inlineTemplatePath, "utf-8");
+  const inlineRequested = input.inline === true;
 
   const renderNotice = (message: string): string => {
     // The notice carries the prior convergence forward IN its blob so the trajectory + last score
@@ -907,6 +923,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     // A lost envelope is not a completed round, so the prior convergence is carried forward in the
     // blob unchanged rather than a new round being built (issue #174).
     const stampedFindings = stampConvergence(findings, priorConv);
+    // This branch lists every visible finding, exactly like the inline-off default, so it can exceed
+    // GitHub's comment limit the same way — and here a 422 is the difference between a notice and
+    // nothing at all.
     const body = formatMarkdown(
       render({
         findings: stampedFindings,
@@ -935,8 +954,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         convergenceRound: false,
         testReport,
         clocDiff,
-        inlineDisposition: { kind: "no-envelope" },
+        inlineDisposition: inlineRequested ? { kind: "no-envelope" } : { kind: "disabled" },
         runUrl: input.runUrl,
+        unverifiedNoLogs: input.unverifiedNoLogs,
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(stampedFindings),
         postedAt: input.postedAt,
@@ -945,11 +965,21 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
     // A complete review, just without usage data — so it earns a run summary like any other.
     appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => body);
+    if (inlineRequested) {
+      process.stderr.write(
+        "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky only\n",
+      );
+    }
     process.stderr.write(
-      "Result envelope missing or malformed — posted sticky summary without usage/cost data; no inline review\n",
+      "Result envelope missing or malformed — posted sticky summary without usage/cost data\n",
     );
     process.exit(0);
   }
+
+  // Read once the lost-envelope branch has passed — that branch posts and exits, and an ENOENT here
+  // would have taken its notice with it — but still before anything on THIS path is written, so a
+  // misconfigured template fails loudly rather than half-way through posting.
+  const inlineTemplate = inlineRequested ? readFileSync(input.inlineTemplatePath, "utf-8") : "";
 
   // A completed review carries real telemetry; adapt (and the workflow's notice wrap) flag a run that
   // produced only a notice. Don't let such a notice bury an existing completed review or post a stray
@@ -981,18 +1011,22 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ? computeSameRootNotes(priorTraj, findings.findings, input.headSha.slice(0, 12))
     : {};
 
+  // With inline off there is no diff-anchored surface, so the split does not apply: every visible
+  // finding is a stray and the sticky carries them all, exactly as it does when the envelope is lost.
   const {
     comments: rawComments,
     strays,
     inDiff,
-  } = buildInlineComments(visibleFindings, diff, {
-    inlineTemplate,
-    models: envelope.models.map((m) => m.model),
-    findings,
-    jsonUrl: input.jsonUrl,
-    sameRootNotes,
-    answeredNotes: reRaisedNotes,
-  });
+  } = inlineRequested
+    ? buildInlineComments(visibleFindings, diff, {
+        inlineTemplate,
+        models: envelope.models.map((m) => m.model),
+        findings,
+        jsonUrl: input.jsonUrl,
+        sameRootNotes,
+        answeredNotes: reRaisedNotes,
+      })
+    : { comments: [], strays: visibleFindings, inDiff: [] };
   const { comments, longFiles } = checkLongSuggestions(rawComments);
   for (const wf of longFiles) {
     process.stderr.write(
@@ -1005,8 +1039,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   const botReviews = await fetchBotReviews(input.repo, prNumber, input.botLogin, ghApi);
 
   // The "posted" disposition is only ever built from the actual post result below, never optimistically.
-  const initialDisposition: InlineDisposition | undefined =
-    comments.length === 0 && strays.length > 0 ? { kind: "none-in-diff" } : undefined;
+  const initialDisposition: InlineDisposition | undefined = !inlineRequested
+    ? { kind: "disabled" }
+    : comments.length === 0 && strays.length > 0
+      ? { kind: "none-in-diff" }
+      : undefined;
 
   const currentCounts = computeSeverityCounts(findings.findings);
 
@@ -1074,6 +1111,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     strays,
     suppressedNits,
     runUrl: input.runUrl,
+    unverifiedNoLogs: input.unverifiedNoLogs,
     jsonUrl: input.jsonUrl,
     findingsPointer: findingsMarker,
     postedAt: input.postedAt,
@@ -1100,6 +1138,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
       }) + longFilesNote,
     );
 
+  // The body is posted unshed: GitHub rejects one over 65536 chars, and postComment/patchComment let
+  // that 422 propagate, so an oversized body fails the job with the announce placeholder still up.
+  // Inline off makes that reachable — every finding's prose now renders into this one comment, where
+  // the in-diff ones used to be separate posts. Shedding is issue #214; tolerating a failed write
+  // after the sticky is up is issue #223. Issue #217 removes the embedded blob, which is the largest
+  // fixed cost in the body.
   // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,
@@ -1118,6 +1162,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   );
 
   // Post first, THEN dismiss: the PR is never left review-less if the process dies between the two.
+  // The review object is posted whatever `inline` says — it is the trail from the PR to the sticky and
+  // to the run. With inline off it is body-only; the dismiss and minimize below run either way, so
+  // flipping a repo to inline=false also clears the threads a previous round left on the diff.
   const {
     url: reviewUrl,
     inlinePosted,
@@ -1135,7 +1182,9 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     ghApi,
   );
   process.stderr.write(
-    `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`,
+    inlineRequested
+      ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
+      : `Posted a body-only review on PR #${String(prNumber)}; the findings are in the sticky\n`,
   );
 
   // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.

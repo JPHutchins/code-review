@@ -67,11 +67,19 @@
 ---
 
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
+<% if (it.unverifiedNoLogs && findingsTotal > 0) { %>
+> [!WARNING]
+> **Unverified — no failing-job logs were available.** This route reads the failing CI job's log to
+> name the failure; none could be staged for this run, so every finding below was reasoned from the
+> diff alone. Treat them as hypotheses until the log is checked.
+
+<% } %>
+
 <% if (findingsTotal > 0) { %>
 <% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
 **Findings:** <%~ parts.join(' · ') %>
 <% } else if (!it.incomplete && it.systemic.length === 0 && !it.answeredReRaiseNote) { %>
-_No findings — clean review._
+<% if (it.unverifiedNoLogs) { %>_No findings — but no failing-job logs were staged, so this pass could not read the CI failure. "No findings" is not evidence of none._<% } else { %>_No findings — clean review._<% } %>
 <% } %>
 
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'posted') { %>
@@ -85,7 +93,7 @@ _No findings — clean review._
 <% } %>
 
 <% if (it.strays.length > 0) { %>
-### <% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'whole-document') { %>Findings<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
+### <% if (it.inlineDisposition && (it.inlineDisposition.kind === 'disabled' || it.inlineDisposition.kind === 'whole-document')) { %>Findings<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>
 _Every finding is listed below — the inline review could not be built because the result envelope was missing._
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'whole-document') { %>

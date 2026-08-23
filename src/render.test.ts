@@ -117,6 +117,60 @@ describe("formatConfidence (issue #26 — always 2 decimal places)", () => {
   });
 });
 
+// The fast-fix route reads the failing job's log to name the failure. With none staged it reasons
+// from the diff alone — the thing that route replaces — and a reader must be told that before the
+// findings, not left to notice a caveat in the agent's prose (issue #154).
+describe("unverified aside — no failing-job logs (issue #154)", () => {
+  const renderWith = (over: Partial<Parameters<typeof render>[0]> = {}): string =>
+    render({
+      findings: mkFindings([mkFinding({ title: "A guess from the diff" })]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "mechanic",
+      // The sticky lists findings from strays, so the aside has something to sit above.
+      strays: [mkFinding({ title: "A guess from the diff" })],
+      ...over,
+    });
+
+  it("warns above the findings when the run staged no logs", () => {
+    const out = renderWith({ unverifiedNoLogs: true });
+    expect(out).toContain("> [!WARNING]");
+    expect(out).toContain("no failing-job logs were available");
+    // Before the findings, so it cannot be read as a footnote to them.
+    expect(out.indexOf("no failing-job logs were available")).toBeLessThan(
+      out.indexOf("A guess from the diff"),
+    );
+  });
+
+  // The aside says "every finding below", which describes nothing when there are none — but a pass
+  // that found nothing BECAUSE it could not read the logs is the case where silence is worst. So the
+  // aside goes and the clean-review line carries it instead.
+  it("replaces the clean-review claim rather than going silent when there are no findings", () => {
+    const out = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "mechanic",
+      unverifiedNoLogs: true,
+    });
+    // The disclosure block is a [!WARNING] too, so match the aside's own lead, not the alert marker.
+    expect(out).not.toContain("Unverified — no failing-job logs were available");
+    expect(out).not.toContain("clean review");
+    expect(out).toContain("no failing-job logs were staged");
+    expect(out).toContain('"No findings" is not evidence of none');
+  });
+
+  it("says nothing when the logs were there", () => {
+    expect(renderWith({ unverifiedNoLogs: false })).not.toContain("no failing-job logs");
+  });
+
+  it("says nothing when the caller does not mention it at all", () => {
+    expect(renderWith()).not.toContain("no failing-job logs");
+  });
+});
+
 describe("suppressed-nit aside — issue #164", () => {
   const nit = (over: Partial<Finding> = {}): Finding =>
     mkFinding({ severity: "nit", confidence: 0.5, likelihood: 0.4, ...over });
@@ -830,7 +884,7 @@ describe("render", () => {
       expect(rec).toBeLessThan(reasoning);
     });
 
-    it("orders a stray's suggestion block between the recommended fix and the reasoning fold (issue #42)", () => {
+    it("orders a stray's patch block between the recommended fix and the reasoning fold (issue #42)", () => {
       const findings = mkFindings([]);
       const strays = [
         mkFinding({
@@ -842,7 +896,7 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const rec = result.indexOf("**Recommended fix:**");
-      const fence = result.indexOf("```suggestion");
+      const fence = result.indexOf("```patch");
       const reasoning = result.indexOf("<details><summary>Reasoning (");
       expect(rec).toBeGreaterThanOrEqual(0);
       expect(fence).toBeGreaterThanOrEqual(0);
@@ -872,7 +926,9 @@ describe("render", () => {
       expect(withoutRec).not.toContain("Recommended fix:");
     });
 
-    it("projects a stray's patch into a ```suggestion block", () => {
+    // The sticky is an issue comment, where a ```suggestion has no Apply button and shows the
+    // replacement lines without the lines they replace. The patch keeps both, and is a patch.
+    it("projects a stray's patch into a ```patch block, never a dead ```suggestion", () => {
       const findings = mkFindings([]);
       const strays = [
         mkFinding({
@@ -881,8 +937,10 @@ describe("render", () => {
         }),
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result).toContain("```suggestion");
-      expect(result).toContain("fixed line");
+      expect(result).toContain("```patch");
+      expect(result).not.toContain("```suggestion");
+      expect(result).toContain("-old");
+      expect(result).toContain("+fixed line");
     });
 
     it("keeps every line of a multi-paragraph reasoning inside the [!TIP] blockquote fold", () => {

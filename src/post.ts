@@ -14,7 +14,6 @@ import {
   computeCodeCounts,
   computeSameRootNotes,
   convergenceMarker,
-  findingsMarkerForm,
   findingsPointer,
   inProgressConvergence,
   nextRoundNumber,
@@ -41,6 +40,7 @@ import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
+import { ghArtifactReader, resolvePriorFindings, type ArtifactReader } from "./artifact.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { runIdFromUrl } from "./checkrun.js";
@@ -607,7 +607,11 @@ const minimizeComments = async (
   }
 };
 
-export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<void> => {
+export const post = async (
+  input: PostInput,
+  ghApi: GhApi = runGhApi,
+  readArtifact: ArtifactReader = ghArtifactReader,
+): Promise<void> => {
   // Phase 1: reads + rendering, no writes yet.
   const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
   const resolution = resolvePr(candidates, input.headBranch);
@@ -693,14 +697,12 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     convergence: conv ?? undefined,
   });
   const findingsBlob = (doc: Findings): string => {
-    const marker = findingsPointer(doc, input.jsonUrl);
-    // On the link/omitted form the embedded blob (and the convergence inside it) is gone, so carry the
-    // SAME stamped convergence compactly beside it — a size fallback so an oversized review's trajectory
-    // + stop signal survive (issue #185 review). The embedded blob always wins on read, so a normal
-    // sticky carries no such marker and the two can never diverge.
-    if (doc.convergence === undefined || findingsMarkerForm(doc, input.jsonUrl) === "embedded") {
-      return marker;
-    }
+    // The marker is a link, so the convergence no longer rides inside the comment — it ALWAYS needs its
+    // compact marker beside the link, or reading a trajectory or a stop signal would mean fetching an
+    // artifact. What used to be the oversized-review fallback (issue #185 review) is now the only path,
+    // which is what lets every convergence reader keep working without a fetch (issue #217).
+    const marker = input.jsonUrl !== undefined ? findingsPointer(input.jsonUrl) : "";
+    if (doc.convergence === undefined) return marker;
     const conv = convergenceMarker(doc.convergence);
     return marker === "" ? conv : `${marker}\n${conv}`;
   };
@@ -881,11 +883,16 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // findings blob and its nits are not this review's prior round; a notice/placeholder carries an empty
   // or prior blob and is handled the same way. Best-effort: an old/missing/oversized/non-review prior
   // yields no keys, so stickiness fails open to visible.
+  // Resolved rather than decoded: the prior sticky's marker names the findings artifact (issue #217),
+  // so this fetches it — and still reads an embedded blob on a sticky written before that change.
+  const priorDocForNits =
+    existingSticky !== null && isFullReviewSticky(existingSticky.body)
+      ? await resolvePriorFindings(existingSticky.body, readArtifact)
+      : null;
   const priorSuppressedKeys = new Set(
-    (existingSticky !== null && isFullReviewSticky(existingSticky.body)
-      ? priorBelowFloorNits(parseFindingsMarker(existingSticky.body), input.nitVisibilityFloor)
-      : []
-    ).map((n) => answeredNoteKey({ code: n.code, title: n.title })),
+    priorBelowFloorNits(priorDocForNits, input.nitVisibilityFloor).map((n) =>
+      answeredNoteKey({ code: n.code, title: n.title }),
+    ),
   );
   const isSuppressedNit = (f: Finding): boolean =>
     f.severity === "nit" &&
@@ -1079,17 +1086,13 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // comment embeds only its own finding instead.
   const findingsMarker = findingsBlob(stampedFindings);
 
-  // The embedded base64 blob is what a re-review seed decodes (parseFindingsMarker); a doc too large to
-  // embed degrades to the jsonUrl-link form, so surface that in the run log — on the link form the
-  // convergence rides in the linked artifact, not the comment body.
-  const markerForm = findingsMarkerForm(stampedFindings, input.jsonUrl);
-  if (markerForm === "link") {
+  // No artifact URL means no machine channel at all: the convergence still rides its compact marker,
+  // but the findings are unreachable, so the next round cannot seed from this one and no decoder can
+  // reach the document. An ::error:: rather than a throw — the prose review is complete and posting it
+  // is strictly better than failing the job and leaving the announce placeholder standing.
+  if (input.jsonUrl === undefined) {
     process.stderr.write(
-      "Warning: the findings-json blob exceeds the embed limit — degraded to the jsonUrl-link form; the convergence rides a compact marker beside it, but a decoding agent (and the next-round seed) must fetch the artifact for the FINDINGS\n",
-    );
-  } else if (markerForm === "omitted") {
-    process.stderr.write(
-      "Warning: the findings-json blob exceeds the embed limit and no --json-url was given — the convergence rides a compact marker but the embedded findings seed is dropped from the posted surfaces\n",
+      "::error::no --json-url was supplied, so the sticky names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
     );
   }
 

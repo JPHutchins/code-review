@@ -24,3 +24,10 @@ export const WORKFLOW_DIRECTORIES = [".github/workflows", "examples/workflows"] 
 
 export const allWorkflows = (): readonly string[] =>
   WORKFLOW_DIRECTORIES.flatMap((directory) => repoFiles(directory));
+
+// A pre-#217 sticky's embedded marker. Nothing in production writes one any more — the write path
+// emits only the artifact link — so tests that need a legacy sticky build it here. These are the
+// fixtures for the decoder's legacy branch, which is what keeps every PR whose sticky predates #217
+// able to seed its next round.
+export const legacyEmbeddedMarker = (document: unknown): string =>
+  `<!-- code-review:findings-json;base64 ${Buffer.from(JSON.stringify(document), "utf-8").toString("base64")} -->`;

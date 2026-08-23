@@ -5,6 +5,7 @@
 // citty requires async run() even when the body has no explicit await
 
 import { defineCommand, runMain } from "citty";
+import { ghArtifactReader, resolvePriorFindings } from "./artifact.js";
 import { copyFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
@@ -49,7 +50,6 @@ import {
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
   isBelowVisibilityFloor,
-  parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
   priorTrajectory,
@@ -1021,7 +1021,12 @@ const seedDraftCmd = defineCommand({
         ? raw.body
         : null;
     })();
-    const parsedPrior = priorBody === null ? null : parseFindingsMarker(priorBody);
+    // The prior sticky's marker NAMES the findings artifact rather than carrying it (issue #217), so
+    // this resolves it — fetching when the marker is a link, decoding when it is a pre-#217 embedded
+    // blob. Runs here, outside the agent's jail, because that is where the token is; the agent still
+    // receives the prior findings the only way it ever has, through the context file written below.
+    const parsedPrior =
+      priorBody === null ? null : await resolvePriorFindings(priorBody, ghArtifactReader);
     // A legacy 0.8.0 surfaced blob had its scope_metastasis PIPELINE-stamped fresh every round, so a
     // carried entry is authoritative that round (a 0.7.0 blob predates the field, so its entry is not
     // a stamp — isSurfaceStampedDoc gates on 0.8.0 alone); the post-#156 blob is the agent's own

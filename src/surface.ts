@@ -42,18 +42,6 @@ export const severityEmoji = (s: string): string => {
   }
 };
 
-// ~32KB of JSON in base64 — well under GitHub's 65536-char comment limit. The embedded blob is the
-// agent's COMPLETE document plus the pipeline-stamped `convergence` field (issue #174), all in one JSON
-// object; scope_metastasis is re-derived at seed time rather than carried. The value is kept at the
-// pre-#156 boundary as a deliberate backward-compat margin, so every review that embedded before the
-// surfacing transform was deleted still embeds. When a review DOES exceed this and the blob falls to the
-// link form, the convergence rides its own compact `code-review:convergence` marker beside the link
-// (issue #185 review) — a size fallback carrying the SAME stamped object — so the trajectory and stop
-// signal survive; only the re-review FINDINGS seed degrades (a decoder must fetch the linked artifact
-// for the findings). The AGENTS_STOP_DIRECTIVE (~0.85KB, issues #171 + #217) rides ahead of the marker on every
-// surface, a small fraction of the headroom.
-export const EMBED_LIMIT = 42700;
-
 // The canonical location of the findings schema — the moving `main` ref (mirrors findings.schema.json's
 // own $id). No version tag is cut yet; a tagged schema pins its own $id (schema/VERSIONING.md), so a
 // decoding agent starts here and, if its document's schema_version names a different version, fetches
@@ -70,21 +58,12 @@ const FINDINGS_SCHEMA_URL =
 // here.
 export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment carries a code-review findings document in the marker, and usually renders that same review as prose too. Read the prose when it is there: it is the cheaper read. Decode the marker when the prose is not the review (this comment may be a status notice instead), when the prose is only part of it (findings anchored to diff lines stay on the diff, and a review too large to embed links its artifact here rather than carrying it — the workflow run's summary renders both of those whole), or when you need a field the prose does not render. Read the document's schema_version and fetch the schema for THAT version before acting — a schema's own $id is its canonical URL, and the current version is at ${FINDINGS_SCHEMA_URL} — then parse the WHOLE findings document, not only the fields you recognize. -->`;
 
-// The base64 length of a document's JSON — the one size computation both encodeMarker and
-// findingsMarkerForm share, so the form report and the emitted marker can never disagree.
-const b64LengthOf = (document: unknown): number =>
-  Buffer.from(JSON.stringify(document), "utf-8").toString("base64").length;
-
-const encodeMarker = (document: unknown, jsonUrl: string | undefined, limit: number): string => {
-  const b64 = Buffer.from(JSON.stringify(document), "utf-8").toString("base64");
-  const marker =
-    b64.length <= limit
-      ? `<!-- code-review:findings-json;base64 ${b64} -->`
-      : jsonUrl
-        ? `<!-- code-review:findings-json ${jsonUrl} -->`
-        : "";
-  return marker ? `${AGENTS_STOP_DIRECTIVE}\n${marker}` : "";
-};
+// The marker names the findings artifact; it never carries the document. The embedded base64 form is
+// still READ (parseFindingsMarker) because every sticky written before this change holds one, but
+// nothing writes another: the blob was ~50% of a sticky's bytes and the size branch it needed was
+// what made an oversized review silently lose its re-review seed (issue #217).
+const encodeMarker = (jsonUrl: string): string =>
+  `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json ${jsonUrl} -->`;
 
 // Decode a base64-in-HTML-comment marker payload, shared by the findings + rounds markers; undefined
 // on any malformed input so callers degrade rather than throw on the render path.
@@ -96,35 +75,12 @@ const decodeBase64Json = (b64: string): unknown => {
   }
 };
 
-export const findingsPointer = (
-  findings: Findings,
-  jsonUrl: string | undefined,
-  limit = EMBED_LIMIT,
-): string => encodeMarker(findings, jsonUrl, limit);
+export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl);
 
-// The form findingsPointer will emit for a whole-document marker, exposed so the IO-bound callers
-// (post) can warn when the embedded machine channel degrades instead of failing silently — only the
-// base64 form is decodable back (parseFindingsMarker), so "link"/"omitted" silently drop the seed
-// for a re-review.
-export type FindingsMarkerForm = "embedded" | "link" | "omitted";
-
-export const findingsMarkerForm = (
-  findings: Findings,
-  jsonUrl: string | undefined,
-  limit = EMBED_LIMIT,
-): FindingsMarkerForm => {
-  if (b64LengthOf(findings) <= limit) return "embedded";
-  return jsonUrl ? "link" : "omitted";
-};
-
-// Per-finding counterpart: an inline comment embeds only its own finding, so the sticky and review
-// body stay the whole-document SSOT.
-export const findingPointer = (
-  finding: Finding,
-  schemaVersion: string,
-  jsonUrl?: string,
-  limit = EMBED_LIMIT,
-): string => encodeMarker({ schema_version: schemaVersion, findings: [finding] }, jsonUrl, limit);
+// Per-finding counterpart. It names the same whole-document artifact: a decoder that wants only this
+// finding has the prose beside it, and one that wants the machine form wants the whole document
+// anyway, so there is nothing left for a per-finding payload to carry.
+export const findingPointer = (jsonUrl: string): string => encodeMarker(jsonUrl);
 
 // null when the marker is absent or holds the all-zeros placeholder (no head SHA was stamped),
 // so callers treat an unknown prior commit as a new-commit re-review rather than asserting a match.

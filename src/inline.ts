@@ -54,7 +54,7 @@ export const buildInlineComments = (
   diff: string,
   context: InlineContext,
 ): InlineResult => {
-  const { inlineTemplate, models = [], jsonUrl, findings: fullFindings } = context;
+  const { inlineTemplate, models = [], jsonUrl } = context;
   const index = indexDiff(diff);
   const { inDiff, strays } = partitionFindings(findings, index);
   const eta = new Eta({ autoTrim: false });
@@ -69,7 +69,7 @@ export const buildInlineComments = (
   };
 
   const comments: InlineComment[] = inDiff.map((f) => {
-    const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";
+    const pointer = jsonUrl !== undefined ? findingPointer(jsonUrl) : "";
     const sameRootNote = noteFor(f, context.sameRootNotes);
     const answeredNote = noteFor(f, context.answeredNotes);
     const comment: InlineComment = {

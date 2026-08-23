@@ -1780,6 +1780,11 @@ const postCmd = defineCommand({
       description:
         "Also render findings as inline review comments on the diff. Off by default: an inline thread cannot be revised by a later round, so stale threads accumulate. The review object is posted either way; with this off the sticky lists the findings instead",
     },
+    "unverified-no-logs": {
+      type: "boolean",
+      description:
+        "Mark the review unverified: the fast-fix route ran with no failing-job logs staged, so its findings came from the diff alone. The caller decides this — the logs are staged in the review job, not here",
+    },
   },
   run: async ({ args }) => {
     const priceResolution = resolvePrices(args.prices);
@@ -1803,6 +1808,7 @@ const postCmd = defineCommand({
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       inline: args.inline,
+      unverifiedNoLogs: args["unverified-no-logs"],
       postedAt: formatUtc(new Date()),
       pricedAt: new Date(),
     });

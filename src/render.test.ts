@@ -117,6 +117,60 @@ describe("formatConfidence (issue #26 — always 2 decimal places)", () => {
   });
 });
 
+// The fast-fix route reads the failing job's log to name the failure. With none staged it reasons
+// from the diff alone — the thing that route replaces — and a reader must be told that before the
+// findings, not left to notice a caveat in the agent's prose (issue #154).
+describe("unverified aside — no failing-job logs (issue #154)", () => {
+  const renderWith = (over: Partial<Parameters<typeof render>[0]> = {}): string =>
+    render({
+      findings: mkFindings([mkFinding({ title: "A guess from the diff" })]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "mechanic",
+      // The sticky lists findings from strays, so the aside has something to sit above.
+      strays: [mkFinding({ title: "A guess from the diff" })],
+      ...over,
+    });
+
+  it("warns above the findings when the run staged no logs", () => {
+    const out = renderWith({ unverifiedNoLogs: true });
+    expect(out).toContain("> [!WARNING]");
+    expect(out).toContain("no failing-job logs were available");
+    // Before the findings, so it cannot be read as a footnote to them.
+    expect(out.indexOf("no failing-job logs were available")).toBeLessThan(
+      out.indexOf("A guess from the diff"),
+    );
+  });
+
+  // The aside says "every finding below", which describes nothing when there are none — but a pass
+  // that found nothing BECAUSE it could not read the logs is the case where silence is worst. So the
+  // aside goes and the clean-review line carries it instead.
+  it("replaces the clean-review claim rather than going silent when there are no findings", () => {
+    const out = render({
+      findings: mkFindings([]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "mechanic",
+      unverifiedNoLogs: true,
+    });
+    // The disclosure block is a [!WARNING] too, so match the aside's own lead, not the alert marker.
+    expect(out).not.toContain("Unverified — no failing-job logs were available");
+    expect(out).not.toContain("clean review");
+    expect(out).toContain("no failing-job logs were staged");
+    expect(out).toContain('"No findings" is not evidence of none');
+  });
+
+  it("says nothing when the logs were there", () => {
+    expect(renderWith({ unverifiedNoLogs: false })).not.toContain("no failing-job logs");
+  });
+
+  it("says nothing when the caller does not mention it at all", () => {
+    expect(renderWith()).not.toContain("no failing-job logs");
+  });
+});
+
 describe("suppressed-nit aside — issue #164", () => {
   const nit = (over: Partial<Finding> = {}): Finding =>
     mkFinding({ severity: "nit", confidence: 0.5, likelihood: 0.4, ...over });

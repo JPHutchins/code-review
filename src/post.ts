@@ -76,6 +76,11 @@ export interface PostInput {
   // an inline thread is a human-only surface that cannot be revised: a later round can neither update
   // nor resolve it, so stale threads accumulate on the diff (issue #179).
   readonly inline?: boolean;
+  // The fast-fix route ran with no failing-job logs staged (issue #154). Passed as a flag because
+  // this runs in the comment job, where the staged logs are not: the review job counted them. It
+  // could equally ride the envelope, which `adapt` stamps with route and effort after the agent —
+  // the flag is the same channel `--route` already uses, and works when the envelope is lost.
+  readonly unverifiedNoLogs?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
   // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
@@ -719,7 +724,11 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     const dropNote = answeredDropNote;
     const body = formatMarkdown(
       noticeBody(
-        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\` — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
+        `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\`${
+          input.unverifiedNoLogs === true
+            ? ' — **but no failing-job logs were available**, so it had only the diff to work from and "no findings" is not evidence of none'
+            : ""
+        } — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
         sticky.body,
       ),
     );
@@ -934,6 +943,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
         clocDiff,
         inlineDisposition: input.inline === true ? { kind: "no-envelope" } : { kind: "disabled" },
         runUrl: input.runUrl,
+        unverifiedNoLogs: input.unverifiedNoLogs,
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(stampedFindings),
         postedAt: input.postedAt,
@@ -1081,6 +1091,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     strays,
     suppressedNits,
     runUrl: input.runUrl,
+    unverifiedNoLogs: input.unverifiedNoLogs,
     jsonUrl: input.jsonUrl,
     findingsPointer: findingsMarker,
     postedAt: input.postedAt,

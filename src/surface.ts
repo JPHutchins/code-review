@@ -948,7 +948,10 @@ export type PatchProjection =
 // In an issue comment — which is what the sticky is — the same block is inert, and worse than inert:
 // it shows the replacement text stripped of the lines it replaces, so the reader sees the fix with no
 // indication of what it displaces. The raw patch is a hunk and reads as one, so a comment-body
-// surface keeps it rather than lowering it to a suggestion that surface cannot honour.
+// surface keeps it rather than lowering it to a suggestion that surface cannot honour. Both forms
+// still go through escapeFence: a hunk that itself contains a triple backtick would otherwise close
+// the block it is rendered in, so the escape is what keeps the rest of the comment intact — the
+// displayed hunk is faithful except for that sequence.
 export type PatchSurface = "diff-anchored" | "comment-body";
 
 export const projectPatch = (patch: string | undefined, surface: PatchSurface): PatchProjection => {

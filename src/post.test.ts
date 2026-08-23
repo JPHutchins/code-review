@@ -118,8 +118,9 @@ const mkdtemp = (): string => {
   return dir;
 };
 
-// inline: true because most of the cases below were written to exercise the inline review surface and
-// predate its default flipping off (issue #179); the off-by-default behaviour has its own describe.
+// The fixture is the shipping default (issue #179): a case that names no `inline` exercises what a
+// default round does. `mkInlineInput` below is the opt-in, for the cases that are about the inline
+// surface itself.
 const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   repo: "owner/repo",
   headSha: "abc123def456",

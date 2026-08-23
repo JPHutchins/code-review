@@ -987,7 +987,7 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
     comments: rawComments,
     strays,
     inDiff,
-  } = input.inline
+  } = input.inline === true
     ? buildInlineComments(visibleFindings, diff, {
         inlineTemplate,
         models: envelope.models.map((m) => m.model),

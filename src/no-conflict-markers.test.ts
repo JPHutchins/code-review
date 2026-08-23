@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { repoRoot } from "./test-util.js";
 
 // Conflict markers in a .ts file fail typecheck, and in a workflow they fail actionlint — so the gate
@@ -46,12 +48,16 @@ const diskReader = (path: string): string => readFileSync(`${repoRoot}/${path}`,
 // `:./path` is git's relative-path form. Bare `:path` would parse a name like `1:notes.md` as an
 // index-stage spec and read a different file. maxBuffer because a tracked blob can exceed Node's 1MiB
 // default — this repo has a 2.4MB fixture — and ENOBUFS would fail the gate rather than scan it.
-const indexReader = (path: string): string =>
-  execFileSync("git", ["show", `:./${path}`], {
-    cwd: repoRoot,
-    encoding: "utf-8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
+export const indexReaderIn =
+  (cwd: string) =>
+  (path: string): string =>
+    execFileSync("git", ["show", `:./${path}`], {
+      cwd,
+      encoding: "utf-8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+
+const indexReader = indexReaderIn(repoRoot);
 
 const firstMarkerLine = (content: string): number =>
   content.split("\n").findIndex((line) => CONFLICT_MARKER.test(line));
@@ -112,6 +118,32 @@ describe("the working tree", () => {
     };
 
     expect(readTracked("here.md", () => "plain content", unused)).toBe("plain content");
+  });
+
+  // The `:./` prefix is the whole point of this reader and the injected-reader tests cannot see it,
+  // so this one drives real git against a real index — the case that motivated it is a filename git
+  // would otherwise parse as an index-stage spec.
+  it("reads the named file from the index, not a same-suffix stage spec", () => {
+    const repo = mkdtempSync(join(tmpdir(), "conflict-gate-"));
+    const git = (...args: readonly string[]): void => {
+      execFileSync("git", [...args], { cwd: repo, encoding: "utf-8" });
+    };
+    try {
+      git("init", "-q", ".");
+      git("config", "user.email", "t@example.com");
+      git("config", "user.name", "t");
+      // `1:notes.md` and `notes.md`: `git show :1:notes.md` reads the SECOND as stage 1.
+      writeFileSync(join(repo, "1:notes.md"), "<<<<<<< HEAD\nthe staged one\n");
+      writeFileSync(join(repo, "notes.md"), "a different file\n");
+      git("add", "-A");
+      git("commit", "-qm", "x");
+      rmSync(join(repo, "1:notes.md"));
+
+      expect(indexReaderIn(repo)("1:notes.md")).toContain("the staged one");
+      expect(indexReaderIn(repo)("1:notes.md")).not.toContain("a different file");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("recognises each marker form", () => {

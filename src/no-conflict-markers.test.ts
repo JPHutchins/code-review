@@ -19,8 +19,11 @@ describe("the working tree", () => {
     const read = (path: string): string | null => {
       try {
         return readFileSync(`${repoRoot}/${path}`, "utf-8");
-      } catch {
-        return null;
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        // Absent from this worktree (sparse checkout) or a submodule's gitlink: nothing to read, and
+        // nothing withheld. Any other failure is a file the gate could not open, which is the signal.
+        return code === "ENOENT" || code === "EISDIR" ? "" : null;
       }
     };
     const results = trackedFiles().map((path) => ({ path, content: read(path) }));

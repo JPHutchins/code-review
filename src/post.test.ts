@@ -321,6 +321,20 @@ describe("post — run summary (issue #205)", () => {
     expect(summary.indexOf("Critical elsewhere")).toBeLessThan(summary.indexOf("Nit on the diff"));
   });
 
+  // The lost-envelope branch posts a complete review and exits before the main path's append, so it
+  // writes its own — the one early exit whose durable record would otherwise be missing.
+  it("writes a summary on the branch that posts and exits", async () => {
+    writeFileSync(summaryPath(), "");
+    setSummaryEnv(summaryPath());
+    const { api } = mkMockGhApi(mkMocks(""));
+
+    await expect(
+      post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+    ).rejects.toThrow("process.exit");
+
+    expect(readFileSync(summaryPath(), "utf-8")).toContain("### Findings");
+  });
+
   // A round with no verdict is still a record of the run, but it is not a review — and the sticky
   // already says so with its own badge. The two surfaces must not disagree about the same round.
   it("calls an incomplete round a review record, not a complete review", async () => {
@@ -353,14 +367,16 @@ describe("post — run summary (issue #205)", () => {
     const { api } = mkMockGhApi(mkMocks(""));
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    await post(mkInput({}), api);
+    try {
+      await post(mkInput({}), api);
 
-    expect(readFileSync(summaryPath(), "utf-8")).toBe("untouched");
-    expect(stderrSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining("could not write the run summary"),
-    );
-
-    stderrSpy.mockRestore();
+      expect(readFileSync(summaryPath(), "utf-8")).toBe("untouched");
+      expect(stderrSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("could not write the run summary"),
+      );
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 
   // The heading the sticky uses says the list is what is NOT on the diff. The summary's list is

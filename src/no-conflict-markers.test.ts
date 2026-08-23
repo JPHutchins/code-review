@@ -14,35 +14,60 @@ const trackedFiles = (): readonly string[] =>
 
 const CONFLICT_MARKER = /^(<{7}|={7}|>{7})(\s|$)/;
 
+// A tracked file's content, or null when the gate could not obtain it — which is a FAILURE, not a
+// pass. Exported shape rather than an inline closure so the fallback can be exercised directly: under
+// a full CI checkout every tracked path reads from disk, so that branch would otherwise be dead code
+// in the only place it runs.
+export const readTracked = (
+  path: string,
+  fromDisk: (p: string) => string,
+  fromIndex: (p: string) => string,
+): string | null => {
+  try {
+    return fromDisk(path);
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    // A path that resolves to a directory has no blob to scan — a submodule's gitlink, or a tracked
+    // file a directory now shadows. Absent from the worktree is different: the index still holds the
+    // content, and a staged conflicted file's markers live exactly there, so read it rather than
+    // clear it unread. Anything else is a file this gate could not open.
+    if (code === "EISDIR") return "";
+    if (code !== "ENOENT") return null;
+    try {
+      return fromIndex(path);
+    } catch {
+      return null;
+    }
+  }
+};
+
+const diskReader = (path: string): string => readFileSync(`${repoRoot}/${path}`, "utf-8");
+
+// `:./path` is git's relative-path form. Bare `:path` would parse a name like `1:notes.md` as an
+// index-stage spec and read a different file. maxBuffer because a tracked blob can exceed Node's 1MiB
+// default — this repo has a 2.4MB fixture — and ENOBUFS would fail the gate rather than scan it.
+const indexReader = (path: string): string =>
+  execFileSync("git", ["show", `:./${path}`], {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+
+const firstMarkerLine = (content: string): number =>
+  content.split("\n").findIndex((line) => CONFLICT_MARKER.test(line));
+
 describe("the working tree", () => {
   it("has no unresolved conflict markers in any tracked file", () => {
-    const read = (path: string): string | null => {
-      try {
-        return readFileSync(`${repoRoot}/${path}`, "utf-8");
-      } catch (err) {
-        const code = (err as { code?: string }).code;
-        // A directory (a submodule's gitlink) has no content to scan. A path missing from the
-        // worktree does — the index still holds its blob, and a staged conflicted file's markers live
-        // exactly there — so fall back to the index rather than clearing it unread. Anything else is
-        // a file the gate could not open, which is the signal.
-        if (code === "EISDIR") return "";
-        if (code === "ENOENT") {
-          try {
-            return execFileSync("git", ["show", `:${path}`], { cwd: repoRoot, encoding: "utf-8" });
-          } catch {
-            return null;
-          }
-        }
-        return null;
-      }
-    };
-    const results = trackedFiles().map((path) => ({ path, content: read(path) }));
+    const results = trackedFiles().map((path) => ({
+      path,
+      content: readTracked(path, diskReader, indexReader),
+    }));
     const unreadable = results.filter((r) => r.content === null).map((r) => r.path);
-    const offenders = results.flatMap(({ path, content }) => {
-      if (content === null) return [];
-      const hit = content.split("\n").findIndex((line) => CONFLICT_MARKER.test(line));
-      return hit === -1 ? [] : [`${path}:${String(hit + 1)}`];
-    });
+    const offenders = results.flatMap(({ path, content }) =>
+      content === null || firstMarkerLine(content) === -1
+        ? []
+        : [`${path}:${String(firstMarkerLine(content) + 1)}`],
+    );
 
     expect(offenders).toEqual([]);
     // A file this gate could not open is not a file it cleared.
@@ -51,6 +76,42 @@ describe("the working tree", () => {
 
   it("reads a meaningful number of tracked files", () => {
     expect(trackedFiles().length).toBeGreaterThan(20);
+  });
+
+  // Under a full CI checkout every tracked path reads from disk, so the fallback never runs there.
+  // These drive it directly, with the errors node actually throws.
+  it("falls back to the index when the worktree lacks a tracked file", () => {
+    const enoent = (): never => {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    };
+
+    expect(readTracked("gone.md", enoent, () => "<<<<<<< HEAD\nstaged\n")).toContain("<<<<<<<");
+    // The index cannot produce it either — unreadable, which the gate must FAIL on, not clear.
+    expect(
+      readTracked("gone.md", enoent, () => {
+        throw new Error("fatal: path does not exist");
+      }),
+    ).toBeNull();
+  });
+
+  it("treats a directory as empty and any other error as unreadable", () => {
+    const throwing = (code: string) => (): never => {
+      throw Object.assign(new Error(code), { code });
+    };
+    const unused = (): never => {
+      throw new Error("index must not be consulted");
+    };
+
+    expect(readTracked("submodule", throwing("EISDIR"), unused)).toBe("");
+    expect(readTracked("locked.md", throwing("EACCES"), unused)).toBeNull();
+  });
+
+  it("reads a present file from disk without touching the index", () => {
+    const unused = (): never => {
+      throw new Error("index must not be consulted");
+    };
+
+    expect(readTracked("here.md", () => "plain content", unused)).toBe("plain content");
   });
 
   it("recognises each marker form", () => {

@@ -1775,6 +1775,11 @@ const postCmd = defineCommand({
       type: "string",
       description: NIT_VISIBILITY_FLOOR_DESCRIPTION,
     },
+    "unverified-no-logs": {
+      type: "boolean",
+      description:
+        "Mark the review unverified: the fast-fix route ran with no failing-job logs staged, so its findings came from the diff alone. The caller decides this — the logs are staged in the review job, not here",
+    },
   },
   run: async ({ args }) => {
     const priceResolution = resolvePrices(args.prices);
@@ -1797,6 +1802,7 @@ const postCmd = defineCommand({
       jsonUrl: args["json-url"],
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
+      unverifiedNoLogs: args["unverified-no-logs"],
       postedAt: formatUtc(new Date()),
       pricedAt: new Date(),
     });

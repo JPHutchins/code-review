@@ -96,8 +96,10 @@ links to:
 
 - **`code-review-findings`** — the findings JSON + result envelope the comment job renders. The
   sticky comment embeds this same JSON directly, base64-encoded, in an
-  `<!-- code-review:findings-json;base64 <base64> -->` HTML comment — a reviewing agent (or any
-  downstream tool) SHOULD base64-decode and parse that marker rather than parse the comment's prose.
+  `<!-- code-review:findings-json;base64 <base64> -->` HTML comment. The comment usually renders that
+  same review as prose, which is the cheaper read; decode the marker where the prose is not the
+  review, where the prose carries only part of it, or where the prose omits a field you need. The directive that rides ahead of the
+  marker states that rule.
   Embedding in the comment (rather than only linking the artifact) keeps the pointer from expiring
   with artifact retention; when the encoded findings are too large to embed, the sticky falls back to
   a `<!-- code-review:findings-json <url> -->` link marker instead. The shared serializer is

@@ -50,7 +50,7 @@ export const severityEmoji = (s: string): string => {
 // link form, the convergence rides its own compact `code-review:convergence` marker beside the link
 // (issue #185 review) — a size fallback carrying the SAME stamped object — so the trajectory and stop
 // signal survive; only the re-review FINDINGS seed degrades (a decoder must fetch the linked artifact
-// for the findings). The AGENTS_STOP_DIRECTIVE (~0.75KB, issue #171) rides ahead of the marker on every
+// for the findings). The AGENTS_STOP_DIRECTIVE (~0.85KB, issues #171 + #217) rides ahead of the marker on every
 // surface, a small fraction of the headroom.
 export const EMBED_LIMIT = 42700;
 
@@ -61,13 +61,14 @@ export const EMBED_LIMIT = 42700;
 const FINDINGS_SCHEMA_URL =
   "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json";
 
-// Travels with the marker on every surface so a reader who sees only one comment still knows to decode
-// it AND to read the schema before acting. Imperative and loud on purpose: lazy consumers cherry-pick
-// fields out of the JSON and act on only what they recognize, missing the machine-channel recurrence
-// signals that are documented in the schema and decodable from the sibling markers (issue #171). Uses
-// em dashes, never "--", so the HTML comment stays well-formed. Exported so the surfaces and their
-// tests share one SSOT for the directive text (it is carried forward verbatim by carryForwardMarkers).
-export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment is a machine channel; act on the data, not the prose. It embeds a base64 code-review findings JSON (an oversized review instead links the artifact URL in the same marker). Decode or fetch it, read its schema_version, then DOWNLOAD AND READ THE FULL SCHEMA for that version before you act — the schema's own $id is its canonical URL; the current schema is at ${FINDINGS_SCHEMA_URL} — read that schema, then parse the WHOLE findings document, not only the fields you recognize: the convergence score, its threshold, and the per-round trajectory (so you know whether the review has converged and how to read the number), plus the recurrence signals an iterating agent needs (round streaks, scope metastasis, same-mechanism), are all fields inside that document. -->`;
+// One constant, carried onto every surface: a rendered review, a status notice, one inline comment.
+// It says nothing about what either side CONTAINS because that varies by route, envelope and round,
+// and three rounds of review found each such claim false somewhere (issues #171, #217). Read the
+// text; do not paraphrase it here. Uses em dashes, never "--", so the HTML comment
+// stays well-formed. Exported so the surfaces and their tests share one SSOT for the text (it is
+// carried forward verbatim by carryForwardMarkers) — the text below is that SSOT; do not restate it
+// here.
+export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment carries a code-review findings document in the marker, and usually renders that same review as prose too. Read the prose when it is there: it is the cheaper read. Decode the marker when the prose is not the review (this comment may be a status notice instead), when the prose is only part of it (findings anchored to diff lines stay on the diff, and a review too large to embed links its artifact here rather than carrying it — the workflow run's summary renders both of those whole), or when you need a field the prose does not render. Read the document's schema_version and fetch the schema for THAT version before acting — a schema's own $id is its canonical URL, and the current version is at ${FINDINGS_SCHEMA_URL} — then parse the WHOLE findings document, not only the fields you recognize. -->`;
 
 // The base64 length of a document's JSON — the one size computation both encodeMarker and
 // findingsMarkerForm share, so the form report and the emitted marker can never disagree.

@@ -218,26 +218,43 @@ describe("findingsMarkerForm", () => {
 });
 
 describe("AGENTS stop directive — read the prose, not the blob (issues #171, #217)", () => {
-  // The directive used to open by telling the agent to decode. The prose became the whole review, so
-  // decoding reaches the same content the long way round — and the directive now says so first.
-  it("sends the agent to the rendered prose, not to the machine channel", () => {
-    expect(AGENTS_STOP_DIRECTIVE).toContain("rendered as prose");
+  // The directive used to open by telling the agent to decode. The prose became the review, so
+  // decoding reaches the same content the long way round — but only WHERE the comment is a review.
+  it("sends the agent to the prose only when the comment renders a review", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("when this comment renders a review");
     expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).not.toContain("DECODE OR FETCH IT");
     expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).not.toContain("DOWNLOAD AND READ THE FULL SCHEMA");
   });
 
-  // The two rounds where this comment is NOT the whole review, and the one surface that always is.
-  it("names the run summary for the rounds this comment does not carry whole", () => {
+  // This directive also rides the in-progress placeholder, the did-not-complete notice, and the
+  // empty-diff notice — surfaces whose prose is a status line and whose marker is the ONLY copy of
+  // the last real review. Telling an agent to read the prose there would lose it.
+  it("tells the agent to decode on the surfaces whose prose is a status line", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("STATUS line");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("only copy of the last real review");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("decoding it is the correct action");
+  });
+
+  // The prose is the cheaper read, not a superset: below-floor nits, finding codes, and the
+  // recurrence signals are deliberately absent from it, and the directive must not deny that.
+  it("does not claim the prose carries everything the document does", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("leaves out by design");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("below-visibility-floor nits");
+    expect(AGENTS_STOP_DIRECTIVE).not.toContain("everything the JSON does");
+  });
+
+  // Inline comments carry this directive verbatim and render no run link at all, so it must name the
+  // summary without promising a link that is not on every surface.
+  it("names the run summary without promising a link this surface may not have", () => {
     expect(AGENTS_STOP_DIRECTIVE).toContain("anchors findings to diff lines");
     expect(AGENTS_STOP_DIRECTIVE).toContain("too large to embed");
     expect(AGENTS_STOP_DIRECTIVE).toContain("workflow run's summary");
+    expect(AGENTS_STOP_DIRECTIVE).not.toContain("linked at the foot");
   });
 
-  // Killing the push is not killing the channel: a consumer that still wants the machine form is
-  // told where it is and which schema governs it.
   it("keeps the machine form on offer, with its schema", () => {
     expect(AGENTS_STOP_DIRECTIVE).toContain("schema_version");
-    expect(AGENTS_STOP_DIRECTIVE).toContain("machine form");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("Decode the marker below");
   });
 
   it("embeds the schema's OWN $id, so the directive URL can't drift from the canonical location", () => {

@@ -202,9 +202,11 @@ this doc.
   name; a cancelled run with no sticky at all (cancelled before announcing) posts nothing, because
   nothing superseded it. The same guards as the failure notice keep it from clobbering the superseding
   run's live placeholder or a completed review.
-- **The stop signal lives in the data, not the prose.** The AGENTS directive on the findings marker
-  tells a decoding agent to ignore the prose — which would leave the convergence badge (prose-only)
-  invisible to exactly the iterating author-agent it exists for. So the stop signal is a
+- **The stop signal lives in the data, not the prose.** The directive no longer tells a decoding
+  agent to ignore the prose (issue #217) — it sends the agent to the rendered review where there is
+  one — but the reason this field exists outlives that change: an agent that DOES decode, and every
+  surface whose prose is a status line rather than a review, still needs the stop signal in the
+  document. So it is a
   pipeline-stamped `convergence` field INSIDE the embedded findings document (issue #174): the
   `{score, threshold, converged}` plus the per-round `rounds` trajectory of the last completed
   full-review round, `converged` a literal boolean the commenter computes, never something an agent

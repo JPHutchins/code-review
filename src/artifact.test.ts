@@ -105,3 +105,48 @@ describe("resolvePriorFindings", () => {
     ).toBeNull();
   });
 });
+
+// The artifact is the agent's draft, uploaded before post stamps convergence, so a document fetched
+// from it can carry the agent's echo of the trajectory it was seeded with. The seed re-derives the
+// scope-metastasis streak and the round number from whatever convergence the prior document holds, so
+// an echo that outlived its streak would undercount both with nothing else in that path to correct it.
+describe("resolvePriorFindings — convergence provenance", () => {
+  const stamped = {
+    score: 3.94,
+    threshold: 1,
+    converged: false,
+    rounds: [{ round: 7, score: 3.94 }],
+  };
+  const marker = `<!-- code-review:convergence;base64 ${Buffer.from(
+    JSON.stringify(stamped),
+    "utf-8",
+  ).toString("base64")} -->`;
+  const echo = { score: 0.1, threshold: 1, converged: true, rounds: [{ round: 1, score: 0.1 }] };
+
+  it("replaces the artifact's echoed convergence with the sticky's stamped marker", async () => {
+    const doc = { schema_version: "0.9.0", findings: [], convergence: echo };
+    const resolved = (await resolvePriorFindings(`${linkSticky}\n${marker}`, () =>
+      Promise.resolve(JSON.stringify(doc)),
+    )) as { convergence: typeof stamped; findings: readonly unknown[] };
+
+    expect(resolved.convergence).toEqual(stamped);
+    expect(resolved.findings).toEqual([]);
+  });
+
+  it("drops an echo the body does not stamp, rather than trusting it", async () => {
+    const doc = { schema_version: "0.9.0", findings: [], convergence: echo };
+    const resolved = (await resolvePriorFindings(linkSticky, () =>
+      Promise.resolve(JSON.stringify(doc)),
+    )) as Record<string, unknown>;
+
+    expect("convergence" in resolved).toBe(false);
+  });
+
+  // The embedded blob was written BY post, so its convergence is the stamped one — that branch must
+  // keep returning the document untouched.
+  it("leaves a legacy embedded document's stamped convergence alone", async () => {
+    const doc = { schema_version: "0.9.0", findings: [], convergence: stamped };
+
+    expect(await resolvePriorFindings(embeddedSticky(doc), never)).toEqual(doc);
+  });
+});

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { parseFindingsMarker } from "./surface.js";
+import { parseConvergenceMarker, parseFindingsMarker } from "./surface.js";
 
 const run = promisify(execFile);
 
@@ -80,6 +80,21 @@ export const ghArtifactReader = readArtifactFindings(async (url, outPath) => {
   await writeFile(outPath, stdout);
 });
 
+// convergence is pipeline-owned, and the artifact holds the agent's draft — uploaded before post stamps
+// it — so a fetched document's convergence is the agent ECHOING what the prior seed showed it. The
+// sticky's compact marker beside the link is the stamped copy, and replaces the echo here so every
+// consumer downstream reads one corrected document. A link with no marker predates the marker and drops
+// the echo; priorTrajectory's legacy rounds-marker fallback covers it.
+const withoutKey = (doc: Record<string, unknown>, key: string): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(doc).filter(([k]) => k !== key));
+
+const withStampedConvergence = (doc: unknown, body: string): unknown => {
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return doc;
+  const stripped = withoutKey(doc as Record<string, unknown>, "convergence");
+  const stamped = parseConvergenceMarker(body);
+  return stamped === null ? stripped : { ...stripped, convergence: stamped };
+};
+
 // A prior sticky's findings document, or null when the body names none and carries none.
 //
 // The embedded branch is read-only legacy: nothing writes a base64 marker any more, but every sticky
@@ -98,7 +113,7 @@ export const resolvePriorFindings = async (
   const text = await read(url);
   if (text === null) return null;
   try {
-    return JSON.parse(text);
+    return withStampedConvergence(JSON.parse(text), body);
   } catch {
     return null;
   }

@@ -1,6 +1,7 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
+import { clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
@@ -15,7 +16,7 @@ import {
   changeSizeSummary,
   computeSameRootNotes,
   metastasisNote,
-  findingsPointer,
+  findingsMarkerPair,
   escapeCodeBackticks,
   escapeFence,
   DEFAULT_NIT_VISIBILITY_FLOOR,
@@ -56,20 +57,66 @@ const sanitizeFinding = (
 // title or path would break out of it (the hazard escapeCodeBackticks documents — it collapses
 // newlines AND neutralizes backticks). `m` is the confidence × likelihood the floor compared against,
 // shown so a maintainer who expands the aside sees WHY each nit was shelved (issue #164).
+// A below-floor nit is HIDDEN from the human list by policy (issue #164) — that is a visibility
+// decision, and it must not become a content filter. The projection used to keep 5 of a finding's 14
+// fields, which meant description, recommendation, reasoning and patch existed nowhere in the comment;
+// harmless while the document rode along as base64, a real hole once the document moved to the
+// artifact (issue #217). Everything now travels: the summary line stays exactly as it was, and the
+// rest rides the machine channel beside it, where a hidden nit's detail belongs.
 type SuppressedNitView = {
   readonly title: string;
   readonly code?: string;
+  readonly codeUrl?: string;
   readonly path: string;
   readonly startLine: number;
+  readonly endLine: number;
+  readonly side?: string;
+  readonly severity: string;
+  readonly confidence: string;
+  readonly likelihood: string;
   readonly m: string;
+  // Pre-split into blockquote-safe lines: the aside is a `>` blockquote, so an unprefixed line would
+  // break out of it and spill a hidden nit's detail into the visible prose.
+  readonly carried: readonly string[];
 };
+
+// HTML comments cannot nest, so a `-->` inside a carried field would close the block early and spill
+// the rest into the visible prose.
+const commentSafe = (text: string): string => text.replace(/--+>/g, "-\u2011>");
+
 const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   title: escapeCodeBackticks(f.title),
   ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
+  ...(f.code_url !== undefined ? { codeUrl: f.code_url } : {}),
   path: escapeCodeBackticks(f.path),
   startLine: f.start_line,
+  endLine: f.end_line,
+  ...(f.side !== undefined ? { side: f.side } : {}),
+  severity: f.severity,
+  confidence: formatConfidence(f.confidence),
+  likelihood: formatConfidence(f.likelihood),
   m: formatConfidence(f.confidence * f.likelihood),
+  carried: carriedLines(f),
 });
+
+// Each carried field is clipped. Every below-floor nit's full finding rides in the sticky body, and
+// that body is the one GitHub rejects over 65536 chars — which post deliberately does not shed, so an
+// oversized body 422s the round with the announce placeholder still up. Removing the ~32KB document
+// bought far more room than this spends, but "far more room" is not a bound. The cap matches the
+// conversation clip's, and clipText marks what it cut so a reader is never silently shown a fragment.
+const CARRIED_FIELD_CHARS = 4000;
+
+const carriedLines = (f: Finding): readonly string[] =>
+  [
+    `description: ${clipText(f.description, CARRIED_FIELD_CHARS)}`,
+    ...(f.recommendation !== undefined
+      ? [`recommendation: ${clipText(f.recommendation, CARRIED_FIELD_CHARS)}`]
+      : []),
+    `reasoning: ${clipText(f.reasoning, CARRIED_FIELD_CHARS)}`,
+    ...(f.patch !== undefined ? ["patch:", clipText(f.patch, CARRIED_FIELD_CHARS)] : []),
+  ]
+    .flatMap((block) => commentSafe(block).split("\n"))
+    .map((line) => line.trimEnd());
 
 // The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
 // finding_codes render inside backticks too, so they get the same backtick escaping as paths.
@@ -206,10 +253,12 @@ export const render = (input: RenderInput): string => {
     unverifiedNoLogs: input.unverifiedNoLogs === true,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
-    // The blob is the agent's complete document with the pipeline-stamped convergence field inside it
-    // (issue #174) — no separate signal or rounds marker rides beside it. post always supplies the
-    // precomputed marker; the standalone `render` command falls back to encoding the doc here.
-    findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
+    // The marker names the findings artifact, so the convergence no longer rides inside the comment —
+    // it needs its own compact marker beside the link or a trajectory would require a fetch to read
+    // (issue #217). post precomputes both together in findingsBlob; the standalone `render` command
+    // builds the same pair here, so neither path can emit a link with the convergence missing.
+    findingsPointer:
+      input.findingsPointer ?? findingsMarkerPair(input.jsonUrl, input.findings.convergence),
     roundsSummary: roundsSummary(trajectory, input.roundCount),
     metastasisNote: advisoryAllowed ? metastasisNote(trajectory) : "",
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},

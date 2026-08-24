@@ -69,7 +69,7 @@ export const buildInlineComments = (
   };
 
   const comments: InlineComment[] = inDiff.map((f) => {
-    const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";
+    const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version) : "";
     const sameRootNote = noteFor(f, context.sameRootNotes);
     const answeredNote = noteFor(f, context.answeredNotes);
     const comment: InlineComment = {

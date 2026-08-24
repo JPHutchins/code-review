@@ -107,11 +107,9 @@ const stampedFindings = isFullReviewRound
     }
   : findings;
 
-// The marker names the findings artifact, built ONCE and shared by the sticky and the review body
-// exactly like post. The preview has no real run, so this is a representative artifact URL.
-const marker = findingsPointer(
-  "https://api.github.com/repos/owner/repo/actions/artifacts/1234567890/zip",
-);
+// The findings blob is the agent's complete document with the pipeline-stamped convergence field
+// (issue #174), built ONCE and shared by the sticky and the review body exactly like post.
+const marker = findingsPointer(stampedFindings, undefined);
 
 // A representative `cloc --git --diff base head` table (issue #182) — in production the pipeline
 // captures this; the fixture supplies one so the reference demonstrates the cloc collapsible.

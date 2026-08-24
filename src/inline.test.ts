@@ -362,7 +362,7 @@ index abc..def 100644
     mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, ...overrides }),
   ];
 
-  /** Decode a comment body's per-finding payload. */
+  /** Decode a comment body's embedded base64 marker back into its carried document. */
   const decodeMarker = (body: string): { schema_version: string; findings: Finding[] } => {
     const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(body);
     expect(match).not.toBeNull();
@@ -372,21 +372,17 @@ index abc..def 100644
     };
   };
 
-  it("puts the per-finding payload on the first line when a findings document is given", () => {
+  it("embeds the findings JSON as base64 as the very first line when a findings document is given", () => {
     const findings = findingAt({});
     const { comments } = buildInlineComments(findings, diff, {
       inlineTemplate: bundledInlineTemplate,
       findings: mkFindingsDoc(findings),
     });
-
     expect(comments[0]!.body.startsWith("<!-- AGENTS: STOP")).toBe(true);
     expect(comments[0]!.body).toContain("<!-- code-review:findings-json;base64 ");
   });
 
-  // The whole-document blob left the sticky (issue #217), but a thread keeps its OWN finding: the
-  // answered registry decodes it to identify the thread, and an answer from round 1 must still close a
-  // verbatim re-raise in round 8 — this round's artifact does not contain round 1's finding.
-  it("embeds ONLY its own finding, self-contained across rounds (issues #31, #217)", () => {
+  it("embeds ONLY its own finding, not the whole findings document (issue #31)", () => {
     const a = mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, title: "Finding A" });
     const b = mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, title: "Finding B" });
     const doc = mkFindingsDoc([a, b]);
@@ -394,19 +390,44 @@ index abc..def 100644
       inlineTemplate: bundledInlineTemplate,
       findings: doc,
     });
-
     expect(comments).toHaveLength(2);
-    expect(decodeMarker(comments[0]!.body).findings).toEqual([a]);
-    expect(decodeMarker(comments[1]!.body).findings).toEqual([b]);
-    expect(decodeMarker(comments[0]!.body).schema_version).toBe(doc.schema_version);
+
+    const decodedA = decodeMarker(comments[0]!.body);
+    expect(decodedA.schema_version).toBe(doc.schema_version);
+    expect(decodedA.findings).toEqual([a]);
+
+    const decodedB = decodeMarker(comments[1]!.body);
+    expect(decodedB.schema_version).toBe(doc.schema_version);
+    expect(decodedB.findings).toEqual([b]);
   });
 
-  it("omits the marker when no findings document is given", () => {
-    const findings = findingAt({});
-    const { comments } = buildInlineComments(findings, diff, {
+  it("falls back to the jsonUrl link marker when a single finding's own payload is too large", () => {
+    const huge = findingAt({ description: "x".repeat(60000) });
+    const { comments } = buildInlineComments(huge, diff, {
       inlineTemplate: bundledInlineTemplate,
+      findings: mkFindingsDoc(huge),
+      jsonUrl: "https://example.com/findings.json",
     });
+    expect(comments[0]!.body).toContain(
+      "<!-- code-review:findings-json https://example.com/findings.json -->",
+    );
+    expect(comments[0]!.body).not.toContain(";base64");
+  });
 
+  it("omits the marker entirely when a single finding's own payload is too large and no jsonUrl is given", () => {
+    const huge = findingAt({ description: "x".repeat(60000) });
+    const { comments } = buildInlineComments(huge, diff, {
+      inlineTemplate: bundledInlineTemplate,
+      findings: mkFindingsDoc(huge),
+    });
+    expect(comments[0]!.body).not.toContain("findings-json");
+  });
+
+  it("omits the marker when no findings document is given, even if jsonUrl is set", () => {
+    const { comments } = buildInlineComments(findingAt({}), diff, {
+      inlineTemplate: bundledInlineTemplate,
+      jsonUrl: "https://example.com/findings.json",
+    });
     expect(comments[0]!.body).not.toContain("code-review:findings-json");
   });
 });

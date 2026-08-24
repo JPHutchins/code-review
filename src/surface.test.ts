@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { legacyEmbeddedMarker } from "./test-util.js";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +14,7 @@ import {
   AGENTS_STOP_DIRECTIVE,
   findingsPointer,
   findingPointer,
+  findingsMarkerForm,
   parseRounds,
   roundsSummary,
   carryForwardMarkers,
@@ -42,6 +42,7 @@ import {
   SCOPE_METASTASIS_DECISION_PROMPT,
   computeSameRootNotes,
   MAX_CODES_PER_ROUND,
+  EMBED_LIMIT,
   reviewBodyPointer,
 } from "./surface.js";
 import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./schema.js";
@@ -114,7 +115,7 @@ const findings = {
 
 describe("parseFindingsMarker", () => {
   it("round-trips the whole findings document embedded by findingsPointer", () => {
-    const body = `sticky prose\n${legacyEmbeddedMarker(findings)}\nmore prose`;
+    const body = `sticky prose\n${findingsPointer(findings, undefined)}\nmore prose`;
     expect(parseFindingsMarker(body)).toEqual(findings);
   });
 
@@ -133,7 +134,7 @@ describe("parseFindingsMarker", () => {
         },
       ],
     } as unknown as Findings;
-    const body = `sticky prose\n${legacyEmbeddedMarker(withSystemic)}\nmore prose`;
+    const body = `sticky prose\n${findingsPointer(withSystemic, undefined)}\nmore prose`;
     const decoded = parseFindingsMarker(body) as {
       systemic_problems?: readonly unknown[];
     };
@@ -169,52 +170,50 @@ describe("parseFindingsMarker", () => {
   });
 
   it("decodes the first marker when a body somehow carries more than one", () => {
-    const first = legacyEmbeddedMarker(findings);
-    const second = legacyEmbeddedMarker({ ...findings, summary: "second" });
+    const first = findingsPointer(findings, undefined);
+    const second = findingsPointer({ ...findings, summary: "second" }, undefined);
     expect(parseFindingsMarker(`${first}\n${second}`)).toEqual(findings);
   });
 });
 
-describe("findingsPointer — one form, always the artifact link (issue #217)", () => {
-  it("emits the artifact link and never a base64 payload", () => {
-    const marker = findingsPointer("https://api.github.com/repos/o/r/actions/artifacts/1/zip");
-
-    expect(marker).toContain(
-      "<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/1/zip -->",
-    );
-    expect(marker).not.toContain(";base64");
+describe("findingsMarkerForm", () => {
+  it("reports embedded when the document fits under the limit", () => {
+    expect(findingsMarkerForm(findings, undefined)).toBe("embedded");
   });
 
-  // A document's SIZE no longer changes the marker, which is the point: the form that used to appear
-  // only past EMBED_LIMIT — and silently dropped the re-review seed when no url was given — is now the
-  // only form, so there is no size at which a review loses its machine channel.
-  it("emits the same marker regardless of how large the review is", () => {
+  it("reports link when the document exceeds the limit and a jsonUrl is given", () => {
     const huge = {
       ...findings,
-      findings: Array.from({ length: 500 }, (_, i) => ({
-        ...findings.findings[0],
-        title: `F${String(i)}`,
-        description: "x".repeat(200),
-      })),
+      findings: [
+        ...findings.findings,
+        ...Array.from({ length: 500 }, (_, i) => ({
+          ...findings.findings[0],
+          title: `F${String(i)}`,
+          description: "x".repeat(200),
+        })),
+      ],
     } as unknown as Findings;
-    const url = "https://api.github.com/repos/o/r/actions/artifacts/1/zip";
-
-    expect(findingsPointer(url)).toBe(findingsPointer(url));
-    expect(JSON.stringify(huge).length).toBeGreaterThan(40000);
+    expect(findingsMarkerForm(huge, "https://example.com/findings.zip")).toBe("link");
   });
 
-  // The one payload that still travels in a comment, and deliberately: the answered registry
-  // identifies a thread by decoding the finding out of its root comment, and an answer given in round
-  // 1 must still close a verbatim re-raise in round 8 — a link to THIS round's artifact cannot do that,
-  // because round 1's finding is not in it.
-  it("keeps a per-finding payload on an inline comment, self-contained across rounds", () => {
-    const marker = findingPointer(findings.findings[0]!, findings.schema_version);
+  it("reports omitted when the document exceeds the limit and no jsonUrl is given", () => {
+    const huge = {
+      ...findings,
+      findings: [
+        ...findings.findings,
+        ...Array.from({ length: 500 }, (_, i) => ({
+          ...findings.findings[0],
+          title: `F${String(i)}`,
+          description: "x".repeat(200),
+        })),
+      ],
+    } as unknown as Findings;
+    expect(findingsMarkerForm(huge, undefined)).toBe("omitted");
+  });
 
-    expect(marker).toContain("findings-json;base64");
-    expect(parseFindingsMarker(marker)).toEqual({
-      schema_version: findings.schema_version,
-      findings: [findings.findings[0]],
-    });
+  it("agrees with what findingsPointer actually emits (embedded form is the decodable one)", () => {
+    expect(findingsMarkerForm(findings, undefined)).toBe("embedded");
+    expect(findingsPointer(findings, undefined)).toContain("code-review:findings-json;base64");
   });
 });
 
@@ -231,7 +230,7 @@ describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)
   // empty-diff notice, whose prose is a status line. Telling an agent to read the prose there loses
   // the review, so the directive has to name that case.
   it("tells the agent to decode where the prose is not the review", () => {
-    expect(AGENTS_STOP_DIRECTIVE).toContain("Fetch the document when the prose is not the review");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("Decode the marker when the prose is not the review");
     expect(AGENTS_STOP_DIRECTIVE).toContain("status notice");
   });
 
@@ -253,11 +252,9 @@ describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)
 
   // Inline comments carry this verbatim and render no run link, so the summary is named without
   // promising a link this surface may not have.
-  // After #217 nothing embeds at any size, so a directive describing a "too large to embed" fallback
-  // would name a form the pipeline no longer has.
-  it("names the run summary without describing a size fallback that no longer exists", () => {
+  it("names the run summary for the rounds the prose carries only in part", () => {
     expect(AGENTS_STOP_DIRECTIVE).toContain("anchored to diff lines");
-    expect(AGENTS_STOP_DIRECTIVE).not.toContain("too large to embed");
+    expect(AGENTS_STOP_DIRECTIVE).toContain("too large to embed");
     expect(AGENTS_STOP_DIRECTIVE).toContain("workflow run's summary");
     expect(AGENTS_STOP_DIRECTIVE).not.toContain("linked at the foot");
   });
@@ -295,8 +292,7 @@ describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)
   });
 
   it("rides ahead of BOTH the whole-document and the per-finding inline markers", () => {
-    const url = "https://api.github.com/repos/o/r/actions/artifacts/1/zip";
-    expect(findingsPointer(url).startsWith(AGENTS_STOP_DIRECTIVE)).toBe(true);
+    expect(findingsPointer(findings, undefined).startsWith(AGENTS_STOP_DIRECTIVE)).toBe(true);
     expect(
       findingPointer(findings.findings[0]!, findings.schema_version).startsWith(
         AGENTS_STOP_DIRECTIVE,
@@ -584,7 +580,7 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     const conv = buildConvergence(docOf(["minor", 0.7]), 1, [{ round: 1, score: 2 }], 2, {});
     expect(conv.rounds).toHaveLength(2);
     const decoded = parseFindingsMarker(
-      legacyEmbeddedMarker({ ...docOf(["minor", 0.7]), convergence: conv }),
+      findingsPointer({ ...docOf(["minor", 0.7]), convergence: conv }, undefined),
     );
     expect(parseConvergence(decoded)).toEqual(conv);
     expect(carriedConvergence(decoded, "")).toEqual(conv);
@@ -631,7 +627,7 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
         rounds: [{ round: 1, score: 0.73 }],
       },
     };
-    const body = `<!-- code-review -->\n${legacyEmbeddedMarker(doc)}`;
+    const body = `<!-- code-review -->\n${findingsPointer(doc, undefined)}`;
     expect(body).not.toContain("reviewed-route");
     expect(isFullReviewSticky(body)).toBe(true);
   });
@@ -1296,8 +1292,24 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
 
   it("the findings-json marker round-trips the surfaced document, signal included", () => {
     const doc = surfacedDoc(findings, signal(1, counts(0, 0, 1, 0)));
-    const body = `sticky prose\n${legacyEmbeddedMarker(doc)}\nmore prose`;
+    const body = `sticky prose\n${findingsPointer(doc, undefined)}\nmore prose`;
     expect(parseFindingsMarker(body)).toEqual(doc);
+  });
+
+  it("embeds a raw agent doc past the old boundary as base64 within the comment budget (issue #156)", () => {
+    // Post-#156 the blob is the agent's COMPLETE document with no pipeline overhead. Grow the raw doc
+    // until its base64 form crosses the old 40200 boundary — the EMBED_LIMIT backward-compat margin
+    // covers it — and assert it still embeds as base64, not the link form.
+    const b64Len = (d: Findings): number =>
+      Buffer.from(JSON.stringify(d), "utf-8").toString("base64").length;
+    // Grow the summary in coarse steps (not one char at a time) so the probe stays linear.
+    let doc = { ...findings, summary: "x".repeat(29000) };
+    while (b64Len(doc) <= 40200) {
+      doc = { ...doc, summary: `${doc.summary}${"x".repeat(500)}` };
+    }
+    expect(b64Len(doc)).toBeGreaterThan(40200);
+    expect(b64Len(doc)).toBeLessThanOrEqual(EMBED_LIMIT);
+    expect(findingsPointer(doc, undefined)).toContain("code-review:findings-json;base64");
   });
 
   it("stripSurfaceFields drops the surface fields and restores the draft version on a surfaced doc", () => {
@@ -1433,11 +1445,11 @@ describe("signal marker — issue #141 (the legacy compact stop signal, still re
 
   it("parseSignalMarker returns null when the body carries no signal marker", () => {
     expect(parseSignalMarker("just prose")).toBeNull();
-    expect(parseSignalMarker(legacyEmbeddedMarker(surfacedDoc(findings, signal)))).toBeNull();
+    expect(parseSignalMarker(findingsPointer(surfacedDoc(findings, signal), undefined))).toBeNull();
   });
 
   it("carryForwardMarkers preserves the signal marker alongside the findings marker", () => {
-    const body = `${legacyEmbeddedMarker(findings)}\n${mkSignalMarker(signal)}`;
+    const body = `${findingsPointer(findings, undefined)}\n${mkSignalMarker(signal)}`;
     expect(carryForwardMarkers(body)).toContain("code-review:signal;base64");
     expect(carryForwardMarkers(body)).toContain("findings-json");
   });

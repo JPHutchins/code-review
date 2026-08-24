@@ -49,12 +49,12 @@ import {
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
   isBelowVisibilityFloor,
+  parseFindingsMarker,
   parseReviewedRoute,
   parseReviewedSha,
   priorTrajectory,
   priorBelowFloorNits,
   stripSurfaceFields,
-  parseFindingsMarker,
 } from "./surface.js";
 import {
   buildNoticeEnvelope,
@@ -937,11 +937,6 @@ const seedDraftCmd = defineCommand({
       description:
         "Path to the prior-review JSON gather staged ({ id, body }, or the literal null); its embedded base64 findings marker is decoded and delivered as re-review context when it validates against the schema",
     },
-    "prior-findings": {
-      type: "string",
-      description:
-        "Path to the gather-staged prior findings document (prior_findings.json). gather resolves it — from the sticky's embedded blob, or by fetching the artifact the marker names — because gather holds the repo token and this step deliberately does not: it runs the jailed agent over untrusted PR code. Absent or null falls back to decoding an embedded blob out of --prior, which needs no token",
-    },
     "prior-answers": {
       type: "string",
       description:
@@ -1026,24 +1021,7 @@ const seedDraftCmd = defineCommand({
         ? raw.body
         : null;
     })();
-    // Resolved by GATHER, not here: the sticky names an artifact (issue #217) and fetching it needs
-    // the repo token, which this step does not have and must not have — it runs the jailed agent over
-    // untrusted PR code. gather stages the document; this reads it. The embedded fallback keeps a
-    // pre-#217 sticky working with no staged file and no token at all.
-    const stagedPrior = ((): unknown => {
-      if (!args["prior-findings"]) return null;
-      try {
-        return JSON.parse(readFileSync(resolve(args["prior-findings"]), "utf-8")) as unknown;
-      } catch {
-        return null;
-      }
-    })();
-    const parsedPrior =
-      stagedPrior !== null
-        ? stagedPrior
-        : priorBody === null
-          ? null
-          : parseFindingsMarker(priorBody);
+    const parsedPrior = priorBody === null ? null : parseFindingsMarker(priorBody);
     // A legacy 0.8.0 surfaced blob had its scope_metastasis PIPELINE-stamped fresh every round, so a
     // carried entry is authoritative that round (a 0.7.0 blob predates the field, so its entry is not
     // a stamp — isSurfaceStampedDoc gates on 0.8.0 alone); the post-#156 blob is the agent's own

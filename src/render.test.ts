@@ -3,12 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
-import {
-  formatConfidence,
-  parseConvergenceMarker,
-  parseFindingsMarker,
-  parseSignalMarker,
-} from "./surface.js";
+import { formatConfidence, parseFindingsMarker, parseSignalMarker } from "./surface.js";
 import type {
   Findings,
   ResultEnvelope,
@@ -306,46 +301,30 @@ describe("render", () => {
     });
   });
 
-  describe("findings-json marker — the artifact link (issues #15, #217)", () => {
-    const ARTIFACT = "https://api.github.com/repos/o/r/actions/artifacts/1/zip";
-
-    it("names the artifact and omits the visible advisory", () => {
+  describe("findings-json marker (issue #15; embedded base64 — PR #17 review)", () => {
+    it("embeds the findings JSON as base64 and omits the visible advisory", () => {
       const findings = mkFindings([mkFinding({ severity: "major", title: "M" })]);
-      const result = render({
-        findings,
-        envelope: baseEnvelope,
-        prices,
-        template,
-        jsonUrl: ARTIFACT,
-      });
-
-      expect(result).toContain(`<!-- code-review:findings-json ${ARTIFACT} -->`);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result).toContain("<!-- code-review:findings-json;base64 ");
       expect(result).not.toContain("Reviewing agents: fetch");
     });
 
-    // The document used to ride in the comment as base64, so its byte-identity to the agent's own
-    // document was worth pinning here. It now lives in the artifact, and what this surface owes is the
-    // opposite guarantee: it carries NO copy that could drift (issue #217).
-    it("carries no copy of the document that could drift from it", () => {
+    it("embeds the agent's COMPLETE document verbatim — no surfacing transform to drift from it (issue #156)", () => {
       const findings = mkFindings([
         mkFinding({ severity: "critical", title: "Round-trip me", description: "detail here" }),
       ]);
-      const result = render({
-        findings,
-        envelope: baseEnvelope,
-        prices,
-        template,
-        jsonUrl: ARTIFACT,
-      });
-
-      expect(result).not.toContain(";base64");
-      expect(parseFindingsMarker(result)).toBeNull();
-      expect(result).toContain(`code-review:findings-json ${ARTIFACT}`);
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(result);
+      expect(match).not.toBeNull();
+      const decoded: unknown = JSON.parse(
+        Buffer.from(match?.[1] ?? "", "base64").toString("utf-8"),
+      );
+      // The blob is byte-identical to the agent's document — the round state (signal, scope
+      // metastasis) rides its own markers, not a second, divergeable copy of the findings.
+      expect(decoded).toEqual(findings);
     });
 
-    // Convergence used to ride INSIDE the blob. With the document in the artifact it rides its own
-    // compact marker instead — which is what keeps a trajectory readable without a fetch.
-    it("carries convergence in its own compact marker, not in the comment's document", () => {
+    it("embeds convergence (score/threshold/converged + trajectory) in the findings blob, not a signal marker (#174)", () => {
       const convergence = {
         score: 0.73,
         threshold: 1,
@@ -360,11 +339,11 @@ describe("render", () => {
         template,
         route: "full review",
         convergenceRound: true,
-        jsonUrl: ARTIFACT,
       });
-
+      // Convergence rides IN the findings blob now — no separate compact signal marker.
       expect(result).not.toContain("code-review:signal;base64");
-      expect(parseFindingsMarker(result)).toBeNull();
+      const decoded = parseFindingsMarker(result) as { convergence?: unknown };
+      expect(decoded.convergence).toEqual(convergence);
     });
 
     it("suppresses the Scope metastasis prose note on a non-round (mechanic) render — recurrence is a property of full-review rounds (issue #150)", () => {
@@ -1988,9 +1967,7 @@ describe("convergence trajectory — issue #125", () => {
     expect(result).not.toContain("code-review:rounds");
   });
 
-  // The trajectory used to survive inside the embedded document; it now rides the compact convergence
-  // marker beside the artifact link, which is what keeps it readable without a fetch (issue #217).
-  it("hides the trajectory LINE on an incomplete review but keeps it in the compact marker (#174)", () => {
+  it("hides the trajectory LINE on an incomplete review but keeps the trajectory in the blob (#174)", () => {
     const convergence = {
       score: 0.5,
       threshold: 1,
@@ -2005,8 +1982,10 @@ describe("convergence trajectory — issue #125", () => {
       incomplete: true,
     });
     expect(result).not.toContain("**Round");
+    // No rounds marker; the trajectory survives inside the findings blob for the next round.
     expect(result).not.toContain("code-review:rounds");
-    expect(parseConvergenceMarker(result)?.rounds).toHaveLength(1);
+    const decoded = parseFindingsMarker(result) as { convergence?: { rounds?: unknown[] } };
+    expect(decoded.convergence?.rounds).toHaveLength(1);
   });
 });
 

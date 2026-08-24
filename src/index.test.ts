@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { legacyEmbeddedMarker } from "./test-util.js";
 import { runCommand } from "citty";
 import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +13,8 @@ import {
   SEED_SENTINEL,
 } from "./budget.js";
 import { ResultEnvelopeCodec } from "./schema.js";
+import { findingsPointer } from "./surface.js";
+import type { Findings } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -1192,7 +1193,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
 
   it("delivers a prior review's embedded findings OUT-OF-BAND and reports 'prior-new' when no head SHA is given to compare", async () => {
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(priorFindings)}\nold sticky`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}\nold sticky`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1253,7 +1254,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       ],
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(withNits)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(withNits as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1282,7 +1283,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       ],
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(oldDoc)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(oldDoc as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1311,7 +1312,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       ],
     };
     const prior = writePrior(
-      `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${legacyEmbeddedMarker(mechDoc)}`,
+      `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${findingsPointer(mechDoc as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1339,7 +1340,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       ],
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(withNit)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(withNit as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { exitCode } = await runCli([
@@ -1367,7 +1368,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       convergence: { score: 0, threshold: 1, converged: true },
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(surfaced)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1399,7 +1400,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       scope_metastasis: entry,
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(surfaced)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1454,7 +1455,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       },
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${legacyEmbeddedMarker(draftBlob)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(draftBlob as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1524,7 +1525,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       },
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${legacyEmbeddedMarker(draftBlob)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(draftBlob as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1583,7 +1584,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       scope_metastasis: carried,
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${legacyEmbeddedMarker(surfaced)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1643,7 +1644,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       convergence: { score: 1, threshold: 1, converged: false },
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${legacyEmbeddedMarker(priorBlob)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(priorBlob as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, stderr, exitCode } = await runCli([
@@ -1688,7 +1689,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       scope_metastasis: entry,
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(surfaced)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(surfaced as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, stderr, exitCode } = await runCli([
@@ -1729,7 +1730,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       change_size: { code: { added: 10, removed: 2 } },
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(withChangeSize)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(withChangeSize as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, stderr, exitCode } = await runCli([
@@ -1791,7 +1792,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       scope_metastasis: ["not", "an", "entry"],
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${legacyEmbeddedMarker(priorBlob)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(priorBlob as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1846,7 +1847,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       scope_metastasis: null,
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${legacyEmbeddedMarker(priorBlob)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(priorBlob as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1905,7 +1906,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       convergence: { score: 1, threshold: 1, converged: false },
     };
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${legacyEmbeddedMarker(noticeBlob)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:rounds;base64 ${Buffer.from(JSON.stringify(rounds), "utf-8").toString("base64")} -->\n${findingsPointer(noticeBlob as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -1960,7 +1961,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       verdict: "comment",
       findings: [{ file: "a", line: 1, summary: "s", failure_scenario: "f" }],
     };
-    const prior = writePrior(legacyEmbeddedMarker(skillShaped));
+    const prior = writePrior(findingsPointer(skillShaped as unknown as Findings, undefined));
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
@@ -1976,7 +1977,9 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       verdict: "error",
       findings: [],
     };
-    const prior = writePrior(`<!-- code-review -->\n${legacyEmbeddedMarker(incompletePrior)}`);
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(incompletePrior as unknown as Findings, undefined)}`,
+    );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
@@ -1994,7 +1997,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       findings: [],
     };
     const prior = writePrior(
-      `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${legacyEmbeddedMarker(mechanicFindings)}`,
+      `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${findingsPointer(mechanicFindings as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -2011,7 +2014,9 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       verdict: "comment",
       findings: [],
     };
-    const prior = writePrior(`<!-- code-review -->\n${legacyEmbeddedMarker(mechanicFindings)}`);
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(mechanicFindings as unknown as Findings, undefined)}`,
+    );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
@@ -2022,7 +2027,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
 
   it("does NOT seed from a no-route prior even with round history — a mechanic carries a full review's rounds forward, so the route marker is the only reliable signal (issue #127 round-2)", async () => {
     const prior = writePrior(
-      `<!-- code-review -->\n${oneRoundMarker}\n${legacyEmbeddedMarker(priorFindings)}`,
+      `<!-- code-review -->\n${oneRoundMarker}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -2034,7 +2039,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
 
   it("still seeds from a prior whose route marker names the full review", async () => {
     const prior = writePrior(
-      `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${legacyEmbeddedMarker(priorFindings)}`,
+      `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
@@ -2052,7 +2057,9 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
   });
 
   it("degrades to the sentinel only and still exits 0 on a bad --schema-version (never fails the review step)", async () => {
-    const prior = writePrior(`<!-- code-review -->\n${legacyEmbeddedMarker(priorFindings)}`);
+    const prior = writePrior(
+      `<!-- code-review -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
+    );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli([
       "seed-draft",
@@ -2073,7 +2080,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
   const shaB = "b".repeat(40);
   const priorWithSha = (sha: string): string =>
     writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- reviewed-sha: ${sha} -->\n${legacyEmbeddedMarker(priorFindings)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- reviewed-sha: ${sha} -->\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
 
   it("reports 'prior-same' when --head-sha matches the prior review's reviewed-sha", async () => {
@@ -2115,7 +2122,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
 
   it("reports 'prior-new' when the prior review has no reviewed-sha to compare, even with --head-sha", async () => {
     const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(priorFindings)}`,
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${findingsPointer(priorFindings as unknown as Findings, undefined)}`,
     );
     const out = join(tmpDir, "draft.json");
     const { stdout, exitCode } = await runCli([

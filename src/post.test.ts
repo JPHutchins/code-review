@@ -1,12 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { legacyEmbeddedMarker } from "./test-util.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
 import { post, announce, reportIncomplete } from "./post.js";
-import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
+import {
+  AGENTS_STOP_DIRECTIVE,
+  convergenceMarker,
+  findingPointer,
+  findingsPointer,
+  parseConvergenceMarker,
+  parseFindingsMarker,
+} from "./surface.js";
 import type {
   Convergence,
   Findings,
@@ -714,20 +720,26 @@ describe("post — systemic problems (issue #134)", () => {
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("### 🔗 Systemic problems");
     expect(body.body).toContain("Retry plumbing is inconsistent");
-    // The systemic array itself now lives in the artifact rather than the comment (issue #217), so what
-    // the sticky owes is the prose above and the convergence marker below. The mechanism map is the
-    // part that must still be IN the comment: it is what the next round's streak detector reads
-    // without fetching anything.
-    expect(body.body).not.toContain("findings-json;base64");
-    const lastRound = parseConvergenceMarker(body.body)?.rounds?.at(-1);
+    // The machine channel carries the systemic array verbatim, plus the pipeline-stamped convergence
+    // (issue #174), not just the rendered prose.
+    const marker = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body.body);
+    expect(marker).not.toBeNull();
+    const decoded = JSON.parse(Buffer.from(marker?.[1] ?? "", "base64").toString("utf-8")) as {
+      systemic_problems?: readonly unknown[];
+      convergence?: { rounds?: readonly { codes?: Record<string, number>; sha?: string }[] };
+    };
+    expect(decoded.systemic_problems).toHaveLength(1);
+    expect(decoded.systemic_problems?.[0]).toEqual(withSystemic.systemic_problems?.[0]);
+    // The convergence trajectory's last round carries this round's mechanism map + head sha (issues #174
+    // + #145): the systemic problem's finding_codes feed the mechanism map, so a mechanism surfaced only
+    // as a systemic problem is still visible to the streak detector, and a same-head retry is
+    // recognizable as such.
+    const lastRound = decoded.convergence?.rounds?.at(-1);
     expect(lastRound?.codes).toEqual({ "widened-type": 1 });
     expect(lastRound?.sha).toBe("abc123def456");
   });
 
-  // There is no embed limit any more — the marker is a link at every size (issue #217). What still
-  // must never pass silently is the case that leaves the round with NO machine channel: no artifact
-  // URL to name.
-  it("errors to the run log when no artifact URL was supplied, so the round names no findings", async () => {
+  it("warns to the run log when the whole-document marker degrades past the embed limit (issue #134 review)", async () => {
     const huge: Findings = {
       ...mkFindings([]),
       findings: Array.from({ length: 500 }, (_, i) =>
@@ -768,9 +780,11 @@ describe("post — systemic problems (issue #134)", () => {
       );
       expect(stickyCall).toBeDefined();
       const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+      // The marker is omitted entirely (no --json-url in this invocation) — the degradation must not
+      // pass silently.
       expect(body.body).not.toContain("code-review:findings-json");
       expect(
-        stderrSpy.mock.calls.some((c) => String(c[0]).includes("::error::no --json-url")),
+        stderrSpy.mock.calls.some((c) => String(c[0]).includes("exceeds the embed limit")),
       ).toBe(true);
     } finally {
       // Restore even when an assertion above fails — a leaked spy swallows stderr for the rest of
@@ -914,14 +928,14 @@ describe("post — nit visibility floor (issue #164)", () => {
     const body = stickyPatchBody(calls());
     expect(body).toContain("below the visibility floor");
     expect(body).toContain("trivial");
-    // The nit stays visible only in the collapsed aside; the document that records it as adjudicated is
-    // the artifact now (issue #217), and this invocation names none, so the aside is the observable.
-    expect(body).not.toContain("findings-json;base64");
+    // The blob KEEPS the nit — the machine channel / next-round seed reads it as adjudicated.
+    expect(JSON.stringify(parseFindingsMarker(body))).toContain("triv");
   });
 
   it("keeps a re-rated still-nit hidden when it matches a prior below-floor nit (stickiness)", async () => {
-    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${legacyEmbeddedMarker(
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${findingsPointer(
       doc([belowFloorNit({ title: "sticky", code: "sticky-nit" })]),
+      undefined,
     )}`;
     // Same code, now m = 0.9 × 0.9 = 0.81 (ABOVE the floor) but STILL a nit → stays suppressed.
     write(
@@ -946,8 +960,9 @@ describe("post — nit visibility floor (issue #164)", () => {
 
   it("does NOT read below-floor nits from a mechanic sticky (route-gated, like the seed chain)", async () => {
     // A mechanic pass writes its OWN blob; its nits are not this review's prior round.
-    const mechanicSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${legacyEmbeddedMarker(
+    const mechanicSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${findingsPointer(
       doc([belowFloorNit({ title: "mech", code: "mech-nit" })]),
+      undefined,
     )}`;
     // Same code, now above the floor and still a nit — WITHOUT the gate this would stick hidden; the
     // gate ignores the mechanic sticky, so it materializes.
@@ -972,8 +987,9 @@ describe("post — nit visibility floor (issue #164)", () => {
   });
 
   it("un-hides a prior below-floor nit that was PROMOTED to minor", async () => {
-    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${legacyEmbeddedMarker(
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${findingsPointer(
       doc([belowFloorNit({ title: "promo", code: "promo" })]),
+      undefined,
     )}`;
     write(
       doc([
@@ -2619,12 +2635,56 @@ describe("post — --run-url / --json-url threading", () => {
     );
   });
 
-  it("names the findings artifact on the sticky and on every inline comment (issues #19, #31, #217)", async () => {
+  it("embeds the whole-document marker on the sticky, and a per-finding marker on each inline comment, when small enough (issue #19 sticky, issue #31 inline)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInlineInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
 
-    // Every surface names the same artifact, at every review size — the embed is gone (issue #217).
+    // Findings are small enough to embed, so every surface prefers the embed over the link — see
+    // the size-fallback case below for the jsonUrl link path.
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+    );
+    const stickyBody = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    expect(stickyBody).toContain("<!-- code-review:findings-json;base64 ");
+    expect(stickyBody).not.toContain("fetch the structured findings JSON");
+
+    const reviewCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    );
+    const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
+    const commentBody = reviewBody.comments[0]?.body ?? "";
+    expect(commentBody.startsWith("<!-- AGENTS: STOP")).toBe(true);
+    expect(commentBody).toContain("<!-- code-review:findings-json;base64 ");
+    expect(commentBody).not.toContain("https://artifacts.example.com/findings.json");
+
+    // The inline comment's marker carries only its OWN finding, not the whole document (issue #31).
+    const match = /<!-- code-review:findings-json;base64 (\S+) -->/.exec(commentBody);
+    const decoded = JSON.parse(Buffer.from(match?.[1] ?? "", "base64").toString("utf-8")) as {
+      schema_version: string;
+      summary?: string;
+      findings: unknown[];
+    };
+    expect(decoded.findings).toHaveLength(1);
+    expect(decoded.summary).toBeUndefined();
+  });
+
+  it("falls back to the --json-url link marker in the sticky when the findings are too large to embed (PR #17 review)", async () => {
+    const largeFindings = mkFindings(
+      Array.from({ length: 500 }, (_, i) =>
+        mkFinding({
+          start_line: 10,
+          end_line: 10,
+          title: `Finding ${String(i)}`,
+          description: "x".repeat(200),
+        }),
+      ),
+    );
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(largeFindings));
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post(mkInput({ jsonUrl: "https://artifacts.example.com/findings.json" }), api);
+
     const stickyCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
     );
@@ -2632,21 +2692,11 @@ describe("post — --run-url / --json-url threading", () => {
     expect(stickyBody).toContain(
       "<!-- code-review:findings-json https://artifacts.example.com/findings.json -->",
     );
+    // The FINDINGS marker fell back to the URL form; the rounds marker's own base64 is unrelated.
     expect(stickyBody).not.toContain("findings-json;base64");
-
-    const reviewCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
-    );
-    const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
-    const commentBody = reviewBody.comments[0]?.body ?? "";
-    // An inline comment keeps its OWN finding as a payload: the answered registry decodes it to
-    // identify the thread, and that must still read in a later round whose artifact no longer contains
-    // it. Only the whole-document blob left the sticky (issue #217).
-    expect(commentBody.startsWith("<!-- AGENTS: STOP")).toBe(true);
-    expect(commentBody).toContain("findings-json;base64");
   });
 
-  it("omits the run link when it isn't given, and names no artifact when no --json-url was given", async () => {
+  it("omits the run link when it isn't given; the sticky still embeds the findings-json marker unconditionally (regression, PR #17 review)", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
     await post(mkInput({}), api);
@@ -2656,9 +2706,8 @@ describe("post — --run-url / --json-url threading", () => {
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toContain("view the run & traces");
-    // No --json-url, so there is nothing to name — and post errors about it in the run log rather
-    // than embedding a copy of the document as it once did.
-    expect(body).not.toContain("code-review:findings-json");
+    expect(body).toContain("<!-- code-review:findings-json;base64 ");
+    expect(body).not.toContain("<!-- code-review:findings-json http");
   });
 });
 
@@ -3039,7 +3088,7 @@ describe("announce — in-progress sticky", () => {
         ],
       },
     };
-    const existing = `<!-- code-review -->\n${legacyEmbeddedMarker(priorDoc)}`;
+    const existing = `<!-- code-review -->\n${findingsPointer(priorDoc, undefined)}`;
     const { api, calls } = mkMockGhApi([
       openPr,
       { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
@@ -3804,9 +3853,14 @@ describe("post — convergence rounds (issue #125)", () => {
   // How many rounds the carried convergence trajectory encodes (issue #174) — the append/carry signal
   // that survives even when the trajectory LINE is hidden (an incomplete notice carries convergence in
   // its blob but renders no line).
-  // The trajectory rides the compact convergence marker beside the artifact link (issue #217), so the
-  // round count is read from there rather than out of an embedded document.
-  const roundsInBlob = (body: string): number => parseConvergenceMarker(body)?.rounds?.length ?? 0;
+  const roundsInBlob = (body: string): number => {
+    const b64 = /code-review:findings-json;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    if (b64 === undefined) return 0;
+    const doc = JSON.parse(Buffer.from(b64, "base64").toString("utf-8")) as {
+      convergence?: { rounds?: unknown[] };
+    };
+    return doc.convergence?.rounds?.length ?? 0;
+  };
 
   it("a full review APPENDS a round — the trajectory grows", async () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
@@ -4058,12 +4112,9 @@ describe("post — convergence rounds (issue #125)", () => {
         c.stdin !== undefined,
     );
     const body = (JSON.parse(sticky?.stdin ?? "{}") as CommentBody).body;
-    // The document itself lives in the artifact now (issue #217); what the STICKY carries is the
-    // compact convergence marker beside the artifact link. These assertions are about the convergence
-    // the pipeline stamped, so they read it from where it actually travels.
-    const convergence = parseConvergenceMarker(body);
-    if (convergence === null) throw new Error("no convergence marker in the sticky");
-    return { convergence } as DecodedBlob;
+    const b64 = /code-review:findings-json;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    if (b64 === undefined) throw new Error("no embedded findings marker in the sticky");
+    return JSON.parse(Buffer.from(b64, "base64").toString("utf-8")) as DecodedBlob;
   };
 
   // The convergence signal the sticky carries — since issue #174 it rides IN the findings blob's
@@ -4177,13 +4228,7 @@ describe("post — convergence rounds (issue #125)", () => {
       },
     ]);
     await post(mkInput({ route: "mechanic" }), api);
-    // No prior round, so there is no convergence to carry — and decodedBlob throws on an absent marker,
-    // which is the point: the sticky must not claim a stop signal it does not have.
-    const posted = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
-    );
-    const stickyBody = (JSON.parse(posted!.stdin!) as CommentBody).body;
-    expect(parseConvergenceMarker(stickyBody)).toBeNull();
+    expect(decodedBlob(calls()).convergence).toBeUndefined();
   });
 
   it("an incomplete run carries the prior convergence forward, not a fresh one — incompleteness, not the verdict, is the gate (issue #141 review r4 / #174)", async () => {
@@ -4289,7 +4334,7 @@ describe("post — answered findings (issue #151)", () => {
         in_reply_to_id: null,
         user_login: "github-actions[bot]",
         user_type: "Bot",
-        body: legacyEmbeddedMarker({ schema_version: "0.6.0", findings: [finding] }),
+        body: findingPointer(finding, "0.6.0"),
         html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
         path: "src/foo.ts",
         line: 10,
@@ -4330,11 +4375,12 @@ describe("post — answered findings (issue #151)", () => {
       (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
     );
     const body = (JSON.parse(sticky?.stdin ?? "{}") as CommentBody).body;
-    // The convergence rides its own compact marker beside the artifact link (issue #217); the document
-    // it used to be embedded in is now only in the artifact.
-    const convergence = parseConvergenceMarker(body);
-    if (convergence === null) throw new Error("no convergence marker in the sticky");
-    return { convergence };
+    const b64 = /code-review:findings-json;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    if (b64 === undefined) throw new Error("no findings blob in the sticky");
+    const doc = JSON.parse(Buffer.from(b64, "base64").toString("utf-8")) as {
+      convergence?: { score: number; threshold: number; converged: boolean };
+    };
+    return { convergence: doc.convergence };
   };
 
   it("treats a VERBATIM re-raise of an answered finding as closed — dropped from the review, the round counts, and the stop signal, named in the sticky", async () => {
@@ -4436,11 +4482,11 @@ describe("post — answered findings (issue #151)", () => {
     const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
     await post(mkInput({ route: "full review" }), api);
     const body = patchedBody(calls());
-    // The stripped list used to be observable in the embedded document; that document is the artifact
-    // now (issue #217), so the prose is the surface — a dangling code would render as a tie to a
-    // finding the reader cannot see.
-    expect(body).toContain("kept-code");
-    expect(body).not.toContain("dropped-code");
+    const b64 = /code-review:findings-json;base64 ([A-Za-z0-9+/=]+)/.exec(body)?.[1];
+    const blob = JSON.parse(Buffer.from(b64 ?? "", "base64").toString("utf-8")) as {
+      systemic_problems: readonly { finding_codes?: readonly string[] }[];
+    };
+    expect(blob.systemic_problems[0]!.finding_codes).toEqual(["kept-code"]);
   });
 
   it("an empty-diff post with a completed sticky LEAVES IN PLACE without crashing — leaveInPlace never reads the late-initialized drop state (issue #151 review r4 TDZ regression)", async () => {

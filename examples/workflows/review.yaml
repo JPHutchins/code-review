@@ -440,20 +440,25 @@ jobs:
             # from the bot's OWN prior output (not attacker-controlled PR content) and $DRAFT lives
             # in $RUNNER_TEMP, so a planted file can't win.
             # --prior-findings is release-gated like post's optional flags (post_accepts below): between
-            # the flag merging and the next release, the pinned CODE_REVIEW_VERSION predates it and citty
-            # ignores the unknown option SILENTLY, turning the prior-findings channel into a no-op that
-            # looks deliberate. Probing names the loss instead. seed-draft's embedded fallback keeps a
-            # pre-#217 sticky working either way, so only a mixed-version history (a newer sticky read
-            # under an older pin) actually loses the prior document.
+            # the flag merging and the next release, the pinned CODE_REVIEW_VERSION predates it and
+            # citty ignores the unknown option SILENTLY, turning the prior-findings channel into a no-op
+            # that looks deliberate. The probe keys on prior_review.json — the file EVERY gather writes
+            # — not prior_findings.json, which only a post-#217 gather stages: keying on the staged
+            # file made the probe unreachable in exactly the mixed-version case it exists for, a newer
+            # sticky read under an older pin (issue #233 r1). seed-draft's embedded fallback keeps a
+            # pre-#217 sticky working either way.
             SEED_HELP=""
-            if [ -f prior_findings.json ]; then
+            if [ -f prior_review.json ]; then
               SEED_HELP="$(code-review seed-draft --help 2>/dev/null || true)"
             fi
-            seed_accepts() { printf '%s' "$SEED_HELP" | grep -qE -- "--$1([[:space:]]|\`|$)"; }
+            # A case pattern, not `printf | grep -q`: grep's exit-on-match can kill printf with
+            # SIGPIPE under `bash -e -o pipefail`, reporting a supporting CLI as predating the flag
+            # (issue #233 r1). Verified against citty's real help output for both commands.
+            seed_accepts() { case " $SEED_HELP " in *" --$1 "*) return 0 ;; esac; return 1; }
             PRIOR_FINDINGS_ARGS=()
             if [ -f prior_findings.json ] && seed_accepts prior-findings; then
               PRIOR_FINDINGS_ARGS=(--prior-findings prior_findings.json)
-            elif [ -f prior_findings.json ]; then
+            elif [ -f prior_review.json ] && ! seed_accepts prior-findings; then
               echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --prior-findings; the prior-findings channel is unavailable and this re-review seeds without the prior document"
             fi
             SEED_MODE="$(code-review seed-draft --prior prior_review.json "${PRIOR_FINDINGS_ARGS[@]}" --prior-answers answered.json --nit-visibility-floor "$NIT_VISIBILITY_FLOOR" --head-sha "$HEAD_SHA" --out "$DRAFT")"
@@ -758,9 +763,10 @@ jobs:
 
           echo "has_findings=true" >> "$GITHUB_OUTPUT"
 
-      # No retention-days — keep the repo default (max) so the traceability links outlive a short
-      # expiry. `id` exposes artifact-id, threaded to the comment job to point --json-url at this
-      # artifact's own download endpoint.
+      # retention-days pinned to the max: the findings artifact is the re-review memory now that the
+      # document left the comment (issue #217), so its retention must not be shrinkable by a repo
+      # settings change (issue #233 r1). `id` exposes artifact-id, threaded to the comment job to
+      # point --json-url at this artifact's own download endpoint.
       - uses: actions/upload-artifact@v7
         id: upload-findings
         # Not on cancellation: assemble is skipped there, so findings/ would not exist to upload.
@@ -768,6 +774,7 @@ jobs:
         with:
           name: code-review-findings
           path: findings/
+          retention-days: 90
 
       # Separate artifact so the transcripts (which can be large) don't bloat the findings download
       # the comment job pulls. Advisory/auditability only — never read by the comment job or any
@@ -892,7 +899,10 @@ jobs:
           if [ -f findings/cloc-diff.txt ] || [ "$REVIEW_ROUTE" = "mechanic" ]; then
             POST_HELP="$(code-review post --help 2>/dev/null || true)"
           fi
-          post_accepts() { printf '%s' "$POST_HELP" | grep -qE -- "--$1([[:space:]]|\`|$)"; }
+          # A case pattern, not `printf | grep -q`: grep's exit-on-match can kill printf with
+          # SIGPIPE under `bash -e -o pipefail`, reporting a supporting CLI as predating the flag
+          # (issue #233 r1). Verified against citty's real help output.
+          post_accepts() { case " $POST_HELP " in *" --$1 "*) return 0 ;; esac; return 1; }
 
           CLOC_ARGS=()
           if [ -f findings/cloc-diff.txt ] && post_accepts cloc-diff; then

@@ -238,6 +238,14 @@ describe("findingPointer — the inline payload's size valve (issue #217 review 
     );
   });
 
+  // The safe bound leaves room for the prose the template re-renders from the same fields:
+  // payload + prose + directive must stay under the comment limit, so the valve sits near 30K.
+  it("embeds a payload below the true safe bound", () => {
+    const sizable = { ...findings.findings[0]!, description: "x".repeat(20_000) };
+
+    expect(findingPointer(sizable, findings.schema_version, URL)).toContain("findings-json;base64");
+  });
+
   // With no URL there is nothing to name — the embed is the only channel the finding has.
   it("keeps embedding past the limit when no URL is supplied", () => {
     const huge = { ...findings.findings[0]!, description: "x".repeat(50_000) };

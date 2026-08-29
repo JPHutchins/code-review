@@ -83,10 +83,12 @@ export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl
 // round 8. A link cannot do that — this round's artifact does not contain round 1's finding — so the
 // thread carries its own finding, self-contained, exactly as before. It is one finding (~1KB), not the
 // whole document, and only on the opt-in inline surface (issue #217). One finding can still grow past
-// the comment limit, though: past the valve the marker names the artifact instead — the whole-document
-// embed had this valve, and the one payload that still travels needs it too (issue #217 review r7).
-// With no URL there is nothing to name, so the embed stays the only channel.
-const INLINE_EMBED_LIMIT_CHARS = 64_000;
+// the comment limit, though: the inline template re-renders the SAME fields as prose, so the payload
+// alone must leave room for roughly itself again plus the ~850-char directive — the safe bound is
+// ~30,000 base64 chars (issue #233 r1; the whole-document embed had this valve, and the one payload
+// that still travels needs it too, issue #217 review r7). With no URL there is nothing to name, so
+// the embed stays the only channel.
+const INLINE_EMBED_LIMIT_CHARS = 30_000;
 export const findingPointer = (
   finding: Finding,
   schemaVersion: string,

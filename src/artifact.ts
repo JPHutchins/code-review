@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { parseConvergenceMarker, parseFindingsMarker } from "./surface.js";
+import { errMsg } from "./util.js";
 
 const run = promisify(execFile);
 
@@ -46,34 +47,44 @@ export const readArtifactFindings = (
   ghApiPath: (url: string, outPath: string) => Promise<void>,
 ): ArtifactReader => {
   return async (zipUrl: string): Promise<string | null> => {
-    const dir = await mkdtemp(join(tmpdir(), "code-review-artifact-"));
-    const zip = join(dir, "findings.zip");
     try {
-      await ghApiPath(zipUrl, zip);
-      // The member is located by NAME, not assumed at the root (locateFindingsMember below) — a
-      // findings document can nest as `findings/findings.json`, and today's upload-artifact strips the
-      // directory prefix (verified against a real archive), but that is its behaviour, not ours.
-      const { stdout: listing } = await run("unzip", ["-Z1", zip], {
-        encoding: "utf-8",
-        maxBuffer: 4 * 1024 * 1024,
-        timeout: STEP_TIMEOUT_MS,
-      });
-      const member = locateFindingsMember(listing);
-      if (member === null) return null;
-      // Extract ALL members and read the located one by exact filesystem path. `unzip -p <zip>
-      // <member>` treats the name as a WILDCARD pattern, so a stored path containing `[`/`]`/`*`/`?`
-      // matches nothing, exits 11, and the catch returns null — the exact silent cold-seed the
-      // located-name fix exists to prevent (issue #217 review r7, verified empirically on Info-ZIP
-      // 6.00). A path read has no pattern semantics at all.
-      await run("unzip", [zip, "-d", dir], {
-        maxBuffer: 64 * 1024 * 1024,
-        timeout: STEP_TIMEOUT_MS,
-      });
-      return await readFile(join(dir, member), "utf-8");
-    } catch {
+      const dir = await mkdtemp(join(tmpdir(), "code-review-artifact-"));
+      const zip = join(dir, "findings.zip");
+      try {
+        await ghApiPath(zipUrl, zip);
+        // The member is located by NAME, not assumed at the root (locateFindingsMember below) — a
+        // findings document can nest as `findings/findings.json`, and today's upload-artifact strips the
+        // directory prefix (verified against a real archive), but that is its behaviour, not ours.
+        const { stdout: listing } = await run("unzip", ["-Z1", zip], {
+          encoding: "utf-8",
+          maxBuffer: 4 * 1024 * 1024,
+          timeout: STEP_TIMEOUT_MS,
+        });
+        const member = locateFindingsMember(listing);
+        if (member === null) return null;
+        // Extract ALL members and read the located one by exact filesystem path. `unzip -p <zip>
+        // <member>` treats the name as a WILDCARD pattern, so a stored path containing `[`/`]`/`*`/`?`
+        // matches nothing, exits 11, and the catch returns null — the exact silent cold-seed the
+        // located-name fix exists to prevent (issue #217 review r7, verified empirically on Info-ZIP
+        // 6.00). A path read has no pattern semantics at all.
+        await run("unzip", [zip, "-d", dir], {
+          maxBuffer: 64 * 1024 * 1024,
+          timeout: STEP_TIMEOUT_MS,
+        });
+        return await readFile(join(dir, member), "utf-8");
+      } finally {
+        // Best-effort: a failed cleanup must not override the document/null this promise resolved
+        // to — both callers await with no try/catch, so a rejection here would fail the gather
+        // step or abort the post (issue #233 r1).
+        await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    } catch (err) {
+      // Every other best-effort channel in gather/post logs its failures; a mute one made an
+      // expired-artifact cold seed undiagnosable (issue #233 r1).
+      process.stderr.write(
+        `Warning: could not resolve the prior findings artifact ${zipUrl} (${errMsg(err)}) — the re-review seeds without the prior document\n`,
+      );
       return null;
-    } finally {
-      await rm(dir, { recursive: true, force: true });
     }
   };
 };
@@ -122,7 +133,10 @@ export const resolvePriorFindings = async (
   if (text === null) return null;
   try {
     return withStampedConvergence(JSON.parse(text), body);
-  } catch {
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not parse the findings document fetched from ${url} (${errMsg(err)}) — the re-review seeds without the prior document\n`,
+    );
     return null;
   }
 };

@@ -27,6 +27,14 @@ import type { PatchProjection } from "./surface.js";
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 
+// The machine-channel budget for carried suppressed-nit fields: each field is clipped individually
+// (BODY_CLIP_CHARS), but the SUM across a nit-heavy round is unbounded, and the sticky is the one
+// comment post deliberately does not shed — an unbounded machine block can still 422 it, which the
+// old embed-limit valve structurally prevented (issue #233 r1). The budget drops a nit's carried
+// block once exhausted — its summary line stays, and the cut is marked in the machine channel,
+// never silent.
+const CARRIED_TOTAL_CHARS = 40_000;
+
 type StrayView = Finding & {
   readonly patchProjection: PatchProjection;
   readonly answeredNote: string;
@@ -224,6 +232,20 @@ export const render = (input: RenderInput): string => {
   // suppressed convergence badge.
   const advisoryAllowed = isFullReviewRound;
 
+  const suppressedBudget = (input.suppressedNits ?? []).map(sanitizeSuppressedNit).reduce<{
+    readonly list: SuppressedNitView[];
+    readonly used: number;
+    readonly dropped: number;
+  }>(
+    (acc, n) => {
+      const size = n.carried.reduce((sum, line) => sum + line.length + 1, 0);
+      return acc.used + size > CARRIED_TOTAL_CHARS
+        ? { list: [...acc.list, { ...n, carried: [] }], used: acc.used, dropped: acc.dropped + 1 }
+        : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };
+    },
+    { list: [], used: 0, dropped: 0 },
+  );
+
   return eta.renderString(input.template, {
     findings: input.findings,
     envelope: input.envelope,
@@ -249,7 +271,8 @@ export const render = (input: RenderInput): string => {
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
     strays: (input.strays ?? []).map((f) => sanitizeFinding(f, input.answeredNotes)),
-    suppressedNits: (input.suppressedNits ?? []).map(sanitizeSuppressedNit),
+    suppressedNits: suppressedBudget.list,
+    carriedDroppedNits: suppressedBudget.dropped,
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,
     systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
     unanchoredCount: input.unanchoredCount ?? 0,

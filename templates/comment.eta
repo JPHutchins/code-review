@@ -156,6 +156,9 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% }) -%>
 > <%~ '-->' %>
 <% }) -%>
+<% if (it.carriedDroppedNits > 0) { -%>
+> <%~ '<!-- code-review:suppressed-nit carried fields clipped for ' + it.carriedDroppedNits + ' nit(s) — the full findings are in the artifact -->' %>
+<% } -%>
 >
 > </details>
 <% } %>

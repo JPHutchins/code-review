@@ -700,7 +700,7 @@ export const post = async (
   // paths — which also post a body built from this — say it too. Once per post, not once per surface.
   let warnedNoJsonUrl = false;
   const findingsBlob = (doc: Findings): string => {
-    if (input.jsonUrl === undefined && !warnedNoJsonUrl) {
+    if (!input.jsonUrl && !warnedNoJsonUrl) {
       warnedNoJsonUrl = true;
       process.stderr.write(
         "::error::no --json-url was supplied, so this comment names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
@@ -1149,6 +1149,20 @@ export const post = async (
   // after the sticky is up is issue #223. The embedded document is gone from this body (issue #217),
   // which removed the largest fixed cost it had — an oversized round is now a matter of finding prose,
   // not of a ~32KB blob.
+  // A body with no --json-url carries no findings marker, and upserting it would overwrite a sticky
+  // whose embedded blob is the last decodable seed (a pre-#217 sticky) — refusing keeps the seed
+  // chain alive; the run log already carries the ::error:: naming the missing machine channel
+  // (issue #233 r2).
+  if (
+    !input.jsonUrl &&
+    existingSticky !== null &&
+    parseFindingsMarker(existingSticky.body) !== null
+  ) {
+    leaveInPlace(
+      "no --json-url was supplied and the existing sticky still carries a decodable embedded findings document — leaving it in place rather than severing the seed chain\n",
+    );
+  }
+
   // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,

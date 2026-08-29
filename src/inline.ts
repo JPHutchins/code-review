@@ -1,6 +1,14 @@
 import { Eta } from "eta";
 import { partitionFindings, indexDiff, defaultSide } from "./diff.js";
-import { severityEmoji, findingPointer, projectPatch, formatConfidence } from "./surface.js";
+import {
+  severityEmoji,
+  findingPointer,
+  findingPayload,
+  INLINE_PROSE_CLIP_THRESHOLD_CHARS,
+  projectPatch,
+  formatConfidence,
+} from "./surface.js";
+import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import { answeredNoteKey } from "./answered.js";
 import type { Finding, Findings } from "./schema.js";
 import type { InlineComment, InlineResult } from "./types.js";
@@ -70,6 +78,23 @@ export const buildInlineComments = (
 
   const comments: InlineComment[] = inDiff.map((f) => {
     const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";
+    // In the clip band the prose sheds so the comment fits — the marker still embeds the WHOLE
+    // finding, which is what keeps the answered registry decoding the thread (issue #233 r2). The
+    // clip is clipText's marked truncation, never silent.
+    const clipProse =
+      fullFindings !== undefined &&
+      findingPayload(f, fullFindings.schema_version).length > INLINE_PROSE_CLIP_THRESHOLD_CHARS;
+    const view = clipProse
+      ? {
+          ...f,
+          description: clipText(f.description, BODY_CLIP_CHARS),
+          ...(f.recommendation != null
+            ? { recommendation: clipText(f.recommendation, BODY_CLIP_CHARS) }
+            : {}),
+          reasoning: clipText(f.reasoning, BODY_CLIP_CHARS),
+          ...(f.patch != null ? { patch: clipText(f.patch, BODY_CLIP_CHARS) } : {}),
+        }
+      : f;
     const sameRootNote = noteFor(f, context.sameRootNotes);
     const answeredNote = noteFor(f, context.answeredNotes);
     const comment: InlineComment = {
@@ -77,7 +102,7 @@ export const buildInlineComments = (
       line: f.end_line,
       side: defaultSide(f.side),
       body: renderCommentBody(
-        f,
+        view,
         eta,
         inlineTemplate,
         modelsText,

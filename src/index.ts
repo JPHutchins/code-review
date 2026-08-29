@@ -31,7 +31,7 @@ import {
   DEFAULT_RESERVE,
   DEADLINE_ENV,
 } from "./budget.js";
-import { decodeAnsweredEntry } from "./answered.js";
+import { decodeAnsweredEntry, isAnsweredDrop, type StagedAnsweredEntry } from "./answered.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { formatUtc } from "./format.js";
 import {
@@ -355,6 +355,12 @@ const renderCmd = defineCommand({
       pricedAt: new Date(),
     });
     process.stdout.write(output);
+    // The standalone render command names no findings artifact (there is no --json-url flag), so
+    // its output carries no machine channel — the same ::error:: post emits, because a preview that
+    // looks like a review is worse than one that says what it lacks (issue #233 r2).
+    process.stderr.write(
+      "::error::no --json-url was supplied, so this comment names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
+    );
   },
 });
 
@@ -1058,44 +1064,12 @@ const seedDraftCmd = defineCommand({
         : stripSurfaceFields(
             isSurfaceStampedDoc(parsedPrior) ? parsedPrior : withoutScopeMetastasis(parsedPrior),
           );
-    // The agent-facing scope_metastasis entry is derivable from the carried convergence trajectory —
-    // the same computation post() ran when it stamped it — so the seed re-attaches it: the next-round agent
-    // must see the recurrence signal. A legacy blob whose stripped doc still carries the authoritative
-    // pipeline stamp keeps it. The re-attach is best-effort: if the in-force schema (a consumer-pinned
-    // custom --schema predating the field) rejects the adorned doc, the un-adorned prior is seeded
-    // instead — losing the recurrence entry beats losing ALL prior context.
-    const priorFindings = ((): unknown => {
-      if (
-        strippedPrior === null ||
-        typeof strippedPrior !== "object" ||
-        Array.isArray(strippedPrior)
-      )
-        return strippedPrior;
-      // A carried entry only counts when it VALIDATES as the entry shape — for a draft blob it is
-      // already dropped (only a legacy pipeline-stamped blob reaches here with one), and an explicit
-      // null, an array, or a malformed object (all possible in a corrupt blob; genuine posts omit the
-      // key on null) falls through to the trajectory recovery like an absent one (issues #150
-      // review r3 + r4). The derivation is also gated on the prior's verdict exactly like post's
-      // stamp (isRound requires a review verdict): an error-verdict prior never carries a
-      // re-derived entry (issue #150 review r4).
-      const carried = (strippedPrior as Record<string, unknown>)["scope_metastasis"];
-      if (ScopeMetastasisCodec.decode(carried)._tag === "Right") return strippedPrior;
-      if ((strippedPrior as Record<string, unknown>)["verdict"] === "error") return strippedPrior;
-      const computed = computeScopeMetastasis(priorTrajectory(parsedPrior, priorBody ?? ""));
-      return computed === null ? strippedPrior : { ...strippedPrior, scope_metastasis: computed };
-    })();
-
-    // Validate + write WITHOUT the process-exiting require* helpers: any failure (bad
-    // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the
-    // sentinel-only seed so the always-exit-0 contract holds. The prior findings are NEVER written
-    // into $DRAFT — only the sentinel goes there; the prior travels out-of-band to
-    // priorContextPath, which no recovery path reads back (issue #127).
-    // The answered-findings registry (issue #151), delivered beside the prior context: the prior
-    // inline findings whose threads a human reply answered, so the next-round agent knows what it
-    // must not re-raise verbatim. Best-effort and independent of whether the prior findings seeded —
-    // even a prior that never completed (a notice) still has answered threads. A malformed staged
-    // file warns and writes nothing; the workflow references the sidecar as possibly absent.
-    if (args["prior-answers"]) {
+    // The answered registry decoded ONCE, up front: the seed's pre-filter below and the sidecar
+    // write at the end both consume it (issue #233 r2). null = no usable registry (the flag absent,
+    // or the staged file malformed — the old contract: a malformed file warns and writes NO
+    // sidecar, issue #151).
+    const answeredRegistry = ((): readonly StagedAnsweredEntry[] | null => {
+      if (!args["prior-answers"]) return null;
       try {
         const raw = JSON.parse(readFileSync(resolve(args["prior-answers"]), "utf-8")) as unknown;
         if (!Array.isArray(raw)) throw new Error("expected an array");
@@ -1110,15 +1084,71 @@ const seedDraftCmd = defineCommand({
             `Warning: ${String(raw.length - decoded.length)} of ${String(raw.length)} answered-registry row(s) failed to decode — the seed's answered state is incomplete\n`,
           );
         }
-        writeFileSync(priorAnswersPath(outPath), `${JSON.stringify(decoded, null, 2)}\n`);
-        process.stderr.write(
-          `Seeded ${priorAnswersPath(outPath)} with ${String(decoded.length)} answered finding(s) as context\n`,
-        );
+        return decoded;
       } catch (err) {
         process.stderr.write(
           `Warning: could not read the answered-findings registry ${args["prior-answers"]} (${errMsg(err)}) — no prior-answers sidecar\n`,
         );
+        return null;
       }
+    })();
+
+    // The agent-facing scope_metastasis entry is derivable from the carried convergence trajectory —
+    // the same computation post() ran when it stamped it — so the seed re-attaches it: the next-round agent
+    // must see the recurrence signal. A legacy blob whose stripped doc still carries the authoritative
+    // pipeline stamp keeps it. The re-attach is best-effort: if the in-force schema (a consumer-pinned
+    // custom --schema predating the field) rejects the adorned doc, the un-adorned prior is seeded
+    // instead — losing the recurrence entry beats losing ALL prior context.
+    const priorFindings = ((): unknown => {
+      if (
+        strippedPrior === null ||
+        typeof strippedPrior !== "object" ||
+        Array.isArray(strippedPrior)
+      )
+        return strippedPrior;
+      const raw = strippedPrior as Record<string, unknown>;
+      // The artifact holds the agent's PRE-FILTER draft — uploaded before post's answered-filter
+      // dropped verbatim re-raises — so the seed applies the SAME drop via the SAME shared
+      // predicate (isAnsweredDrop, issue #233 r2): a finding the prior round closed as answered is
+      // not open, and showing it as open wastes the next round on a claim post will suppress anyway.
+      const doc: Record<string, unknown> =
+        answeredRegistry !== null && answeredRegistry.length > 0 && Array.isArray(raw["findings"])
+          ? {
+              ...raw,
+              findings: (raw["findings"] as Finding[]).filter(
+                (f) => !answeredRegistry.some((e) => isAnsweredDrop(f, e)),
+              ),
+            }
+          : raw;
+      // A carried entry only counts when it VALIDATES as the entry shape — for a draft blob it is
+      // already dropped (only a legacy pipeline-stamped blob reaches here with one), and an explicit
+      // null, an array, or a malformed object (all possible in a corrupt blob; genuine posts omit the
+      // key on null) falls through to the trajectory recovery like an absent one (issues #150
+      // review r3 + r4). The derivation is also gated on the prior's verdict exactly like post's
+      // stamp (isRound requires a review verdict): an error-verdict prior never carries a
+      // re-derived entry (issue #150 review r4).
+      const carried = doc["scope_metastasis"];
+      if (ScopeMetastasisCodec.decode(carried)._tag === "Right") return doc;
+      if (doc["verdict"] === "error") return doc;
+      const computed = computeScopeMetastasis(priorTrajectory(parsedPrior, priorBody ?? ""));
+      return computed === null ? doc : { ...doc, scope_metastasis: computed };
+    })();
+
+    // Validate + write WITHOUT the process-exiting require* helpers: any failure (bad
+    // --schema-version, unreadable schema, non-matching shape, unwritable $DRAFT) degrades to the
+    // sentinel-only seed so the always-exit-0 contract holds. The prior findings are NEVER written
+    // into $DRAFT — only the sentinel goes there; the prior travels out-of-band to
+    // priorContextPath, which no recovery path reads back (issue #127).
+    // The answered-findings registry (issue #151), delivered beside the prior context: the prior
+    // inline findings whose threads a human reply answered, so the next-round agent knows what it
+    // must not re-raise verbatim. Best-effort and independent of whether the prior findings seeded —
+    // even a prior that never completed (a notice) still has answered threads. A malformed staged
+    // file warns and writes nothing; the workflow references the sidecar as possibly absent.
+    if (answeredRegistry !== null) {
+      writeFileSync(priorAnswersPath(outPath), `${JSON.stringify(answeredRegistry, null, 2)}\n`);
+      process.stderr.write(
+        `Seeded ${priorAnswersPath(outPath)} with ${String(answeredRegistry.length)} answered finding(s) as context\n`,
+      );
     }
 
     // The prior round's below-visibility-floor nits (issue #164), re-derived from the SAME prior blob

@@ -1,0 +1,14 @@
+Initialize $DRAFT before the review runs: write a NON-REVIEW SENTINEL (no recovery path can validate it as a review), and deliver the decoded findings of a prior review OUT-OF-BAND to a read-only context file beside the draft when one exists and still validates (incremental re-review). Skips a prior that never completed (an error-verdict notice) or that a CI-fix mechanic pass produced — the seed chain is route-aware. Prints the mode to stdout (prior-same|prior-new when prior context was delivered, by whether the prior review examined this same commit; empty-had-prior when a prior review exists but its findings could not be loaded; empty on a first review; none when even the sentinel write failed) and always exits 0 (code-review seed-draft v0.1.0-alpha.40)
+
+USAGE code-review seed-draft [OPTIONS] --out
+
+OPTIONS
+
+           --prior    Path to the prior-review JSON gather staged ({ id, body }, or the literal null); its embedded base64 findings marker is decoded and delivered as re-review context when it validates against the schema
+        --head-sha    Current head SHA, compared against the prior review's embedded reviewed-sha to distinguish a same-commit re-review from a new-commit one; an unknown or mismatched prior SHA is treated as a new commit
+  --out (required)    Path to write the sentinel $DRAFT to (an absolute path outside the worktree)                                                                                                                           
+            --kind    Schema kind to validate the prior findings against (default: findings)                                                                                                                                 
+          --schema    Path to a schema file (wins over --kind/--schema-version)                                                                                                                                              
+  --schema-version    Schema major.minor to validate the prior findings against (default: the kind's latest — an older-shaped prior review then delivers no context)                                                         
+
+

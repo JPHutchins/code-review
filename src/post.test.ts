@@ -126,6 +126,9 @@ const mkInput = (overrides: Partial<PostInput>): PostInput => ({
   templatePath: join(tmpDir, "comment.eta"),
   inlineTemplatePath: join(tmpDir, "inline.eta"),
   route: "full review",
+  // Every production post names the findings artifact (issue #217); a test that needs the no-json-url
+  // edge overrides this with `jsonUrl: undefined`.
+  jsonUrl: "https://artifacts.example.com/findings.json",
   ...overrides,
 });
 
@@ -761,7 +764,7 @@ describe("post — systemic problems (issue #134)", () => {
         },
       ]);
 
-      await post(mkInput({}), api);
+      await post(mkInput({ jsonUrl: undefined }), api);
 
       const stickyCall = calls().find(
         (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
@@ -2649,7 +2652,7 @@ describe("post — --run-url / --json-url threading", () => {
   it("omits the run link when it isn't given, and names no artifact when no --json-url was given", async () => {
     const { api, calls } = mkMockGhApi(okMocks);
 
-    await post(mkInput({}), api);
+    await post(mkInput({ jsonUrl: undefined }), api);
 
     const stickyCall = calls().find(
       (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,

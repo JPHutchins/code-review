@@ -27,6 +27,13 @@ import type { PatchProjection } from "./surface.js";
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 
+// A code renders inside backticks and a code_url inside a markdown link: a backtick in the code
+// breaks the span, and a paren/newline in the URL breaks the link (or the blockquote the nit's
+// aside sits in) — issue #233 r2. The parens are percent-encoded (the URL stays valid); the
+// newline/backtick handling is escapeCodeBackticks' own.
+const linkSafeUrl = (url: string): string =>
+  escapeCodeBackticks(url).replace(/\(/g, "%28").replace(/\)/g, "%29");
+
 // The machine-channel budget for carried suppressed-nit fields: each field is clipped individually
 // (BODY_CLIP_CHARS), but the SUM across a nit-heavy round is unbounded, and the sticky is the one
 // comment post deliberately does not shed — an unbounded machine block can still 422 it, which the
@@ -53,6 +60,8 @@ const sanitizeFinding = (
     ...f,
     title: escapePipes(f.title),
     path: escapeCodeBackticks(f.path),
+    ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
+    ...(f.code_url !== undefined ? { code_url: linkSafeUrl(f.code_url) } : {}),
     patchProjection: projectPatch(f.patch, "comment-body"),
     answeredNote:
       answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
@@ -98,7 +107,7 @@ const commentSafe = (text: string): string =>
 const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   title: escapeCodeBackticks(f.title),
   ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
-  ...(f.code_url !== undefined ? { codeUrl: f.code_url } : {}),
+  ...(f.code_url !== undefined ? { codeUrl: linkSafeUrl(f.code_url) } : {}),
   path: commentSafe(escapeCodeBackticks(f.path)),
   startLine: f.start_line,
   endLine: f.end_line,
@@ -134,6 +143,8 @@ const carriedLines = (f: Finding): readonly string[] =>
 const sanitizeSystemic = (s: SystemicProblem): SystemicProblem => ({
   ...s,
   title: escapePipes(s.title),
+  ...(s.code !== undefined ? { code: escapeCodeBackticks(s.code) } : {}),
+  ...(s.code_url !== undefined ? { code_url: linkSafeUrl(s.code_url) } : {}),
   ...(s.paths !== undefined ? { paths: s.paths.map(escapeCodeBackticks) } : {}),
   ...(s.finding_codes !== undefined
     ? { finding_codes: s.finding_codes.map(escapeCodeBackticks) }

@@ -239,11 +239,20 @@ describe("findingPointer — the inline payload's size valve (issue #217 review 
   });
 
   // The safe bound leaves room for the prose the template re-renders from the same fields:
-  // payload + prose + directive must stay under the comment limit, so the valve sits near 30K.
-  it("embeds a payload below the true safe bound", () => {
+  // payload + prose + directive must stay under the comment limit, so the prose clip starts near 30K.
+  it("embeds a payload below the prose-clip threshold", () => {
     const sizable = { ...findings.findings[0]!, description: "x".repeat(20_000) };
 
     expect(findingPointer(sizable, findings.schema_version, URL)).toContain("findings-json;base64");
+  });
+
+  // The hard valve sits at the whole-document embed's old EMBED_LIMIT: in the band between the two
+  // thresholds the inline renderer clips the prose while the payload keeps embedding — which is
+  // what keeps the answered registry decoding the thread (issue #233 r2).
+  it("embeds through the clip band, leaving only the hard valve to the link form", () => {
+    const inBand = { ...findings.findings[0]!, description: "x".repeat(30_000) };
+
+    expect(findingPointer(inBand, findings.schema_version, URL)).toContain("findings-json;base64");
   });
 
   // With no URL there is nothing to name — the embed is the only channel the finding has.

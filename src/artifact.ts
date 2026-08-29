@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { parseConvergenceMarker, parseFindingsMarker } from "./surface.js";
-import { errMsg } from "./util.js";
+import { annotationSafe, errMsg } from "./util.js";
 
 const run = promisify(execFile);
 
@@ -80,9 +80,12 @@ export const readArtifactFindings = (
       }
     } catch (err) {
       // Every other best-effort channel in gather/post logs its failures; a mute one made an
-      // expired-artifact cold seed undiagnosable (issue #233 r1).
+      // expired-artifact cold seed undiagnosable. ::warning:: so the Actions UI surfaces it as an
+      // annotation, not just a log line (issue #233 r1 + r2).
       process.stderr.write(
-        `Warning: could not resolve the prior findings artifact ${zipUrl} (${errMsg(err)}) — the re-review seeds without the prior document\n`,
+        annotationSafe(
+          `::warning::could not resolve the prior findings artifact ${zipUrl} (${errMsg(err)}) — the re-review seeds without the prior document`,
+        ),
       );
       return null;
     }
@@ -135,7 +138,9 @@ export const resolvePriorFindings = async (
     return withStampedConvergence(JSON.parse(text), body);
   } catch (err) {
     process.stderr.write(
-      `Warning: could not parse the findings document fetched from ${url} (${errMsg(err)}) — the re-review seeds without the prior document\n`,
+      annotationSafe(
+        `::warning::could not parse the findings document fetched from ${url} (${errMsg(err)}) — the re-review seeds without the prior document`,
+      ),
     );
     return null;
   }

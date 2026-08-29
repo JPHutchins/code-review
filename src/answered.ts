@@ -282,8 +282,32 @@ export const answeredRegistryFrom = (
 
 // The "code (or title)" match: codes equal when the finding carries one; two codeless findings match
 // on equal titles. A code-bearing finding never matches a codeless answered entry (and vice versa).
-const matches = (f: Finding, e: AnsweredEntry): boolean =>
+const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
   f.code !== undefined && f.code !== "" ? e.code === f.code : e.code === "" && e.title === f.title;
+
+// The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
+// (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
+export const isVerbatimReRaise = (
+  f: Finding,
+  e: Pick<AnsweredEntry, "title" | "description" | "reasoning" | "severity" | "path" | "patch">,
+): boolean =>
+  f.title === e.title &&
+  f.description === e.description &&
+  f.reasoning === e.reasoning &&
+  f.severity === e.severity &&
+  f.path === e.path &&
+  (f.patch ?? null) === e.patch;
+
+// Would post's answered-filter DROP this finding? applyAnswered below and the seed's pre-filter
+// both ask this (issue #233 r2), so "answered" can never mean two things across the pipeline. e is
+// the staged wire shape too: every field the predicate reads shares its name across both types.
+export const isAnsweredDrop = (
+  f: Finding,
+  e: Pick<
+    AnsweredEntry,
+    "code" | "title" | "description" | "reasoning" | "severity" | "path" | "patch"
+  >,
+): boolean => matches(f, e) && isVerbatimReRaise(f, e) && f.severity !== "critical";
 
 // The ONE note-key contract: a finding's annotation key is its code when it carries one, else
 // "title:<title>" — written once here, consumed by the registry builder, applyAnswered, and both
@@ -339,14 +363,7 @@ export const applyAnswered = (
     // something new. The line is deliberately excluded: positional drift (a rebase moving the same
     // claim) is not evidence (issue #151 review r3). patch is normalized (undefined → null) so an
     // absent patch on both sides compares equal.
-    const verbatim =
-      f.title === entry.title &&
-      f.description === entry.description &&
-      f.reasoning === entry.reasoning &&
-      f.severity === entry.severity &&
-      f.path === entry.path &&
-      (f.patch ?? null) === entry.patch;
-    if (verbatim && f.severity !== "critical") {
+    if (isAnsweredDrop(f, entry)) {
       droppedByKey.set(answeredNoteKey(f), entry);
       droppedCount += 1;
     } else {

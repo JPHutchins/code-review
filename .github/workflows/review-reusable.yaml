@@ -718,8 +718,11 @@ jobs:
             fi
             # A case pattern, not `printf | grep -q`: grep's exit-on-match can kill printf with
             # SIGPIPE under `bash -e -o pipefail`, reporting a supporting CLI as predating the flag
-            # (issue #233 r1). Verified against citty's real help output for both commands.
-            seed_accepts() { case " $SEED_HELP " in *" --$1 "*) return 0 ;; esac; return 1; }
+            # (issue #233 r1). The pattern accepts BOTH option-name renderings citty emits — plain
+            # names (0.1.6) and backtick-quoted ones — and is executed against the real published
+            # help by workflow-probe.test.ts, so a rendering change fails the suite instead of
+            # dropping flags in CI (issue #233 r2).
+            seed_accepts() { case " $SEED_HELP " in *" --$1 "*|*" \`--$1\` "*) return 0 ;; esac; return 1; }
             PRIOR_FINDINGS_ARGS=()
             if [ -f prior_findings.json ] && seed_accepts prior-findings; then
               PRIOR_FINDINGS_ARGS=(--prior-findings prior_findings.json)
@@ -1047,10 +1050,12 @@ jobs:
 
           echo "has_findings=true" >> "$GITHUB_OUTPUT"
 
-      # retention-days pinned to the max: the findings artifact is the re-review memory now that the
-      # document left the comment (issue #217), so its retention must not be shrinkable by a repo
-      # settings change (issue #233 r1). `id` exposes artifact-id, threaded to the comment job to
-      # point --json-url at this artifact's own download endpoint.
+      # retention-days requests the platform max for public repos, but a repo/org-level retention
+      # setting still caps it (whichever expires first) — the pin is a floor of min(90, repo max),
+      # not a guarantee. The findings artifact is the re-review memory now that the document left
+      # the comment (issue #217), so requesting the max keeps the default behavior explicit
+      # (issue #233 r2). `id` exposes artifact-id, threaded to the comment job to point --json-url
+      # at this artifact's own download endpoint.
       - uses: actions/upload-artifact@v7
         id: upload-findings
         # Not on cancellation: assemble is skipped there, so findings/ would not exist to upload.
@@ -1192,8 +1197,11 @@ jobs:
           fi
           # A case pattern, not `printf | grep -q`: grep's exit-on-match can kill printf with
           # SIGPIPE under `bash -e -o pipefail`, reporting a supporting CLI as predating the flag
-          # (issue #233 r1). Verified against citty's real help output.
-          post_accepts() { case " $POST_HELP " in *" --$1 "*) return 0 ;; esac; return 1; }
+          # (issue #233 r1). The pattern accepts BOTH option-name renderings citty emits — plain
+          # names (0.1.6) and backtick-quoted ones — and is executed against the real published
+          # help by workflow-probe.test.ts, so a rendering change fails the suite instead of
+          # dropping flags in CI (issue #233 r2).
+          post_accepts() { case " $POST_HELP " in *" --$1 "*|*" \`--$1\` "*) return 0 ;; esac; return 1; }
 
           CLOC_ARGS=()
           if [ -f findings/cloc-diff.txt ] && post_accepts cloc-diff; then

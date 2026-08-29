@@ -82,22 +82,28 @@ export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl
 // must keep working across rounds: an answer given in round 1 still closes a verbatim re-raise in
 // round 8. A link cannot do that — this round's artifact does not contain round 1's finding — so the
 // thread carries its own finding, self-contained, exactly as before. It is one finding (~1KB), not the
-// whole document, and only on the opt-in inline surface (issue #217). One finding can still grow past
-// the comment limit, though: the inline template re-renders the SAME fields as prose, so the payload
-// alone must leave room for roughly itself again plus the ~850-char directive — the safe bound is
-// ~30,000 base64 chars (issue #233 r1; the whole-document embed had this valve, and the one payload
-// that still travels needs it too, issue #217 review r7). With no URL there is nothing to name, so
-// the embed stays the only channel.
-const INLINE_EMBED_LIMIT_CHARS = 30_000;
+// whole document, and only on the opt-in inline surface (issue #217).
+//
+// Two thresholds, one valve. The inline template re-renders the SAME fields as prose, so the comment
+// holds the payload AND roughly the payload again — past the SOFT bound the inline renderer clips
+// that prose (marked, never silent) while the marker keeps embedding the WHOLE finding, which is
+// what keeps the answered registry working (issue #233 r1 + r2). Past the HARD bound (the
+// whole-document embed's old EMBED_LIMIT) no embed fits at all, so the marker names the artifact
+// instead — and only THAT band breaks the registry, for a finding pathological enough that no
+// comment could hold it. With no URL there is nothing to name, so the embed stays the only channel.
+export const INLINE_PROSE_CLIP_THRESHOLD_CHARS = 30_000;
+export const INLINE_EMBED_LIMIT_CHARS = 42_700;
+export const findingPayload = (finding: Finding, schemaVersion: string): string =>
+  Buffer.from(
+    JSON.stringify({ schema_version: schemaVersion, findings: [finding] }),
+    "utf-8",
+  ).toString("base64");
 export const findingPointer = (
   finding: Finding,
   schemaVersion: string,
   jsonUrl?: string,
 ): string => {
-  const payload = Buffer.from(
-    JSON.stringify({ schema_version: schemaVersion, findings: [finding] }),
-    "utf-8",
-  ).toString("base64");
+  const payload = findingPayload(finding, schemaVersion);
   return payload.length > INLINE_EMBED_LIMIT_CHARS && jsonUrl !== undefined
     ? `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json ${jsonUrl} -->`
     : `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${payload} -->`;

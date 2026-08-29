@@ -57,6 +57,24 @@ index abc..def 100644
 `;
 
 describe("buildInlineComments", () => {
+  // In the clip band the prose sheds so the comment fits while the marker keeps embedding the
+  // WHOLE finding — the answered registry depends on that (issue #233 r2).
+  it("clips the prose in the clip band while the marker embeds the whole finding", () => {
+    const inBand = mkFinding({
+      path: "src/foo.ts",
+      start_line: 10,
+      end_line: 10,
+      description: "x".repeat(30_000),
+    });
+    const { comments } = buildInlineComments([inBand], inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+      findings: mkFindingsDoc([inBand]),
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("… [truncated]");
+    expect(comments[0]!.body).toContain("findings-json;base64");
+  });
+
   it("includes in-diff findings as comments", () => {
     const findings: Finding[] = [
       mkFinding({ path: "src/foo.ts", start_line: 10, end_line: 10, title: "on-line10" }),

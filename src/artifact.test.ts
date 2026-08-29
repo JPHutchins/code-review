@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { findingsArtifactUrl, resolvePriorFindings } from "./artifact.js";
+import { findingsArtifactUrl, locateFindingsMember, resolvePriorFindings } from "./artifact.js";
 
 // The link branch is the whole point of #217 and nothing exercised it: every other test builds a
 // legacy embedded marker, so the regex → fetch → parse path never ran. The reader is injected, so
@@ -148,5 +148,38 @@ describe("resolvePriorFindings — convergence provenance", () => {
     const doc = { schema_version: "0.9.0", findings: [], convergence: stamped };
 
     expect(await resolvePriorFindings(embeddedSticky(doc), never)).toEqual(doc);
+  });
+});
+
+describe("locateFindingsMember (issue #217 review r7)", () => {
+  it("finds a root-level member", () => {
+    expect(locateFindingsMember("findings.json\n")).toBe("findings.json");
+  });
+
+  it("finds a nested member by name", () => {
+    expect(locateFindingsMember("findings/findings.json\n")).toBe("findings/findings.json");
+  });
+
+  // The case-insensitive match: a `Findings.json` member is the same upload with different casing,
+  // and a case-sensitive filter silently cold-seeds it.
+  it("matches the member name case-insensitively", () => {
+    expect(locateFindingsMember("Findings.json\n")).toBe("Findings.json");
+  });
+
+  // `unzip -p <zip> <member>` treated the name as a wildcard pattern — `[prod]` is a character
+  // class — so a bracket path exited 11 and cold-seeded. The located name now feeds a filesystem
+  // read, which has no pattern semantics; this test pins that such a member is LOCATED at all.
+  it("locates a member whose path contains pattern metacharacters", () => {
+    expect(locateFindingsMember("artifacts-[prod]/findings.json\n")).toBe(
+      "artifacts-[prod]/findings.json",
+    );
+  });
+
+  it("prefers the shortest member when the archive holds both root and nested copies", () => {
+    expect(locateFindingsMember("findings/findings.json\nfindings.json\n")).toBe("findings.json");
+  });
+
+  it("is null when no findings member exists", () => {
+    expect(locateFindingsMember("readme.md\n")).toBeNull();
   });
 });

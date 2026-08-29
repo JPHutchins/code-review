@@ -685,12 +685,13 @@ export const post = async (
   // so the placeholder's round and this round's stamp can't disagree (issue #188 review).
   const priorRoundCount = nextRoundNumber(priorTraj, priorConv?.rounds ?? []) - 1;
 
-  // The blob is the agent's complete document with the pipeline-stamped convergence inside it — no
-  // separate signal or rounds marker (issue #174). A notice / CI-fix pass carries the prior convergence
-  // forward, so the trajectory + last score survive a non-round post; a first-run notice with no
-  // completed round carries none. convergence is pipeline-owned and ALWAYS overwritten: any value the
-  // agent echoed is replaced by the pipeline's (or by undefined, which serializes to an omitted key), so
-  // a draft can never smuggle a self-declared score/converged into the blob.
+  // The agent's document carries no convergence of its own (issue #217 review r7): the pipeline stamps
+  // it, and the compact marker beside the findings link carries the SAME stamped object, so a reader of
+  // the comment never needs the artifact for the stop signal. A notice / CI-fix pass carries the prior
+  // convergence forward, so the trajectory + last score survive a non-round post; a first-run notice
+  // with no completed round carries none. convergence is pipeline-owned and ALWAYS overwritten: any
+  // value the agent echoed is replaced by the pipeline's (or by undefined, which serializes to an
+  // omitted key), so a draft can never smuggle a self-declared score/converged into the document.
   const stampConvergence = (doc: Findings, conv: Convergence | null): Findings => ({
     ...doc,
     convergence: conv ?? undefined,

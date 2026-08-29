@@ -1207,6 +1207,58 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.findings[0]!.title).toBe("Prior finding");
   });
 
+  it("seeds a gather-staged --prior-findings document from the staged file (issue #217)", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:findings-json https://example.com/artifact.zip -->\nnew sticky`,
+    );
+    const staged = join(tmpDir, "prior_findings.json");
+    writeFileSync(staged, JSON.stringify(priorFindings));
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--prior-findings",
+      staged,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    assertSentinelOnly(out);
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings;
+    expect(context.findings).toHaveLength(1);
+    expect(context.findings[0]!.title).toBe("Prior finding");
+  });
+
+  it("a staged 'null' falls back to decoding the embedded blob out of --prior (issue #217)", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(priorFindings)}\nold sticky`,
+    );
+    const staged = join(tmpDir, "prior_findings.json");
+    writeFileSync(staged, "null");
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--prior-findings",
+      staged,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    assertSentinelOnly(out);
+    const context = JSON.parse(
+      readFileSync(priorContextPath(out), "utf-8"),
+    ) as typeof priorFindings;
+    expect(context.findings).toHaveLength(1);
+    expect(context.findings[0]!.title).toBe("Prior finding");
+  });
+
   it("delivers the prior round's below-floor nits to the .prior-suppressed sidecar as adjudicated context (issue #164)", async () => {
     const withNits = {
       schema_version: "0.9.0",

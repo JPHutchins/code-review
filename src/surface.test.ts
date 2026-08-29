@@ -218,6 +218,34 @@ describe("findingsPointer — one form, always the artifact link (issue #217)", 
   });
 });
 
+describe("findingPointer — the inline payload's size valve (issue #217 review r7)", () => {
+  const URL = "https://api.github.com/repos/o/r/actions/artifacts/1/zip";
+
+  // 65536 chars minus the ~850-char directive, at 4/3 base64 expansion: a finding past ~48KB of JSON
+  // 422s the whole inline comment and costs the finding its anchor — the valve names the artifact
+  // instead, the one form that cannot overflow.
+  it("names the artifact when the payload would exceed the comment limit", () => {
+    const huge = { ...findings.findings[0]!, description: "x".repeat(50_000) };
+
+    const marker = findingPointer(huge, findings.schema_version, URL);
+    expect(marker).toContain(`<!-- code-review:findings-json ${URL} -->`);
+    expect(marker).not.toContain(";base64");
+  });
+
+  it("embeds when the payload fits", () => {
+    expect(findingPointer(findings.findings[0]!, findings.schema_version, URL)).toContain(
+      "findings-json;base64",
+    );
+  });
+
+  // With no URL there is nothing to name — the embed is the only channel the finding has.
+  it("keeps embedding past the limit when no URL is supplied", () => {
+    const huge = { ...findings.findings[0]!, description: "x".repeat(50_000) };
+
+    expect(findingPointer(huge, findings.schema_version)).toContain("findings-json;base64");
+  });
+});
+
 describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)", () => {
   // It used to open by telling the agent to decode. The prose became the review, so decoding reaches
   // the same content the long way round — but only WHERE the comment is a review.
@@ -225,6 +253,12 @@ describe("AGENTS stop directive — a rule, not an inventory (issues #171, #217)
     expect(AGENTS_STOP_DIRECTIVE).toContain("Read the prose when it is there");
     expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).not.toContain("DECODE OR FETCH IT");
     expect(AGENTS_STOP_DIRECTIVE.toUpperCase()).not.toContain("DOWNLOAD AND READ THE FULL SCHEMA");
+  });
+
+  // An inline thread and a pre-#217 sticky EMBED their document; the fetch instruction names no URL
+  // there, so the directive must also point at the marker itself (issue #217 review r7).
+  it("names the decode route for the embedded forms the fetch instruction cannot reach", () => {
+    expect(AGENTS_STOP_DIRECTIVE).toContain("decode the marker where the comment carries it");
   });
 
   // This constant also rides the in-progress placeholder, the did-not-complete notice and the

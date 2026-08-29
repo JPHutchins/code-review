@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -24,6 +24,20 @@ const MARKER_URL = /<!-- code-review:findings-json (https?:\/\/[^\s>]+) -->/;
 export const findingsArtifactUrl = (body: string): string | null =>
   MARKER_URL.exec(body)?.[1] ?? null;
 
+// The exact stored name of the findings member in `unzip -Z1` output, matched CASE-INSENSITIVELY — a
+// case-sensitive filter misses a `Findings.json` member and the seed goes cold with nothing logged
+// (issue #217 review r7). Shortest match wins, so a root-level member is preferred over a nested one
+// if an archive ever holds both — the pipeline uploads a single directory, so today there is exactly
+// one.
+export const locateFindingsMember = (listing: string): string | null =>
+  listing
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(
+      (l) => l.toLowerCase() === "findings.json" || l.toLowerCase().endsWith("/findings.json"),
+    )
+    .sort((a, b) => a.length - b.length)[0] ?? null;
+
 // Reads `findings.json` out of the zip an artifact URL serves. Injected at the call sites so the
 // resolver is testable without a network or an unzip binary.
 export type ArtifactReader = (zipUrl: string) => Promise<string | null>;
@@ -36,32 +50,26 @@ export const readArtifactFindings = (
     const zip = join(dir, "findings.zip");
     try {
       await ghApiPath(zipUrl, zip);
-      // The member is located by NAME, not assumed at the root. `unzip -p <zip> findings.json`
-      // pattern-matches the full stored path, so it exits 11 ("filename not matched") if the archive
-      // ever nests as `findings/findings.json` — and that failure is silent: the catch below returns
-      // null, so every re-review would seed cold and the nit stickiness would always fail open with
-      // nothing in the log. Today's upload-artifact strips the directory prefix (verified against a
-      // real archive), but that is its behaviour, not ours.
+      // The member is located by NAME, not assumed at the root (locateFindingsMember below) — a
+      // findings document can nest as `findings/findings.json`, and today's upload-artifact strips the
+      // directory prefix (verified against a real archive), but that is its behaviour, not ours.
       const { stdout: listing } = await run("unzip", ["-Z1", zip], {
         encoding: "utf-8",
         maxBuffer: 4 * 1024 * 1024,
         timeout: STEP_TIMEOUT_MS,
       });
-      // Shortest match wins, so a root-level member is preferred over a nested one if an archive ever
-      // holds both — the pipeline uploads a single directory, so today there is exactly one.
-      const member = listing
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l === "findings.json" || l.endsWith("/findings.json"))
-        .sort((a, b) => a.length - b.length)[0];
-      if (member === undefined) return null;
-      // maxBuffer because a findings document on a long PR is comfortably past node's 1MiB default.
-      const { stdout } = await run("unzip", ["-p", zip, member], {
-        encoding: "utf-8",
+      const member = locateFindingsMember(listing);
+      if (member === null) return null;
+      // Extract ALL members and read the located one by exact filesystem path. `unzip -p <zip>
+      // <member>` treats the name as a WILDCARD pattern, so a stored path containing `[`/`]`/`*`/`?`
+      // matches nothing, exits 11, and the catch returns null — the exact silent cold-seed the
+      // located-name fix exists to prevent (issue #217 review r7, verified empirically on Info-ZIP
+      // 6.00). A path read has no pattern semantics at all.
+      await run("unzip", [zip, "-d", dir], {
         maxBuffer: 64 * 1024 * 1024,
         timeout: STEP_TIMEOUT_MS,
       });
-      return stdout;
+      return await readFile(join(dir, member), "utf-8");
     } catch {
       return null;
     } finally {

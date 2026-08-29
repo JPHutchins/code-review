@@ -56,7 +56,7 @@ const FINDINGS_SCHEMA_URL =
 // stays well-formed. Exported so the surfaces and their tests share one SSOT for the text (it is
 // carried forward verbatim by carryForwardMarkers) — the text below is that SSOT; do not restate it
 // here.
-export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment names a code-review findings document in the marker, and usually renders that same review as prose too. Read the prose when it is there: it is the cheaper read. Fetch the document when the prose is not the review (this comment may be a status notice instead), when the prose is only part of it (findings anchored to diff lines stay on the diff, and those threads carry their own finding rather than a link — the workflow run's summary renders the review whole), or when you need a field the prose does not render. Read the document's schema_version and fetch the schema for THAT version before acting — a schema's own $id is its canonical URL, and the URL below is the current version, not a pinned one: ${FINDINGS_SCHEMA_URL} — then parse the WHOLE findings document, not only the fields you recognize. -->`;
+export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment names a code-review findings document in the marker, and usually renders that same review as prose. Read the prose when it is there: it is the cheaper read. Fetch the document when the prose is not the review (this comment may be a status notice), when the prose is only part of it (findings anchored to diff lines, and those threads carry their own finding rather than a link — the workflow run's summary renders the review whole), or when you need a field the prose does not render — decode the marker where the comment carries it instead (an inline thread's finding, or a pre-#217 sticky). Read the document's schema_version and fetch the schema for THAT version before acting — a schema's own $id is its canonical URL, and the URL below is the current version, not a pinned one: ${FINDINGS_SCHEMA_URL} — then parse the WHOLE findings document, not only the fields you recognize. -->`;
 
 // The marker names the findings artifact; it never carries the document. The embedded base64 form is
 // still READ (parseFindingsMarker) because every sticky written before this change holds one, but
@@ -82,12 +82,24 @@ export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl
 // must keep working across rounds: an answer given in round 1 still closes a verbatim re-raise in
 // round 8. A link cannot do that — this round's artifact does not contain round 1's finding — so the
 // thread carries its own finding, self-contained, exactly as before. It is one finding (~1KB), not the
-// whole document, and only on the opt-in inline surface (issue #217).
-export const findingPointer = (finding: Finding, schemaVersion: string): string =>
-  `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${Buffer.from(
+// whole document, and only on the opt-in inline surface (issue #217). One finding can still grow past
+// the comment limit, though: past the valve the marker names the artifact instead — the whole-document
+// embed had this valve, and the one payload that still travels needs it too (issue #217 review r7).
+// With no URL there is nothing to name, so the embed stays the only channel.
+const INLINE_EMBED_LIMIT_CHARS = 64_000;
+export const findingPointer = (
+  finding: Finding,
+  schemaVersion: string,
+  jsonUrl?: string,
+): string => {
+  const payload = Buffer.from(
     JSON.stringify({ schema_version: schemaVersion, findings: [finding] }),
     "utf-8",
-  ).toString("base64")} -->`;
+  ).toString("base64");
+  return payload.length > INLINE_EMBED_LIMIT_CHARS && jsonUrl !== undefined
+    ? `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json ${jsonUrl} -->`
+    : `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${payload} -->`;
+};
 
 // null when the marker is absent or holds the all-zeros placeholder (no head SHA was stamped),
 // so callers treat an unknown prior commit as a new-commit re-review rather than asserting a match.
@@ -118,8 +130,9 @@ export const isFullReviewSticky = (body: string): boolean => {
   if (route === "full review") return true;
   if (route === "mechanic") return false;
   // Round history means a completed full review — whether it rides the new convergence field/marker or a
-  // legacy rounds marker (issue #185 review). A post-#174 notice carries its trajectory only in the blob,
-  // and this predicate gates the empty-mechanic guard that must not bury that completed review.
+  // legacy rounds marker (issue #185 review). A post-#174 notice carries its trajectory in the
+  // document's convergence or the compact marker, and this predicate gates the empty-mechanic guard
+  // that must not bury that completed review.
   return priorTrajectory(parseFindingsMarker(body), body).length > 0;
 };
 
@@ -140,8 +153,10 @@ export const parseCompletedAncestor = (body: string): boolean =>
 export const REVIEW_COMPLETE_MARKER = "<!-- review-complete -->";
 export const parseReviewComplete = (body: string): boolean => body.includes(REVIEW_COMPLETE_MARKER);
 
-// null when the body carries no base64 marker (e.g. the jsonUrl-link fallback for oversized findings)
-// or the payload isn't valid JSON. Callers validate the result — a prior run may predate the shape.
+// null when the body carries no base64 marker — the link form is what every post writes now, and the
+// embedded form is read-only legacy: nothing writes a base64 marker since #217, but every sticky
+// written before it holds one, and each PR only rewrites its own on its next round. Also null when the
+// payload isn't valid JSON. Callers validate the result — a prior run may predate the shape.
 export const parseFindingsMarker = (body: string): unknown => {
   const b64 = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body)?.[1];
   if (b64 === undefined) return null;
@@ -773,11 +788,11 @@ export const parseConvergence = (priorDoc: unknown): Convergence | null => {
 
 const CONVERGENCE_RE = /<!-- code-review:convergence;base64 ([A-Za-z0-9+/=]+) -->/;
 
-// The compact convergence marker — a SIZE FALLBACK for the link/omitted blob form (issue #185 review):
-// convergence lives IN the findings blob (the SSOT), but an oversized review's blob falls to the link
-// form and the convergence would be lost with it. This carries the SAME stamped convergence object
-// compactly beside the link, emitted ONLY when the blob does not embed and read ONLY as a fallback (the
-// embedded blob always wins), so a normal sticky carries no such marker and the two can never diverge.
+// The compact convergence marker (issue #185): the document left the comment (issue #217), so
+// convergence no longer rides inside it — the marker carries the SAME stamped convergence object
+// compactly beside the link, on EVERY post that has a convergence to carry (a completed round, or one
+// carried forward by a notice or a CI-fix pass). Its size-fallback role is over: it is how a reader of
+// the comment reaches the trajectory and the stop signal without a fetch.
 export const convergenceMarker = (convergence: Convergence): string =>
   `<!-- code-review:convergence;base64 ${Buffer.from(JSON.stringify(convergence), "utf-8").toString(
     "base64",
@@ -896,8 +911,8 @@ export const carryForwardMarkers = (body: string): string => {
   const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
   const reviewedRoute = ROUTE_RE.exec(body)?.[0];
-  // The compact convergence marker (issue #185 review) rides an oversized review's link-form blob, so
-  // the in-progress placeholder must carry it forward too or the trajectory is lost across the swap.
+  // The compact convergence marker (issue #185 review) rides beside the findings link, so the
+  // in-progress placeholder must carry it forward too or the trajectory is lost across the swap.
   const convergence = CONVERGENCE_RE.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
   const signal = SIGNAL_RE.exec(body)?.[0];
@@ -943,9 +958,9 @@ export const projectPatch = (patch: string | undefined, surface: PatchSurface): 
 
 export const formatConfidence = (n: number): string => n.toFixed(2);
 
-// The review-object body: a bare one-line pointer to the sticky, where the findings-json blob lives —
+// The review-object body: a bare one-line pointer to the sticky, where the findings document lives —
 // the sole documented decode surface (issue #161) — and to the run that produced the review (issue
-// #204), so a reader who lands here has a path back to the evidence. It never embeds the blob: the
+// #204), so a reader who lands here has a path back to the evidence. It never embeds the document: the
 // review body is written only after upsertSticky returns — a genuinely failed sticky write throws and
 // aborts post() first, and a response it cannot parse leaves these words unlinked rather than
 // embedding the blob here. SSOT shared by the commenter (post.ts) and the `preview` command.

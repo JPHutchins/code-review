@@ -1,7 +1,7 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
-import { clipText } from "./util.js";
+import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
@@ -81,14 +81,17 @@ type SuppressedNitView = {
 };
 
 // HTML comments cannot nest, so a `-->` inside a carried field would close the block early and spill
-// the rest into the visible prose.
-const commentSafe = (text: string): string => text.replace(/--+>/g, "-\u2011>");
+// the rest into the visible prose. A zero-width space between the dashes and the `>` breaks the
+// sequence while rendering invisibly, so a human reading the carried text sees it VERBATIM — the
+// previous replacement mutated the author's own text to a visible hyphen (issue #217 review r7).
+const commentSafe = (text: string): string =>
+  text.replace(/--+(?=>)/g, (dashes) => `${dashes}\u200b`);
 
 const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   title: escapeCodeBackticks(f.title),
   ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
   ...(f.code_url !== undefined ? { codeUrl: f.code_url } : {}),
-  path: escapeCodeBackticks(f.path),
+  path: commentSafe(escapeCodeBackticks(f.path)),
   startLine: f.start_line,
   endLine: f.end_line,
   ...(f.side !== undefined ? { side: f.side } : {}),
@@ -102,18 +105,18 @@ const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
 // Each carried field is clipped. Every below-floor nit's full finding rides in the sticky body, and
 // that body is the one GitHub rejects over 65536 chars — which post deliberately does not shed, so an
 // oversized body 422s the round with the announce placeholder still up. Removing the ~32KB document
-// bought far more room than this spends, but "far more room" is not a bound. The cap matches the
-// conversation clip's, and clipText marks what it cut so a reader is never silently shown a fragment.
-const CARRIED_FIELD_CHARS = 4000;
+// bought far more room than this spends, but "far more room" is not a bound. The cap IS the
+// conversation clip's (BODY_CLIP_CHARS, util.ts) — one constant so the two can't drift — and clipText
+// marks what it cut so a reader is never silently shown a fragment.
 
 const carriedLines = (f: Finding): readonly string[] =>
   [
-    `description: ${clipText(f.description, CARRIED_FIELD_CHARS)}`,
+    `description: ${clipText(f.description, BODY_CLIP_CHARS)}`,
     ...(f.recommendation !== undefined
-      ? [`recommendation: ${clipText(f.recommendation, CARRIED_FIELD_CHARS)}`]
+      ? [`recommendation: ${clipText(f.recommendation, BODY_CLIP_CHARS)}`]
       : []),
-    `reasoning: ${clipText(f.reasoning, CARRIED_FIELD_CHARS)}`,
-    ...(f.patch !== undefined ? ["patch:", clipText(f.patch, CARRIED_FIELD_CHARS)] : []),
+    `reasoning: ${clipText(f.reasoning, BODY_CLIP_CHARS)}`,
+    ...(f.patch !== undefined ? ["patch:", clipText(f.patch, BODY_CLIP_CHARS)] : []),
   ]
     .flatMap((block) => commentSafe(block).split("\n"))
     .map((line) => line.trimEnd());
@@ -183,7 +186,8 @@ export const render = (input: RenderInput): string => {
   // The pipeline-stamped convergence field (issue #174) is the source for the trajectory and the badge.
   // `input.rounds` is a fallback only for callers that supply a legacy trajectory directly (tests, or a
   // standalone render of a doc without convergence); its entries carry no score and render "—". Every
-  // production sticky carries convergence in the blob, so the fallback never fires there.
+  // production sticky carries convergence — in the compact marker beside the link (issue #217) — so
+  // the fallback never fires there.
   const convergence = input.findings.convergence;
   const trajectory = convergence?.rounds ?? input.rounds ?? [];
   // The same-root annotation: post passes the explicit map computed from the PRIOR-round history it
@@ -200,7 +204,7 @@ export const render = (input: RenderInput): string => {
   // carried-forward trajectory alone gives context. Prefer post's explicit signal (which also gates
   // the round append, so badge ⇔ append); fall back to the shared predicate for the standalone
   // `render` command — which additionally requires a rounds history, since without one no round has
-  // completed and neither the badge nor the blob's stop signal may appear (the README's omission
+  // completed and neither the badge nor the stop signal may appear (the README's omission
   // semantics, issue #141 review r4). The verdict guard (isReviewVerdict, shared with post's round
   // append) closes an edge isIncompleteFindings misses (it flags an "error" verdict only when
   // findings are also empty): an error doc that carries findings must still show no badge, never

@@ -16,7 +16,7 @@ import {
   ThreadCommentCodec,
   THREAD_COMMENT_JQ,
 } from "./answered.js";
-import { annotationSafe, clipText, errMsg } from "./util.js";
+import { annotationSafe, BODY_CLIP_CHARS, clipText, errMsg } from "./util.js";
 
 export interface GatherInput {
   readonly repo: string;
@@ -282,10 +282,10 @@ const priorReviewFrom = (
 // channel with each body clipped so a long thread can't blow the agent's context; the workflow frames
 // these files as claims-to-verify, never as instructions.
 const MAX_CONVERSATION_COMMENTS = 50;
-const MAX_CONVERSATION_BODY_CHARS = 4000;
 
-// The shared surrogate-safe clip (util.ts) at the conversation's own length cap.
-const clip = (body: string): string => clipText(body, MAX_CONVERSATION_BODY_CHARS);
+// The shared surrogate-safe clip (util.ts) at the shared body cap — one constant with render's
+// carried-field clip so the two caps cannot drift (issue #217 review r7).
+const clip = (body: string): string => clipText(body, BODY_CLIP_CHARS);
 
 // Drop the review bot and empty bodies, keep the most recent MAX (logging when it caps), then project.
 const boundedHuman = <

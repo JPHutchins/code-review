@@ -10,6 +10,13 @@ import { repoRoot } from "./test-util.js";
 // the REAL published help (captured fixtures) plus a backtick-quoted variant, so a rendering change
 // in either citty or the workflow fails here instead of silently dropping flags in CI (issue #233
 // r2 — the systemic that followed a probe change verified against the wrong help text).
+//
+// Fixture provenance: test/fixtures/published-help/*.txt are byte-identical captures of
+// `npx -y @jphutchins/code-review@0.1.0-alpha.52 <cmd> --help`, captured 2026-08-29 and re-verified
+// by diff the same day. The help headers say "v0.1.0-alpha.40" — that is the PUBLISHED package's
+// own stale help metadata (the release build does not stamp the package version into the help
+// meta), not a stale fixture; it is why the captures can look older than the package they come
+// from.
 
 const workflowPaths = [".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"];
 

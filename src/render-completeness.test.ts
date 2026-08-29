@@ -479,6 +479,41 @@ describe("the comment carries every field of the findings document (issue #217)"
     expect(out).not.toContain("a`b");
     expect(out).toContain("%28y%29");
   });
+
+  // The same-root note lookup is keyed on RAW codes; the escaped display form must not break it
+  // for exactly the codes the escaping exists to serve (issue #233 r3).
+  it("looks up the same-root note by the raw code, not the escaped display form", () => {
+    const noteCode = "a`b";
+    const doc = {
+      ...findings,
+      findings: [{ ...findings.findings[0]!, code: noteCode }],
+    } as unknown as Findings;
+    const out = render({
+      findings: doc,
+      envelope: {
+        schema_version: "0.4.0",
+        findings: doc,
+        models: [{ model: "m", input_tokens: 1, output_tokens: 1 }],
+        turns: 1,
+        duration_ms: 1,
+      },
+      prices: {
+        _updated: "x",
+        _unit: "y",
+        models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
+      },
+      template: readFileSync(`${repoRoot}/templates/comment.eta`, "utf-8"),
+      strays: doc.findings.slice(0, 1),
+      suppressedNits: [],
+      route: "full review",
+      convergenceRound: true,
+      nitVisibilityFloor: 0.25,
+      jsonUrl: "https://example.com/artifact.zip",
+      sameRootNotes: { [noteCode]: "Same mechanism as round 1" },
+    });
+
+    expect(out).toContain("Same mechanism as round 1");
+  });
 });
 
 describe("leafPaths — the walker the guard's coverage is built on (issue #217 review r7)", () => {

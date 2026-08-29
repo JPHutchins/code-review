@@ -45,6 +45,10 @@ const CARRIED_TOTAL_CHARS = 40_000;
 type StrayView = Finding & {
   readonly patchProjection: PatchProjection;
   readonly answeredNote: string;
+  // The RAW code, carried beside the escaped display form: the same-root note lookup in the
+  // template is keyed on raw codes, so a backtick/newline code must not lose its note through
+  // the escaping (issue #233 r3).
+  readonly codeKey?: string;
 };
 
 // The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
@@ -60,7 +64,7 @@ const sanitizeFinding = (
     ...f,
     title: escapePipes(f.title),
     path: escapeCodeBackticks(f.path),
-    ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
+    ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code), codeKey: f.code } : {}),
     ...(f.code_url !== undefined ? { code_url: linkSafeUrl(f.code_url) } : {}),
     patchProjection: projectPatch(f.patch, "comment-body"),
     answeredNote:

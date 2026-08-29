@@ -87,6 +87,7 @@ export const buildInlineComments = (
     const view = clipProse
       ? {
           ...f,
+          title: clipText(f.title, BODY_CLIP_CHARS),
           description: clipText(f.description, BODY_CLIP_CHARS),
           ...(f.recommendation != null
             ? { recommendation: clipText(f.recommendation, BODY_CLIP_CHARS) }

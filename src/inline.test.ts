@@ -64,6 +64,7 @@ describe("buildInlineComments", () => {
       path: "src/foo.ts",
       start_line: 10,
       end_line: 10,
+      title: "t".repeat(30_000),
       description: "x".repeat(30_000),
     });
     const { comments } = buildInlineComments([inBand], inlineDiff, {
@@ -73,6 +74,9 @@ describe("buildInlineComments", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]!.body).toContain("… [truncated]");
     expect(comments[0]!.body).toContain("findings-json;base64");
+    // The title sheds with the rest of the prose — every rendered field is inside the valve.
+    expect(comments[0]!.body).not.toContain("t".repeat(30_000));
+    expect(comments[0]!.body).not.toContain("x".repeat(30_000));
   });
 
   it("includes in-diff findings as comments", () => {

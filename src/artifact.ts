@@ -5,6 +5,7 @@ import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { parseConvergenceMarker, parseFindingsMarker } from "./surface.js";
 import { annotationSafe, errMsg } from "./util.js";
+import { withEscapeRetry } from "./gh.js";
 
 const run = promisify(execFile);
 
@@ -114,12 +115,21 @@ export const readArtifactFindings = (
 };
 
 // The default reader: `gh api <url> > <path>` — gh follows the artifact redirect and writes the zip.
+// gh's guard classifies binary responses by their first bytes and refuses them only when writing to
+// a TTY, which this piped child stdout never is — so the zip streams verbatim today. The shared
+// escape-retry still wraps the call as defense against a future gh that inspects binary bodies, and
+// to keep every gh api site on one boundary (this one reads its own run call because it needs buffer
+// output rather than runGhApi's string).
 export const ghArtifactReader = readArtifactFindings(async (url, outPath) => {
-  const { stdout } = await run("gh", ["api", url], {
-    encoding: "buffer",
-    maxBuffer: 256 * 1024 * 1024,
-    timeout: STEP_TIMEOUT_MS,
-  });
+  const { stdout } = await withEscapeRetry(
+    (withFlag) =>
+      run("gh", ["api", ...(withFlag ? ["--allow-escape-sequences"] : []), url], {
+        encoding: "buffer",
+        maxBuffer: 256 * 1024 * 1024,
+        timeout: STEP_TIMEOUT_MS,
+      }),
+    true,
+  );
   await writeFile(outPath, stdout);
 });
 

@@ -911,6 +911,31 @@ describe("gather — failing-job logs", () => {
     stderrSpy.mockRestore();
   });
 
+  // The job-log endpoint colors its output; the staged file must carry the colored log VERBATIM —
+  // the escapes are the CI author's own text, and the fast-fix agent reads them exactly as the
+  // author saw them. (The ANSI escapes are written as \u001b escape sequences here so this file's own
+  // source stays ASCII — a raw ESC byte in the diff would trip the same refusal this pipeline now
+  // works around.)
+  it("stages an ANSI-colored job log verbatim", async () => {
+    const colored = "2026-01-01T00:00:00.000Z \u001b[31mfailing test\u001b[0m\n";
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: jobRows({ id: 11, conclusion: "failure" }) },
+      { match: logsMatch, response: colored },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1 });
+    expect(outFile("job_11.log")).toBe(colored);
+  });
+
   // The fast-fix route exists to read the failing logs; with none staged it reasons from the diff
   // alone, which is the thing it replaces. That has to be said out loud, not left for a reader to
   // notice in the agent's prose (issue #154).

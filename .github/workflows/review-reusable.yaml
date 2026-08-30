@@ -30,7 +30,13 @@ on:
         type: string
         required: true
       head_repo:
-        description: Head repository full_name, for the concurrency group (disambiguates forks)
+        # When passed, this MUST name the HEAD repo — the fork's owner/name on a fork PR — never the
+        # base repo. It drives BOTH the concurrency group and the sticky's finding permalinks (which
+        # target the tree the reviewed SHA lives in; a base-repo value on a fork PR renders
+        # permalinks the base repo cannot resolve). Omitted ⇒ the workflow derives it from the
+        # caller's event (workflow_run.head_repository / pull_request.head.repo), and the concurrency
+        # groups fall back to github.repository for group naming only.
+        description: Head repository full_name (the fork on a fork PR) — disambiguates the concurrency group AND anchors finding permalinks; MUST be the head repo, never the base repo
         type: string
         required: false
         default: ""

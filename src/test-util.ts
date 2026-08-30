@@ -1,8 +1,54 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { vi } from "vitest";
+import { runCommand } from "citty";
+import { main } from "./index.js";
 
 export const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Thrown by the mocked process.exit below, distinguishing a deliberate exit from a real error. */
+export class ExitSignal extends Error {
+  constructor(readonly code: number) {
+    super(`process.exit(${String(code)})`);
+  }
+}
+
+/** Capture stdout/stderr writes and process.exit calls around a CLI invocation. */
+export const runCli = async (
+  rawArgs: readonly string[],
+): Promise<{
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number | null;
+}> => {
+  let stdout = "";
+  let stderr = "";
+  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+    stdout += String(chunk);
+    return true;
+  });
+  const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    stderr += String(chunk);
+    return true;
+  });
+  const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+    throw new ExitSignal(code ?? 0);
+  }) as never);
+
+  let exitCode: number | null = null;
+  try {
+    await runCommand(main, { rawArgs: [...rawArgs] });
+  } catch (err) {
+    if (!(err instanceof ExitSignal)) throw err;
+    exitCode = err.code;
+  } finally {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+    exitSpy.mockRestore();
+  }
+  return { stdout, stderr, exitCode };
+};
 
 export const readRepoFile = (relativePath: string): string =>
   readFileSync(resolvePath(repoRoot, relativePath), "utf-8");

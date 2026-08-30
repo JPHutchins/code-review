@@ -73,36 +73,40 @@ const DOCUMENTED_EXCLUSIONS = [
 // themselves rendered nowhere and were asserted nowhere (issue #217 review r7).
 const sentinel = (leaf: string): string => `S_${leaf.replace(/\./g, "_")}_E`;
 
-// Leaves whose type cannot carry a string sentinel. This is ONE table: the keys are the allowlist the
-// schema walk accepts, and the values are what the render must contain — so a leaf cannot be listed
-// here to excuse it from the walk without also being asserted. Listing without asserting was the third
-// hole this guard has had; deriving both from one table is what closes it structurally.
-// Values a search can only satisfy by the leaf actually rendering. The previous version used values
-// the render produces for OTHER reasons — `verdict: "comment"` matched the word "comment" inside the
-// directive's own static text, and the convergence values matched prose derived from the same object —
-// so several entries passed without the leaf being carried at all.
-const VISIBLE_LEAF_VALUES: Readonly<Record<string, string>> = {
-  verdict: "💬 comment",
-  "findings.start_line": ":10",
-  "findings.end_line": "–12",
-  "findings.side": "RIGHT",
-  "findings.severity": "(major)",
-  "findings.confidence": "0.91",
-  "findings.likelihood": "0.92",
-  "systemic_problems.severity": "(critical)",
-  "systemic_problems.confidence": "0.81",
-  "change_size.code.added": "111",
-  "change_size.code.removed": "222",
-  "change_size.tests.added": "333",
-  "change_size.tests.removed": "444",
-  "change_size.docs.added": "555",
-  "change_size.docs.removed": "666",
-  // The note's own rendered text — a bare "3" was satisfiable by change_size's "333", so the entry
-  // passed while the metastasis note rendered nothing at all (the fixture's single round was below
-  // the streak threshold; issue #217 review r7).
-  "scope_metastasis.recurring.code": "`recurring-code`",
-  "scope_metastasis.recurring.consecutive_rounds": "in 3 consecutive rounds",
-};
+// Leaves whose type cannot carry a string sentinel. ONE table per concern: the leaf names are the
+// allowlist the schema walk accepts, and each entry pairs the value the render must contain with the
+// anchor naming the LINE the leaf's own field renders on — a sibling sentinel or fixed prose on that
+// surface. So a leaf cannot be listed here to excuse it from the walk without also being asserted,
+// and a value cannot pass by rendering somewhere else in the comment: the previous presence search
+// let `verdict: "comment"` match the directive's own static prose, and a bare "3" match
+// change_size's "333" while the metastasis note rendered nothing (issue #232, #217 review r7).
+const VISIBLE_LEAVES: readonly (readonly [leaf: string, value: string, anchor: string])[] = [
+  // The verdict anchor is the markdown header prefix, NOT a fragment of the value itself: a value
+  // containing its own anchor reduces the position check to the presence check it replaces — a
+  // badge moved off the header would still pass (issue #232 r1). The first "### " line IS the
+  // verdict badge (the systemic and findings headers render later in the template).
+  ["verdict", "💬 comment", "### "],
+  ["findings.start_line", ":10", "S_findings_title_E"],
+  ["findings.end_line", "–12", "S_findings_title_E"],
+  ["findings.side", "RIGHT", "S_findings_title_E"],
+  ["findings.severity", "(major)", "S_findings_title_E"],
+  ["findings.confidence", "0.91", "S_findings_title_E"],
+  ["findings.likelihood", "0.92", "S_findings_title_E"],
+  ["systemic_problems.severity", "(critical)", "S_systemic_problems_title_E"],
+  ["systemic_problems.confidence", "0.81", "S_systemic_problems_title_E"],
+  ["change_size.code.added", "111", "**Changes:**"],
+  ["change_size.code.removed", "222", "**Changes:**"],
+  ["change_size.tests.added", "333", "**Changes:**"],
+  ["change_size.tests.removed", "444", "**Changes:**"],
+  ["change_size.docs.added", "555", "**Changes:**"],
+  ["change_size.docs.removed", "666", "**Changes:**"],
+  // The anchor is the flagged-code line's blockquote code-span opening ("> **`"), the only line in
+  // the note that carries it — the INTRO line is near-duplicate prose ("each fix keeps enabling the
+  // next finding in that machinery"), so any prose fragment ("consecutive rounds", " findings in ")
+  // is one wording edit away from colliding with it (issue #232 r1).
+  ["scope_metastasis.recurring.code", "`recurring-code`", "> **`"],
+  ["scope_metastasis.recurring.consecutive_rounds", "in 3 consecutive rounds", "> **`"],
+];
 
 // These live ONLY in the compact convergence marker. They are asserted by the golden pin below —
 // exact JSON equality against the fixture's convergence object, not substring search: searching was
@@ -123,7 +127,7 @@ const CONVERGENCE_LEAF_VALUES: Readonly<Record<string, string>> = {
 };
 
 const NUMERIC_LEAVES = [
-  ...Object.keys(VISIBLE_LEAF_VALUES),
+  ...VISIBLE_LEAVES.map(([leaf]) => leaf),
   ...Object.keys(CONVERGENCE_LEAF_VALUES),
 ];
 
@@ -267,12 +271,16 @@ describe("the comment carries every field of the findings document (issue #217)"
   // The numeric and boolean leaves, which cannot carry a string sentinel — asserted by value, and
   // listed by name so the walk above can tell "covered numerically" from "not covered at all".
   it("renders a value for every leaf the allowlist excuses from the sentinel walk", () => {
-    const out = rendered();
+    const lines = rendered().split("\n");
 
-    const absent = Object.entries(VISIBLE_LEAF_VALUES)
-      .filter(([, value]) => !out.includes(value))
-      .map(([leaf, value]) => `${leaf} (${value})`);
-    expect(absent, "leaves listed in the allowlist but absent from the comment").toEqual([]);
+    for (const [leaf, value, anchor] of VISIBLE_LEAVES) {
+      const line = lines.find((l) => l.includes(anchor)) ?? "";
+      expect(line, `${leaf} (${value}) on the ${anchor} line`).toContain(value);
+    }
+    // Within-line attribution: the six change_size values share one anchor line, so per-value
+    // containment cannot catch a swapped pair — assert the rendered cell ORDER (issue #232 r1).
+    const changesLine = lines.find((l) => l.includes("**Changes:**")) ?? "";
+    expect(changesLine).toContain("+111 / −222 code · +333 / −444 tests · +555 / −666 docs");
   });
 
   it("carries every convergence leaf in the compact marker itself", () => {

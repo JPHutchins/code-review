@@ -255,8 +255,13 @@ export const render = (input: RenderInput): string => {
     readonly dropped: number;
   }>(
     (acc, n) => {
+      // The fixed overhead covers the summary line's structure; the title and path are the
+      // reviewer-controlled variable-length parts of it, budgeted at their true size (issue #233 r6).
       const size =
-        n.carried.reduce((sum, line) => sum + line.length + 1, 0) + SUPPRESSED_NIT_BLOCK_OVERHEAD;
+        n.carried.reduce((sum, line) => sum + line.length + 1, 0) +
+        SUPPRESSED_NIT_BLOCK_OVERHEAD +
+        n.title.length +
+        n.path.length;
       return acc.used + size > CARRIED_TOTAL_CHARS
         ? { list: acc.list, used: acc.used, dropped: acc.dropped + 1 }
         : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };

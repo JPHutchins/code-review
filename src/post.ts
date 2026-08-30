@@ -1156,14 +1156,17 @@ export const post = async (
   // not of a ~32KB blob.
   // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
   // pointer to the prior findings document. The guard refuses only when the pointer is actually
-  // load-bearing: a FULL-REVIEW sticky whose markers gather would seed from (a mechanic/notice
-  // sticky is never a seed, and an announce placeholder must be replaced by an honest notice, not
-  // frozen). An expired artifact link is not resolvability-checked here — a fetch in the write path
+  // load-bearing: a COMPLETED full-review sticky whose markers gather would seed from. The
+  // review-complete requirement exempts the announce placeholder, which carries the route and the
+  // markers forward but strips review-complete — it must be replaced by an honest notice, not
+  // frozen (post.ts's empty-mechanic path handles it). A mechanic/notice sticky is never a seed
+  // either. An expired artifact link is not resolvability-checked here — a fetch in the write path
   // is the wrong trade — so an expired link can still freeze a round; the run log's ::error:: names
-  // why (issue #233 r2 + r5).
+  // why (issue #233 r2 + r5 + r6).
   if (
     !input.jsonUrl &&
     existingSticky !== null &&
+    parseReviewComplete(existingSticky.body) &&
     parseReviewedRoute(existingSticky.body) === "full review" &&
     hasFindingsMarker(existingSticky.body)
   ) {

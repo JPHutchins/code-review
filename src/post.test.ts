@@ -2666,7 +2666,7 @@ describe("post — --run-url / --json-url threading", () => {
 
   it("refuses to overwrite a sticky whose LINK marker is the last pointer, when no --json-url was given (issue #233 r4)", async () => {
     const linkSticky =
-      "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/f.zip -->\nprose";
+      "<!-- code-review -->\n<!-- review-complete -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/f.zip -->\nprose";
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
       throw new Error("exit");
     });

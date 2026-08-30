@@ -450,6 +450,8 @@ describe("the comment carries every field of the findings document (issue #217)"
   it("bounds a sticky with hundreds of accumulated nits", () => {
     const manyNits = Array.from({ length: 300 }, (_, i) => ({
       ...findings.findings[1]!,
+      // A huge title is the variable-length summary part the budget must count too (issue #233 r6).
+      ...(i === 0 ? { title: "T".repeat(20_000) } : {}),
       reasoning: `r${String(i)} ${"y".repeat(200)}`,
     }));
     const doc = {

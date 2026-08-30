@@ -96,8 +96,10 @@ export interface RenderInput {
   // URL at the IO boundary (issue #231 r1).
   readonly repo?: string;
   // The strays GitHub rejected inline, whose coordinates are known-bad: their permalinks link the
-  // path only, never re-asserting a rejected `#L…` anchor as if it were verified. Omitted ⇒ every
-  // permalink carries its anchor (issue #231 r1).
+  // path only, never re-asserting a rejected `#L…` anchor as if it were verified. Matched by
+  // REFERENCE identity — post spreads the same finding objects into both arrays, so a distinct
+  // twin finding at the same coordinates keeps its anchor (issue #231 r2). Omitted ⇒ every
+  // permalink carries its anchor.
   readonly unanchoredStrays?: readonly Finding[];
   // Computed at the IO boundary so render() stays pure/clockless. Omitted ⇒ segment suppressed.
   readonly postedAt?: string;

@@ -1188,9 +1188,10 @@ jobs:
           HEAD_SHA: ${{ inputs.head_sha }}
           HEAD_BRANCH: ${{ inputs.head_branch }}
           # The head repo (a fork's owner/name) — a finding permalink targets the tree the reviewed
-          # SHA lives in, which is the fork on a fork PR. Empty when the caller omits the input;
-          # post then falls back to the base repo (issue #231).
-          HEAD_REPO: ${{ inputs.head_repo }}
+          # SHA lives in, which is the fork on a fork PR. Derived from the caller's event when the
+          # input is empty, so a fork PR from a caller that predates the input does not fall back to
+          # base-repo permalinks its SHA cannot resolve (issue #231 r2).
+          HEAD_REPO: ${{ inputs.head_repo != '' && inputs.head_repo || github.event.workflow_run.head_repository.full_name || github.event.pull_request.head.repo.full_name || '' }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}

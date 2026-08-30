@@ -20,7 +20,6 @@ import {
   escapeCodeBackticks,
   escapeFence,
   lineRange,
-  findingLocationKey,
   DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
 import { answeredNoteKey } from "./answered.js";
@@ -31,10 +30,13 @@ const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 
 // A code renders inside backticks and a code_url inside a markdown link: a backtick in the code
 // breaks the span, and a paren/newline in the URL breaks the link (or the blockquote the nit's
-// aside sits in) — issue #233 r2. The parens are percent-encoded (the URL stays valid); the
-// newline/backtick handling is escapeCodeBackticks' own.
-const linkSafeUrl = (url: string): string =>
-  escapeCodeBackticks(url).replace(/\(/g, "%28").replace(/\)/g, "%29");
+// aside sits in) — issue #233 r2. The newline/backtick handling is escapeCodeBackticks' own.
+// The paren policy has ONE owner: an unbalanced paren truncates GitHub's autolink, so every
+// URL-building surface on the sticky shares this encoding (issue #231 r2).
+const encodeAutolinkParens = (url: string): string =>
+  url.replace(/\(/g, "%28").replace(/\)/g, "%29");
+
+const linkSafeUrl = (url: string): string => encodeAutolinkParens(escapeCodeBackticks(url));
 
 // A stray finding the sticky lists links back to its code at the reviewed SHA: a BARE URL — GitHub
 // autolinks it and sizes the rendering sensibly, where the nested-aside `<details>` permalink JP
@@ -50,14 +52,14 @@ const permalinkFor = (base: string, f: Finding, anchor: boolean): string | null 
   const path = f.path
     .split("/")
     .map((segment) =>
-      encodeURIComponent(
-        segment.replace(
-          /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
-          "�",
+      encodeAutolinkParens(
+        encodeURIComponent(
+          segment.replace(
+            /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+            "�",
+          ),
         ),
-      )
-        .replace(/\(/g, "%28")
-        .replace(/\)/g, "%29"),
+      ),
     )
     .join("/");
   return anchor ? `${base}${path}#L${lineRange(f.start_line, f.end_line, "-L")}` : `${base}${path}`;
@@ -100,11 +102,13 @@ const sanitizeFinding = (
   f: Finding,
   answeredNotes: Readonly<Record<string, string>> | undefined,
   permalinkBase?: string,
-  unanchoredKeys?: ReadonlySet<string>,
+  unanchored?: ReadonlySet<Finding>,
 ): StrayView => {
   const key = answeredNoteKey(f);
-  const anchored =
-    permalinkBase !== undefined && !(unanchoredKeys?.has(findingLocationKey(f)) ?? false);
+  // Reference identity, not a location key: post spreads the SAME finding objects into both
+  // arrays, so the rejected set un-anchors exactly the findings GitHub rejected — a string key
+  // would also demote a distinct twin finding at the same coordinates (issue #231 r2).
+  const anchored = permalinkBase !== undefined && !(unanchored?.has(f) ?? false);
   const permalink =
     permalinkBase === undefined ? undefined : permalinkFor(permalinkBase, f, anchored);
   return {
@@ -334,7 +338,7 @@ export const render = (input: RenderInput): string => {
     input.repo !== undefined && input.reviewedSha !== undefined
       ? `https://github.com/${input.repo}/blob/${input.reviewedSha}/`
       : undefined;
-  const unanchoredKeys = new Set((input.unanchoredStrays ?? []).map(findingLocationKey));
+  const unanchored = new Set(input.unanchoredStrays ?? []);
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -361,7 +365,7 @@ export const render = (input: RenderInput): string => {
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
     strays: (input.strays ?? []).map((f) =>
-      sanitizeFinding(f, input.answeredNotes, permalinkBase, unanchoredKeys),
+      sanitizeFinding(f, input.answeredNotes, permalinkBase, unanchored),
     ),
     suppressedNits: suppressedBudget.list,
     carriedDroppedNits: suppressedBudget.dropped,

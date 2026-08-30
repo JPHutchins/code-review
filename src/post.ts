@@ -1300,6 +1300,11 @@ export const post = async (
       { kind: "whole-document", inlineCount: inlinePosted, rejectedCount: unanchoredCount },
       reviewUrl,
       visibleFindings,
+      undefined,
+      // The rejected-anchor invariant holds on EVERY surface, the run summary included — this
+      // document deliberately carries every finding, so the GitHub-rejected ones must keep their
+      // path-only links here too (issue #231 r2).
+      unanchoredCount > 0 ? unposted : undefined,
     ),
   );
 };

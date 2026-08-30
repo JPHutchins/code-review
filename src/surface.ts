@@ -104,6 +104,19 @@ export const findingPayload = (finding: Finding, schemaVersion: string): string 
     JSON.stringify({ schema_version: schemaVersion, findings: [finding] }),
     "utf-8",
   ).toString("base64");
+
+// The heading and the permalink render the same line range with different separators (an en dash
+// for display, "-L" for the URL anchor) — ONE collapse decision shared by both, so the two
+// surfaces cannot drift (issue #231 r1).
+export const lineRange = (startLine: number, endLine: number, separator: string): string =>
+  startLine === endLine ? String(startLine) : `${String(startLine)}${separator}${String(endLine)}`;
+
+// The identity post and render use to match a rejected stray against the merged list (issue #231 r1).
+export const findingLocationKey = (f: {
+  readonly path: string;
+  readonly start_line: number;
+  readonly end_line: number;
+}): string => `${f.path}:${String(f.start_line)}-${String(f.end_line)}`;
 export const findingPointer = (
   finding: Finding,
   schemaVersion: string,

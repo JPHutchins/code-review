@@ -87,11 +87,18 @@ export interface RenderInput {
   readonly prices: PriceMap;
   readonly template: string;
   readonly reviewedSha?: string;
-  // Owner/name of the reviewed repository. When present, every stray finding the sticky lists
-  // carries a bare permalink to its code at the reviewed SHA (issue #231) — the sticky is then the
-  // only surface for inline-off reviews, so each finding links to where it anchors. Omitted ⇒ no
-  // permalinks (the standalone render command has no repo to link to).
+  // The repo whose tree a stray finding's permalink targets: the HEAD repo (the fork's owner/name)
+  // when the workflow threaded one — a fork PR's head SHA is unreachable from the base repo — else
+  // the base repo (issue #231 r1). When present (with reviewedSha), every stray finding the sticky
+  // lists carries a bare permalink — the sticky is then the only surface for inline-off reviews.
+  // Omitted ⇒ no permalinks (the standalone render command has no repo to link to). The permalink
+  // host is github.com, not the gh CLI's configured host — GHES support would derive the blob base
+  // URL at the IO boundary (issue #231 r1).
   readonly repo?: string;
+  // The strays GitHub rejected inline, whose coordinates are known-bad: their permalinks link the
+  // path only, never re-asserting a rejected `#L…` anchor as if it were verified. Omitted ⇒ every
+  // permalink carries its anchor (issue #231 r1).
+  readonly unanchoredStrays?: readonly Finding[];
   // Computed at the IO boundary so render() stays pure/clockless. Omitted ⇒ segment suppressed.
   readonly postedAt?: string;
   // The run's UTC instant, passed in at the IO boundary (same instant as postedAt) so render() stays

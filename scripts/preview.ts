@@ -137,6 +137,9 @@ const sticky = render({
   template: readFileSync(resolve(root, "templates/comment.eta"), "utf-8"),
   route: "full review",
   reviewedSha: REVIEWED_SHA,
+  // The reference render must show the production shape: every production sticky carries the
+  // stray permalinks, so the preview does too (issue #231 r1).
+  repo: "owner/repo",
   testReport,
   clocDiff: previewClocDiff,
   strays,

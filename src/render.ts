@@ -19,6 +19,8 @@ import {
   findingsMarkerPair,
   escapeCodeBackticks,
   escapeFence,
+  lineRange,
+  findingLocationKey,
   DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
 import { answeredNoteKey } from "./answered.js";
@@ -36,16 +38,29 @@ const linkSafeUrl = (url: string): string =>
 
 // A stray finding the sticky lists links back to its code at the reviewed SHA: a BARE URL — GitHub
 // autolinks it and sizes the rendering sensibly, where the nested-aside `<details>` permalink JP
-// prototyped renders dead in issue comments (issue #231). The path is percent-encoded segment-wise
-// so a space, `#`, or unicode name cannot break the URL or the autolink, and the line range
-// collapses to one anchor when the finding spans a single line (mirroring the heading).
-const permalinkFor = (repo: string, reviewedSha: string, f: Finding): string => {
-  const path = f.path.split("/").map(encodeURIComponent).join("/");
-  const range =
-    f.start_line === f.end_line
-      ? `#L${String(f.start_line)}`
-      : `#L${String(f.start_line)}-L${String(f.end_line)}`;
-  return `https://github.com/${repo}/blob/${reviewedSha}/${path}${range}`;
+// prototyped renders dead in issue comments (issue #231). Each segment is percent-encoded: lone
+// surrogates are replaced with U+FFFD first (encodeURIComponent THROWS on them — a junk path must
+// degrade, never crash the post), then parens after it (an unbalanced paren truncates GitHub's
+// autolink; linkSafeUrl's policy — issue #231 r1). Returns null for the findings a link would lie
+// about: a LEFT-side finding (its line numbers index the BASE tree, so a head-blob anchor names
+// the wrong code) and an empty path. `anchor` false links the path only — a stray GitHub rejected
+// inline must not re-assert its known-bad coordinates as an exact anchor.
+const permalinkFor = (base: string, f: Finding, anchor: boolean): string | null => {
+  if (f.path === "" || f.side === "LEFT") return null;
+  const path = f.path
+    .split("/")
+    .map((segment) =>
+      encodeURIComponent(
+        segment.replace(
+          /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+          "�",
+        ),
+      )
+        .replace(/\(/g, "%28")
+        .replace(/\)/g, "%29"),
+    )
+    .join("/");
+  return anchor ? `${base}${path}#L${lineRange(f.start_line, f.end_line, "-L")}` : `${base}${path}`;
 };
 
 // The machine-channel budget for suppressed-nit blocks: each field is clipped individually
@@ -65,9 +80,16 @@ type StrayView = Finding & {
   // template is keyed on raw codes, so a backtick/newline code must not lose its note through
   // the escaping (issue #233 r3).
   readonly codeKey?: string;
+  // The heading's collapsed line range (`start–end` via the shared lineRange collapse, so the
+  // heading and the permalink anchor can never disagree — issue #231 r1).
+  readonly rangeLabel: string;
   // Pre-encoded bare permalink to the finding's code at the reviewed SHA (issue #231); absent when
-  // the caller supplies no repo (the standalone render command).
+  // the caller supplies no repo (the standalone render command), for a LEFT-side finding (its
+  // coordinates index the base tree), or for an empty path.
   readonly permalink?: string;
+  // False for a stray GitHub rejected inline: its permalink links the path only, so the template
+  // can tell an anchored link (which carries the agent-reported qualifier) from a bare one.
+  readonly permalinkAnchored?: boolean;
 };
 
 // The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
@@ -77,19 +99,22 @@ type StrayView = Finding & {
 const sanitizeFinding = (
   f: Finding,
   answeredNotes: Readonly<Record<string, string>> | undefined,
-  repo?: string,
-  reviewedSha?: string,
+  permalinkBase?: string,
+  unanchoredKeys?: ReadonlySet<string>,
 ): StrayView => {
   const key = answeredNoteKey(f);
+  const anchored =
+    permalinkBase !== undefined && !(unanchoredKeys?.has(findingLocationKey(f)) ?? false);
+  const permalink =
+    permalinkBase === undefined ? undefined : permalinkFor(permalinkBase, f, anchored);
   return {
     ...f,
     title: escapePipes(f.title),
     path: escapeCodeBackticks(f.path),
     ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code), codeKey: f.code } : {}),
     ...(f.code_url !== undefined ? { code_url: linkSafeUrl(f.code_url) } : {}),
-    ...(repo !== undefined && reviewedSha !== undefined
-      ? { permalink: permalinkFor(repo, reviewedSha, f) }
-      : {}),
+    rangeLabel: lineRange(f.start_line, f.end_line, "–"),
+    ...(permalink !== null ? { permalink, permalinkAnchored: anchored } : {}),
     patchProjection: projectPatch(f.patch, "comment-body"),
     answeredNote:
       answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
@@ -302,6 +327,15 @@ export const render = (input: RenderInput): string => {
     { list: [], used: 0, dropped: 0 },
   );
 
+  // The permalink identity is ONE optional: repo + reviewedSha only mean something together, and a
+  // half-supplied pair must not silently drop every link — precomputed once per render rather than
+  // rebuilt per stray (issue #231 r1).
+  const permalinkBase =
+    input.repo !== undefined && input.reviewedSha !== undefined
+      ? `https://github.com/${input.repo}/blob/${input.reviewedSha}/`
+      : undefined;
+  const unanchoredKeys = new Set((input.unanchoredStrays ?? []).map(findingLocationKey));
+
   return eta.renderString(input.template, {
     findings: input.findings,
     envelope: input.envelope,
@@ -327,7 +361,7 @@ export const render = (input: RenderInput): string => {
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
     strays: (input.strays ?? []).map((f) =>
-      sanitizeFinding(f, input.answeredNotes, input.repo, input.reviewedSha),
+      sanitizeFinding(f, input.answeredNotes, permalinkBase, unanchoredKeys),
     ),
     suppressedNits: suppressedBudget.list,
     carriedDroppedNits: suppressedBudget.dropped,

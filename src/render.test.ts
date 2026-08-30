@@ -660,9 +660,11 @@ describe("render", () => {
         reviewedSha: "c4c60941b084053e19f85659c2642749ad0f4343",
       });
       // The bare permalink sits at the top of the finding: its own paragraph directly after the
-      // heading, before the description (the <details> aside JP prototyped renders dead in comments).
+      // heading, before the description (the <details> aside JP prototyped renders dead in
+      // comments). The anchor carries the agent-reported qualifier — the coordinates come from the
+      // findings document, never a diff verification (issue #231 r1).
       expect(result).toMatch(
-        /`src\/bar\.ts:100–104` — linked stray[^\n]*\n\nhttps:\/\/github\.com\/JPHutchins\/code-review\/blob\/c4c60941b084053e19f85659c2642749ad0f4343\/src\/bar\.ts#L100-L104\n\nTest description content\./,
+        /`src\/bar\.ts:100–104` — linked stray[^\n]*\n\nhttps:\/\/github\.com\/JPHutchins\/code-review\/blob\/c4c60941b084053e19f85659c2642749ad0f4343\/src\/bar\.ts#L100-L104 · _agent-reported location_\n\nTest description content\./,
       );
     });
 
@@ -695,6 +697,89 @@ describe("render", () => {
         reviewedSha: "abc",
       });
       expect(result).not.toContain("blob/");
+    });
+
+    it("degrades a lone-surrogate path instead of crashing the render (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ path: "src/a\uD800b.ts", start_line: 1, end_line: 1, title: "junk path" }),
+      ];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      // The lone surrogate becomes U+FFFD (percent-encoded as %EF%BF%BD) — encodeURIComponent
+      // throws URIError on the raw form, and a junk path must degrade, never abort the post.
+      expect(result).toContain("https://github.com/o/r/blob/abc/src/a%EF%BF%BDb.ts#L1");
+    });
+
+    it("percent-encodes parens so an unbalanced one cannot truncate the autolink (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/foo(.ts", start_line: 2, end_line: 2 })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).toContain("https://github.com/o/r/blob/abc/src/foo%28.ts#L2");
+    });
+
+    it("omits the permalink for a LEFT-side finding — its lines index the base tree (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/bar.ts", start_line: 5, end_line: 6, side: "LEFT" })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).not.toContain("blob/");
+    });
+
+    it("omits the permalink for an empty path (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "", start_line: 1, end_line: 1 })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).not.toContain("blob/");
+    });
+
+    it("links a GitHub-rejected stray path-only — never re-asserting its known-bad anchor (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const rejected = mkFinding({ path: "src/bar.ts", start_line: 999, end_line: 999 });
+      const strays = [rejected];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        unanchoredStrays: [rejected],
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).toContain("https://github.com/o/r/blob/abc/src/bar.ts\n");
+      expect(result).not.toContain("#L999");
+      expect(result).not.toContain("agent-reported");
     });
   });
 

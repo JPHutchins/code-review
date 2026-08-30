@@ -6,6 +6,8 @@ import * as t from "io-ts";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
+import { ghArtifactReader, resolvePriorFindings, type ArtifactReader } from "./artifact.js";
+import { parseReviewedRoute } from "./surface.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { parseJsonl } from "./transcript.js";
 import {
@@ -14,7 +16,7 @@ import {
   ThreadCommentCodec,
   THREAD_COMMENT_JQ,
 } from "./answered.js";
-import { annotationSafe, clipText, errMsg } from "./util.js";
+import { annotationSafe, BODY_CLIP_CHARS, clipText, errMsg } from "./util.js";
 
 export interface GatherInput {
   readonly repo: string;
@@ -280,10 +282,10 @@ const priorReviewFrom = (
 // channel with each body clipped so a long thread can't blow the agent's context; the workflow frames
 // these files as claims-to-verify, never as instructions.
 const MAX_CONVERSATION_COMMENTS = 50;
-const MAX_CONVERSATION_BODY_CHARS = 4000;
 
-// The shared surrogate-safe clip (util.ts) at the conversation's own length cap.
-const clip = (body: string): string => clipText(body, MAX_CONVERSATION_BODY_CHARS);
+// The shared surrogate-safe clip (util.ts) at the shared body cap — one constant with render's
+// carried-field clip so the two caps cannot drift (issue #217 review r7).
+const clip = (body: string): string => clipText(body, BODY_CLIP_CHARS);
 
 // Drop the review bot and empty bodies, keep the most recent MAX (logging when it caps), then project.
 const boundedHuman = <
@@ -394,6 +396,7 @@ export const gather = async (
   input: GatherInput,
   ghApi: GhApi = runGhApi,
   gitRun: GitRun = runGit,
+  readArtifact: ArtifactReader = ghArtifactReader,
 ): Promise<GatherResult> => {
   const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
   const resolution = resolvePr(candidates, input.headBranch);
@@ -461,6 +464,34 @@ export const gather = async (
   writeFileSync(
     join(input.outDir, "prior_review.json"),
     prior === null ? "null" : JSON.stringify(prior),
+  );
+  // The prior round's findings document, RESOLVED here rather than by seed-draft. The sticky names an
+  // artifact instead of carrying the document (issue #217), and fetching it needs the token — which
+  // THIS step has and the agentic-review step deliberately does not: that step runs the jailed agent
+  // over untrusted PR code, so handing it a repo token to read an artifact would be a bad trade. A
+  // failed resolve stages null and the seed degrades to no prior context, exactly like a first round.
+  // Two gates, because the seed chain is route-aware on both sides. THIS run must be a full review —
+  // the workflow's mechanic branch invokes seed-draft with no --prior-findings at all, so a CI-fix
+  // round following a completed review (the routine case that route exists for) would otherwise
+  // download and unzip an artifact nothing is ever handed. And the PRIOR must be a full review, since
+  // seed-draft discards a mechanic pass's findings: they are not the previous round's.
+  const seedsFromPrior =
+    input.conclusion === "success" &&
+    prior !== null &&
+    prior.body !== null &&
+    parseReviewedRoute(prior.body) === "full review";
+  const resolvedPrior = seedsFromPrior
+    ? await resolvePriorFindings(prior.body, readArtifact)
+    : null;
+  // The staged file must always be valid JSON. The normalization is defensive against the
+  // resolver's contract drifting — a future non-object resolve would make JSON.stringify return
+  // undefined and throw in writeFileSync — but it also makes the invariant local to this write
+  // rather than borrowed from resolvePriorFindings (issue #233 r4 + r5).
+  const priorFindings =
+    resolvedPrior !== null && typeof resolvedPrior === "object" ? resolvedPrior : null;
+  writeFileSync(
+    join(input.outDir, "prior_findings.json"),
+    priorFindings === null ? "null" : JSON.stringify(priorFindings),
   );
   // The "already answered" registry (issue #151): the prior inline findings whose threads a human
   // reply answered — staged for seed-draft to deliver beside the prior context, so the next-round

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { legacyEmbeddedMarker } from "./test-util.js";
 import { answeredRegistryFrom, applyAnswered, answeredReRaiseNote } from "./answered.js";
 import type { AnsweredEntry, ThreadComment } from "./answered.js";
-import { findingPointer } from "./surface.js";
 import type { Finding } from "./schema.js";
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
@@ -24,7 +24,7 @@ const botComment = (id: number, finding: Finding): ThreadComment => ({
   user_login: "github-actions[bot]",
   user_type: "Bot",
   // Each inline comment embeds its own finding via the per-finding marker (findingPointer).
-  body: findingPointer(finding, "0.6.0"),
+  body: legacyEmbeddedMarker({ schema_version: "0.6.0", findings: [finding] }),
   html_url: `https://github.com/owner/repo/pull/1#discussion_r${String(id)}`,
   path: "src/foo.ts",
   line: 10,

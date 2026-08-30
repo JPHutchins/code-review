@@ -13,9 +13,7 @@ import {
   carryForwardMarkers,
   computeCodeCounts,
   computeSameRootNotes,
-  convergenceMarker,
-  findingsMarkerForm,
-  findingsPointer,
+  findingsMarkerPair,
   inProgressConvergence,
   nextRoundNumber,
   isBelowVisibilityFloor,
@@ -41,6 +39,12 @@ import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
+import {
+  ghArtifactReader,
+  hasFindingsMarker,
+  resolvePriorFindings,
+  type ArtifactReader,
+} from "./artifact.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { runIdFromUrl } from "./checkrun.js";
@@ -607,7 +611,11 @@ const minimizeComments = async (
   }
 };
 
-export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<void> => {
+export const post = async (
+  input: PostInput,
+  ghApi: GhApi = runGhApi,
+  readArtifact: ArtifactReader = ghArtifactReader,
+): Promise<void> => {
   // Phase 1: reads + rendering, no writes yet.
   const candidates = await fetchPrCandidates(input.repo, input.headSha, ghApi);
   const resolution = resolvePr(candidates, input.headBranch);
@@ -682,27 +690,28 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // so the placeholder's round and this round's stamp can't disagree (issue #188 review).
   const priorRoundCount = nextRoundNumber(priorTraj, priorConv?.rounds ?? []) - 1;
 
-  // The blob is the agent's complete document with the pipeline-stamped convergence inside it — no
-  // separate signal or rounds marker (issue #174). A notice / CI-fix pass carries the prior convergence
-  // forward, so the trajectory + last score survive a non-round post; a first-run notice with no
-  // completed round carries none. convergence is pipeline-owned and ALWAYS overwritten: any value the
-  // agent echoed is replaced by the pipeline's (or by undefined, which serializes to an omitted key), so
-  // a draft can never smuggle a self-declared score/converged into the blob.
+  // The agent's document carries no convergence of its own (issue #217 review r7): the pipeline stamps
+  // it, and the compact marker beside the findings link carries the SAME stamped object, so a reader of
+  // the comment never needs the artifact for the stop signal. A notice / CI-fix pass carries the prior
+  // convergence forward, so the trajectory + last score survive a non-round post; a first-run notice
+  // with no completed round carries none. convergence is pipeline-owned and ALWAYS overwritten: any
+  // value the agent echoed is replaced by the pipeline's (or by undefined, which serializes to an
+  // omitted key), so a draft can never smuggle a self-declared score/converged into the document.
   const stampConvergence = (doc: Findings, conv: Convergence | null): Findings => ({
     ...doc,
     convergence: conv ?? undefined,
   });
+  // The error rides HERE rather than at the main path's call site, so the notice and lost-envelope
+  // paths — which also post a body built from this — say it too. Once per post, not once per surface.
+  let warnedNoJsonUrl = false;
   const findingsBlob = (doc: Findings): string => {
-    const marker = findingsPointer(doc, input.jsonUrl);
-    // On the link/omitted form the embedded blob (and the convergence inside it) is gone, so carry the
-    // SAME stamped convergence compactly beside it — a size fallback so an oversized review's trajectory
-    // + stop signal survive (issue #185 review). The embedded blob always wins on read, so a normal
-    // sticky carries no such marker and the two can never diverge.
-    if (doc.convergence === undefined || findingsMarkerForm(doc, input.jsonUrl) === "embedded") {
-      return marker;
+    if (!input.jsonUrl && !warnedNoJsonUrl) {
+      warnedNoJsonUrl = true;
+      process.stderr.write(
+        "::error::no --json-url was supplied, so this comment names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
+      );
     }
-    const conv = convergenceMarker(doc.convergence);
-    return marker === "" ? conv : `${marker}\n${conv}`;
+    return findingsMarkerPair(input.jsonUrl, doc.convergence);
   };
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
@@ -881,11 +890,20 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // findings blob and its nits are not this review's prior round; a notice/placeholder carries an empty
   // or prior blob and is handled the same way. Best-effort: an old/missing/oversized/non-review prior
   // yields no keys, so stickiness fails open to visible.
+  // Resolved rather than decoded: the prior sticky's marker names the findings artifact (issue #217),
+  // so this fetches it — and still reads an embedded blob on a sticky written before that change.
+  // Gated on this round HAVING a nit: the keys only ever match a nit, and the resolve is a download
+  // plus an unzip subprocess on the critical path before the sticky write. A round with no nits paid
+  // that for a set it could not use.
+  const roundHasNit = findings.findings.some((f) => f.severity === "nit");
+  const priorDocForNits =
+    roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body)
+      ? await resolvePriorFindings(existingSticky.body, readArtifact)
+      : null;
   const priorSuppressedKeys = new Set(
-    (existingSticky !== null && isFullReviewSticky(existingSticky.body)
-      ? priorBelowFloorNits(parseFindingsMarker(existingSticky.body), input.nitVisibilityFloor)
-      : []
-    ).map((n) => answeredNoteKey({ code: n.code, title: n.title })),
+    priorBelowFloorNits(priorDocForNits, input.nitVisibilityFloor).map((n) =>
+      answeredNoteKey({ code: n.code, title: n.title }),
+    ),
   );
   const isSuppressedNit = (f: Finding): boolean =>
     f.severity === "nit" &&
@@ -1079,20 +1097,6 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // comment embeds only its own finding instead.
   const findingsMarker = findingsBlob(stampedFindings);
 
-  // The embedded base64 blob is what a re-review seed decodes (parseFindingsMarker); a doc too large to
-  // embed degrades to the jsonUrl-link form, so surface that in the run log — on the link form the
-  // convergence rides in the linked artifact, not the comment body.
-  const markerForm = findingsMarkerForm(stampedFindings, input.jsonUrl);
-  if (markerForm === "link") {
-    process.stderr.write(
-      "Warning: the findings-json blob exceeds the embed limit — degraded to the jsonUrl-link form; the convergence rides a compact marker beside it, but a decoding agent (and the next-round seed) must fetch the artifact for the FINDINGS\n",
-    );
-  } else if (markerForm === "omitted") {
-    process.stderr.write(
-      "Warning: the findings-json blob exceeds the embed limit and no --json-url was given — the convergence rides a compact marker but the embedded findings seed is dropped from the posted surfaces\n",
-    );
-  }
-
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     findings: stampedFindings,
     envelope,
@@ -1147,9 +1151,30 @@ export const post = async (input: PostInput, ghApi: GhApi = runGhApi): Promise<v
   // that 422 propagate, so an oversized body fails the job with the announce placeholder still up.
   // Inline off makes that reachable — every finding's prose now renders into this one comment, where
   // the in-diff ones used to be separate posts. Shedding is issue #214; tolerating a failed write
-  // after the sticky is up is issue #223. Issue #217 would remove the embedded blob — the largest
-  // fixed cost in the body — but has so far only changed what the directive tells an agent to do, so
-  // that cost is still here.
+  // after the sticky is up is issue #223. The embedded document is gone from this body (issue #217),
+  // which removed the largest fixed cost it had — an oversized round is now a matter of finding prose,
+  // not of a ~32KB blob.
+  // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
+  // pointer to the prior findings document. The guard refuses only when the pointer is actually
+  // load-bearing: a COMPLETED full-review sticky whose markers gather would seed from. The
+  // review-complete requirement exempts the announce placeholder, which carries the route and the
+  // markers forward but strips review-complete — it must be replaced by an honest notice, not
+  // frozen (post.ts's empty-mechanic path handles it). A mechanic/notice sticky is never a seed
+  // either. An expired artifact link is not resolvability-checked here — a fetch in the write path
+  // is the wrong trade — so an expired link can still freeze a round; the run log's ::error:: names
+  // why (issue #233 r2 + r5 + r6).
+  if (
+    !input.jsonUrl &&
+    existingSticky !== null &&
+    parseReviewComplete(existingSticky.body) &&
+    parseReviewedRoute(existingSticky.body) === "full review" &&
+    hasFindingsMarker(existingSticky.body)
+  ) {
+    leaveInPlace(
+      "no --json-url was supplied and the existing sticky still carries the prior findings document's marker (embedded or link) — leaving it in place rather than severing the seed chain\n",
+    );
+  }
+
   // Phase 2: writes — sticky first, inline second.
   const stickyRef = await upsertSticky(
     input.repo,

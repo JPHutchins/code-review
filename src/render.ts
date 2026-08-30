@@ -1,6 +1,7 @@
 // Pure data-in, string-out Eta rendering — no side effects, no model invocation.
 
 import { Eta } from "eta";
+import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
@@ -15,7 +16,7 @@ import {
   changeSizeSummary,
   computeSameRootNotes,
   metastasisNote,
-  findingsPointer,
+  findingsMarkerPair,
   escapeCodeBackticks,
   escapeFence,
   DEFAULT_NIT_VISIBILITY_FLOOR,
@@ -26,9 +27,30 @@ import type { PatchProjection } from "./surface.js";
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 
+// A code renders inside backticks and a code_url inside a markdown link: a backtick in the code
+// breaks the span, and a paren/newline in the URL breaks the link (or the blockquote the nit's
+// aside sits in) — issue #233 r2. The parens are percent-encoded (the URL stays valid); the
+// newline/backtick handling is escapeCodeBackticks' own.
+const linkSafeUrl = (url: string): string =>
+  escapeCodeBackticks(url).replace(/\(/g, "%28").replace(/\)/g, "%29");
+
+// The machine-channel budget for suppressed-nit blocks: each field is clipped individually
+// (BODY_CLIP_CHARS), but the SUM across a nit-heavy round is unbounded, and the sticky is the one
+// comment post deliberately does not shed — an unbounded machine block can still 422 it, which the
+// old embed-limit valve structurally prevented (issue #233 r1). The budget counts each nit's
+// WHOLE block — the carried lines plus the fixed summary/severity/location/`-->` lines and their
+// blockquote prefixes — and drops a nit's entire block once exhausted. The cut is marked in the
+// machine channel, never silent (issue #233 r5).
+const CARRIED_TOTAL_CHARS = 40_000;
+const SUPPRESSED_NIT_BLOCK_OVERHEAD = 280;
+
 type StrayView = Finding & {
   readonly patchProjection: PatchProjection;
   readonly answeredNote: string;
+  // The RAW code, carried beside the escaped display form: the same-root note lookup in the
+  // template is keyed on raw codes, so a backtick/newline code must not lose its note through
+  // the escaping (issue #233 r3).
+  readonly codeKey?: string;
 };
 
 // The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
@@ -44,6 +66,8 @@ const sanitizeFinding = (
     ...f,
     title: escapePipes(f.title),
     path: escapeCodeBackticks(f.path),
+    ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code), codeKey: f.code } : {}),
+    ...(f.code_url !== undefined ? { code_url: linkSafeUrl(f.code_url) } : {}),
     patchProjection: projectPatch(f.patch, "comment-body"),
     answeredNote:
       answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
@@ -56,26 +80,77 @@ const sanitizeFinding = (
 // title or path would break out of it (the hazard escapeCodeBackticks documents — it collapses
 // newlines AND neutralizes backticks). `m` is the confidence × likelihood the floor compared against,
 // shown so a maintainer who expands the aside sees WHY each nit was shelved (issue #164).
+// A below-floor nit is HIDDEN from the human list by policy (issue #164) — that is a visibility
+// decision, and it must not become a content filter. The projection used to keep 5 of a finding's 14
+// fields, which meant description, recommendation, reasoning and patch existed nowhere in the comment;
+// harmless while the document rode along as base64, a real hole once the document moved to the
+// artifact (issue #217). Everything now travels: the summary line stays exactly as it was, and the
+// rest rides the machine channel beside it, where a hidden nit's detail belongs.
 type SuppressedNitView = {
   readonly title: string;
   readonly code?: string;
+  readonly codeUrl?: string;
   readonly path: string;
   readonly startLine: number;
+  readonly endLine: number;
+  readonly side?: string;
+  readonly severity: string;
+  readonly confidence: string;
+  readonly likelihood: string;
   readonly m: string;
+  // Pre-split into blockquote-safe lines: the aside is a `>` blockquote, so an unprefixed line would
+  // break out of it and spill a hidden nit's detail into the visible prose.
+  readonly carried: readonly string[];
 };
+
+// HTML comments cannot nest, so a `-->` inside a carried field would close the block early and spill
+// the rest into the visible prose. A zero-width space between the dashes and the `>` breaks the
+// sequence while rendering invisibly, so a human reading the carried text sees it VERBATIM — the
+// previous replacement mutated the author's own text to a visible hyphen (issue #217 review r7).
+const commentSafe = (text: string): string =>
+  text.replace(/--+(?=>)/g, (dashes) => `${dashes}\u200b`);
+
 const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   title: escapeCodeBackticks(f.title),
   ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
-  path: escapeCodeBackticks(f.path),
+  ...(f.code_url !== undefined ? { codeUrl: linkSafeUrl(f.code_url) } : {}),
+  path: commentSafe(escapeCodeBackticks(f.path)),
   startLine: f.start_line,
+  endLine: f.end_line,
+  ...(f.side !== undefined ? { side: f.side } : {}),
+  severity: f.severity,
+  confidence: formatConfidence(f.confidence),
+  likelihood: formatConfidence(f.likelihood),
   m: formatConfidence(f.confidence * f.likelihood),
+  carried: carriedLines(f),
 });
+
+// Each carried field is clipped. Every below-floor nit's full finding rides in the sticky body, and
+// that body is the one GitHub rejects over 65536 chars — which post deliberately does not shed, so an
+// oversized body 422s the round with the announce placeholder still up. Removing the ~32KB document
+// bought far more room than this spends, but "far more room" is not a bound. The cap IS the
+// conversation clip's (BODY_CLIP_CHARS, util.ts) — one constant so the two can't drift — and clipText
+// marks what it cut so a reader is never silently shown a fragment.
+
+const carriedLines = (f: Finding): readonly string[] =>
+  [
+    `description: ${clipText(f.description, BODY_CLIP_CHARS)}`,
+    ...(f.recommendation !== undefined
+      ? [`recommendation: ${clipText(f.recommendation, BODY_CLIP_CHARS)}`]
+      : []),
+    `reasoning: ${clipText(f.reasoning, BODY_CLIP_CHARS)}`,
+    ...(f.patch !== undefined ? ["patch:", clipText(f.patch, BODY_CLIP_CHARS)] : []),
+  ]
+    .flatMap((block) => commentSafe(block).split("\n"))
+    .map((line) => line.trimEnd());
 
 // The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
 // finding_codes render inside backticks too, so they get the same backtick escaping as paths.
 const sanitizeSystemic = (s: SystemicProblem): SystemicProblem => ({
   ...s,
   title: escapePipes(s.title),
+  ...(s.code !== undefined ? { code: escapeCodeBackticks(s.code) } : {}),
+  ...(s.code_url !== undefined ? { code_url: linkSafeUrl(s.code_url) } : {}),
   ...(s.paths !== undefined ? { paths: s.paths.map(escapeCodeBackticks) } : {}),
   ...(s.finding_codes !== undefined
     ? { finding_codes: s.finding_codes.map(escapeCodeBackticks) }
@@ -136,7 +211,8 @@ export const render = (input: RenderInput): string => {
   // The pipeline-stamped convergence field (issue #174) is the source for the trajectory and the badge.
   // `input.rounds` is a fallback only for callers that supply a legacy trajectory directly (tests, or a
   // standalone render of a doc without convergence); its entries carry no score and render "—". Every
-  // production sticky carries convergence in the blob, so the fallback never fires there.
+  // production sticky carries convergence — in the compact marker beside the link (issue #217) — so
+  // the fallback never fires there.
   const convergence = input.findings.convergence;
   const trajectory = convergence?.rounds ?? input.rounds ?? [];
   // The same-root annotation: post passes the explicit map computed from the PRIOR-round history it
@@ -153,7 +229,7 @@ export const render = (input: RenderInput): string => {
   // carried-forward trajectory alone gives context. Prefer post's explicit signal (which also gates
   // the round append, so badge ⇔ append); fall back to the shared predicate for the standalone
   // `render` command — which additionally requires a rounds history, since without one no round has
-  // completed and neither the badge nor the blob's stop signal may appear (the README's omission
+  // completed and neither the badge nor the stop signal may appear (the README's omission
   // semantics, issue #141 review r4). The verdict guard (isReviewVerdict, shared with post's round
   // append) closes an edge isIncompleteFindings misses (it flags an "error" verdict only when
   // findings are also empty): an error doc that carries findings must still show no badge, never
@@ -172,6 +248,26 @@ export const render = (input: RenderInput): string => {
   // completed review must not render a "still recurring" claim from carried-forward rounds beside a
   // suppressed convergence badge.
   const advisoryAllowed = isFullReviewRound;
+
+  const suppressedBudget = (input.suppressedNits ?? []).map(sanitizeSuppressedNit).reduce<{
+    readonly list: SuppressedNitView[];
+    readonly used: number;
+    readonly dropped: number;
+  }>(
+    (acc, n) => {
+      // The fixed overhead covers the summary line's structure; the title and path are the
+      // reviewer-controlled variable-length parts of it, budgeted at their true size (issue #233 r6).
+      const size =
+        n.carried.reduce((sum, line) => sum + line.length + 1, 0) +
+        SUPPRESSED_NIT_BLOCK_OVERHEAD +
+        n.title.length +
+        n.path.length;
+      return acc.used + size > CARRIED_TOTAL_CHARS
+        ? { list: acc.list, used: acc.used, dropped: acc.dropped + 1 }
+        : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };
+    },
+    { list: [], used: 0, dropped: 0 },
+  );
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -198,7 +294,8 @@ export const render = (input: RenderInput): string => {
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
     strays: (input.strays ?? []).map((f) => sanitizeFinding(f, input.answeredNotes)),
-    suppressedNits: (input.suppressedNits ?? []).map(sanitizeSuppressedNit),
+    suppressedNits: suppressedBudget.list,
+    carriedDroppedNits: suppressedBudget.dropped,
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,
     systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
     unanchoredCount: input.unanchoredCount ?? 0,
@@ -206,10 +303,12 @@ export const render = (input: RenderInput): string => {
     unverifiedNoLogs: input.unverifiedNoLogs === true,
     runUrl: input.runUrl ?? null,
     jsonUrl: input.jsonUrl ?? null,
-    // The blob is the agent's complete document with the pipeline-stamped convergence field inside it
-    // (issue #174) — no separate signal or rounds marker rides beside it. post always supplies the
-    // precomputed marker; the standalone `render` command falls back to encoding the doc here.
-    findingsPointer: input.findingsPointer ?? findingsPointer(input.findings, input.jsonUrl),
+    // The marker names the findings artifact, so the convergence no longer rides inside the comment —
+    // it needs its own compact marker beside the link or a trajectory would require a fetch to read
+    // (issue #217). post precomputes both together in findingsBlob; the standalone `render` command
+    // builds the same pair here, so neither path can emit a link with the convergence missing.
+    findingsPointer:
+      input.findingsPointer ?? findingsMarkerPair(input.jsonUrl, input.findings.convergence),
     roundsSummary: roundsSummary(trajectory, input.roundCount),
     metastasisNote: advisoryAllowed ? metastasisNote(trajectory) : "",
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},

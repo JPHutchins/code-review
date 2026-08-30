@@ -1,0 +1,26 @@
+Post a complete review (inline comments + sticky summary) from findings + envelope + diff (code-review post v0.1.0-alpha.40)
+
+USAGE code-review post [OPTIONS] <FINDINGS> --head-sha --repo --usage
+
+ARGUMENTS
+
+  FINDINGS    Path to findings JSON    
+
+OPTIONS
+
+    --head-sha (required)    Trusted head SHA to resolve the PR (from workflow_run.head_sha)                                                                                                                                          
+        --repo (required)    Repository (owner/name)                                                                                                                                                                                  
+       --usage (required)    Path to result envelope JSON (from agent CLI)                                                                                                                                                            
+                 --prices    Path to price map JSON (default: bundled schema/prices.example.json — all zero)                                                                                                                          
+               --template    Path to Eta template file for the summary comment (default: bundled templates/comment.eta)                                                                                                               
+        --inline-template    Path to inline comment Eta template (default: bundled templates/inline.eta)                                                                                                                              
+                  --route    Review route label; overrides the envelope's route when set (default: read from the envelope)                                                                                                            
+              --bot-login    Bot login to trust for sticky comment upsert (default: github-actions[bot])                                                                                                                              
+            --head-branch    Head branch to disambiguate PR when multiple share a commit                                                                                                                                              
+                 --effort    Effort label; overrides the envelope's effort when set (default: read from the envelope)                                                                                                                 
+            --test-report    Path to a JSON test summary: {"passed": number, "failed": number, "total": number, "failures"?: [{"name": string, "message"?: string}]}                                                                  
+                --run-url    Workflow run URL (transcript/traces), rendered as a link in the LLM Disclosure aside                                                                                                                     
+               --json-url    URL to the machine-readable findings JSON artifact, pointed at from the sticky and each inline comment                                                                                                   
+  --convergence-threshold    Advisory convergence tolerance: the weighted-severity score (critical 4 · major 2 · minor 1 · nit 0) at or below which the sticky reads as converged (default: 1 — unlimited nits plus at most one minor)
+
+

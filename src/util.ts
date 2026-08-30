@@ -31,6 +31,12 @@ export const clipText = (body: string, max: number): string => {
   return `${safe}\n… [truncated]`;
 };
 
+// The shared clip cap for bodies that travel whole: gather clips each conversation body to it, and
+// render clips each carried suppressed-nit field to it. One constant so the two caps cannot drift
+// (the carried clip must match the conversation clip the seeded agent already saw, issue #217
+// review r7).
+export const BODY_CLIP_CHARS = 4000;
+
 export const tryParseJson = (text: string): ParseResult => {
   try {
     return { ok: true, value: JSON.parse(text) as unknown };

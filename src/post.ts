@@ -40,6 +40,7 @@ import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import {
+  findingsArtifactUrl,
   ghArtifactReader,
   hasFindingsMarker,
   resolvePriorFindings,
@@ -703,15 +704,31 @@ export const post = async (
   });
   // The error rides HERE rather than at the main path's call site, so the notice and lost-envelope
   // paths — which also post a body built from this — say it too. Once per post, not once per surface.
+  // When no --json-url can name an artifact and the existing sticky carries a findings marker, the
+  // rendered body carries the PRIOR review's findings LINK forward — through findingsBlob, so EVERY
+  // rendered body (main, final patch, the empty-diff/corrupt/lost-envelope paths) carries it, and
+  // the template places it after the sticky's leading markers so findBotComment still identifies
+  // the comment. The freeze guard above still wins for a completed full-review sticky
+  // (leaveInPlace); every OTHER marker-carrying sticky — placeholder, mechanic, pre-route — gets
+  // the carry instead of a markerless overwrite (issue #235 + #236 r1-r3). The embedded form is
+  // not carried — its size is unbounded and a 422 would fail the round.
+  const carriedFindingsLink =
+    !input.jsonUrl && existingSticky !== null ? findingsArtifactUrl(existingSticky.body) : null;
   let warnedNoJsonUrl = false;
   const findingsBlob = (doc: Findings): string => {
-    if (!input.jsonUrl && !warnedNoJsonUrl) {
+    if (input.jsonUrl) return findingsMarkerPair(input.jsonUrl, doc.convergence);
+    if (carriedFindingsLink !== null) {
+      // The prior link is carried: the machine channel survives, though this run names no NEW
+      // artifact — the sticky's findings remain the prior round's.
+      return findingsMarkerPair(carriedFindingsLink, doc.convergence);
+    }
+    if (!warnedNoJsonUrl) {
       warnedNoJsonUrl = true;
       process.stderr.write(
-        "::error::no --json-url was supplied, so this comment names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
+        "::error::no --json-url was supplied and the existing sticky carries no findings marker to carry forward, so this comment names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
       );
     }
-    return findingsMarkerPair(input.jsonUrl, doc.convergence);
+    return findingsMarkerPair(undefined, doc.convergence);
   };
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
@@ -1175,7 +1192,8 @@ export const post = async (
     );
   }
 
-  // Phase 2: writes — sticky first, inline second.
+  // Phase 2: writes — sticky first, inline second. The carry is a property of the rendered body
+  // (findingsBlob above), so every write site gets it for free.
   const stickyRef = await upsertSticky(
     input.repo,
     prNumber,

@@ -11,13 +11,12 @@ import { repoRoot } from "./test-util.js";
 // in either citty or the workflow fails here instead of silently dropping flags in CI (issue #233
 // r2 — the systemic that followed a probe change verified against the wrong help text).
 //
-// Fixture provenance: test/fixtures/published-help/*.txt are byte-identical captures of
-// `npx -y @jphutchins/code-review@0.1.0-alpha.52 <cmd> --help`, captured 2026-08-29 and re-verified
-// by diff the same day. The captures look like alpha.40 output (header "v0.1.0-alpha.40", no
-// --cloc-diff/--nit-visibility-floor/--prior-answers) because the published alpha.52 tarball
-// BUNDLES AN ALPHA.40-ERA DIST — the release pipeline shipped a stale bundle (issue #234). The
-// fixtures therefore exercise exactly what a consumer pinned to alpha.52 runs today; regenerate
-// them once #234 fixes the release.
+// Fixture provenance: test/fixtures/published-help/*.txt are captures of the REAL published
+// alpha.52 package's --help, taken 2026-08-30 by running the published tarball's dist directly
+// (`npm pack @jphutchins/code-review@0.1.0-alpha.52`, `npm --prefix <dir> install`, then
+// `node <dir>/dist/index.js <cmd> --help`). Earlier captures were poisoned by the npx cache
+// (`~/.npm/_npx` held an alpha.40-era install that `npx -y` reused) and were deleted — never
+// verify package output through npx; run the tarball's dist.
 
 const workflowPaths = [".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"];
 
@@ -80,6 +79,7 @@ describe("workflow capability probes (issue #233 r2)", () => {
       "utf-8",
     );
     expect(runProbe("post_accepts", postFn, postHelp, "json-url")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp, "cloc-diff")).toBe("yes");
     expect(runProbe("post_accepts", postFn, postHelp, "bogus-flag")).toBe("no");
   });
 
@@ -91,8 +91,8 @@ describe("workflow capability probes (issue #233 r2)", () => {
     );
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior")).toBe("yes");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-findings")).toBe("no");
-    expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-answers")).toBe("no");
-    expect(runProbe("seed_accepts", seedFn, seedHelp, "nit-visibility-floor")).toBe("no");
+    expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-answers")).toBe("yes");
+    expect(runProbe("seed_accepts", seedFn, seedHelp, "nit-visibility-floor")).toBe("yes");
   });
 
   it("matches a help text that backtick-quotes option names", () => {
@@ -102,5 +102,39 @@ describe("workflow capability probes (issue #233 r2)", () => {
     expect(runProbe("post_accepts", postFn, quoted, "inline")).toBe("yes");
     expect(runProbe("post_accepts", postFn, quoted, "cloc-diff")).toBe("yes");
     expect(runProbe("post_accepts", postFn, quoted, "bogus-flag")).toBe("no");
+  });
+
+  // The capture-condition ↔ call-site coverage: both #236 regressions were a probe call firing
+  // against an uncaptured help. Pin the concrete invariants that failed (issue #236 r3).
+  it("covers every probe call site with its help-capture condition", () => {
+    for (const text of workflowTexts()) {
+      const scripts = stepScripts(text);
+      const postCapture = scripts.find((s) => s.includes('POST_HELP="$(code-review post --help'));
+      const seedCapture = scripts.find((s) =>
+        s.includes('SEED_HELP="$(code-review seed-draft --help'),
+      );
+      expect(postCapture).toBeDefined();
+      expect(seedCapture).toBeDefined();
+      // Every flag the post side probes must appear in its capture condition.
+      expect(postCapture).toContain("$NIT_VISIBILITY_FLOOR");
+      expect(postCapture).toContain("$REVIEW_ROUTE");
+      expect(postCapture).toContain("findings/cloc-diff.txt");
+      // The seed side captures on a real prior.
+      expect(seedCapture).toContain("$HAS_PRIOR");
+      // A "predates" warning may only fire when the help was actually captured — the nearest
+      // if/elif guard above the warning must carry the _OK check (issue #236 r3).
+      for (const script of scripts) {
+        const lines = script.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i]!.includes("predates") && lines[i]!.includes("::warning::")) {
+            const guard = lines
+              .slice(0, i)
+              .reverse()
+              .find((l) => l.includes("elif [") || l.includes("if ["));
+            expect(guard, "a predates warning without its _OK gate").toContain("_OK");
+          }
+        }
+      }
+    }
   });
 });

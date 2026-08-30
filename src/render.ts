@@ -255,13 +255,24 @@ export const render = (input: RenderInput): string => {
     readonly dropped: number;
   }>(
     (acc, n) => {
-      // The fixed overhead covers the summary line's structure; the title and path are the
-      // reviewer-controlled variable-length parts of it, budgeted at their true size (issue #233 r6).
+      // The fixed overhead covers the summary line's structure; the reviewer-controlled variable
+      // parts are budgeted at their true RENDERED size — the title, the path TWICE (summary +
+      // location line), the code/code_url the summary line renders, each carried line's `> `
+      // blockquote prefix (length + 3: prefix + newline), and the location line's line numbers
+      // and side label (issue #233 r6 + #235 + #236 r1).
       const size =
-        n.carried.reduce((sum, line) => sum + line.length + 1, 0) +
+        n.carried.reduce((sum, line) => sum + line.length + 3, 0) +
         SUPPRESSED_NIT_BLOCK_OVERHEAD +
         n.title.length +
-        n.path.length;
+        n.path.length * 2 +
+        (n.code?.length ?? 0) +
+        (n.codeUrl?.length ?? 0) +
+        String(n.startLine).length * 2 +
+        String(n.endLine).length +
+        (n.side !== undefined ? n.side.length + 2 : 0) +
+        // The summary line's wrappers: backticks around the code and the [](...) around the link.
+        (n.code !== undefined ? n.code.length + 2 : 0) +
+        (n.codeUrl !== undefined ? n.codeUrl.length + 4 : 0);
       return acc.used + size > CARRIED_TOTAL_CHARS
         ? { list: acc.list, used: acc.used, dropped: acc.dropped + 1 }
         : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };

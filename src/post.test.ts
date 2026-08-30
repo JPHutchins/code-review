@@ -2679,6 +2679,27 @@ describe("post — --run-url / --json-url threading", () => {
       exitSpy.mockRestore();
     }
   });
+
+  it("carries the prior findings link forward when overwriting this run's placeholder with no --json-url, on BOTH sticky writes (issue #235 + #236 r1)", async () => {
+    const placeholder =
+      "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- review-complete-ancestor -->\n<!-- code-review:findings-json https://artifacts.example.com/f.zip -->\nCode review in progress";
+    const { api, calls } = mkMockGhApi(mkMocks(placeholder));
+
+    // Inline enabled: the post-inline final patch is the LAST sticky write — the marker must
+    // survive into it, or the seed chain severs on the patch (issue #236 r1).
+    await post(mkInlineInput({ jsonUrl: undefined }), api);
+
+    const stickyWrites = calls().filter(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    // Inline is enabled, so there are exactly TWO writes — the initial upsert and the post-inline
+    // final patch — and BOTH must carry the prior link (issue #236 r2).
+    expect(stickyWrites.length).toBe(2);
+    for (const write of stickyWrites) {
+      const body = JSON.parse(write.stdin!) as CommentBody;
+      expect(body.body).toContain("code-review:findings-json https://artifacts.example.com/f.zip");
+    }
+  });
 });
 
 describe("post — postedAt threading (issue #28)", () => {

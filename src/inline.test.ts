@@ -64,8 +64,7 @@ describe("buildInlineComments", () => {
       path: "src/foo.ts",
       start_line: 10,
       end_line: 10,
-      title: "t".repeat(30_000),
-      description: "x".repeat(30_000),
+      description: "x".repeat(25_000),
     });
     const { comments } = buildInlineComments([inBand], inlineDiff, {
       inlineTemplate: bundledInlineTemplate,
@@ -74,9 +73,29 @@ describe("buildInlineComments", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]!.body).toContain("… [truncated]");
     expect(comments[0]!.body).toContain("findings-json;base64");
-    // The title sheds with the rest of the prose — every rendered field is inside the valve.
-    expect(comments[0]!.body).not.toContain("t".repeat(30_000));
-    expect(comments[0]!.body).not.toContain("x".repeat(30_000));
+    // The prose sheds inside the valve — the whole-field text is gone, its clip marker is not.
+    expect(comments[0]!.body).not.toContain("x".repeat(25_000));
+  });
+
+  // A patch-driven payload past the hard valve: the rendered hunk comes from the CLIPPED view
+  // (patchProjection is built from view.patch), so the body stays bounded — pinned because the
+  // reviewer claimed the opposite (issue #236 r3, adjudicated empirically).
+  it("bounds a patch-driven payload past the hard valve", () => {
+    const hugePatch = mkFinding({
+      path: "src/foo.ts",
+      start_line: 10,
+      end_line: 10,
+      patch: ["@@ -1 +1 @@", "-old", `+${"x".repeat(60_000)}`].join("\n"),
+    });
+    const { comments } = buildInlineComments([hugePatch], inlineDiff, {
+      inlineTemplate: bundledInlineTemplate,
+      findings: mkFindingsDoc([hugePatch]),
+      jsonUrl: "https://artifacts.example.com/f.zip",
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body.length).toBeLessThan(65_536);
+    expect(comments[0]!.body).toContain("… [truncated]");
+    expect(comments[0]!.body).not.toContain("x".repeat(60_000));
   });
 
   it("includes in-diff findings as comments", () => {

@@ -1,4 +1,4 @@
-[log] Post a complete review (inline comments + sticky summary) from findings + envelope + diff (code-review post v0.1.0-alpha.52)
+[log] Post a complete review (inline comments + sticky summary) from findings + envelope + diff (code-review post v0.1.0-alpha.53)
 
 USAGE `code-review post [OPTIONS] <FINDINGS> --head-sha --repo --usage`
 

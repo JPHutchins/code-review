@@ -728,7 +728,7 @@ jobs:
               HAS_PRIOR_FINDINGS=1
             fi
             if [ "$HAS_PRIOR" = "1" ] || [ "$HAS_PRIOR_FINDINGS" = "1" ]; then
-              SEED_HELP="$(code-review seed-draft --help 2>/dev/null || true)"
+              SEED_HELP="$(NO_COLOR=1 code-review seed-draft --help 2>/dev/null || true)"
               if [ -n "$SEED_HELP" ]; then
                 SEED_HELP_OK=1
               else
@@ -1238,7 +1238,7 @@ jobs:
           POST_HELP=""
           POST_HELP_OK=0
           if [ -f findings/cloc-diff.txt ] || [ "$REVIEW_ROUTE" = "mechanic" ] || [ "$INLINE" = "true" ] || [ -n "$NIT_VISIBILITY_FLOOR" ]; then
-            POST_HELP="$(code-review post --help 2>/dev/null || true)"
+            POST_HELP="$(NO_COLOR=1 code-review post --help 2>/dev/null || true)"
             if [ -n "$POST_HELP" ]; then
               POST_HELP_OK=1
             else

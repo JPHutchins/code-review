@@ -1,11 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { legacyEmbeddedMarker } from "./test-util.js";
-import { runCommand } from "citty";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { legacyEmbeddedMarker, runCli } from "./test-util.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { main, snapshotIfValid } from "./index.js";
+import { snapshotIfValid } from "./index.js";
 import {
   lastValidPath,
   priorAnswersPath,
@@ -43,49 +42,6 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
-
-/** Thrown by the mocked process.exit below, distinguishing a deliberate exit from a real error. */
-class ExitSignal extends Error {
-  constructor(readonly code: number) {
-    super(`process.exit(${String(code)})`);
-  }
-}
-
-/** Capture stdout/stderr writes and process.exit calls around a CLI invocation. */
-const runCli = async (
-  rawArgs: readonly string[],
-): Promise<{
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly exitCode: number | null;
-}> => {
-  let stdout = "";
-  let stderr = "";
-  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
-    stdout += String(chunk);
-    return true;
-  });
-  const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
-    stderr += String(chunk);
-    return true;
-  });
-  const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-    throw new ExitSignal(code ?? 0);
-  }) as never);
-
-  let exitCode: number | null = null;
-  try {
-    await runCommand(main, { rawArgs: [...rawArgs] });
-  } catch (err) {
-    if (!(err instanceof ExitSignal)) throw err;
-    exitCode = err.code;
-  } finally {
-    stdoutSpy.mockRestore();
-    stderrSpy.mockRestore();
-    exitSpy.mockRestore();
-  }
-  return { stdout, stderr, exitCode };
-};
 
 describe("cli — check-cost", () => {
   it("sums a real transcript per model and reports real cost against a provided price map", async () => {

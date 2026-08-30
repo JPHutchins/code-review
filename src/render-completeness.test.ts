@@ -81,7 +81,11 @@ const sentinel = (leaf: string): string => `S_${leaf.replace(/\./g, "_")}_E`;
 // let `verdict: "comment"` match the directive's own static prose, and a bare "3" match
 // change_size's "333" while the metastasis note rendered nothing (issue #232, #217 review r7).
 const VISIBLE_LEAVES: readonly (readonly [leaf: string, value: string, anchor: string])[] = [
-  ["verdict", "💬 comment", "💬 "],
+  // The verdict anchor is the markdown header prefix, NOT a fragment of the value itself: a value
+  // containing its own anchor reduces the position check to the presence check it replaces — a
+  // badge moved off the header would still pass (issue #232 r1). The first "### " line IS the
+  // verdict badge (the systemic and findings headers render later in the template).
+  ["verdict", "💬 comment", "### "],
   ["findings.start_line", ":10", "S_findings_title_E"],
   ["findings.end_line", "–12", "S_findings_title_E"],
   ["findings.side", "RIGHT", "S_findings_title_E"],
@@ -96,11 +100,12 @@ const VISIBLE_LEAVES: readonly (readonly [leaf: string, value: string, anchor: s
   ["change_size.tests.removed", "444", "**Changes:**"],
   ["change_size.docs.added", "555", "**Changes:**"],
   ["change_size.docs.removed", "666", "**Changes:**"],
-  // The anchor is the flagged-code line's own prose (" findings in "), not "consecutive rounds":
-  // the note's INTRO line also carries that phrase, and a position assertion that lands on the intro
-  // line instead of the flagged line is exactly the failure mode this guard exists to catch.
-  ["scope_metastasis.recurring.code", "`recurring-code`", " findings in "],
-  ["scope_metastasis.recurring.consecutive_rounds", "in 3 consecutive rounds", " findings in "],
+  // The anchor is the flagged-code line's blockquote code-span opening ("> **`"), the only line in
+  // the note that carries it — the INTRO line is near-duplicate prose ("each fix keeps enabling the
+  // next finding in that machinery"), so any prose fragment ("consecutive rounds", " findings in ")
+  // is one wording edit away from colliding with it (issue #232 r1).
+  ["scope_metastasis.recurring.code", "`recurring-code`", "> **`"],
+  ["scope_metastasis.recurring.consecutive_rounds", "in 3 consecutive rounds", "> **`"],
 ];
 
 // These live ONLY in the compact convergence marker. They are asserted by the golden pin below —
@@ -272,6 +277,10 @@ describe("the comment carries every field of the findings document (issue #217)"
       const line = lines.find((l) => l.includes(anchor)) ?? "";
       expect(line, `${leaf} (${value}) on the ${anchor} line`).toContain(value);
     }
+    // Within-line attribution: the six change_size values share one anchor line, so per-value
+    // containment cannot catch a swapped pair — assert the rendered cell ORDER (issue #232 r1).
+    const changesLine = lines.find((l) => l.includes("**Changes:**")) ?? "";
+    expect(changesLine).toContain("+111 / −222 code · +333 / −444 tests · +555 / −666 docs");
   });
 
   it("carries every convergence leaf in the compact marker itself", () => {

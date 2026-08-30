@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCommand } from "citty";
 import type { GhApi } from "./gh.js";
 import type { GatherInput, GitRun } from "./gather.js";
 import { gather, renderOutputs } from "./gather.js";
 import { AGENTS_STOP_DIRECTIVE } from "./surface.js";
-import { main } from "./index.js";
+import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
 
 const sampleDiff = `diff --git a/src/foo.ts b/src/foo.ts
@@ -1333,44 +1332,12 @@ describe("gather — answered-findings registry (issue #151)", () => {
 
 // The two halves are each tested in isolation — gather writes prior_findings.json (above), seed-draft
 // reads --prior-findings (index.test.ts) — but nothing asserted the FILE the one writes is the FILE
-// the other reads. This runs the REAL gather and the REAL seed-draft back to back over one temp dir
-// (issue #232).
+// the other reads. This runs the REAL gather and the REAL seed-draft back to back over one temp dir,
+// through the shared runCli harness so a harness fix reaches both (issue #232 + r1).
 describe("gather → seed-draft seam (issue #232)", () => {
-  class ExitSignal extends Error {
-    constructor(readonly code: number) {
-      super(`process.exit(${String(code)})`);
-    }
-  }
-
-  const runSeedDraft = async (
-    args: readonly string[],
-  ): Promise<{ readonly stdout: string; readonly exitCode: number | null }> => {
-    let stdout = "";
-    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
-      stdout += String(chunk);
-      return true;
-    });
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw new ExitSignal(code ?? 0);
-    }) as never);
-    let exitCode: number | null = null;
-    try {
-      await runCommand(main, { rawArgs: ["seed-draft", ...args] });
-    } catch (err) {
-      if (!(err instanceof ExitSignal)) throw err;
-      exitCode = err.code;
-    } finally {
-      stdoutSpy.mockRestore();
-      stderrSpy.mockRestore();
-      exitSpy.mockRestore();
-    }
-    return { stdout, exitCode };
-  };
-
   it("seed-draft consumes the prior_findings.json gather staged from an artifact-named marker", async () => {
     const doc = {
-      schema_version: "0.4.0",
+      schema_version: "0.9.0",
       summary: "Prior review summary.",
       verdict: "changes",
       findings: [
@@ -1416,7 +1383,8 @@ describe("gather → seed-draft seam (issue #232)", () => {
     expect(JSON.parse(readFileSync(staged, "utf-8")) as unknown).toEqual(doc);
 
     const out = join(tmpDir, "draft.json");
-    const { stdout, exitCode } = await runSeedDraft([
+    const { stdout, stderr } = await runCli([
+      "seed-draft",
       "--prior",
       prior,
       "--prior-findings",
@@ -1424,8 +1392,11 @@ describe("gather → seed-draft seam (issue #232)", () => {
       "--out",
       out,
     ]);
-    expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("prior-new");
+    // The stderr success line is the seam's real signal: seed-draft never calls process.exit, so
+    // a null-exit assertion could not falsify any outcome, while this line distinguishes a seeded
+    // prior from every degraded path (issue #232 r1).
+    expect(stderr).toContain("wrote the prior review (1 finding(s))");
     const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as typeof doc;
     expect(context.findings[0]!.title).toBe("Prior finding");
   });

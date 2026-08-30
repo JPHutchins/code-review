@@ -26,7 +26,11 @@ export const describeEndpoint = (args: readonly string[]): string =>
 // with --allow-escape-sequences. A successful retry memoizes flag-first for the process — an old gh
 // never sees the flag, so no capability probe is needed and no probe failure can silently degrade
 // the boundary. The retry re-executes the command, so only IDEMPOTENT calls may retry — a write
-// that already landed server-side before the refusal must surface loudly, never replay.
+// that already landed server-side before the refusal must surface loudly, never replay. The retry's
+// cost is bounded by design: it re-fetches ONE already-buffered response (for a --paginate call,
+// gh has buffered every page before it refuses, so the retry re-downloads the whole sequence once),
+// and concurrent first calls can each refuse-and-retry once before the memoization lands — a
+// one-time per-process per-endpoint doubling, paid again in each fresh workflow step.
 let flagFirst: boolean | undefined;
 
 export const withEscapeRetry = async <T>(
@@ -46,10 +50,12 @@ export const withEscapeRetry = async <T>(
   }
 };
 
-// A write call is one carrying --input or an explicit --method — a conservative reading: a `--method
-// GET` is idempotent too, but nothing here issues one, so any explicit method opts out.
+// A write call is one carrying --input, an explicit --method, or a graphql invocation — a
+// conservative reading: a `--method GET` is idempotent too, but nothing here issues one, and the one
+// graphql read query loses nothing by opting out (JSON responses bypass gh's guard anyway), while
+// the graphql minimize MUTATION carries neither REST write flag and must never replay.
 const isIdempotentCall = (args: readonly string[]): boolean =>
-  !args.includes("--input") && !args.includes("--method");
+  !args.includes("--input") && !args.includes("--method") && !args.includes("graphql");
 
 export const runGhApi: GhApi = (args, stdin, env) =>
   withEscapeRetry(

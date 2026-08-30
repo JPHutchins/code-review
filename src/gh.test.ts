@@ -106,4 +106,18 @@ describe("runGhApi — the escape-retry boundary", () => {
     const only = mockExec.mock.calls[0]![0] as { args: readonly string[] };
     expect(only.args).toEqual(["api", "repos/o/r/pulls/42/reviews", "--input", "-"]);
   });
+
+  it("never replays a graphql call on refusal — the mutation form carries no REST write flags", async () => {
+    mockExec.mockRejectedValueOnce(
+      new Error(
+        "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway",
+      ),
+    );
+    const { runGhApi } = await import("./gh.js");
+
+    await expect(
+      runGhApi(["graphql", "-f", "query=mutation { x }", "-f", "id=abc"]),
+    ).rejects.toThrow("escape sequences");
+    expect(mockExec).toHaveBeenCalledTimes(1);
+  });
 });

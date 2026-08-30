@@ -61,8 +61,10 @@ import { asRecord, errMsg, tryParseJson } from "./util.js";
 export interface PostInput {
   readonly repo: string;
   // The head repo (owner/name of the fork) threaded by the workflow via HEAD_REPO — a finding
-  // permalink targets the tree the reviewed SHA lives in, which is the fork on a fork PR. Omitted
-  // ⇒ the base repo (issue #231 r1).
+  // permalink targets the reviewed SHA, which the base repo stops resolving for a fork once the
+  // pull ref is force-pushed away. The workflow derives it from the caller's event
+  // (workflow_run.head_repository.full_name / pull_request.head.repo.full_name); this base-repo
+  // fallback serves the event types it cannot derive from.
   readonly headRepo?: string;
   readonly headSha: string;
   readonly botLogin: string;

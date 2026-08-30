@@ -911,6 +911,57 @@ describe("gather — failing-job logs", () => {
     stderrSpy.mockRestore();
   });
 
+  // gh refuses raw responses containing terminal escapes unless told to — a refusal that silently
+  // emptied the fast-fix route's staged logs. The download must ask for the escapes (they are
+  // written to a FILE, never echoed) and stage the colored log verbatim.
+  it("downloads each job log with --allow-escape-sequences, staging ANSI-colored logs verbatim", async () => {
+    const colored = "2026-01-01T00:00:00.000Z [31mfailing test[0m\n";
+    const { api, calls } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: jobRows({ id: 11, conclusion: "failure" }) },
+      { match: logsMatch, response: colored },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1 });
+    expect(outFile("job_11.log")).toBe(colored);
+    const logCalls = calls().filter((c) => logsMatch(c.args));
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0]!.args).toContain("--allow-escape-sequences");
+  });
+
+  // ghs that predate the escape refusal also predate the flag — the plain call is the fallback.
+  it("falls back to the plain call when the gh predates --allow-escape-sequences", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: jobRows({ id: 11, conclusion: "failure" }) },
+      {
+        match: (a) => logsMatch(a) && a.includes("--allow-escape-sequences"),
+        response: new Error("unknown flag: --allow-escape-sequences"),
+      },
+      { match: logsMatch, response: "LOG 11" },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1 });
+    expect(outFile("job_11.log")).toBe("LOG 11");
+    expect(calls().filter((c) => logsMatch(c.args))).toHaveLength(2);
+  });
+
   // The fast-fix route exists to read the failing logs; with none staged it reasons from the diff
   // alone, which is the thing it replaces. That has to be said out loud, not left for a reader to
   // notice in the agent's prose (issue #154).

@@ -1,28 +1,29 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { repoRoot } from "./test-util.js";
+import { readRepoFile } from "./test-util.js";
 
 // The capability probes (seed_accepts/post_accepts) live as inline bash in the workflows, and their
 // correctness depends on citty's --help rendering — a version-mutable, human-facing surface. These
 // tests extract the REAL functions from the REAL workflow files and run them through bash against
-// the REAL published help (captured fixtures) plus a backtick-quoted variant, so a rendering change
-// in either citty or the workflow fails here instead of silently dropping flags in CI (issue #233
-// r2 — the systemic that followed a probe change verified against the wrong help text).
+// the REAL published help (captured fixtures), so a rendering change in either citty or the
+// workflow fails here instead of silently dropping flags in CI (issue #233 r2 — the systemic that
+// followed a probe change verified against the wrong help text).
 //
 // Fixture provenance: test/fixtures/published-help/*.txt are captures of the REAL published
-// package's --help, taken 2026-08-30 by running the published tarball's dist directly
-// (`npm pack @jphutchins/code-review@<ver>`, `npm --prefix <dir> install`, then
-// `node <dir>/dist/index.js <cmd> --help`): the alpha.52 pair, and the alpha.53 pair whose seed
-// gains --prior-findings (the #217 channel first ships in 53). Earlier captures were poisoned
-// by the npx cache (`~/.npm/_npx` held an alpha.40-era install that `npx -y` reused) and were
-// deleted — never verify package output through npx; run the tarball's dist.
+// package's --help, taken 2026-08-30 by running the published tarball's dist directly with
+// `CI=true NO_COLOR=1 node <dir>/dist/index.js <cmd> --help` (after `npm pack
+// @jphutchins/code-review@<ver>` + `npm --prefix <dir> install`). CI=true is the byte-form the
+// workflow's probes actually see — citty renders a `[log] ` prefix and backtick-quoted option
+// names under it, and nothing here strips or normalizes them; NO_COLOR pins that form
+// deterministically. The alpha.53 pair's seed gains --prior-findings (the #217 channel first ships
+// in 53). Earlier captures were poisoned by the npx cache (`~/.npm/_npx` held an alpha.40-era
+// install that `npx -y` reused) and were deleted — never verify package output through npx; run
+// the tarball's dist.
 
 const workflowPaths = [".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"];
 
-const workflowTexts = (): readonly string[] =>
-  workflowPaths.map((p) => readFileSync(`${repoRoot}/${p}`, "utf-8"));
+const workflowTexts = (): readonly string[] => workflowPaths.map(readRepoFile);
 
 const stepScripts = (text: string): readonly string[] => {
   const doc = parseYaml(text) as { jobs: Record<string, { steps: Array<{ run?: string }> }> };
@@ -31,11 +32,12 @@ const stepScripts = (text: string): readonly string[] => {
   );
 };
 
-// The functions are deliberately ONE-LINE definitions so this extraction stays exact.
-const FN_RE = /(seed_accepts|post_accepts)\(\) \{ [^}]* \}/g;
+// The functions are deliberately ONE-LINE definitions so this extraction stays exact. The
+// word-boundary anchor keeps a comment or echo mentioning a probe name from being extracted first.
+const FN_RE = /\b(seed_accepts|post_accepts)\(\) \{ [^}]* \}/g;
 
-const probeSites = (): readonly { name: "seed_accepts" | "post_accepts"; fn: string }[] =>
-  workflowTexts().flatMap((text) =>
+const probeSites = (): readonly { name: "seed_accepts" | "post_accepts"; fn: string }[] => {
+  const sites = workflowTexts().flatMap((text) =>
     stepScripts(text).flatMap((script) =>
       [...script.matchAll(FN_RE)].map((m) => ({
         name: m[1] as "seed_accepts" | "post_accepts",
@@ -43,6 +45,15 @@ const probeSites = (): readonly { name: "seed_accepts" | "post_accepts"; fn: str
       })),
     ),
   );
+  // A reformatted probe definition would silently truncate or stop matching FN_RE, and the empty
+  // extraction would surface as a confusing per-flag probe failure — fail loudly at the source.
+  if (sites.length === 0) {
+    throw new Error(
+      "no probe definitions extracted from the workflows — FN_RE no longer matches the probe format",
+    );
+  }
+  return sites;
+};
 
 const runProbe = (
   name: "seed_accepts" | "post_accepts",
@@ -75,10 +86,7 @@ describe("workflow capability probes (issue #233 r2)", () => {
 
   it("accepts a flag the real published alpha.52 help carries, and rejects a bogus one", () => {
     const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
-    const postHelp = readFileSync(
-      `${repoRoot}/test/fixtures/published-help/post-alpha52.txt`,
-      "utf-8",
-    );
+    const postHelp = readRepoFile("test/fixtures/published-help/post-alpha52.txt");
     expect(runProbe("post_accepts", postFn, postHelp, "json-url")).toBe("yes");
     expect(runProbe("post_accepts", postFn, postHelp, "cloc-diff")).toBe("yes");
     expect(runProbe("post_accepts", postFn, postHelp, "bogus-flag")).toBe("no");
@@ -86,32 +94,28 @@ describe("workflow capability probes (issue #233 r2)", () => {
 
   it("reports the published seed-draft as lacking --prior-findings (it predates #217)", () => {
     const seedFn = sites.find((s) => s.name === "seed_accepts")!.fn;
-    const seedHelp = readFileSync(
-      `${repoRoot}/test/fixtures/published-help/seed-draft-alpha52.txt`,
-      "utf-8",
-    );
+    const seedHelp = readRepoFile("test/fixtures/published-help/seed-draft-alpha52.txt");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior")).toBe("yes");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-findings")).toBe("no");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-answers")).toBe("yes");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "nit-visibility-floor")).toBe("yes");
   });
 
-  it("reports the published alpha.53 as carrying the full prior-findings channel", () => {
+  // The alpha.53 pair's novel coverage is the 52→53 boundary itself: the version strings pin the
+  // captures to their named generation (a stale re-capture would still pass every probe above), the
+  // seed gains --prior-findings, and the post side probes the flags CI actually gates through the
+  // published help's OPTIONS block (--inline, --unverified-no-logs, --nit-visibility-floor).
+  it("reports the published alpha.53 as carrying the prior-findings channel and the CI-gated post flags", () => {
     const seedFn = sites.find((s) => s.name === "seed_accepts")!.fn;
     const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
-    const seedHelp53 = readFileSync(
-      `${repoRoot}/test/fixtures/published-help/seed-draft-alpha53.txt`,
-      "utf-8",
-    );
-    const postHelp53 = readFileSync(
-      `${repoRoot}/test/fixtures/published-help/post-alpha53.txt`,
-      "utf-8",
-    );
+    const seedHelp53 = readRepoFile("test/fixtures/published-help/seed-draft-alpha53.txt");
+    const postHelp53 = readRepoFile("test/fixtures/published-help/post-alpha53.txt");
+    expect(seedHelp53).toContain("code-review seed-draft v0.1.0-alpha.53");
+    expect(postHelp53).toContain("code-review post v0.1.0-alpha.53");
     expect(runProbe("seed_accepts", seedFn, seedHelp53, "prior-findings")).toBe("yes");
-    expect(runProbe("seed_accepts", seedFn, seedHelp53, "prior-answers")).toBe("yes");
-    expect(runProbe("seed_accepts", seedFn, seedHelp53, "nit-visibility-floor")).toBe("yes");
-    expect(runProbe("post_accepts", postFn, postHelp53, "json-url")).toBe("yes");
-    expect(runProbe("post_accepts", postFn, postHelp53, "cloc-diff")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp53, "inline")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp53, "unverified-no-logs")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp53, "nit-visibility-floor")).toBe("yes");
   });
 
   it("matches a help text that backtick-quotes option names", () => {

@@ -103,4 +103,38 @@ describe("workflow capability probes (issue #233 r2)", () => {
     expect(runProbe("post_accepts", postFn, quoted, "cloc-diff")).toBe("yes");
     expect(runProbe("post_accepts", postFn, quoted, "bogus-flag")).toBe("no");
   });
+
+  // The capture-condition ↔ call-site coverage: both #236 regressions were a probe call firing
+  // against an uncaptured help. Pin the concrete invariants that failed (issue #236 r3).
+  it("covers every probe call site with its help-capture condition", () => {
+    for (const text of workflowTexts()) {
+      const scripts = stepScripts(text);
+      const postCapture = scripts.find((s) => s.includes('POST_HELP="$(code-review post --help'));
+      const seedCapture = scripts.find((s) =>
+        s.includes('SEED_HELP="$(code-review seed-draft --help'),
+      );
+      expect(postCapture).toBeDefined();
+      expect(seedCapture).toBeDefined();
+      // Every flag the post side probes must appear in its capture condition.
+      expect(postCapture).toContain("$NIT_VISIBILITY_FLOOR");
+      expect(postCapture).toContain("$REVIEW_ROUTE");
+      expect(postCapture).toContain("findings/cloc-diff.txt");
+      // The seed side captures on a real prior.
+      expect(seedCapture).toContain("$HAS_PRIOR");
+      // A "predates" warning may only fire when the help was actually captured — the nearest
+      // if/elif guard above the warning must carry the _OK check (issue #236 r3).
+      for (const script of scripts) {
+        const lines = script.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i]!.includes("predates") && lines[i]!.includes("::warning::")) {
+            const guard = lines
+              .slice(0, i)
+              .reverse()
+              .find((l) => l.includes("elif [") || l.includes("if ["));
+            expect(guard, "a predates warning without its _OK gate").toContain("_OK");
+          }
+        }
+      }
+    }
+  });
 });

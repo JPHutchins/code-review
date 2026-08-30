@@ -269,7 +269,10 @@ export const render = (input: RenderInput): string => {
         (n.codeUrl?.length ?? 0) +
         String(n.startLine).length * 2 +
         String(n.endLine).length +
-        (n.side !== undefined ? n.side.length + 2 : 0);
+        (n.side !== undefined ? n.side.length + 2 : 0) +
+        // The summary line's wrappers: backticks around the code and the [](...) around the link.
+        (n.code !== undefined ? n.code.length + 2 : 0) +
+        (n.codeUrl !== undefined ? n.codeUrl.length + 4 : 0);
       return acc.used + size > CARRIED_TOTAL_CHARS
         ? { list: acc.list, used: acc.used, dropped: acc.dropped + 1 }
         : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };

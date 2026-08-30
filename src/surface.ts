@@ -91,6 +91,9 @@ export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl
 // whole-document embed's old EMBED_LIMIT) no embed fits at all, so the marker names the artifact
 // instead — and only THAT band breaks the registry, for a finding pathological enough that no
 // comment could hold it. With no URL there is nothing to name, so the embed stays the only channel.
+// Dedupes the hard-valve warning per finding identity within one process (issue #236 r3).
+const warnedValveFindings = new Set<string>();
+
 export const INLINE_PROSE_CLIP_THRESHOLD_CHARS = 30_000;
 // The hard valve sits below the whole-document embed's old EMBED_LIMIT: the inline body is payload
 // + directive + clipped prose, and the clipped reasoning gains a `> ` prefix per rendered line — the
@@ -112,11 +115,16 @@ export const findingPointer = (
       return `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json ${jsonUrl} -->`;
     }
     // No URL to name and the payload cannot fit: omit the marker entirely — the pre-#217 behavior —
-    // with a loud warning, rather than embedding a comment GitHub is guaranteed to reject (the 422
-    // aborts the inline post; issue #235).
-    process.stderr.write(
-      "::warning::a finding's payload exceeds the inline comment limit and no --json-url was supplied to name the artifact — the comment carries no findings marker\n",
-    );
+    // with a loud warning naming the finding, rather than embedding a comment GitHub is guaranteed
+    // to reject (the 422 aborts the inline post; issue #235). Deduped per finding identity — a
+    // fan-out round hits the valve once per comment, and the log must stay readable (issue #236 r3).
+    const identity = `${finding.path}:${String(finding.start_line)}`;
+    if (!warnedValveFindings.has(identity)) {
+      warnedValveFindings.add(identity);
+      process.stderr.write(
+        `::warning::the finding at ${identity} has a payload past the inline comment limit and no --json-url was supplied to name the artifact — the comment carries no findings marker\n`,
+      );
+    }
     return "";
   }
   return `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${payload} -->`;

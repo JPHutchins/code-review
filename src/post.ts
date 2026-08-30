@@ -704,17 +704,16 @@ export const post = async (
   });
   // The error rides HERE rather than at the main path's call site, so the notice and lost-envelope
   // paths — which also post a body built from this — say it too. Once per post, not once per surface.
-  // When no --json-url can name an artifact and the existing sticky is this run's own announce
-  // placeholder (no review-complete), the rendered body carries the PRIOR review's findings LINK
-  // forward — through findingsBlob, so EVERY rendered body (main, final patch, the
-  // empty-diff/corrupt/lost-envelope paths) carries it, and the template places it after the
-  // sticky's leading markers so findBotComment still identifies the comment. The embedded form is
-  // deliberately not carried — its size is unbounded and a 422 would fail the round
-  // (issue #235 + #236 r1 + r2).
+  // When no --json-url can name an artifact and the existing sticky carries a findings marker, the
+  // rendered body carries the PRIOR review's findings LINK forward — through findingsBlob, so EVERY
+  // rendered body (main, final patch, the empty-diff/corrupt/lost-envelope paths) carries it, and
+  // the template places it after the sticky's leading markers so findBotComment still identifies
+  // the comment. The freeze guard above still wins for a completed full-review sticky
+  // (leaveInPlace); every OTHER marker-carrying sticky — placeholder, mechanic, pre-route — gets
+  // the carry instead of a markerless overwrite (issue #235 + #236 r1-r3). The embedded form is
+  // not carried — its size is unbounded and a 422 would fail the round.
   const carriedFindingsLink =
-    !input.jsonUrl && existingSticky !== null && !parseReviewComplete(existingSticky.body)
-      ? findingsArtifactUrl(existingSticky.body)
-      : null;
+    !input.jsonUrl && existingSticky !== null ? findingsArtifactUrl(existingSticky.body) : null;
   let warnedNoJsonUrl = false;
   const findingsBlob = (doc: Findings): string => {
     if (input.jsonUrl) return findingsMarkerPair(input.jsonUrl, doc.convergence);

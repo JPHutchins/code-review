@@ -745,10 +745,14 @@ jobs:
               else
                 echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --prior-answers; the answered-registry channel is unavailable for this seed"
               fi
-              if seed_accepts nit-visibility-floor; then
-                NIT_FLOOR_ARGS=(--nit-visibility-floor "$NIT_VISIBILITY_FLOOR")
-              else
-                echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --nit-visibility-floor; the nit visibility floor is not applied to this seed"
+              # An EMPTY floor needs no flag and no probe — probing an uncaptured help would emit a
+              # false "predates" warning (issue #236 r2).
+              if [ -n "$NIT_VISIBILITY_FLOOR" ]; then
+                if seed_accepts nit-visibility-floor; then
+                  NIT_FLOOR_ARGS=(--nit-visibility-floor "$NIT_VISIBILITY_FLOOR")
+                else
+                  echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --nit-visibility-floor; the nit visibility floor is not applied to this seed"
+                fi
               fi
             fi
             SEED_MODE="$(code-review seed-draft --prior prior_review.json "${PRIOR_FINDINGS_ARGS[@]}" "${PRIOR_ANSWERS_ARGS[@]}" "${NIT_FLOOR_ARGS[@]}" --head-sha "$HEAD_SHA" --out "$DRAFT")"

@@ -704,15 +704,32 @@ export const post = async (
   });
   // The error rides HERE rather than at the main path's call site, so the notice and lost-envelope
   // paths — which also post a body built from this — say it too. Once per post, not once per surface.
+  // When no --json-url can name an artifact and the existing sticky is this run's own announce
+  // placeholder (no review-complete), the rendered body carries the PRIOR review's findings LINK
+  // forward — through findingsBlob, so EVERY rendered body (main, final patch, the
+  // empty-diff/corrupt/lost-envelope paths) carries it, and the template places it after the
+  // sticky's leading markers so findBotComment still identifies the comment. The embedded form is
+  // deliberately not carried — its size is unbounded and a 422 would fail the round
+  // (issue #235 + #236 r1 + r2).
+  const carriedFindingsLink =
+    !input.jsonUrl && existingSticky !== null && !parseReviewComplete(existingSticky.body)
+      ? findingsArtifactUrl(existingSticky.body)
+      : null;
   let warnedNoJsonUrl = false;
   const findingsBlob = (doc: Findings): string => {
-    if (!input.jsonUrl && !warnedNoJsonUrl) {
+    if (input.jsonUrl) return findingsMarkerPair(input.jsonUrl, doc.convergence);
+    if (carriedFindingsLink !== null) {
+      // The prior link is carried: the machine channel survives, though this run names no NEW
+      // artifact — the sticky's findings remain the prior round's.
+      return findingsMarkerPair(carriedFindingsLink, doc.convergence);
+    }
+    if (!warnedNoJsonUrl) {
       warnedNoJsonUrl = true;
       process.stderr.write(
-        "::error::no --json-url was supplied, so this comment names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
+        "::error::no --json-url was supplied and the existing sticky carries no findings marker to carry forward, so this comment names no findings artifact — the review's prose is intact but its machine channel is gone, and the next round cannot seed from it\n",
       );
     }
-    return findingsMarkerPair(input.jsonUrl, doc.convergence);
+    return findingsMarkerPair(undefined, doc.convergence);
   };
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
@@ -1176,27 +1193,13 @@ export const post = async (
     );
   }
 
-  // When no --json-url can name an artifact and the existing sticky is this run's own announce
-  // placeholder (no review-complete), the new body carries the PRIOR review's findings LINK
-  // forward — the embedded form is deliberately not carried (its size is unbounded and a 422
-  // would fail the round), and the missing machine channel is already named by the ::error::.
-  // Applied at BOTH sticky writes (the initial upsert and the post-inline final patch), so an
-  // inline round cannot drop the marker on the final patch (issue #235 + #236 r1).
-  const priorFindingsLink =
-    !input.jsonUrl && existingSticky !== null && !parseReviewComplete(existingSticky.body)
-      ? findingsArtifactUrl(existingSticky.body)
-      : null;
-  const withCarriedMarker = (body: string): string =>
-    priorFindingsLink === null
-      ? body
-      : `<!-- code-review:findings-json ${priorFindingsLink} -->\n\n${body}`;
-
-  // Phase 2: writes — sticky first, inline second.
+  // Phase 2: writes — sticky first, inline second. The carry is a property of the rendered body
+  // (findingsBlob above), so every write site gets it for free.
   const stickyRef = await upsertSticky(
     input.repo,
     prNumber,
     existingSticky,
-    withCarriedMarker(renderBody(initialDisposition)),
+    renderBody(initialDisposition),
     ghApi,
   );
 
@@ -1257,7 +1260,7 @@ export const post = async (
       await patchComment(
         input.repo,
         stickyRef.id,
-        withCarriedMarker(renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount)),
+        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount),
         ghApi,
       );
       process.stderr.write(

@@ -267,9 +267,9 @@ export const render = (input: RenderInput): string => {
         n.path.length * 2 +
         (n.code?.length ?? 0) +
         (n.codeUrl?.length ?? 0) +
-        String(n.startLine).length +
+        String(n.startLine).length * 2 +
         String(n.endLine).length +
-        (n.side?.length ?? 0);
+        (n.side !== undefined ? n.side.length + 2 : 0);
       return acc.used + size > CARRIED_TOTAL_CHARS
         ? { list: acc.list, used: acc.used, dropped: acc.dropped + 1 }
         : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };

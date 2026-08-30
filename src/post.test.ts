@@ -2692,7 +2692,9 @@ describe("post — --run-url / --json-url threading", () => {
     const stickyWrites = calls().filter(
       (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
     );
-    expect(stickyWrites.length).toBeGreaterThan(0);
+    // Inline is enabled, so there are exactly TWO writes — the initial upsert and the post-inline
+    // final patch — and BOTH must carry the prior link (issue #236 r2).
+    expect(stickyWrites.length).toBe(2);
     for (const write of stickyWrites) {
       const body = JSON.parse(write.stdin!) as CommentBody;
       expect(body.body).toContain("code-review:findings-json https://artifacts.example.com/f.zip");

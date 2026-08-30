@@ -961,12 +961,15 @@ jobs:
 
           # --nit-visibility-floor is probed like the other post flags: a consumer-set floor that is
           # silently ignored (rendered at the default) is the same no-op class the probes exist to
-          # name (issue #235).
+          # name (issue #235). An EMPTY floor needs no flag and no probe — probing an uncaptured
+          # help would emit a false "predates" warning (issue #236 r1).
           NIT_FLOOR_POST_ARGS=()
-          if post_accepts nit-visibility-floor; then
-            NIT_FLOOR_POST_ARGS=(--nit-visibility-floor "$NIT_VISIBILITY_FLOOR")
-          else
-            echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --nit-visibility-floor; the nit visibility floor is not applied to this post"
+          if [ -n "$NIT_VISIBILITY_FLOOR" ]; then
+            if post_accepts nit-visibility-floor; then
+              NIT_FLOOR_POST_ARGS=(--nit-visibility-floor "$NIT_VISIBILITY_FLOOR")
+            else
+              echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --nit-visibility-floor; the nit visibility floor is not applied to this post"
+            fi
           fi
 
           code-review post findings/findings.json \

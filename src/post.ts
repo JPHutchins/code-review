@@ -40,6 +40,7 @@ import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import {
+  findingsArtifactUrl,
   ghArtifactReader,
   hasFindingsMarker,
   resolvePriorFindings,
@@ -1176,20 +1177,28 @@ export const post = async (
   }
 
   // When no --json-url can name an artifact and the existing sticky is this run's own announce
-  // placeholder (no review-complete; it carries the PRIOR review's findings marker forward), the
-  // new body carries that marker too — otherwise the overwrite severs the seed chain the refuse
-  // guard exists to protect (issue #235).
-  const priorFindingsMarker =
+  // placeholder (no review-complete), the new body carries the PRIOR review's findings LINK
+  // forward — the embedded form is deliberately not carried (its size is unbounded and a 422
+  // would fail the round), and the missing machine channel is already named by the ::error::.
+  // Applied at BOTH sticky writes (the initial upsert and the post-inline final patch), so an
+  // inline round cannot drop the marker on the final patch (issue #235 + #236 r1).
+  const priorFindingsLink =
     !input.jsonUrl && existingSticky !== null && !parseReviewComplete(existingSticky.body)
-      ? /<!-- code-review:findings-json[^>]*-->/.exec(existingSticky.body)?.[0]
-      : undefined;
-  const stickyBody =
-    priorFindingsMarker === undefined
-      ? renderBody(initialDisposition)
-      : `${priorFindingsMarker}\n\n${renderBody(initialDisposition)}`;
+      ? findingsArtifactUrl(existingSticky.body)
+      : null;
+  const withCarriedMarker = (body: string): string =>
+    priorFindingsLink === null
+      ? body
+      : `<!-- code-review:findings-json ${priorFindingsLink} -->\n\n${body}`;
 
   // Phase 2: writes — sticky first, inline second.
-  const stickyRef = await upsertSticky(input.repo, prNumber, existingSticky, stickyBody, ghApi);
+  const stickyRef = await upsertSticky(
+    input.repo,
+    prNumber,
+    existingSticky,
+    withCarriedMarker(renderBody(initialDisposition)),
+    ghApi,
+  );
 
   // Snapshot stale comments BEFORE posting the fresh ones; timing (not commit SHA) separates them.
   const priorInlineComments = await listPriorBotCommentIds(
@@ -1248,7 +1257,7 @@ export const post = async (
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount),
+        withCarriedMarker(renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount)),
         ghApi,
       );
       process.stderr.write(

@@ -2680,21 +2680,23 @@ describe("post — --run-url / --json-url threading", () => {
     }
   });
 
-  it("carries the prior findings marker forward when overwriting this run's placeholder with no --json-url (issue #235)", async () => {
+  it("carries the prior findings link forward when overwriting this run's placeholder with no --json-url, on BOTH sticky writes (issue #235 + #236 r1)", async () => {
     const placeholder =
       "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- review-complete-ancestor -->\n<!-- code-review:findings-json https://artifacts.example.com/f.zip -->\nCode review in progress";
     const { api, calls } = mkMockGhApi(mkMocks(placeholder));
 
-    await post(mkInput({ jsonUrl: undefined }), api);
+    // Inline enabled: the post-inline final patch is the LAST sticky write — the marker must
+    // survive into it, or the seed chain severs on the patch (issue #236 r1).
+    await post(mkInlineInput({ jsonUrl: undefined }), api);
 
-    const stickyCall = calls().find(
+    const stickyWrites = calls().filter(
       (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
     );
-    expect(stickyCall).toBeDefined();
-    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
-    // The placeholder held the PRIOR review's link; the new body keeps it, so the seed chain
-    // survives the overwrite.
-    expect(body.body).toContain("code-review:findings-json https://artifacts.example.com/f.zip");
+    expect(stickyWrites.length).toBeGreaterThan(0);
+    for (const write of stickyWrites) {
+      const body = JSON.parse(write.stdin!) as CommentBody;
+      expect(body.body).toContain("code-review:findings-json https://artifacts.example.com/f.zip");
+    }
   });
 });
 

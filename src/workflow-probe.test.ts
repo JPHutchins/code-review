@@ -12,11 +12,12 @@ import { repoRoot } from "./test-util.js";
 // r2 — the systemic that followed a probe change verified against the wrong help text).
 //
 // Fixture provenance: test/fixtures/published-help/*.txt are captures of the REAL published
-// alpha.52 package's --help, taken 2026-08-30 by running the published tarball's dist directly
-// (`npm pack @jphutchins/code-review@0.1.0-alpha.52`, `npm --prefix <dir> install`, then
-// `node <dir>/dist/index.js <cmd> --help`). Earlier captures were poisoned by the npx cache
-// (`~/.npm/_npx` held an alpha.40-era install that `npx -y` reused) and were deleted — never
-// verify package output through npx; run the tarball's dist.
+// package's --help, taken 2026-08-30 by running the published tarball's dist directly
+// (`npm pack @jphutchins/code-review@<ver>`, `npm --prefix <dir> install`, then
+// `node <dir>/dist/index.js <cmd> --help`): the alpha.52 pair, and the alpha.53 pair whose seed
+// gains --prior-findings (the #217 channel first ships in 53). Earlier captures were poisoned
+// by the npx cache (`~/.npm/_npx` held an alpha.40-era install that `npx -y` reused) and were
+// deleted — never verify package output through npx; run the tarball's dist.
 
 const workflowPaths = [".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"];
 
@@ -93,6 +94,24 @@ describe("workflow capability probes (issue #233 r2)", () => {
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-findings")).toBe("no");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-answers")).toBe("yes");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "nit-visibility-floor")).toBe("yes");
+  });
+
+  it("reports the published alpha.53 as carrying the full prior-findings channel", () => {
+    const seedFn = sites.find((s) => s.name === "seed_accepts")!.fn;
+    const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
+    const seedHelp53 = readFileSync(
+      `${repoRoot}/test/fixtures/published-help/seed-draft-alpha53.txt`,
+      "utf-8",
+    );
+    const postHelp53 = readFileSync(
+      `${repoRoot}/test/fixtures/published-help/post-alpha53.txt`,
+      "utf-8",
+    );
+    expect(runProbe("seed_accepts", seedFn, seedHelp53, "prior-findings")).toBe("yes");
+    expect(runProbe("seed_accepts", seedFn, seedHelp53, "prior-answers")).toBe("yes");
+    expect(runProbe("seed_accepts", seedFn, seedHelp53, "nit-visibility-floor")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp53, "json-url")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp53, "cloc-diff")).toBe("yes");
   });
 
   it("matches a help text that backtick-quotes option names", () => {

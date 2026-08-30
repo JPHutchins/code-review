@@ -348,22 +348,6 @@ const reviewsFrom = (reviews: readonly Review[], botLogin: string) =>
 // log still shows the original error rather than a cascade.
 const MAX_STAGED_JOB_LOGS = 20;
 
-// The job-log endpoint's response now carries ANSI color sequences, and gh REFUSES to emit raw
-// responses containing terminal escapes unless told to — an escape-refusing gh rejects EVERY log
-// download, silently degrading the fast-fix route to the diff alone. The flag is version-dependent
-// the other way too (ghs that predate the refusal also predate the flag), so fall back to the plain
-// call only when the flag itself is unknown. The log is staged to a FILE the agent reads, never
-// echoed to a terminal, so allowing the escapes is safe.
-const downloadJobLog = async (repo: string, jobId: number, ghApi: GhApi): Promise<string> => {
-  const endpoint = `repos/${repo}/actions/jobs/${String(jobId)}/logs`;
-  try {
-    return await ghApi([endpoint, "--allow-escape-sequences"]);
-  } catch (err) {
-    if (!errMsg(err).includes("unknown flag")) throw err;
-    return await ghApi([endpoint]);
-  }
-};
-
 const downloadFailingJobLogs = async (
   repo: string,
   runId: string,
@@ -382,7 +366,7 @@ const downloadFailingJobLogs = async (
   let staged = 0;
   for (const job of selected) {
     try {
-      const log = await downloadJobLog(repo, job.id, ghApi);
+      const log = await ghApi([`repos/${repo}/actions/jobs/${String(job.id)}/logs`]);
       writeFileSync(join(outDir, `job_${String(job.id)}.log`), log);
       staged += 1;
     } catch (err) {

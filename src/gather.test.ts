@@ -2,10 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runCommand } from "citty";
 import type { GhApi } from "./gh.js";
 import type { GatherInput, GitRun } from "./gather.js";
 import { gather, renderOutputs } from "./gather.js";
 import { AGENTS_STOP_DIRECTIVE } from "./surface.js";
+import { main } from "./index.js";
+import { priorContextPath } from "./budget.js";
 
 const sampleDiff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
@@ -1325,5 +1328,105 @@ describe("gather — answered-findings registry (issue #151)", () => {
     ]);
     await gather(mkInput({}), api, mkMockGit([]).git);
     expect(answered()).toEqual([]);
+  });
+});
+
+// The two halves are each tested in isolation — gather writes prior_findings.json (above), seed-draft
+// reads --prior-findings (index.test.ts) — but nothing asserted the FILE the one writes is the FILE
+// the other reads. This runs the REAL gather and the REAL seed-draft back to back over one temp dir
+// (issue #232).
+describe("gather → seed-draft seam (issue #232)", () => {
+  class ExitSignal extends Error {
+    constructor(readonly code: number) {
+      super(`process.exit(${String(code)})`);
+    }
+  }
+
+  const runSeedDraft = async (
+    args: readonly string[],
+  ): Promise<{ readonly stdout: string; readonly exitCode: number | null }> => {
+    let stdout = "";
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+      stdout += String(chunk);
+      return true;
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new ExitSignal(code ?? 0);
+    }) as never);
+    let exitCode: number | null = null;
+    try {
+      await runCommand(main, { rawArgs: ["seed-draft", ...args] });
+    } catch (err) {
+      if (!(err instanceof ExitSignal)) throw err;
+      exitCode = err.code;
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+    return { stdout, exitCode };
+  };
+
+  it("seed-draft consumes the prior_findings.json gather staged from an artifact-named marker", async () => {
+    const doc = {
+      schema_version: "0.4.0",
+      summary: "Prior review summary.",
+      verdict: "changes",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 3,
+          end_line: 3,
+          severity: "major",
+          title: "Prior finding",
+          description: "carried over from the prior review",
+          reasoning: "still worth checking",
+          confidence: 0.8,
+          likelihood: 1,
+        },
+      ],
+    };
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          {
+            id: 7,
+            body: "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/9/zip -->\nold sticky",
+            user: { login: "github-actions[bot]" },
+          },
+        ]),
+      },
+    ]);
+
+    await gather(mkInput({}), api, mkMockGit([]).git, (url) => {
+      expect(url).toBe("https://api.github.com/repos/o/r/actions/artifacts/9/zip");
+      return Promise.resolve(JSON.stringify(doc));
+    });
+
+    const prior = join(tmpDir, "prior_review.json");
+    const staged = join(tmpDir, "prior_findings.json");
+    expect(JSON.parse(readFileSync(staged, "utf-8")) as unknown).toEqual(doc);
+
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runSeedDraft([
+      "--prior",
+      prior,
+      "--prior-findings",
+      staged,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as typeof doc;
+    expect(context.findings[0]!.title).toBe("Prior finding");
   });
 });

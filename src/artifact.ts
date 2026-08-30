@@ -5,6 +5,7 @@ import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { parseConvergenceMarker, parseFindingsMarker } from "./surface.js";
 import { annotationSafe, errMsg } from "./util.js";
+import { withEscapeRetry } from "./gh.js";
 
 const run = promisify(execFile);
 
@@ -114,12 +115,17 @@ export const readArtifactFindings = (
 };
 
 // The default reader: `gh api <url> > <path>` — gh follows the artifact redirect and writes the zip.
+// Through the shared escape-retry boundary: a zip's DEFLATE stream can carry the same terminal-escape
+// bytes the refusal guards, and this is the one gh api site with binary output (hence its own run
+// call rather than runGhApi).
 export const ghArtifactReader = readArtifactFindings(async (url, outPath) => {
-  const { stdout } = await run("gh", ["api", url], {
-    encoding: "buffer",
-    maxBuffer: 256 * 1024 * 1024,
-    timeout: STEP_TIMEOUT_MS,
-  });
+  const { stdout } = await withEscapeRetry((withFlag) =>
+    run("gh", ["api", ...(withFlag ? ["--allow-escape-sequences"] : []), url], {
+      encoding: "buffer",
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: STEP_TIMEOUT_MS,
+    }),
+  );
   await writeFile(outPath, stdout);
 });
 

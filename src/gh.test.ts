@@ -43,43 +43,51 @@ vi.mock("./exec.js", () => ({
   subprocessTimeoutMs: () => 1,
 }));
 
-// The escape-flag boundary: newer gh refuses raw responses carrying terminal escapes, older gh
-// rejects the flag itself — runGhApi probes once per process and only then passes the flag.
-describe("runGhApi — the escape-flag boundary", () => {
+// The escape-flag boundary: newer gh refuses raw responses carrying terminal escapes unless told to
+// allow them — the refusal names the flag, so each call retries plain-then-flagged against the error
+// it actually got, memoizing flag-first once a refusal proves the gh supports the flag.
+describe("runGhApi — the escape-retry boundary", () => {
   beforeEach(() => {
     vi.resetModules();
     mockExec.mockReset();
     mockExec.mockResolvedValue("");
   });
 
-  it("probes once with zen, then passes --allow-escape-sequences on every call", async () => {
+  it("passes plain first and, on a refusal, retries with the flag — memoized for later calls", async () => {
+    mockExec
+      .mockRejectedValueOnce(
+        new Error(
+          "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway",
+        ),
+      )
+      .mockResolvedValueOnce("ok");
     const { runGhApi } = await import("./gh.js");
     await runGhApi(["repos/o/r/pulls/1"]);
     await runGhApi(["repos/o/r/pulls/2"]);
 
-    // One zen probe + two api calls.
     expect(mockExec).toHaveBeenCalledTimes(3);
-    const probe = mockExec.mock.calls[0]![0] as { args: readonly string[] };
-    expect(probe.args).toEqual(["api", "zen", "--allow-escape-sequences"]);
-    const first = mockExec.mock.calls[1]![0] as { args: readonly string[] };
-    expect(first.args).toEqual(["api", "--allow-escape-sequences", "repos/o/r/pulls/1"]);
+    const plain = mockExec.mock.calls[0]![0] as { args: readonly string[] };
+    expect(plain.args).toEqual(["api", "repos/o/r/pulls/1"]);
+    const flagged = mockExec.mock.calls[1]![0] as { args: readonly string[] };
+    expect(flagged.args).toEqual(["api", "--allow-escape-sequences", "repos/o/r/pulls/1"]);
+    const memoized = mockExec.mock.calls[2]![0] as { args: readonly string[] };
+    expect(memoized.args).toEqual(["api", "--allow-escape-sequences", "repos/o/r/pulls/2"]);
   });
 
-  it("omits the flag when the gh predates it (the probe's failure is 'unknown flag')", async () => {
-    mockExec.mockRejectedValueOnce(new Error("unknown flag: --allow-escape-sequences"));
+  it("a plain success makes no flag attempt — an old gh never sees the flag", async () => {
     const { runGhApi } = await import("./gh.js");
     await runGhApi(["repos/o/r/pulls/1"]);
 
-    const call = mockExec.mock.calls[1]![0] as { args: readonly string[] };
+    expect(mockExec).toHaveBeenCalledTimes(1);
+    const call = mockExec.mock.calls[0]![0] as { args: readonly string[] };
     expect(call.args).toEqual(["api", "repos/o/r/pulls/1"]);
   });
 
-  it("omits the flag when the probe is unreachable — a false positive would break old gh", async () => {
-    mockExec.mockRejectedValueOnce(new Error("could not resolve host"));
+  it("propagates an error that is not the escape refusal", async () => {
+    mockExec.mockRejectedValueOnce(new Error("gh: Not Found (HTTP 404)"));
     const { runGhApi } = await import("./gh.js");
-    await runGhApi(["repos/o/r/pulls/1"]);
 
-    const call = mockExec.mock.calls[1]![0] as { args: readonly string[] };
-    expect(call.args).toEqual(["api", "repos/o/r/pulls/1"]);
+    await expect(runGhApi(["repos/o/r/pulls/1"])).rejects.toThrow("HTTP 404");
+    expect(mockExec).toHaveBeenCalledTimes(1);
   });
 });

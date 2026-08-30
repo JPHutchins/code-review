@@ -1,6 +1,7 @@
 // The single GitHub-API shell boundary; pure callers inject a fake GhApi.
 
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
+import { errMsg } from "./util.js";
 
 export type GhApi = (
   args: readonly string[],
@@ -17,37 +18,37 @@ export const describeEndpoint = (args: readonly string[]): string =>
   "(no endpoint)";
 
 // Newer gh REFUSES raw responses containing terminal escapes unless told to allow them, and GitHub's
-// endpoints now embed ANSI color in responses that are built from untrusted PR content (job logs, and
-// any diff/conversation an author happens to carry raw escapes in). Every response here is CAPTURED —
+// endpoints now embed ANSI color in responses built from untrusted PR content (job logs, and any
+// diff/conversation an author happens to carry raw escapes in). Every response here is CAPTURED —
 // written to a file or parsed, never echoed to a terminal — so the escapes are always safe to allow.
-// Older ghs that predate the refusal also predate the flag, so support is probed ONCE per process via
-// the unauthenticated zen endpoint. ONLY an explicit probe success enables the flag: any failure —
-// the flag unknown on an old gh, or the probe unreachable — degrades to the plain call, because a
-// false positive would break every call on an old gh.
-let allowEscapes: boolean | undefined;
+// The refusal names its own remedy, so each call retries against the error it actually got: plain
+// first (an old gh accepts it, a new gh accepts it for escape-free content), and a refusal retries
+// with --allow-escape-sequences. A successful retry memoizes flag-first for the process — an old gh
+// never sees the flag, so no capability probe is needed and no probe failure can silently degrade
+// the boundary. Shared by the artifact reader, the one other gh api site (binary output).
+let flagFirst: boolean | undefined;
 
-const ghAllowsEscapeFlag = async (): Promise<boolean> => {
-  if (allowEscapes !== undefined) return allowEscapes;
+export const withEscapeRetry = async <T>(run: (withFlag: boolean) => Promise<T>): Promise<T> => {
+  if (flagFirst) return run(true);
   try {
-    await execFileWithTimeout({
-      command: "gh",
-      args: ["api", "zen", "--allow-escape-sequences"],
-      label: "gh api zen (escape-flag probe)",
-      timeoutMs: subprocessTimeoutMs(),
-    });
-    allowEscapes = true;
-  } catch {
-    allowEscapes = false;
+    return await run(false);
+  } catch (err) {
+    if (errMsg(err).includes("--allow-escape-sequences")) {
+      flagFirst = true;
+      return run(true);
+    }
+    throw err;
   }
-  return allowEscapes;
 };
 
-export const runGhApi: GhApi = async (args, stdin, env) =>
-  execFileWithTimeout({
-    command: "gh",
-    args: ["api", ...((await ghAllowsEscapeFlag()) ? ["--allow-escape-sequences"] : []), ...args],
-    label: `gh api ${describeEndpoint(args)}`,
-    timeoutMs: subprocessTimeoutMs(),
-    env,
-    stdin,
-  });
+export const runGhApi: GhApi = (args, stdin, env) =>
+  withEscapeRetry((withFlag) =>
+    execFileWithTimeout({
+      command: "gh",
+      args: ["api", ...(withFlag ? ["--allow-escape-sequences"] : []), ...args],
+      label: `gh api ${describeEndpoint(args)}`,
+      timeoutMs: subprocessTimeoutMs(),
+      env,
+      stdin,
+    }),
+  );

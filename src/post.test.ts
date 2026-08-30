@@ -2666,15 +2666,15 @@ describe("post — --run-url / --json-url threading", () => {
 
   it("refuses to overwrite a sticky whose LINK marker is the last pointer, when no --json-url was given (issue #233 r4)", async () => {
     const linkSticky =
-      "<!-- code-review -->\n<!-- code-review:findings-json https://artifacts.example.com/f.zip -->\nprose";
+      "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/f.zip -->\nprose";
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
       throw new Error("exit");
     });
     try {
       const { api, calls } = mkMockGhApi(mkMocks(linkSticky));
       await expect(post(mkInput({ jsonUrl: undefined }), api)).rejects.toThrow("exit");
-      // The refusal exits before any write — the sticky was not patched with a markerless body.
-      expect(calls().some((c) => c.args.includes("PATCH"))).toBe(false);
+      // The refusal exits before any write — the sticky comment was never posted or updated.
+      expect(calls().some((c) => c.args[0] === "repos/owner/repo/issues/comments/999")).toBe(false);
     } finally {
       exitSpy.mockRestore();
     }

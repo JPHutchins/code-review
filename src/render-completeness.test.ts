@@ -436,11 +436,51 @@ describe("the comment carries every field of the findings document (issue #217)"
     });
 
     expect(out.length).toBeLessThan(65_536);
-    expect(out).toContain("carried fields clipped for");
-    expect(out).toContain("r0"); // the first nits' carried fields survive
-    expect(out).not.toContain("r13"); // the tail's carried fields are dropped, marked not silent
+    expect(out).toContain("nit(s) dropped from the sticky");
+    expect(out).toContain("r0"); // the first nits' blocks survive
+    expect(out).not.toContain("r13"); // the tail's blocks are dropped, marked not silent
     const blocks = out.match(/<!-- code-review:suppressed-nit[\s\S]*?-->/g) ?? [];
-    expect(blocks.length).toBe(manyNits.length + 1); // one block per nit, plus the clip marker
+    // One block per KEPT nit, plus the clip marker — a dropped nit leaves no block at all.
+    expect(blocks.length).toBeGreaterThan(1);
+    expect(blocks.length).toBeLessThan(manyNits.length + 1);
+  });
+
+  // The block OVERHEAD is budgeted too: a few hundred accumulated nits must not overflow the
+  // sticky even with every carried field in play (issue #233 r5).
+  it("bounds a sticky with hundreds of accumulated nits", () => {
+    const manyNits = Array.from({ length: 300 }, (_, i) => ({
+      ...findings.findings[1]!,
+      reasoning: `r${String(i)} ${"y".repeat(200)}`,
+    }));
+    const doc = {
+      ...findings,
+      findings: [findings.findings[0]!, ...manyNits],
+    } as unknown as Findings;
+    const out = render({
+      findings: doc,
+      envelope: {
+        schema_version: "0.4.0",
+        findings: doc,
+        models: [{ model: "m", input_tokens: 1, output_tokens: 1 }],
+        turns: 1,
+        duration_ms: 1,
+      },
+      prices: {
+        _updated: "x",
+        _unit: "y",
+        models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
+      },
+      template: readFileSync(`${repoRoot}/templates/comment.eta`, "utf-8"),
+      strays: findings.findings.slice(0, 1),
+      suppressedNits: manyNits,
+      route: "full review",
+      convergenceRound: true,
+      nitVisibilityFloor: 0.25,
+      jsonUrl: "https://example.com/artifact.zip",
+    });
+
+    expect(out.length).toBeLessThan(65_536);
+    expect(out).toContain("dropped from the sticky");
   });
 
   // Every sibling field gets escapeCodeBackticks; the code/code_url renders did not — a backtick

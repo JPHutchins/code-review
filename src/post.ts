@@ -40,8 +40,8 @@ import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import {
-  findingsArtifactUrl,
   ghArtifactReader,
+  hasFindingsMarker,
   resolvePriorFindings,
   type ArtifactReader,
 } from "./artifact.js";
@@ -1154,18 +1154,21 @@ export const post = async (
   // after the sticky is up is issue #223. The embedded document is gone from this body (issue #217),
   // which removed the largest fixed cost it had — an oversized round is now a matter of finding prose,
   // not of a ~32KB blob.
-  // A body with no --json-url carries no findings marker, and upserting it would overwrite a sticky
-  // whose marker — an embedded blob or an artifact link — is the last pointer to the prior findings
-  // document. Refusing keeps the seed chain alive; the run log already carries the ::error:: naming
-  // the missing machine channel (issue #233 r2 + r4).
+  // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
+  // pointer to the prior findings document. The guard refuses only when the pointer is actually
+  // load-bearing: a FULL-REVIEW sticky whose markers gather would seed from (a mechanic/notice
+  // sticky is never a seed, and an announce placeholder must be replaced by an honest notice, not
+  // frozen). An expired artifact link is not resolvability-checked here — a fetch in the write path
+  // is the wrong trade — so an expired link can still freeze a round; the run log's ::error:: names
+  // why (issue #233 r2 + r5).
   if (
     !input.jsonUrl &&
     existingSticky !== null &&
-    (parseFindingsMarker(existingSticky.body) !== null ||
-      findingsArtifactUrl(existingSticky.body) !== null)
+    parseReviewedRoute(existingSticky.body) === "full review" &&
+    hasFindingsMarker(existingSticky.body)
   ) {
     leaveInPlace(
-      "no --json-url was supplied and the existing sticky still carries a decodable embedded findings document — leaving it in place rather than severing the seed chain\n",
+      "no --json-url was supplied and the existing sticky still carries the prior findings document's marker (embedded or link) — leaving it in place rather than severing the seed chain\n",
     );
   }
 

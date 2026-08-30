@@ -34,13 +34,15 @@ const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 const linkSafeUrl = (url: string): string =>
   escapeCodeBackticks(url).replace(/\(/g, "%28").replace(/\)/g, "%29");
 
-// The machine-channel budget for carried suppressed-nit fields: each field is clipped individually
+// The machine-channel budget for suppressed-nit blocks: each field is clipped individually
 // (BODY_CLIP_CHARS), but the SUM across a nit-heavy round is unbounded, and the sticky is the one
 // comment post deliberately does not shed — an unbounded machine block can still 422 it, which the
-// old embed-limit valve structurally prevented (issue #233 r1). The budget drops a nit's carried
-// block once exhausted — its summary line stays, and the cut is marked in the machine channel,
-// never silent.
+// old embed-limit valve structurally prevented (issue #233 r1). The budget counts each nit's
+// WHOLE block — the carried lines plus the fixed summary/severity/location/`-->` lines and their
+// blockquote prefixes — and drops a nit's entire block once exhausted. The cut is marked in the
+// machine channel, never silent (issue #233 r5).
 const CARRIED_TOTAL_CHARS = 40_000;
+const SUPPRESSED_NIT_BLOCK_OVERHEAD = 280;
 
 type StrayView = Finding & {
   readonly patchProjection: PatchProjection;
@@ -253,9 +255,10 @@ export const render = (input: RenderInput): string => {
     readonly dropped: number;
   }>(
     (acc, n) => {
-      const size = n.carried.reduce((sum, line) => sum + line.length + 1, 0);
+      const size =
+        n.carried.reduce((sum, line) => sum + line.length + 1, 0) + SUPPRESSED_NIT_BLOCK_OVERHEAD;
       return acc.used + size > CARRIED_TOTAL_CHARS
-        ? { list: [...acc.list, { ...n, carried: [] }], used: acc.used, dropped: acc.dropped + 1 }
+        ? { list: acc.list, used: acc.used, dropped: acc.dropped + 1 }
         : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };
     },
     { list: [], used: 0, dropped: 0 },

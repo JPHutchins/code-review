@@ -459,12 +459,30 @@ jobs:
             # dropping flags in CI (issue #233 r2).
             seed_accepts() { case " $SEED_HELP " in *" --$1 "*|*" \`--$1\` "*) return 0 ;; esac; return 1; }
             PRIOR_FINDINGS_ARGS=()
+            PRIOR_ANSWERS_ARGS=()
+            NIT_FLOOR_ARGS=()
             if [ -f prior_findings.json ] && seed_accepts prior-findings; then
               PRIOR_FINDINGS_ARGS=(--prior-findings prior_findings.json)
             elif [ -f prior_review.json ] && ! seed_accepts prior-findings; then
               echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --prior-findings; the prior-findings channel is unavailable and this re-review seeds without the prior document"
             fi
-            SEED_MODE="$(code-review seed-draft --prior prior_review.json "${PRIOR_FINDINGS_ARGS[@]}" --prior-answers answered.json --nit-visibility-floor "$NIT_VISIBILITY_FLOOR" --head-sha "$HEAD_SHA" --out "$DRAFT")"
+            # The same probe gate covers the seed's OTHER flags: the deployed published CLI predates
+            # several, and citty drops an unknown option silently — a seed with the answered registry
+            # and the nit floor disabled, and no warning, is the exact no-op the probes exist to name
+            # (issue #233 r5).
+            if [ -f prior_review.json ]; then
+              if seed_accepts prior-answers; then
+                PRIOR_ANSWERS_ARGS=(--prior-answers answered.json)
+              else
+                echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --prior-answers; the answered-registry channel is unavailable for this seed"
+              fi
+              if seed_accepts nit-visibility-floor; then
+                NIT_FLOOR_ARGS=(--nit-visibility-floor "$NIT_VISIBILITY_FLOOR")
+              else
+                echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --nit-visibility-floor; the nit visibility floor is not applied to this seed"
+              fi
+            fi
+            SEED_MODE="$(code-review seed-draft --prior prior_review.json "${PRIOR_FINDINGS_ARGS[@]}" "${PRIOR_ANSWERS_ARGS[@]}" "${NIT_FLOOR_ARGS[@]}" --head-sha "$HEAD_SHA" --out "$DRAFT")"
             case "$SEED_MODE" in
               prior-same)
                 SEED_NOTE=" Your previous review of THIS SAME commit is in $PRIOR_CONTEXT — read it as context; it is read-only and never your deliverable. The code under review has not changed since. Use those findings and systemic_problems to steer your investigation: reconfirm each still holds (correct any that were wrong or imprecise), then spend the remaining budget hunting for NEW issues the earlier pass missed rather than only re-checking old ones." ;;

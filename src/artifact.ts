@@ -33,6 +33,12 @@ export const containedPath = (dir: string, member: string): string | null => {
   return target.startsWith(`${dir}${sep}`) || target === dir ? target : null;
 };
 
+// Does the sticky carry a findings marker the next round could seed from — the embedded blob or the
+// artifact link? The single probe post's no-json-url guard and the resolver's callers share, so the
+// two can never disagree on what "has a prior document" means (issue #233 r5).
+export const hasFindingsMarker = (body: string): boolean =>
+  parseFindingsMarker(body) !== null || findingsArtifactUrl(body) !== null;
+
 // The exact stored name of the findings member in `unzip -Z1` output, matched CASE-INSENSITIVELY — a
 // case-sensitive filter misses a `Findings.json` member and the seed goes cold with nothing logged
 // (issue #217 review r7). Shortest match wins, so a root-level member is preferred over a nested one
@@ -80,7 +86,12 @@ export const readArtifactFindings = (
           timeout: STEP_TIMEOUT_MS,
         });
         const target = containedPath(dir, member);
-        if (target === null) return null;
+        if (target === null) {
+          process.stderr.write(
+            `::warning::the findings artifact names a member outside the archive directory (${member}) — the re-review seeds without the prior document`,
+          );
+          return null;
+        }
         return await readFile(target, "utf-8");
       } finally {
         // Best-effort: a failed cleanup must not override the document/null this promise resolved

@@ -483,9 +483,10 @@ export const gather = async (
   const resolvedPrior = seedsFromPrior
     ? await resolvePriorFindings(prior.body, readArtifact)
     : null;
-  // resolvePriorFindings' contract is a document or null; the null check alone would let a
-  // non-object resolve reach JSON.stringify — whose undefined return would throw in writeFileSync —
-  // if that contract ever drifts. Normalize so the staged file is always JSON (issue #233 r4).
+  // The staged file must always be valid JSON. The normalization is defensive against the
+  // resolver's contract drifting — a future non-object resolve would make JSON.stringify return
+  // undefined and throw in writeFileSync — but it also makes the invariant local to this write
+  // rather than borrowed from resolvePriorFindings (issue #233 r4 + r5).
   const priorFindings =
     resolvedPrior !== null && typeof resolvedPrior === "object" ? resolvedPrior : null;
   writeFileSync(

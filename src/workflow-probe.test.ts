@@ -91,6 +91,8 @@ describe("workflow capability probes (issue #233 r2)", () => {
     );
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior")).toBe("yes");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-findings")).toBe("no");
+    expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-answers")).toBe("no");
+    expect(runProbe("seed_accepts", seedFn, seedHelp, "nit-visibility-floor")).toBe("no");
   });
 
   it("matches a help text that backtick-quotes option names", () => {

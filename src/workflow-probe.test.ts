@@ -112,17 +112,29 @@ describe("workflow capability probes (issue #233 r2)", () => {
     expect(runProbe("seed_accepts", seedFn, seedHelp, "nit-visibility-floor")).toBe("yes");
   });
 
-  // The alpha.53 pair's novel coverage is the 52→53 boundary itself: the version strings are tied
-  // to the workflow's pinned CODE_REVIEW_VERSION — the source of truth for what CI installs — so a
-  // release that bumps the pin while the fixtures lag fails HERE (a self-referential pin only
-  // proved the fixture matched its own filename; issue #238 r2). The seed gains --prior-findings,
-  // and the post side probes the flags CI actually gates through the published help's OPTIONS
-  // block (--inline, --unverified-no-logs, --nit-visibility-floor).
+  // The alpha.53 pair is historical now (the 52→53 boundary: the seed gains --prior-findings and the
+  // post side's CI-gated flags probe against its OPTIONS block), pinned to its own version line like
+  // the alpha.52 pair — only the CURRENT generation ties to the workflow's pin.
   it("reports the published alpha.53 as carrying the prior-findings channel and the CI-gated post flags", () => {
     const seedFn = sites.find((s) => s.name === "seed_accepts")!.fn;
     const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
     const seedHelp53 = readRepoFile("test/fixtures/published-help/seed-draft-alpha53.txt");
     const postHelp53 = readRepoFile("test/fixtures/published-help/post-alpha53.txt");
+    expect(seedHelp53).toContain("code-review seed-draft v0.1.0-alpha.53");
+    expect(postHelp53).toContain("code-review post v0.1.0-alpha.53");
+    expect(runProbe("seed_accepts", seedFn, seedHelp53, "prior-findings")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp53, "inline")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp53, "unverified-no-logs")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp53, "nit-visibility-floor")).toBe("yes");
+  });
+
+  // The current generation's version strings are tied to the workflow's pinned CODE_REVIEW_VERSION —
+  // the source of truth for what CI installs — so a release that bumps the pin while the fixtures
+  // lag fails HERE (a self-referential pin only proved the fixture matched its own filename). The
+  // release commit refreshes this pair from the freshly built dist.
+  it("reports the published pinned generation as carrying the CI-gated flags", () => {
+    const seedFn = sites.find((s) => s.name === "seed_accepts")!.fn;
+    const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
     const pinnedVersions = workflowTexts().flatMap((text) => {
       const version = (parseYaml(text) as { env?: { CODE_REVIEW_VERSION?: string } }).env
         ?.CODE_REVIEW_VERSION;
@@ -130,12 +142,15 @@ describe("workflow capability probes (issue #233 r2)", () => {
     });
     expect(new Set(pinnedVersions).size).toBe(1);
     const pinnedVersion = pinnedVersions[0]!;
-    expect(seedHelp53).toContain(`code-review seed-draft v${pinnedVersion}`);
-    expect(postHelp53).toContain(`code-review post v${pinnedVersion}`);
-    expect(runProbe("seed_accepts", seedFn, seedHelp53, "prior-findings")).toBe("yes");
-    expect(runProbe("post_accepts", postFn, postHelp53, "inline")).toBe("yes");
-    expect(runProbe("post_accepts", postFn, postHelp53, "unverified-no-logs")).toBe("yes");
-    expect(runProbe("post_accepts", postFn, postHelp53, "nit-visibility-floor")).toBe("yes");
+    const shortPin = pinnedVersion.replace("0.1.0-", "");
+    const seedHelp = readRepoFile(`test/fixtures/published-help/seed-draft-${shortPin}.txt`);
+    const postHelp = readRepoFile(`test/fixtures/published-help/post-${shortPin}.txt`);
+    expect(seedHelp).toContain(`code-review seed-draft v${pinnedVersion}`);
+    expect(postHelp).toContain(`code-review post v${pinnedVersion}`);
+    expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-findings")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp, "inline")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp, "unverified-no-logs")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, postHelp, "nit-visibility-floor")).toBe("yes");
   });
 
   // The real fixtures are backtick-quoted, so they exercise only that branch of the pattern — this

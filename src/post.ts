@@ -980,7 +980,7 @@ export const post = async (
         template,
         route: effectiveRoute,
         reviewedSha: input.headSha,
-        repo: input.headRepo ?? input.repo,
+        repo: input.headRepo || input.repo,
         effort: input.effort,
         sameRootNotes: {},
         // The answered-state honesty rules apply on EVERY surface that renders the filtered
@@ -1128,7 +1128,7 @@ export const post = async (
     template,
     route: effectiveRoute,
     reviewedSha: input.headSha,
-    repo: input.headRepo ?? input.repo,
+    repo: input.headRepo || input.repo,
     effort: input.effort,
     testReport,
     clocDiff,
@@ -1270,13 +1270,7 @@ export const post = async (
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(
-          finalDisposition,
-          reviewUrl,
-          finalStrays,
-          unanchoredCount,
-          unanchoredCount > 0 ? unposted : undefined,
-        ),
+        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount, unposted),
         ghApi,
       );
       process.stderr.write(
@@ -1303,8 +1297,9 @@ export const post = async (
       undefined,
       // The rejected-anchor invariant holds on EVERY surface, the run summary included — this
       // document deliberately carries every finding, so the GitHub-rejected ones must keep their
-      // path-only links here too (issue #231 r2).
-      unanchoredCount > 0 ? unposted : undefined,
+      // path-only links here too (issue #231 r2). Unconditional: renderBody's own gate treats an
+      // empty array exactly like absence, so the ternary was a duplicated decision (issue #231 r3).
+      unposted,
     ),
   );
 };

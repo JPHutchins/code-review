@@ -699,6 +699,31 @@ describe("render", () => {
       expect(result).not.toContain("blob/");
     });
 
+    it("renders no permalink for an empty repo or reviewed SHA — a malformed `//blob/` link must not exist (issue #231 r3)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/bar.ts", start_line: 1, end_line: 1 })];
+      const emptyRepo = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "",
+        reviewedSha: "abc",
+      });
+      expect(emptyRepo).not.toContain("blob/");
+      const emptySha = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "",
+      });
+      expect(emptySha).not.toContain("blob/");
+    });
+
     it("degrades a lone-surrogate path instead of crashing the render (issue #231 r1)", () => {
       const findings = mkFindings([]);
       const strays = [

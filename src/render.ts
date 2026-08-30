@@ -332,10 +332,13 @@ export const render = (input: RenderInput): string => {
   );
 
   // The permalink identity is ONE optional: repo + reviewedSha only mean something together, and a
-  // half-supplied pair must not silently drop every link — precomputed once per render rather than
-  // rebuilt per stray (issue #231 r1).
+  // half-supplied OR EMPTY pair must not render malformed `//blob/` links — precomputed once per
+  // render rather than rebuilt per stray (issue #231 r1 + r3).
   const permalinkBase =
-    input.repo !== undefined && input.reviewedSha !== undefined
+    input.repo !== undefined &&
+    input.repo !== "" &&
+    input.reviewedSha !== undefined &&
+    input.reviewedSha !== ""
       ? `https://github.com/${input.repo}/blob/${input.reviewedSha}/`
       : undefined;
   const unanchored = new Set(input.unanchoredStrays ?? []);

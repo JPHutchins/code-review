@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { findingsArtifactUrl, locateFindingsMember, resolvePriorFindings } from "./artifact.js";
+import {
+  containedPath,
+  findingsArtifactUrl,
+  locateFindingsMember,
+  resolvePriorFindings,
+} from "./artifact.js";
 
 // The link branch is the whole point of #217 and nothing exercised it: every other test builds a
 // legacy embedded marker, so the regex → fetch → parse path never ran. The reader is injected, so
@@ -181,5 +186,17 @@ describe("locateFindingsMember (issue #217 review r7)", () => {
 
   it("is null when no findings member exists", () => {
     expect(locateFindingsMember("readme.md\n")).toBeNull();
+  });
+});
+
+describe("containedPath (issue #233 r4)", () => {
+  it("resolves a member inside the extraction directory", () => {
+    expect(containedPath("/tmp/d", "findings.json")).toBe("/tmp/d/findings.json");
+    expect(containedPath("/tmp/d", "findings/findings.json")).toBe("/tmp/d/findings/findings.json");
+  });
+
+  it("rejects a member that would escape the directory", () => {
+    expect(containedPath("/tmp/d", "../../findings.json")).toBeNull();
+    expect(containedPath("/tmp/d", "a/../../b.json")).toBeNull();
   });
 });

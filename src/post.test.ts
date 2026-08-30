@@ -2663,6 +2663,22 @@ describe("post — --run-url / --json-url threading", () => {
     // than embedding a copy of the document as it once did.
     expect(body).not.toContain("code-review:findings-json");
   });
+
+  it("refuses to overwrite a sticky whose LINK marker is the last pointer, when no --json-url was given (issue #233 r4)", async () => {
+    const linkSticky =
+      "<!-- code-review -->\n<!-- code-review:findings-json https://artifacts.example.com/f.zip -->\nprose";
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    try {
+      const { api, calls } = mkMockGhApi(mkMocks(linkSticky));
+      await expect(post(mkInput({ jsonUrl: undefined }), api)).rejects.toThrow("exit");
+      // The refusal exits before any write — the sticky was not patched with a markerless body.
+      expect(calls().some((c) => c.args.includes("PATCH"))).toBe(false);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
 });
 
 describe("post — postedAt threading (issue #28)", () => {

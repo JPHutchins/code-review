@@ -480,9 +480,14 @@ export const gather = async (
     prior !== null &&
     prior.body !== null &&
     parseReviewedRoute(prior.body) === "full review";
-  const priorFindings = seedsFromPrior
+  const resolvedPrior = seedsFromPrior
     ? await resolvePriorFindings(prior.body, readArtifact)
     : null;
+  // resolvePriorFindings' contract is a document or null; the null check alone would let a
+  // non-object resolve reach JSON.stringify — whose undefined return would throw in writeFileSync —
+  // if that contract ever drifts. Normalize so the staged file is always JSON (issue #233 r4).
+  const priorFindings =
+    resolvedPrior !== null && typeof resolvedPrior === "object" ? resolvedPrior : null;
   writeFileSync(
     join(input.outDir, "prior_findings.json"),
     priorFindings === null ? "null" : JSON.stringify(priorFindings),

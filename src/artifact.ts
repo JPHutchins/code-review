@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { parseConvergenceMarker, parseFindingsMarker } from "./surface.js";
 import { annotationSafe, errMsg } from "./util.js";
@@ -24,6 +24,14 @@ const MARKER_URL = /<!-- code-review:findings-json (https?:\/\/[^\s>]+) -->/;
 
 export const findingsArtifactUrl = (body: string): string | null =>
   MARKER_URL.exec(body)?.[1] ?? null;
+
+// The located member name comes from the archive's own listing; before reading it, verify the
+// resolved path stays inside the extraction directory — a stored name like `../../findings.json`
+// must resolve to null, never to a file outside the temp dir (issue #233 r4).
+export const containedPath = (dir: string, member: string): string | null => {
+  const target = resolve(dir, member);
+  return target.startsWith(`${dir}${sep}`) || target === dir ? target : null;
+};
 
 // The exact stored name of the findings member in `unzip -Z1` output, matched CASE-INSENSITIVELY — a
 // case-sensitive filter misses a `Findings.json` member and the seed goes cold with nothing logged
@@ -71,7 +79,9 @@ export const readArtifactFindings = (
           maxBuffer: 64 * 1024 * 1024,
           timeout: STEP_TIMEOUT_MS,
         });
-        return await readFile(join(dir, member), "utf-8");
+        const target = containedPath(dir, member);
+        if (target === null) return null;
+        return await readFile(target, "utf-8");
       } finally {
         // Best-effort: a failed cleanup must not override the document/null this promise resolved
         // to — both callers await with no try/catch, so a rejection here would fail the gather

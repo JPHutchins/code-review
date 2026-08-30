@@ -13,10 +13,11 @@ import { repoRoot } from "./test-util.js";
 //
 // Fixture provenance: test/fixtures/published-help/*.txt are byte-identical captures of
 // `npx -y @jphutchins/code-review@0.1.0-alpha.52 <cmd> --help`, captured 2026-08-29 and re-verified
-// by diff the same day. The help headers say "v0.1.0-alpha.40" — that is the PUBLISHED package's
-// own stale help metadata (the release build does not stamp the package version into the help
-// meta), not a stale fixture; it is why the captures can look older than the package they come
-// from.
+// by diff the same day. The captures look like alpha.40 output (header "v0.1.0-alpha.40", no
+// --cloc-diff/--nit-visibility-floor/--prior-answers) because the published alpha.52 tarball
+// BUNDLES AN ALPHA.40-ERA DIST — the release pipeline shipped a stale bundle (issue #234). The
+// fixtures therefore exercise exactly what a consumer pinned to alpha.52 runs today; regenerate
+// them once #234 fixes the release.
 
 const workflowPaths = [".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"];
 

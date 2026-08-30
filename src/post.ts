@@ -39,7 +39,12 @@ import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
-import { ghArtifactReader, resolvePriorFindings, type ArtifactReader } from "./artifact.js";
+import {
+  findingsArtifactUrl,
+  ghArtifactReader,
+  resolvePriorFindings,
+  type ArtifactReader,
+} from "./artifact.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { runIdFromUrl } from "./checkrun.js";
@@ -1150,13 +1155,14 @@ export const post = async (
   // which removed the largest fixed cost it had — an oversized round is now a matter of finding prose,
   // not of a ~32KB blob.
   // A body with no --json-url carries no findings marker, and upserting it would overwrite a sticky
-  // whose embedded blob is the last decodable seed (a pre-#217 sticky) — refusing keeps the seed
-  // chain alive; the run log already carries the ::error:: naming the missing machine channel
-  // (issue #233 r2).
+  // whose marker — an embedded blob or an artifact link — is the last pointer to the prior findings
+  // document. Refusing keeps the seed chain alive; the run log already carries the ::error:: naming
+  // the missing machine channel (issue #233 r2 + r4).
   if (
     !input.jsonUrl &&
     existingSticky !== null &&
-    parseFindingsMarker(existingSticky.body) !== null
+    (parseFindingsMarker(existingSticky.body) !== null ||
+      findingsArtifactUrl(existingSticky.body) !== null)
   ) {
     leaveInPlace(
       "no --json-url was supplied and the existing sticky still carries a decodable embedded findings document — leaving it in place rather than severing the seed chain\n",

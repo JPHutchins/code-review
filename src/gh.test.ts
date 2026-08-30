@@ -90,4 +90,20 @@ describe("runGhApi — the escape-retry boundary", () => {
     await expect(runGhApi(["repos/o/r/pulls/1"])).rejects.toThrow("HTTP 404");
     expect(mockExec).toHaveBeenCalledTimes(1);
   });
+
+  it("never replays a write call on refusal — the write may already have landed", async () => {
+    mockExec.mockRejectedValueOnce(
+      new Error(
+        "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway",
+      ),
+    );
+    const { runGhApi } = await import("./gh.js");
+
+    await expect(runGhApi(["repos/o/r/pulls/42/reviews", "--input", "-"], "{}")).rejects.toThrow(
+      "escape sequences",
+    );
+    expect(mockExec).toHaveBeenCalledTimes(1);
+    const only = mockExec.mock.calls[0]![0] as { args: readonly string[] };
+    expect(only.args).toEqual(["api", "repos/o/r/pulls/42/reviews", "--input", "-"]);
+  });
 });

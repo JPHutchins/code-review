@@ -25,15 +25,20 @@ export const describeEndpoint = (args: readonly string[]): string =>
 // first (an old gh accepts it, a new gh accepts it for escape-free content), and a refusal retries
 // with --allow-escape-sequences. A successful retry memoizes flag-first for the process — an old gh
 // never sees the flag, so no capability probe is needed and no probe failure can silently degrade
-// the boundary. Shared by the artifact reader, the one other gh api site (binary output).
+// the boundary. The retry re-executes the command, so only IDEMPOTENT calls may retry — a write
+// that already landed server-side before the refusal must surface loudly, never replay.
 let flagFirst: boolean | undefined;
 
-export const withEscapeRetry = async <T>(run: (withFlag: boolean) => Promise<T>): Promise<T> => {
+export const withEscapeRetry = async <T>(
+  run: (withFlag: boolean) => Promise<T>,
+  idempotent: boolean,
+): Promise<T> => {
   if (flagFirst) return run(true);
   try {
     return await run(false);
   } catch (err) {
     if (errMsg(err).includes("--allow-escape-sequences")) {
+      if (!idempotent) throw err;
       flagFirst = true;
       return run(true);
     }
@@ -41,14 +46,21 @@ export const withEscapeRetry = async <T>(run: (withFlag: boolean) => Promise<T>)
   }
 };
 
+// A write call is one carrying --input or an explicit --method — a conservative reading: a `--method
+// GET` is idempotent too, but nothing here issues one, so any explicit method opts out.
+const isIdempotentCall = (args: readonly string[]): boolean =>
+  !args.includes("--input") && !args.includes("--method");
+
 export const runGhApi: GhApi = (args, stdin, env) =>
-  withEscapeRetry((withFlag) =>
-    execFileWithTimeout({
-      command: "gh",
-      args: ["api", ...(withFlag ? ["--allow-escape-sequences"] : []), ...args],
-      label: `gh api ${describeEndpoint(args)}`,
-      timeoutMs: subprocessTimeoutMs(),
-      env,
-      stdin,
-    }),
+  withEscapeRetry(
+    (withFlag) =>
+      execFileWithTimeout({
+        command: "gh",
+        args: ["api", ...(withFlag ? ["--allow-escape-sequences"] : []), ...args],
+        label: `gh api ${describeEndpoint(args)}`,
+        timeoutMs: subprocessTimeoutMs(),
+        env,
+        stdin,
+      }),
+    isIdempotentCall(args),
   );

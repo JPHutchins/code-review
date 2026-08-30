@@ -32,6 +32,7 @@ jobs:
     outputs:
       head_sha: ${{ steps.r.outputs.head_sha }}
       head_branch: ${{ steps.r.outputs.head_branch }}
+      head_repo: ${{ steps.r.outputs.head_repo }}
       run_id: ${{ steps.r.outputs.run_id }}
     steps:
       - id: r
@@ -41,8 +42,10 @@ jobs:
           PR: ${{ inputs.pr }}
         run: |
           set -euo pipefail
-          head_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
-          head_branch=$(gh pr view "$PR" --repo "$REPO" --json headRefName -q .headRefName)
+          pr=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,headRefName,headRepository)
+          head_sha=$(echo "$pr" | jq -r .headRefOid)
+          head_branch=$(echo "$pr" | jq -r .headRefName)
+          head_repo=$(echo "$pr" | jq -r '.headRepository.nameWithOwner // empty')
           # Newest CI run for that head SHA (any conclusion); mechanic route uses it for job logs.
           # Pass the SHA via --arg (no string interpolation into the filter) and coalesce a no-match
           # (jq null) to "0" so the reusable workflow never receives the literal string "null".
@@ -55,6 +58,7 @@ jobs:
           {
             echo "head_sha=$head_sha"
             echo "head_branch=$head_branch"
+            echo "head_repo=$head_repo"
             echo "run_id=${run_id:-0}"
           } >> "$GITHUB_OUTPUT"
 
@@ -64,11 +68,7 @@ jobs:
     with:
       head_sha: ${{ needs.resolve.outputs.head_sha }}
       head_branch: ${{ needs.resolve.outputs.head_branch }}
-      # The base repo, the selftest's normal target (its own PRs) — a selftest dispatched against a
-      # FORK PR would need the fork's name here for permalinks to resolve; the dispatch cannot know
-      # it without resolving the PR, so fork-targeted selftests accept base-repo permalinks
-      # (issue #231 r4).
-      head_repo: ${{ github.repository }}
+      head_repo: ${{ needs.resolve.outputs.head_repo }}
       run_id: ${{ needs.resolve.outputs.run_id }}
       conclusion: ${{ inputs.conclusion }}
       trigger_event: pull_request

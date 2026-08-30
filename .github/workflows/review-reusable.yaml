@@ -30,7 +30,17 @@ on:
         type: string
         required: true
       head_repo:
-        description: Head repository full_name, for the concurrency group (disambiguates forks)
+        # When passed, this MUST name the HEAD repo — the fork's owner/name on a fork PR — never the
+        # base repo. It drives BOTH the concurrency group and the sticky's finding permalinks: a
+        # base-repo value on a fork PR yields permalinks that break once the pull ref stops
+        # resolving the SHA (e.g. a force-push). Omitted ⇒ the workflow derives it from the caller's
+        # event (github.event.workflow_run.head_repository.full_name or
+        # github.event.pull_request.head.repo.full_name); any other event (or a deleted fork)
+        # degrades to base-repo permalinks. Omission costs group isolation on fork PRs: the review
+        # group names the base repo, so same-named branches across forks share one group and the
+        # cancel-on-merge workflow (which groups by the PR's head repo) does not match — pass
+        # head_repo to keep both effective.
+        description: Head repository full_name (the fork on a fork PR) — disambiguates the concurrency group AND anchors finding permalinks; MUST be the head repo, never the base repo
         type: string
         required: false
         default: ""

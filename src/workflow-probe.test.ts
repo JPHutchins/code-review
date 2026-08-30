@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { readRepoFile } from "./test-util.js";
+import { allWorkflows, readRepoFile } from "./test-util.js";
 
 // The capability probes (seed_accepts/post_accepts) live as inline bash in the workflows, and their
 // correctness depends on citty's --help rendering — a version-mutable, human-facing surface. These
@@ -11,24 +11,26 @@ import { readRepoFile } from "./test-util.js";
 // followed a probe change verified against the wrong help text).
 //
 // Fixture provenance: test/fixtures/published-help/*.txt are captures of the REAL published
-// package's --help, taken 2026-08-30 by running the published tarball's dist directly with
+// package's --help, taken by running the published tarball's dist directly with
 // `CI=true NO_COLOR=1 node <dir>/dist/index.js <cmd> --help` (after `npm pack
-// @jphutchins/code-review@<ver>` + `npm --prefix <dir> install`). CI=true is the byte-form the
-// workflow's probes actually see — citty renders a `[log] ` prefix and backtick-quoted option
-// names under it, and nothing here strips or normalizes them; NO_COLOR pins that form
-// deterministically. The alpha.53 pair's seed gains --prior-findings (the #217 channel first ships
-// in 53). Earlier captures were poisoned by the npx cache (`~/.npm/_npx` held an alpha.40-era
+// @jphutchins/code-review@<ver>` + `npm --prefix <dir> install`). The workflow's capture commands
+// themselves set NO_COLOR=1 (issue #238 r2 — under CI alone citty styles the description and
+// section labels, and a styled-option-name change would blind every probe while these fixtures
+// stayed green), so the fixtures are byte-identical to what CI's probes actually match against.
+// The CURRENT generation is tied to the workflow's pinned CODE_REVIEW_VERSION (asserted below) —
+// a release commit refreshes the current pair from the freshly built dist, the same bytes prepack
+// publishes. Earlier captures were poisoned by the npx cache (`~/.npm/_npx` held an alpha.40-era
 // install that `npx -y` reused) and were deleted — never verify package output through npx; run
 // the tarball's dist.
 
-const workflowPaths = [".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"];
-
-const workflowTexts = (): readonly string[] => workflowPaths.map(readRepoFile);
+const workflowTexts = (): readonly string[] => allWorkflows().map(readRepoFile);
 
 const stepScripts = (text: string): readonly string[] => {
-  const doc = parseYaml(text) as { jobs: Record<string, { steps: Array<{ run?: string }> }> };
-  return Object.values(doc.jobs).flatMap((job) =>
-    job.steps.flatMap((s) => (s.run !== undefined ? [s.run] : [])),
+  const doc = parseYaml(text) as {
+    jobs?: Record<string, { steps?: Array<{ run?: string }> }>;
+  };
+  return Object.values(doc.jobs ?? {}).flatMap((job) =>
+    (job.steps ?? []).flatMap((s) => (s.run !== undefined ? [s.run] : [])),
   );
 };
 
@@ -87,6 +89,10 @@ describe("workflow capability probes (issue #233 r2)", () => {
   it("accepts a flag the real published alpha.52 help carries, and rejects a bogus one", () => {
     const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
     const postHelp = readRepoFile("test/fixtures/published-help/post-alpha52.txt");
+    // The historical pair pins its OWN version line: the post pair differs from the 53 pair only in
+    // that line, so an unpinned fixture could be silently re-captured from the wrong generation
+    // (issue #238 r2).
+    expect(postHelp).toContain("code-review post v0.1.0-alpha.52");
     expect(runProbe("post_accepts", postFn, postHelp, "json-url")).toBe("yes");
     expect(runProbe("post_accepts", postFn, postHelp, "cloc-diff")).toBe("yes");
     expect(runProbe("post_accepts", postFn, postHelp, "bogus-flag")).toBe("no");
@@ -95,55 +101,96 @@ describe("workflow capability probes (issue #233 r2)", () => {
   it("reports the published seed-draft as lacking --prior-findings (it predates #217)", () => {
     const seedFn = sites.find((s) => s.name === "seed_accepts")!.fn;
     const seedHelp = readRepoFile("test/fixtures/published-help/seed-draft-alpha52.txt");
+    expect(seedHelp).toContain("code-review seed-draft v0.1.0-alpha.52");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior")).toBe("yes");
+    // The probe matches help PROSE too ("re-derived from --prior" in the floor's description), so a
+    // citty that dropped --prior from OPTIONS would still pass the positive check — pin the option
+    // column itself (issue #238 r2).
+    expect(seedHelp).toMatch(/^\s+`--prior`\s+/m);
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-findings")).toBe("no");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-answers")).toBe("yes");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "nit-visibility-floor")).toBe("yes");
   });
 
-  // The alpha.53 pair's novel coverage is the 52→53 boundary itself: the version strings pin the
-  // captures to their named generation (a stale re-capture would still pass every probe above), the
-  // seed gains --prior-findings, and the post side probes the flags CI actually gates through the
-  // published help's OPTIONS block (--inline, --unverified-no-logs, --nit-visibility-floor).
+  // The alpha.53 pair's novel coverage is the 52→53 boundary itself: the version strings are tied
+  // to the workflow's pinned CODE_REVIEW_VERSION — the source of truth for what CI installs — so a
+  // release that bumps the pin while the fixtures lag fails HERE (a self-referential pin only
+  // proved the fixture matched its own filename; issue #238 r2). The seed gains --prior-findings,
+  // and the post side probes the flags CI actually gates through the published help's OPTIONS
+  // block (--inline, --unverified-no-logs, --nit-visibility-floor).
   it("reports the published alpha.53 as carrying the prior-findings channel and the CI-gated post flags", () => {
     const seedFn = sites.find((s) => s.name === "seed_accepts")!.fn;
     const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
     const seedHelp53 = readRepoFile("test/fixtures/published-help/seed-draft-alpha53.txt");
     const postHelp53 = readRepoFile("test/fixtures/published-help/post-alpha53.txt");
-    expect(seedHelp53).toContain("code-review seed-draft v0.1.0-alpha.53");
-    expect(postHelp53).toContain("code-review post v0.1.0-alpha.53");
+    const pinnedVersions = workflowTexts().flatMap((text) => {
+      const version = (parseYaml(text) as { env?: { CODE_REVIEW_VERSION?: string } }).env
+        ?.CODE_REVIEW_VERSION;
+      return version === undefined ? [] : [version];
+    });
+    expect(new Set(pinnedVersions).size).toBe(1);
+    const pinnedVersion = pinnedVersions[0]!;
+    expect(seedHelp53).toContain(`code-review seed-draft v${pinnedVersion}`);
+    expect(postHelp53).toContain(`code-review post v${pinnedVersion}`);
     expect(runProbe("seed_accepts", seedFn, seedHelp53, "prior-findings")).toBe("yes");
     expect(runProbe("post_accepts", postFn, postHelp53, "inline")).toBe("yes");
     expect(runProbe("post_accepts", postFn, postHelp53, "unverified-no-logs")).toBe("yes");
     expect(runProbe("post_accepts", postFn, postHelp53, "nit-visibility-floor")).toBe("yes");
   });
 
-  it("matches a help text that backtick-quotes option names", () => {
+  // The real fixtures are backtick-quoted, so they exercise only that branch of the pattern — this
+  // pins the PLAIN alternative the workflow comment says exists for older published renderings, so
+  // neither branch can rot silently (issue #238 r2).
+  it("matches a help text that renders option names plain (pre-0.1.6 CLIs)", () => {
     const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
-    const quoted =
-      "OPTIONS\n  `--inline`  Inline review comments.\n  `--cloc-diff`  The cloc table.\n";
-    expect(runProbe("post_accepts", postFn, quoted, "inline")).toBe("yes");
-    expect(runProbe("post_accepts", postFn, quoted, "cloc-diff")).toBe("yes");
-    expect(runProbe("post_accepts", postFn, quoted, "bogus-flag")).toBe("no");
+    const plain =
+      "OPTIONS\n    --inline  Inline review comments.\n    --cloc-diff  The cloc table.\n";
+    expect(runProbe("post_accepts", postFn, plain, "inline")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, plain, "cloc-diff")).toBe("yes");
+    expect(runProbe("post_accepts", postFn, plain, "bogus-flag")).toBe("no");
   });
 
   // The capture-condition ↔ call-site coverage: both #236 regressions were a probe call firing
-  // against an uncaptured help. Pin the concrete invariants that failed (issue #236 r3).
+  // against an uncaptured help. Pin the concrete invariants that failed (issue #236 r3). Scoped to
+  // the workflow files that DEFINE the probes, whatever future file that is (issue #238 r2).
   it("covers every probe call site with its help-capture condition", () => {
-    for (const text of workflowTexts()) {
+    const probeWorkflows = workflowTexts().filter((t) => /seed_accepts\(\) \{/.test(t));
+    expect(probeWorkflows.length).toBeGreaterThanOrEqual(2);
+    for (const text of probeWorkflows) {
       const scripts = stepScripts(text);
-      const postCapture = scripts.find((s) => s.includes('POST_HELP="$(code-review post --help'));
+      const postCapture = scripts.find((s) =>
+        s.includes('POST_HELP="$(NO_COLOR=1 code-review post --help'),
+      );
       const seedCapture = scripts.find((s) =>
-        s.includes('SEED_HELP="$(code-review seed-draft --help'),
+        s.includes('SEED_HELP="$(NO_COLOR=1 code-review seed-draft --help'),
       );
       expect(postCapture).toBeDefined();
       expect(seedCapture).toBeDefined();
-      // Every flag the post side probes must appear in its capture condition.
-      expect(postCapture).toContain("$NIT_VISIBILITY_FLOOR");
-      expect(postCapture).toContain("$REVIEW_ROUTE");
-      expect(postCapture).toContain("findings/cloc-diff.txt");
-      // The seed side captures on a real prior.
-      expect(seedCapture).toContain("$HAS_PRIOR");
+      // The capture's enclosing GATE must name every trigger — the prior whole-block toContain was
+      // satisfiable by the flag-passing sections below the gate, so deleting or inverting the gate
+      // left every assertion green (issue #238 r2). The gate is the nearest if/elif line above the
+      // capture command.
+      const gateOf = (script: string, captureNeedle: string): string => {
+        const lines = script.split("\n");
+        const captureIndex = lines.findIndex((l) => l.includes(captureNeedle));
+        return (
+          lines
+            .slice(0, captureIndex)
+            .reverse()
+            .find((l) => l.includes("if [") || l.includes("elif [")) ?? ""
+        );
+      };
+      expect(gateOf(postCapture!, 'POST_HELP="$(NO_COLOR=1')).toContain("$NIT_VISIBILITY_FLOOR");
+      expect(gateOf(postCapture!, 'POST_HELP="$(NO_COLOR=1')).toContain("$REVIEW_ROUTE");
+      expect(gateOf(postCapture!, 'POST_HELP="$(NO_COLOR=1')).toContain("findings/cloc-diff.txt");
+      // $INLINE gates the reusable's --inline pass (a caller input); the example copy passes no
+      // inline flag, so its gate intentionally omits the term (documented at its capture site).
+      if (text.includes("$INLINE")) {
+        expect(gateOf(postCapture!, 'POST_HELP="$(NO_COLOR=1')).toContain("$INLINE");
+      }
+      // The seed side captures on a real prior, in either channel.
+      expect(gateOf(seedCapture!, 'SEED_HELP="$(NO_COLOR=1')).toContain("$HAS_PRIOR");
+      expect(gateOf(seedCapture!, 'SEED_HELP="$(NO_COLOR=1')).toContain("$HAS_PRIOR_FINDINGS");
       // A "predates" warning may only fire when the help was actually captured — the nearest
       // if/elif guard above the warning must carry the _OK check (issue #236 r3).
       for (const script of scripts) {

@@ -87,6 +87,11 @@ export interface RenderInput {
   readonly prices: PriceMap;
   readonly template: string;
   readonly reviewedSha?: string;
+  // Owner/name of the reviewed repository. When present, every stray finding the sticky lists
+  // carries a bare permalink to its code at the reviewed SHA (issue #231) — the sticky is then the
+  // only surface for inline-off reviews, so each finding links to where it anchors. Omitted ⇒ no
+  // permalinks (the standalone render command has no repo to link to).
+  readonly repo?: string;
   // Computed at the IO boundary so render() stays pure/clockless. Omitted ⇒ segment suppressed.
   readonly postedAt?: string;
   // The run's UTC instant, passed in at the IO boundary (same instant as postedAt) so render() stays

@@ -34,6 +34,20 @@ const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
 const linkSafeUrl = (url: string): string =>
   escapeCodeBackticks(url).replace(/\(/g, "%28").replace(/\)/g, "%29");
 
+// A stray finding the sticky lists links back to its code at the reviewed SHA: a BARE URL — GitHub
+// autolinks it and sizes the rendering sensibly, where the nested-aside `<details>` permalink JP
+// prototyped renders dead in issue comments (issue #231). The path is percent-encoded segment-wise
+// so a space, `#`, or unicode name cannot break the URL or the autolink, and the line range
+// collapses to one anchor when the finding spans a single line (mirroring the heading).
+const permalinkFor = (repo: string, reviewedSha: string, f: Finding): string => {
+  const path = f.path.split("/").map(encodeURIComponent).join("/");
+  const range =
+    f.start_line === f.end_line
+      ? `#L${String(f.start_line)}`
+      : `#L${String(f.start_line)}-L${String(f.end_line)}`;
+  return `https://github.com/${repo}/blob/${reviewedSha}/${path}${range}`;
+};
+
 // The machine-channel budget for suppressed-nit blocks: each field is clipped individually
 // (BODY_CLIP_CHARS), but the SUM across a nit-heavy round is unbounded, and the sticky is the one
 // comment post deliberately does not shed — an unbounded machine block can still 422 it, which the
@@ -51,6 +65,9 @@ type StrayView = Finding & {
   // template is keyed on raw codes, so a backtick/newline code must not lose its note through
   // the escaping (issue #233 r3).
   readonly codeKey?: string;
+  // Pre-encoded bare permalink to the finding's code at the reviewed SHA (issue #231); absent when
+  // the caller supplies no repo (the standalone render command).
+  readonly permalink?: string;
 };
 
 // The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
@@ -60,6 +77,8 @@ type StrayView = Finding & {
 const sanitizeFinding = (
   f: Finding,
   answeredNotes: Readonly<Record<string, string>> | undefined,
+  repo?: string,
+  reviewedSha?: string,
 ): StrayView => {
   const key = answeredNoteKey(f);
   return {
@@ -68,6 +87,9 @@ const sanitizeFinding = (
     path: escapeCodeBackticks(f.path),
     ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code), codeKey: f.code } : {}),
     ...(f.code_url !== undefined ? { code_url: linkSafeUrl(f.code_url) } : {}),
+    ...(repo !== undefined && reviewedSha !== undefined
+      ? { permalink: permalinkFor(repo, reviewedSha, f) }
+      : {}),
     patchProjection: projectPatch(f.patch, "comment-body"),
     answeredNote:
       answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
@@ -304,7 +326,9 @@ export const render = (input: RenderInput): string => {
       : convergence
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
-    strays: (input.strays ?? []).map((f) => sanitizeFinding(f, input.answeredNotes)),
+    strays: (input.strays ?? []).map((f) =>
+      sanitizeFinding(f, input.answeredNotes, input.repo, input.reviewedSha),
+    ),
     suppressedNits: suppressedBudget.list,
     carriedDroppedNits: suppressedBudget.dropped,
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,

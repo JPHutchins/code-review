@@ -807,6 +807,7 @@ export const post = async (
         template,
         route: input.route,
         reviewedSha: input.headSha,
+        repo: input.repo,
         effort: input.effort,
         sameRootNotes: {},
         roundCount: priorRoundCount,
@@ -976,6 +977,7 @@ export const post = async (
         template,
         route: effectiveRoute,
         reviewedSha: input.headSha,
+        repo: input.repo,
         effort: input.effort,
         sameRootNotes: {},
         // The answered-state honesty rules apply on EVERY surface that renders the filtered
@@ -1123,6 +1125,7 @@ export const post = async (
     template,
     route: effectiveRoute,
     reviewedSha: input.headSha,
+    repo: input.repo,
     effort: input.effort,
     testReport,
     clocDiff,

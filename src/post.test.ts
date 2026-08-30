@@ -2268,6 +2268,8 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     expect(body).toContain("Findings outside the diff");
     expect(body).toContain("src/foo.ts:999");
     expect(body).toContain("Out of diff finding");
+    // issue #231: the sticky-listed stray links back to its code at the reviewed SHA.
+    expect(body).toContain("https://github.com/owner/repo/blob/abc123def456/src/foo.ts#L999");
 
     // Issue #43: the sticky keeps its none-in-diff wording, but a body-only COMMENT review is still
     // posted (empty comments[]) so tooling/agents get a review event.

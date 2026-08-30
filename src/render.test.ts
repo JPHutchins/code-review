@@ -644,6 +644,58 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       expect(result).toContain("src/x.ts:10–14");
     });
+
+    it("links each stray to its code at the reviewed SHA when a repo is supplied (issue #231)", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ path: "src/bar.ts", start_line: 100, end_line: 104, title: "linked stray" }),
+      ];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "JPHutchins/code-review",
+        reviewedSha: "c4c60941b084053e19f85659c2642749ad0f4343",
+      });
+      // The bare permalink sits at the top of the finding: its own paragraph directly after the
+      // heading, before the description (the <details> aside JP prototyped renders dead in comments).
+      expect(result).toMatch(
+        /`src\/bar\.ts:100–104` — linked stray[^\n]*\n\nhttps:\/\/github\.com\/JPHutchins\/code-review\/blob\/c4c60941b084053e19f85659c2642749ad0f4343\/src\/bar\.ts#L100-L104\n\nTest description content\./,
+      );
+    });
+
+    it("collapses a single-line range to one anchor and percent-encodes the path", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ path: "src/my dir/a#b.ts", start_line: 7, end_line: 7, title: "odd path" }),
+      ];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).toContain("https://github.com/o/r/blob/abc/src/my%20dir/a%23b.ts#L7");
+    });
+
+    it("renders no permalink when no repo is supplied", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/bar.ts", start_line: 1, end_line: 1 })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        reviewedSha: "abc",
+      });
+      expect(result).not.toContain("blob/");
+    });
   });
 
   describe("systemic problems section (issue #134)", () => {

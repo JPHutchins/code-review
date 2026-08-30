@@ -64,6 +64,10 @@ jobs:
     with:
       head_sha: ${{ needs.resolve.outputs.head_sha }}
       head_branch: ${{ needs.resolve.outputs.head_branch }}
+      # The base repo, the selftest's normal target (its own PRs) — a selftest dispatched against a
+      # FORK PR would need the fork's name here for permalinks to resolve; the dispatch cannot know
+      # it without resolving the PR, so fork-targeted selftests accept base-repo permalinks
+      # (issue #231 r4).
       head_repo: ${{ github.repository }}
       run_id: ${{ needs.resolve.outputs.run_id }}
       conclusion: ${{ inputs.conclusion }}

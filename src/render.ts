@@ -47,8 +47,8 @@ const linkSafeUrl = (url: string): string => encodeAutolinkParens(escapeCodeBack
 // about: a LEFT-side finding (its line numbers index the BASE tree, so a head-blob anchor names
 // the wrong code) and an empty path. `anchor` false links the path only — a stray GitHub rejected
 // inline must not re-assert its known-bad coordinates as an exact anchor.
-const permalinkFor = (base: string, f: Finding, anchor: boolean): string | null => {
-  if (f.path === "" || f.side === "LEFT") return null;
+const permalinkFor = (base: string, f: Finding, anchor: boolean): string | undefined => {
+  if (f.path === "" || f.side === "LEFT") return undefined;
   const path = f.path
     .split("/")
     .map((segment) =>
@@ -59,7 +59,14 @@ const permalinkFor = (base: string, f: Finding, anchor: boolean): string | null 
             "�",
           ),
         ),
-      ),
+        // Markdown emphasis/syntax characters: `__` runs split the bare URL across CommonMark
+        // nodes and truncate the autolink, and a path-only link ending in one of these loses its
+        // tail to the autolinker's trailing-punctuation trim (issue #231 r4).
+      )
+        .replace(/_/g, "%5F")
+        .replace(/\*/g, "%2A")
+        .replace(/'/g, "%27")
+        .replace(/!/g, "%21"),
     )
     .join("/");
   return anchor ? `${base}${path}#L${lineRange(f.start_line, f.end_line, "-L")}` : `${base}${path}`;
@@ -111,6 +118,8 @@ const sanitizeFinding = (
   const anchored = permalinkBase !== undefined && !(unanchored?.has(f) ?? false);
   const permalink =
     permalinkBase === undefined ? undefined : permalinkFor(permalinkBase, f, anchored);
+  // permalinkBase undefined AND a LEFT/empty-path omission both land on `undefined`, so the spread
+  // below is truly absent for every no-permalink case — the StrayView contract (issue #231 r4).
   return {
     ...f,
     title: escapePipes(f.title),
@@ -118,7 +127,7 @@ const sanitizeFinding = (
     ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code), codeKey: f.code } : {}),
     ...(f.code_url !== undefined ? { code_url: linkSafeUrl(f.code_url) } : {}),
     rangeLabel: lineRange(f.start_line, f.end_line, "–"),
-    ...(permalink !== null ? { permalink, permalinkAnchored: anchored } : {}),
+    ...(permalink !== undefined ? { permalink, permalinkAnchored: anchored } : {}),
     patchProjection: projectPatch(f.patch, "comment-body"),
     answeredNote:
       answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
@@ -142,6 +151,9 @@ type SuppressedNitView = {
   readonly code?: string;
   readonly codeUrl?: string;
   readonly path: string;
+  // The machine location line renders start-end ALWAYS FULL (plain hyphen, no collapse) — a
+  // machine-parseable form, deliberately distinct from the heading's collapsed rangeLabel; do not
+  // migrate it onto lineRange (issue #231 r4).
   readonly startLine: number;
   readonly endLine: number;
   readonly side?: string;

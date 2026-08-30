@@ -743,6 +743,25 @@ describe("render", () => {
       expect(result).toContain("https://github.com/o/r/blob/abc/src/a%EF%BF%BDb.ts#L1");
     });
 
+    it("percent-encodes markdown emphasis characters so a bare URL cannot split (issue #231 r4)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/__tests__/foo.test.ts", start_line: 7, end_line: 7 })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      // `__tests__` would parse as CommonMark emphasis and split the URL across nodes, truncating
+      // the autolink to the directory.
+      expect(result).toContain(
+        "https://github.com/o/r/blob/abc/src/%5F%5Ftests%5F%5F/foo.test.ts#L7",
+      );
+    });
+
     it("percent-encodes parens so an unbalanced one cannot truncate the autolink (issue #231 r1)", () => {
       const findings = mkFindings([]);
       const strays = [mkFinding({ path: "src/foo(.ts", start_line: 2, end_line: 2 })];

@@ -2679,6 +2679,23 @@ describe("post — --run-url / --json-url threading", () => {
       exitSpy.mockRestore();
     }
   });
+
+  it("carries the prior findings marker forward when overwriting this run's placeholder with no --json-url (issue #235)", async () => {
+    const placeholder =
+      "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- review-complete-ancestor -->\n<!-- code-review:findings-json https://artifacts.example.com/f.zip -->\nCode review in progress";
+    const { api, calls } = mkMockGhApi(mkMocks(placeholder));
+
+    await post(mkInput({ jsonUrl: undefined }), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    expect(stickyCall).toBeDefined();
+    const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
+    // The placeholder held the PRIOR review's link; the new body keeps it, so the seed chain
+    // survives the overwrite.
+    expect(body.body).toContain("code-review:findings-json https://artifacts.example.com/f.zip");
+  });
 });
 
 describe("post — postedAt threading (issue #28)", () => {

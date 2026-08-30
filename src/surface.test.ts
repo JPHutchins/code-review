@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { legacyEmbeddedMarker } from "./test-util.js";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -250,16 +250,23 @@ describe("findingPointer — the inline payload's size valve (issue #217 review 
   // thresholds the inline renderer clips the prose while the payload keeps embedding — which is
   // what keeps the answered registry decoding the thread (issue #233 r2).
   it("embeds through the clip band, leaving only the hard valve to the link form", () => {
-    const inBand = { ...findings.findings[0]!, description: "x".repeat(30_000) };
+    const inBand = { ...findings.findings[0]!, description: "x".repeat(25_000) };
 
     expect(findingPointer(inBand, findings.schema_version, URL)).toContain("findings-json;base64");
   });
 
-  // With no URL there is nothing to name — the embed is the only channel the finding has.
-  it("keeps embedding past the limit when no URL is supplied", () => {
+  // Past the hard valve with no URL there is nothing to name AND nothing that fits: the marker is
+  // omitted — the pre-#217 behavior — with a loud warning, rather than guaranteeing a 422 that
+  // aborts the inline post (issue #235).
+  it("omits the marker past the hard valve when no URL is supplied, warning loudly", () => {
     const huge = { ...findings.findings[0]!, description: "x".repeat(50_000) };
-
-    expect(findingPointer(huge, findings.schema_version)).toContain("findings-json;base64");
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(findingPointer(huge, findings.schema_version)).toBe("");
+      expect(stderrSpy.mock.calls.some((c) => String(c[0]).includes("no --json-url"))).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });
 

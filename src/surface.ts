@@ -92,7 +92,10 @@ export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl
 // instead — and only THAT band breaks the registry, for a finding pathological enough that no
 // comment could hold it. With no URL there is nothing to name, so the embed stays the only channel.
 export const INLINE_PROSE_CLIP_THRESHOLD_CHARS = 30_000;
-export const INLINE_EMBED_LIMIT_CHARS = 42_700;
+// The hard valve sits below the whole-document embed's old EMBED_LIMIT: the inline body is payload
+// + directive + clipped prose, and the clipped reasoning gains a `> ` prefix per rendered line — the
+// worst RENDERED case must stay under the comment limit, not just the raw parts (issue #235).
+export const INLINE_EMBED_LIMIT_CHARS = 38_000;
 export const findingPayload = (finding: Finding, schemaVersion: string): string =>
   Buffer.from(
     JSON.stringify({ schema_version: schemaVersion, findings: [finding] }),
@@ -104,9 +107,19 @@ export const findingPointer = (
   jsonUrl?: string,
 ): string => {
   const payload = findingPayload(finding, schemaVersion);
-  return payload.length > INLINE_EMBED_LIMIT_CHARS && jsonUrl !== undefined
-    ? `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json ${jsonUrl} -->`
-    : `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${payload} -->`;
+  if (payload.length > INLINE_EMBED_LIMIT_CHARS) {
+    if (jsonUrl !== undefined) {
+      return `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json ${jsonUrl} -->`;
+    }
+    // No URL to name and the payload cannot fit: omit the marker entirely — the pre-#217 behavior —
+    // with a loud warning, rather than embedding a comment GitHub is guaranteed to reject (the 422
+    // aborts the inline post; issue #235).
+    process.stderr.write(
+      "::warning::a finding's payload exceeds the inline comment limit and no --json-url was supplied to name the artifact — the comment carries no findings marker\n",
+    );
+    return "";
+  }
+  return `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${payload} -->`;
 };
 
 // null when the marker is absent or holds the all-zeros placeholder (no head SHA was stamped),

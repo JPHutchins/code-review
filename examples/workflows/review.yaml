@@ -448,7 +448,11 @@ jobs:
             # sticky read under an older pin (issue #233 r1). seed-draft's embedded fallback keeps a
             # pre-#217 sticky working either way.
             SEED_HELP=""
-            if [ -f prior_review.json ]; then
+            # A REAL prior sticky — the file holds the literal null on a first round, and the probe
+            # warnings must not fire when there never was a prior document to lose (issue #235).
+            HAS_PRIOR=0
+            if [ -f prior_review.json ] && grep -q '"body"' prior_review.json; then
+              HAS_PRIOR=1
               SEED_HELP="$(code-review seed-draft --help 2>/dev/null || true)"
             fi
             # A case pattern, not `printf | grep -q`: grep's exit-on-match can kill printf with
@@ -463,14 +467,14 @@ jobs:
             NIT_FLOOR_ARGS=()
             if [ -f prior_findings.json ] && seed_accepts prior-findings; then
               PRIOR_FINDINGS_ARGS=(--prior-findings prior_findings.json)
-            elif [ -f prior_review.json ] && ! seed_accepts prior-findings; then
+            elif [ "$HAS_PRIOR" = "1" ] && ! seed_accepts prior-findings; then
               echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --prior-findings; the prior-findings channel is unavailable and this re-review seeds without the prior document"
             fi
             # The same probe gate covers the seed's OTHER flags: the deployed published CLI predates
             # several, and citty drops an unknown option silently — a seed with the answered registry
             # and the nit floor disabled, and no warning, is the exact no-op the probes exist to name
             # (issue #233 r5).
-            if [ -f prior_review.json ]; then
+            if [ "$HAS_PRIOR" = "1" ]; then
               if seed_accepts prior-answers; then
                 PRIOR_ANSWERS_ARGS=(--prior-answers answered.json)
               else
@@ -919,7 +923,7 @@ jobs:
           # This variant has no inline knob — it calls `post` directly, so add --inline there and to
           # this capture's condition if you want it — which is why there is no INLINE term below.
           POST_HELP=""
-          if [ -f findings/cloc-diff.txt ] || [ "$REVIEW_ROUTE" = "mechanic" ]; then
+          if [ -f findings/cloc-diff.txt ] || [ "$REVIEW_ROUTE" = "mechanic" ] || [ -n "$NIT_VISIBILITY_FLOOR" ]; then
             POST_HELP="$(code-review post --help 2>/dev/null || true)"
           fi
           # A case pattern, not `printf | grep -q`: grep's exit-on-match can kill printf with
@@ -933,6 +937,8 @@ jobs:
           CLOC_ARGS=()
           if [ -f findings/cloc-diff.txt ] && post_accepts cloc-diff; then
             CLOC_ARGS=(--cloc-diff findings/cloc-diff.txt)
+          elif [ -f findings/cloc-diff.txt ]; then
+            echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --cloc-diff; the cloc table is not rendered"
           fi
 
           # route/effort come from the envelope the review job stamped — not re-derived here.
@@ -949,6 +955,18 @@ jobs:
           if [ "${STAGED_JOB_LOGS:-0}" = "0" ] && [ "$REVIEW_ROUTE" = "mechanic" ] \
              && post_accepts unverified-no-logs; then
             UNVERIFIED_ARGS=(--unverified-no-logs)
+          elif [ "${STAGED_JOB_LOGS:-0}" = "0" ] && [ "$REVIEW_ROUTE" = "mechanic" ]; then
+            echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --unverified-no-logs; the mechanic route cannot name its missing logs"
+          fi
+
+          # --nit-visibility-floor is probed like the other post flags: a consumer-set floor that is
+          # silently ignored (rendered at the default) is the same no-op class the probes exist to
+          # name (issue #235).
+          NIT_FLOOR_POST_ARGS=()
+          if post_accepts nit-visibility-floor; then
+            NIT_FLOOR_POST_ARGS=(--nit-visibility-floor "$NIT_VISIBILITY_FLOOR")
+          else
+            echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --nit-visibility-floor; the nit visibility floor is not applied to this post"
           fi
 
           code-review post findings/findings.json \
@@ -958,7 +976,7 @@ jobs:
             --head-branch "$HEAD_BRANCH" \
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}" \
             --convergence-threshold "$CONVERGENCE_THRESHOLD" \
-            --nit-visibility-floor "$NIT_VISIBILITY_FLOOR" \
+            "${NIT_FLOOR_POST_ARGS[@]}" \
             "${ROUTE_ARGS[@]}" \
             "${CLOC_ARGS[@]}" \
             "${JSON_URL_ARGS[@]}" \

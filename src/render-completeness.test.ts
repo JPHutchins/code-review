@@ -450,8 +450,6 @@ describe("the comment carries every field of the findings document (issue #217)"
   it("bounds a sticky with hundreds of accumulated nits", () => {
     const manyNits = Array.from({ length: 300 }, (_, i) => ({
       ...findings.findings[1]!,
-      // A huge title is the variable-length summary part the budget must count too (issue #233 r6).
-      ...(i === 0 ? { title: "T".repeat(20_000) } : {}),
       reasoning: `r${String(i)} ${"y".repeat(200)}`,
     }));
     const doc = {
@@ -483,6 +481,42 @@ describe("the comment carries every field of the findings document (issue #217)"
 
     expect(out.length).toBeLessThan(65_536);
     expect(out).toContain("dropped from the sticky");
+  });
+
+  // A single huge title fits the budget and must be KEPT — the assertion pins the outcome the
+  // budget arithmetic decides, so a dropped title term fails it (issue #235).
+  it("counts a huge title in the budget and keeps it when it fits", () => {
+    const hugeTitle = { ...findings.findings[1]!, title: "T".repeat(20_000) };
+    const doc = {
+      ...findings,
+      findings: [findings.findings[0]!, hugeTitle],
+    } as unknown as Findings;
+    const out = render({
+      findings: doc,
+      envelope: {
+        schema_version: "0.4.0",
+        findings: doc,
+        models: [{ model: "m", input_tokens: 1, output_tokens: 1 }],
+        turns: 1,
+        duration_ms: 1,
+      },
+      prices: {
+        _updated: "x",
+        _unit: "y",
+        models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
+      },
+      template: readFileSync(`${repoRoot}/templates/comment.eta`, "utf-8"),
+      strays: findings.findings.slice(0, 1),
+      suppressedNits: [hugeTitle],
+      route: "full review",
+      convergenceRound: true,
+      nitVisibilityFloor: 0.25,
+      jsonUrl: "https://example.com/artifact.zip",
+    });
+
+    expect(out).toContain("T".repeat(20_000));
+    expect(out).not.toContain("dropped from the sticky");
+    expect(out.length).toBeLessThan(65_536);
   });
 
   // Every sibling field gets escapeCodeBackticks; the code/code_url renders did not — a backtick

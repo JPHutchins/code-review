@@ -1175,14 +1175,21 @@ export const post = async (
     );
   }
 
+  // When no --json-url can name an artifact and the existing sticky is this run's own announce
+  // placeholder (no review-complete; it carries the PRIOR review's findings marker forward), the
+  // new body carries that marker too — otherwise the overwrite severs the seed chain the refuse
+  // guard exists to protect (issue #235).
+  const priorFindingsMarker =
+    !input.jsonUrl && existingSticky !== null && !parseReviewComplete(existingSticky.body)
+      ? /<!-- code-review:findings-json[^>]*-->/.exec(existingSticky.body)?.[0]
+      : undefined;
+  const stickyBody =
+    priorFindingsMarker === undefined
+      ? renderBody(initialDisposition)
+      : `${priorFindingsMarker}\n\n${renderBody(initialDisposition)}`;
+
   // Phase 2: writes — sticky first, inline second.
-  const stickyRef = await upsertSticky(
-    input.repo,
-    prNumber,
-    existingSticky,
-    renderBody(initialDisposition),
-    ghApi,
-  );
+  const stickyRef = await upsertSticky(input.repo, prNumber, existingSticky, stickyBody, ghApi);
 
   // Snapshot stale comments BEFORE posting the fresh ones; timing (not commit SHA) separates them.
   const priorInlineComments = await listPriorBotCommentIds(

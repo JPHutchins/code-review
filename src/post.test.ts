@@ -356,6 +356,19 @@ describe("post — run summary (issue #205)", () => {
     expect(summary).toMatch(/1 could not be anchored \(GitHub rejected the position\)/);
   });
 
+  // The rejected-anchor invariant holds on the summary too: this document deliberately carries
+  // every finding, so the GitHub-rejected one must keep its path-only link (issue #231 r2).
+  it("keeps a GitHub-rejected finding's permalink path-only", async () => {
+    const summary = await runRejectionRound();
+
+    expect(summary).toMatch(
+      /https:\/\/github\.com\/owner\/repo\/blob\/abc123def456\/src\/foo\.ts\n/,
+    );
+    expect(summary).not.toContain("#L11");
+    // The anchored twin keeps its anchor.
+    expect(summary).toContain("#L10");
+  });
+
   it("is a no-op outside Actions, where the variable is unset", async () => {
     // Two observables, because "no throw" is true of every path: the sentinel file is untouched, and
     // nothing warned — an unset variable must return early, not attempt the write and report failing.
@@ -2268,6 +2281,8 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     expect(body).toContain("Findings outside the diff");
     expect(body).toContain("src/foo.ts:999");
     expect(body).toContain("Out of diff finding");
+    // issue #231: the sticky-listed stray links back to its code at the reviewed SHA.
+    expect(body).toContain("https://github.com/owner/repo/blob/abc123def456/src/foo.ts#L999");
 
     // Issue #43: the sticky keeps its none-in-diff wording, but a body-only COMMENT review is still
     // posted (empty comments[]) so tooling/agents get a review event.
@@ -2278,6 +2293,20 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     expect(reviewBody.event).toBe("COMMENT");
     expect(reviewBody.comments).toEqual([]);
+  });
+
+  it("targets the fork's tree when the workflow threaded a HEAD_REPO (issue #231 r2)", async () => {
+    const strayFindings = mkFindings([
+      mkFinding({ start_line: 999, end_line: 999, title: "Out of diff finding" }),
+    ]);
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(strayFindings));
+    const { api, calls } = mkMockGhApi(okMocks);
+
+    await post({ ...mkInlineInput({}), headRepo: "fork-owner/repo" }, api);
+
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("https://github.com/fork-owner/repo/blob/abc123def456/src/foo.ts#L999");
+    expect(body).not.toContain("https://github.com/owner/repo/blob/abc123def456/src/foo.ts#L999");
   });
 
   it("gives the inline review a pointer body, not a duplicate of the walkthrough summary", async () => {

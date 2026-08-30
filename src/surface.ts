@@ -104,6 +104,13 @@ export const findingPayload = (finding: Finding, schemaVersion: string): string 
     JSON.stringify({ schema_version: schemaVersion, findings: [finding] }),
     "utf-8",
   ).toString("base64");
+
+// The heading and the permalink render the same line range with different separators (an en dash
+// for display, "-L" for the URL anchor) — ONE collapse decision shared by both, so the two
+// surfaces cannot drift (issue #231 r1).
+export const lineRange = (startLine: number, endLine: number, separator: string): string =>
+  startLine === endLine ? String(startLine) : `${String(startLine)}${separator}${String(endLine)}`;
+
 export const findingPointer = (
   finding: Finding,
   schemaVersion: string,

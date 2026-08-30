@@ -60,6 +60,10 @@ import { asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
   readonly repo: string;
+  // The head repo (owner/name of the fork) threaded by the workflow via HEAD_REPO — a finding
+  // permalink targets the tree the reviewed SHA lives in, which is the fork on a fork PR. Omitted
+  // ⇒ the base repo (issue #231 r1).
+  readonly headRepo?: string;
   readonly headSha: string;
   readonly botLogin: string;
   readonly findingsPath: string;
@@ -976,6 +980,7 @@ export const post = async (
         template,
         route: effectiveRoute,
         reviewedSha: input.headSha,
+        repo: input.headRepo || input.repo,
         effort: input.effort,
         sameRootNotes: {},
         // The answered-state honesty rules apply on EVERY surface that renders the filtered
@@ -1123,6 +1128,7 @@ export const post = async (
     template,
     route: effectiveRoute,
     reviewedSha: input.headSha,
+    repo: input.headRepo || input.repo,
     effort: input.effort,
     testReport,
     clocDiff,
@@ -1153,12 +1159,16 @@ export const post = async (
     reviewUrl?: string,
     straysOverride?: readonly Finding[],
     unanchoredCount?: number,
+    unanchoredStrays?: readonly Finding[],
   ): string =>
     formatMarkdown(
       render({
         ...commonRenderInput,
         ...(straysOverride ? { strays: straysOverride } : {}),
         ...(unanchoredCount !== undefined ? { unanchoredCount } : {}),
+        ...(unanchoredStrays !== undefined && unanchoredStrays.length > 0
+          ? { unanchoredStrays }
+          : {}),
         inlineDisposition,
         reviewUrl,
       }) + longFilesNote,
@@ -1170,7 +1180,8 @@ export const post = async (
   // the in-diff ones used to be separate posts. Shedding is issue #214; tolerating a failed write
   // after the sticky is up is issue #223. The embedded document is gone from this body (issue #217),
   // which removed the largest fixed cost it had — an oversized round is now a matter of finding prose,
-  // not of a ~32KB blob.
+  // not of a ~32KB blob. Each sticky-listed stray's permalink adds a URL line (~55–130 chars) to this
+  // budgeted-by-nobody section, so a nit-heavy inline-off round sits closer to the limit (issue #231 r1).
   // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
   // pointer to the prior findings document. The guard refuses only when the pointer is actually
   // load-bearing: a COMPLETED full-review sticky whose markers gather would seed from. The
@@ -1259,7 +1270,7 @@ export const post = async (
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount),
+        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount, unposted),
         ghApi,
       );
       process.stderr.write(
@@ -1283,6 +1294,12 @@ export const post = async (
       { kind: "whole-document", inlineCount: inlinePosted, rejectedCount: unanchoredCount },
       reviewUrl,
       visibleFindings,
+      undefined,
+      // The rejected-anchor invariant holds on EVERY surface, the run summary included — this
+      // document deliberately carries every finding, so the GitHub-rejected ones must keep their
+      // path-only links here too (issue #231 r2). Unconditional: renderBody's own gate treats an
+      // empty array exactly like absence, so the ternary was a duplicated decision (issue #231 r3).
+      unposted,
     ),
   );
 };

@@ -644,6 +644,187 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       expect(result).toContain("src/x.ts:10–14");
     });
+
+    it("links each stray to its code at the reviewed SHA when a repo is supplied (issue #231)", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ path: "src/bar.ts", start_line: 100, end_line: 104, title: "linked stray" }),
+      ];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "JPHutchins/code-review",
+        reviewedSha: "c4c60941b084053e19f85659c2642749ad0f4343",
+      });
+      // The bare permalink sits at the top of the finding: its own paragraph directly after the
+      // heading, before the description (the <details> aside JP prototyped renders dead in
+      // comments). The anchor carries the agent-reported qualifier — the coordinates come from the
+      // findings document, never a diff verification (issue #231 r1).
+      expect(result).toMatch(
+        /`src\/bar\.ts:100–104` — linked stray[^\n]*\n\nhttps:\/\/github\.com\/JPHutchins\/code-review\/blob\/c4c60941b084053e19f85659c2642749ad0f4343\/src\/bar\.ts#L100-L104 · _agent-reported location_\n\nTest description content\./,
+      );
+    });
+
+    it("collapses a single-line range to one anchor and percent-encodes the path", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ path: "src/my dir/a#b.ts", start_line: 7, end_line: 7, title: "odd path" }),
+      ];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).toContain("https://github.com/o/r/blob/abc/src/my%20dir/a%23b.ts#L7");
+    });
+
+    it("renders no permalink when no repo is supplied", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/bar.ts", start_line: 1, end_line: 1 })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        reviewedSha: "abc",
+      });
+      expect(result).not.toContain("blob/");
+    });
+
+    it("renders no permalink for an empty repo or reviewed SHA — a malformed `//blob/` link must not exist (issue #231 r3)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/bar.ts", start_line: 1, end_line: 1 })];
+      const emptyRepo = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "",
+        reviewedSha: "abc",
+      });
+      expect(emptyRepo).not.toContain("blob/");
+      const emptySha = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "",
+      });
+      expect(emptySha).not.toContain("blob/");
+    });
+
+    it("degrades a lone-surrogate path instead of crashing the render (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const strays = [
+        mkFinding({ path: "src/a\uD800b.ts", start_line: 1, end_line: 1, title: "junk path" }),
+      ];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      // The lone surrogate becomes U+FFFD (percent-encoded as %EF%BF%BD) — encodeURIComponent
+      // throws URIError on the raw form, and a junk path must degrade, never abort the post.
+      expect(result).toContain("https://github.com/o/r/blob/abc/src/a%EF%BF%BDb.ts#L1");
+    });
+
+    it("percent-encodes markdown emphasis characters so a bare URL cannot split (issue #231 r4)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/__tests__/foo.test.ts", start_line: 7, end_line: 7 })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      // `__tests__` would parse as CommonMark emphasis and split the URL across nodes, truncating
+      // the autolink to the directory.
+      expect(result).toContain(
+        "https://github.com/o/r/blob/abc/src/%5F%5Ftests%5F%5F/foo.test.ts#L7",
+      );
+    });
+
+    it("percent-encodes parens so an unbalanced one cannot truncate the autolink (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/foo(.ts", start_line: 2, end_line: 2 })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).toContain("https://github.com/o/r/blob/abc/src/foo%28.ts#L2");
+    });
+
+    it("omits the permalink for a LEFT-side finding — its lines index the base tree (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "src/bar.ts", start_line: 5, end_line: 6, side: "LEFT" })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).not.toContain("blob/");
+    });
+
+    it("omits the permalink for an empty path (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const strays = [mkFinding({ path: "", start_line: 1, end_line: 1 })];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).not.toContain("blob/");
+    });
+
+    it("links a GitHub-rejected stray path-only — never re-asserting its known-bad anchor (issue #231 r1)", () => {
+      const findings = mkFindings([]);
+      const rejected = mkFinding({ path: "src/bar.ts", start_line: 999, end_line: 999 });
+      const strays = [rejected];
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays,
+        unanchoredStrays: [rejected],
+        repo: "o/r",
+        reviewedSha: "abc",
+      });
+      expect(result).toContain("https://github.com/o/r/blob/abc/src/bar.ts\n");
+      expect(result).not.toContain("#L999");
+      expect(result).not.toContain("agent-reported");
+    });
   });
 
   describe("systemic problems section (issue #134)", () => {

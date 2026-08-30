@@ -1842,6 +1842,10 @@ const postCmd = defineCommand({
     const priceResolution = resolvePrices(args.prices);
     await post({
       repo: args.repo,
+      // The workflow's post step threads HEAD_REPO env (the fork's owner/name) — a finding
+      // permalink targets the tree the reviewed SHA lives in (issue #231 r1). Absent/empty ⇒ the
+      // base repo. Env rather than a flag: an older pinned CLI simply ignores it.
+      headRepo: process.env["HEAD_REPO"] || undefined,
       headSha: args["head-sha"],
       botLogin: args["bot-login"] || "github-actions[bot]",
       findingsPath: args.findings,

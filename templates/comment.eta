@@ -103,7 +103,11 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% } %>
 
 <% it.strays.forEach(function(f) { -%>
-#### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.start_line %><% if (f.start_line !== f.end_line) { %>–<%= f.end_line %><% } %><% if (f.side) { %> (<%= f.side %>)<% } %>` — <%= f.title %><% if (f.code) { %> (<% if (f.code_url) { %>[`<%= f.code %>`](<%~ f.code_url %>)<% } else { %>`<%= f.code %>`<% } %>)<% } %> · confidence <%= it.formatConfidence(f.confidence) %> · likelihood <%= it.formatConfidence(f.likelihood) %>
+#### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.rangeLabel %><% if (f.side) { %> (<%= f.side %>)<% } %>` — <%= f.title %><% if (f.code) { %> (<% if (f.code_url) { %>[`<%= f.code %>`](<%~ f.code_url %>)<% } else { %>`<%= f.code %>`<% } %>)<% } %> · confidence <%= it.formatConfidence(f.confidence) %> · likelihood <%= it.formatConfidence(f.likelihood) %>
+<% if (f.permalink) { -%>
+
+<%~ f.permalink %><% if (f.permalinkAnchored) { %> · _agent-reported location_<% } %>
+<% } -%>
 
 <%~ f.description %>
 <% if (f.code && it.sameRootNotes && Object.prototype.hasOwnProperty.call(it.sameRootNotes, (f.codeKey !== undefined ? f.codeKey : f.code))) { -%>

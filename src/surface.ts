@@ -14,7 +14,7 @@ import type {
   Severity,
   SystemicProblem,
 } from "./schema.js";
-import type { CodeCounts, CodeStreak, RoundRecord, SeverityCounts } from "./types.js";
+import type { IdCounts, IdStreak, RoundRecord, SeverityCounts } from "./types.js";
 import { patchToSuggestion } from "./patch.js";
 
 // The recurrence signals (streaks, scope metastasis, same-root) read only a round's mechanism map,
@@ -22,7 +22,7 @@ import { patchToSuggestion } from "./patch.js";
 // the JSON trajectory (ConvergenceRound) and a legacy parsed rounds marker (RoundRecord) flow through
 // the same detectors without an adapter.
 type RecurrenceRound = {
-  readonly codes?: CodeCounts;
+  readonly ids?: IdCounts;
   readonly sha?: string;
   readonly round?: number;
 };
@@ -226,14 +226,14 @@ const isSeverityCounts = (u: unknown): u is SeverityCounts =>
 // How many distinct mechanisms (codes) a round's marker may record — a per-round top-N by count, so a
 // finding-heavy round can't grow the carried marker without bound. Recurring mechanisms are typically
 // among a round's most-counted codes, so the streak signal survives the cap.
-export const MAX_CODES_PER_ROUND = 8;
+export const MAX_IDS_PER_ROUND = 8;
 
 // Own-property presence of a code in a frequency map. Reviewer-supplied codes are used as plain-object
 // keys, so a code like "constructor" or "__proto__" must never read an inherited Object.prototype
 // member (which would count a function as a recurrence). Maps are built via Object.fromEntries
 // (CreateDataProperty), so the own property is what every consumer should read.
-const hasCode = (codes: CodeCounts | undefined, code: string): boolean =>
-  codes !== undefined && Object.prototype.hasOwnProperty.call(codes, code);
+const hasId = (ids: IdCounts | undefined, code: string): boolean =>
+  ids !== undefined && Object.prototype.hasOwnProperty.call(ids, code);
 
 // Codes render inside backticks in the advisory notes; a backtick inside a (reviewer-supplied) code
 // would break the span, and a newline would break out of the note's blockquote, so both are escaped
@@ -249,17 +249,17 @@ export const escapeCodeBackticks = (code: string): string =>
 // detector is watching), then alphabetically for a stable order. Malformed (or absent) codes decode to
 // undefined so the round's severity counts still stand — a crafted marker can't smuggle a bad codes
 // shape into the streak/note renderers.
-const normalizeCodeCounts = (codes: unknown, priorCodes?: CodeCounts): CodeCounts | undefined => {
-  if (typeof codes !== "object" || codes === null || Array.isArray(codes)) return undefined;
-  const entries = Object.entries(codes as Record<string, unknown>).filter(
+const normalizeIdCounts = (ids: unknown, priorCodes?: IdCounts): IdCounts | undefined => {
+  if (typeof ids !== "object" || ids === null || Array.isArray(ids)) return undefined;
+  const entries = Object.entries(ids as Record<string, unknown>).filter(
     (e): e is [string, number] =>
       typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
   );
   if (entries.length === 0) return undefined;
   const sorted = entries.sort((a, b) => {
     if (b[1] !== a[1]) return b[1] - a[1];
-    const aPrior = hasCode(priorCodes, a[0]) ? 1 : 0;
-    const bPrior = hasCode(priorCodes, b[0]) ? 1 : 0;
+    const aPrior = hasId(priorCodes, a[0]) ? 1 : 0;
+    const bPrior = hasId(priorCodes, b[0]) ? 1 : 0;
     if (aPrior !== bPrior) return bPrior - aPrior;
     return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
   });
@@ -267,11 +267,11 @@ const normalizeCodeCounts = (codes: unknown, priorCodes?: CodeCounts): CodeCount
   // watching (it recurred in the previous round) is never dropped by a finding-heavy round even when
   // its count is low — any such code cut by the cap is appended after the base (bounded by a second
   // cap), so a recurrence can't silently end.
-  const base = sorted.slice(0, MAX_CODES_PER_ROUND);
+  const base = sorted.slice(0, MAX_IDS_PER_ROUND);
   const priorKept = sorted
-    .slice(MAX_CODES_PER_ROUND)
-    .filter(([code]) => hasCode(priorCodes, code))
-    .slice(0, MAX_CODES_PER_ROUND);
+    .slice(MAX_IDS_PER_ROUND)
+    .filter(([code]) => hasId(priorCodes, code))
+    .slice(0, MAX_IDS_PER_ROUND);
   return Object.fromEntries([...base, ...priorKept]);
 };
 
@@ -280,18 +280,19 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   if (b64 === undefined) return [];
   const decoded = decodeBase64Json(b64);
   // Filter, not all-or-nothing: one future-shaped or corrupted round drops only itself rather than
-  // erasing the whole trajectory (post re-serializes the parsed array on every write). The codes
-  // field is normalized independently — a bad codes shape strips just that field, never the round.
+  // erasing the whole trajectory (post re-serializes the parsed array on every write). The ids
+  // field is normalized independently — a bad ids shape strips just that field, never the round.
+  // A legacy marker's `codes` field reads identically (0.10 renamed it to `ids`).
   if (!Array.isArray(decoded)) return [];
-  // SEQUENTIAL normalization: each round's codes are re-normalized with the PRECEDING round's
-  // normalized codes as priorCodes, so the up-to-8 prior-kept codes of a finding-heavy round survive
+  // SEQUENTIAL normalization: each round's ids are re-normalized with the PRECEDING round's
+  // normalized ids as priorCodes, so the up-to-8 prior-kept ids of a finding-heavy round survive
   // the marker round-trip (without it, the re-parse collapses every round to its top-8 base and the
   // re-attached scope_metastasis under-reports mechanisms post() would have flagged, issue #150 review r2).
   const kept: RoundRecord[] = [];
-  let priorCodes: CodeCounts | undefined;
+  let priorCodes: IdCounts | undefined;
   for (const u of (decoded as readonly unknown[]).filter(isSeverityCounts)) {
     const rec = u as Record<string, unknown>;
-    const codes = normalizeCodeCounts(rec["codes"], priorCodes);
+    const codes = normalizeIdCounts(rec["ids"] ?? rec["codes"], priorCodes);
     priorCodes = codes;
     const sha = rec["sha"];
     const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;
@@ -301,7 +302,7 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
     const base =
       codes === undefined
         ? { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit }
-        : { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit, codes };
+        : { critical: u.critical, major: u.major, minor: u.minor, nit: u.nit, ids: codes };
     const record = shaStr === undefined ? base : { ...base, sha: shaStr };
     kept.push(roundNum === undefined ? record : { ...record, round: roundNum });
   }
@@ -339,21 +340,21 @@ export const roundsSummary = (
 };
 
 // The per-round mechanism-frequency map: each finding carrying a `code` counts once toward that
-// mechanism, as does each code a systemic problem ties together via `finding_codes` — so a structural
+// mechanism, as does each code a systemic problem ties together via `finding_ids` — so a structural
 // mechanism surfaced as a systemic problem is visible to the same-root note and the streak detector,
 // not just one surfaced on a finding. Findings without a `code` are mechanism-unknown and uncounted.
 // Built via Object.fromEntries so reviewer-supplied keys like "__proto__" or "constructor" become own
 // data properties rather than mutating the map's prototype or reading inherited members.
-export const computeCodeCounts = (
+export const computeIdCounts = (
   findings: readonly Finding[],
   systemic: readonly SystemicProblem[] = [],
-): CodeCounts => {
+): IdCounts => {
   // A single Map pass — one increment per code — then Object.fromEntries so a reviewer-supplied
   // key like "__proto__" becomes an own property, never the map's prototype.
   const counts = new Map<string, number>();
   for (const code of [
-    ...findings.map((f) => f.code),
-    ...systemic.flatMap((s) => [s.code, ...(s.finding_codes ?? [])]),
+    ...findings.map((f) => f.id),
+    ...systemic.flatMap((s) => [s.id, ...(s.finding_ids ?? [])]),
   ]) {
     if (code === undefined || code === "") continue;
     counts.set(code, (counts.get(code) ?? 0) + 1);
@@ -364,19 +365,19 @@ export const computeCodeCounts = (
 // Per code, how many consecutive rounds (ending at the last recorded round) carried a finding with
 // that code, and the 1-indexed round where the streak began. A round with no codes record (pre-feature
 // or a round with no coded findings) ENDS every streak — absence of data cannot evidence recurrence.
-export const consecutiveCodeStreaks = (
+export const consecutiveIdStreaks = (
   rounds: readonly RecurrenceRound[],
-): Readonly<Record<string, CodeStreak>> => {
-  const entries: [string, CodeStreak][] = [];
+): Readonly<Record<string, IdStreak>> => {
+  const entries: [string, IdStreak][] = [];
   if (rounds.length === 0) return {};
-  const lastCodes = rounds[rounds.length - 1]?.codes;
+  const lastCodes = rounds[rounds.length - 1]?.ids;
   if (lastCodes === undefined) return {};
   for (const code of Object.keys(lastCodes)) {
     let streak = 0;
     let startIndex = rounds.length;
     for (let i = rounds.length - 1; i >= 0; i--) {
-      const codes = rounds[i]?.codes;
-      if (codes === undefined || !hasCode(codes, code)) break;
+      const codes = rounds[i]?.ids;
+      if (codes === undefined || !hasId(codes, code)) break;
       // A same-head CI retry appends a round with the same sha as the round before it — the same
       // review iteration re-examined, not new evidence of recurrence — so it neither advances nor
       // breaks the streak. Only when the code ALSO appeared in the previous (same-sha) round is the
@@ -385,7 +386,7 @@ export const consecutiveCodeStreaks = (
         i > 0 &&
         rounds[i]?.sha !== undefined &&
         rounds[i]?.sha === rounds[i - 1]?.sha &&
-        hasCode(rounds[i - 1]?.codes, code)
+        hasId(rounds[i - 1]?.ids, code)
       ) {
         continue;
       }
@@ -415,14 +416,14 @@ export const SCOPE_METASTASIS_DECISION_PROMPT =
 // The codes whose consecutive-round streak meets the threshold, sorted by streak descending — the
 // single computation both the advisory prose note and the structured scope-metastasis entry derive
 // from, so the two surfaces can never disagree on what is flagged.
-const flaggedCodeStreaks = (
+const flaggedIdStreaks = (
   rounds: readonly RecurrenceRound[],
   minStreak: number,
-): ReadonlyArray<{ readonly code: string; readonly streak: CodeStreak }> =>
-  Object.entries(consecutiveCodeStreaks(rounds))
+): ReadonlyArray<{ readonly id: string; readonly streak: IdStreak }> =>
+  Object.entries(consecutiveIdStreaks(rounds))
     .filter(([, s]) => s.streak >= minStreak)
     .sort((a, b) => b[1].streak - a[1].streak)
-    .map(([code, streak]) => ({ code, streak }));
+    .map(([id, streak]) => ({ id, streak }));
 
 // The advisory scope-metastasis note for the sticky's convergence area: "" when no code has recurred
 // in `minStreak` or more consecutive rounds. Names the mechanism by its code (the pipeline cannot
@@ -433,14 +434,14 @@ export const metastasisNote = (
   rounds: readonly RecurrenceRound[],
   minStreak: number = DEFAULT_METASTASIS_STREAK,
 ): string => {
-  const flagged = flaggedCodeStreaks(rounds, minStreak);
+  const flagged = flaggedIdStreaks(rounds, minStreak);
   if (flagged.length === 0) return "";
   // The note only fires at minStreak ≥ 3 (the default), so "consecutive rounds" is always plural.
   // The round range is deliberately omitted: the history may contain same-sha retries that the
   // streak detector de-duplicates, so any X–Y range would contradict the streak count.
   const lines = flagged.map(
-    ({ code, streak }) =>
-      `> **\`${escapeCodeBackticks(code)}\`** — findings in ${String(streak.streak)} consecutive rounds.`,
+    ({ id, streak }) =>
+      `> **\`${escapeCodeBackticks(id)}\`** — findings in ${String(streak.streak)} consecutive rounds.`,
   );
   return [
     "> [!WARNING]",
@@ -462,12 +463,12 @@ export const computeScopeMetastasis = (
   rounds: readonly RecurrenceRound[],
   minStreak: number = DEFAULT_METASTASIS_STREAK,
 ): ScopeMetastasis | null => {
-  const flagged = flaggedCodeStreaks(rounds, minStreak);
+  const flagged = flaggedIdStreaks(rounds, minStreak);
   if (flagged.length === 0) return null;
   return {
     decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
-    recurring: flagged.map(({ code, streak }) => ({
-      code,
+    recurring: flagged.map(({ id, streak }) => ({
+      id,
       consecutive_rounds: streak.streak,
       start_round: streak.startRound,
     })),
@@ -483,7 +484,7 @@ export const computeSameRootNotes = (
   findings: readonly Finding[],
   currentSha?: string,
 ): Readonly<Record<string, string>> => {
-  const codes = findings.map((f) => f.code).filter((c): c is string => c !== undefined && c !== "");
+  const codes = findings.map((f) => f.id).filter((c) => c !== "");
   const entries: [string, string][] = [];
   for (const code of codes) {
     let lastRound = 0;
@@ -491,19 +492,19 @@ export const computeSameRootNotes = (
       // A same-sha prior round is the same commit re-reviewed (a CI retry) — its findings are the
       // same evidence, not a prior fix that re-opened the mechanism, so it must not be named. A
       // retry deeper in the history (a round that merely re-examines the commit before it) is
-      // collapsed the same way consecutiveCodeStreaks collapses it, so both advisory signals agree.
+      // collapsed the same way consecutiveIdStreaks collapses it, so both advisory signals agree.
       if (currentSha !== undefined && priorRounds[i]?.sha === currentSha) continue;
-      // Collapse a same-sha retry exactly like consecutiveCodeStreaks does: only when the code ALSO
+      // Collapse a same-sha retry exactly like consecutiveIdStreaks does: only when the code ALSO
       // appeared in the retried round is the evidence genuinely repeated — a code NEW in the retry
       // round is fresh and is named here (the two advisory signals agree).
       if (
         i > 0 &&
         priorRounds[i]?.sha !== undefined &&
         priorRounds[i]?.sha === priorRounds[i - 1]?.sha &&
-        hasCode(priorRounds[i - 1]?.codes, code)
+        hasId(priorRounds[i - 1]?.ids, code)
       )
         continue;
-      const count = priorRounds[i]?.codes?.[code];
+      const count = priorRounds[i]?.ids?.[code];
       if (count !== undefined && count > 0) {
         lastRound = priorRounds[i]?.round ?? i + 1;
         break;
@@ -591,15 +592,15 @@ export const buildConvergence = (
   threshold: number = DEFAULT_CONVERGENCE_THRESHOLD,
   priorRounds: readonly ConvergenceRound[] = [],
   round: number = 1,
-  codes: CodeCounts = {},
+  ids: IdCounts = {},
   sha?: string,
 ): Convergence => {
   const score = convergenceScore(doc, threshold);
-  const normalized = normalizeCodeCounts(codes, priorRounds[priorRounds.length - 1]?.codes);
+  const normalized = normalizeIdCounts(ids, priorRounds[priorRounds.length - 1]?.ids);
   const current: ConvergenceRound = {
     round,
     score,
-    ...(normalized !== undefined ? { codes: { ...normalized } } : {}),
+    ...(normalized !== undefined ? { ids: { ...normalized } } : {}),
     ...(sha !== undefined ? { sha } : {}),
   };
   const rounds = [...priorRounds, current].slice(-CONVERGENCE_TRAJECTORY_LIMIT);
@@ -635,7 +636,7 @@ export const isBelowVisibilityFloor = (
 // blob without likelihood, or a malformed entry contributes nothing.
 export interface PriorSuppressedNit {
   readonly title: string;
-  readonly code?: string;
+  readonly id?: string;
   readonly path?: string;
 }
 export const priorBelowFloorNits = (
@@ -652,11 +653,17 @@ export const priorBelowFloorNits = (
     if (!isBelowVisibilityFloor(rec, floor)) continue;
     const title = rec["title"];
     if (typeof title !== "string") continue;
-    const code = typeof rec["code"] === "string" && rec["code"] !== "" ? rec["code"] : undefined;
+    // The raw marker doc may predate id (a legacy `code`) — read both, emitting the id form.
+    const id =
+      typeof rec["id"] === "string" && rec["id"] !== ""
+        ? rec["id"]
+        : typeof rec["code"] === "string" && rec["code"] !== ""
+          ? rec["code"]
+          : undefined;
     const path = typeof rec["path"] === "string" ? rec["path"] : undefined;
     nits.push({
       title,
-      ...(code !== undefined ? { code } : {}),
+      ...(id !== undefined ? { id } : {}),
       ...(path !== undefined ? { path } : {}),
     });
   }
@@ -862,7 +869,7 @@ export const roundRecordsToConvergenceRounds = (
 ): ConvergenceRound[] =>
   records.map((r, i) => ({
     round: r.round ?? i + 1,
-    ...(r.codes !== undefined ? { codes: { ...r.codes } } : {}),
+    ...(r.ids !== undefined ? { ids: { ...r.ids } } : {}),
     ...(r.sha !== undefined ? { sha: r.sha } : {}),
   }));
 

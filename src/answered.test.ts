@@ -2,10 +2,12 @@ import { describe, it, expect } from "vitest";
 import { legacyEmbeddedMarker } from "./test-util.js";
 import { answeredRegistryFrom, applyAnswered, answeredReRaiseNote } from "./answered.js";
 import type { AnsweredEntry, ThreadComment } from "./answered.js";
+import { synthesizedFindingId } from "./schema.js";
 import type { Finding } from "./schema.js";
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
   path: "src/foo.ts",
+  id: "recurring-a",
   start_line: 10,
   end_line: 10,
   severity: "minor",
@@ -14,7 +16,6 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   reasoning: "The same reasoning.",
   confidence: 0.8,
   likelihood: 1,
-  code: "recurring-a",
   ...overrides,
 });
 
@@ -178,15 +179,15 @@ describe("answeredRegistryFrom — the 'already answered' state (issue #151)", (
     expect(registry[0]!.repliedAt).toBe("2026-07-01T02:00:00Z");
   });
 
-  it("records a codeless answered finding with a title-only match key and clips the reply excerpt", () => {
-    const finding = mkFinding({ code: undefined });
+  it("resolves a pre-id marker finding to its synthesized id — the same key the legacy upcast derives — and clips the reply excerpt", () => {
+    const finding = mkFinding({ id: undefined });
     const longReply = reply(2, 1, "alice", "x".repeat(500));
     const registry = answeredRegistryFrom(
       [botComment(1, finding), longReply],
       "github-actions[bot]",
     );
     expect(registry).toHaveLength(1);
-    expect(registry[0]!.code).toBe("");
+    expect(registry[0]!.code).toBe(synthesizedFindingId("src/foo.ts", "The same claim"));
     expect(registry[0]!.replyExcerpt).toContain("… [truncated]");
   });
 });
@@ -308,7 +309,7 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
 
   it("annotates a finding whose code is `__proto__` — the notes map is built via Object.fromEntries, never a prototype write (issue #151 review r1)", () => {
     const { findings, reRaisedNotes, verbatimReRaised } = applyAnswered(
-      [mkFinding({ code: "__proto__", reasoning: "NEW evidence." })],
+      [mkFinding({ id: "__proto__", reasoning: "NEW evidence." })],
       [entry({ code: "__proto__" })],
     );
     expect(findings).toHaveLength(1);
@@ -318,10 +319,10 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes["__proto__"]).toContain("discussion_r2");
   });
 
-  it("annotates a CODELESS kept re-raise under its title key — the annotation is not code-only (issue #151 review r1)", () => {
+  it("keys a kept re-raise with an EMPTY id under its title — the note key never vanishes (issue #151 review r1)", () => {
     const uncoded = entry({ code: "" });
     const { findings, reRaisedNotes, verbatimReRaised } = applyAnswered(
-      [mkFinding({ code: undefined, reasoning: "NEW evidence: persists on 3.14." })],
+      [mkFinding({ id: "", reasoning: "NEW evidence: persists on 3.14." })],
       [uncoded],
     );
     expect(findings).toHaveLength(1);
@@ -330,22 +331,22 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes["recurring-a"]).toBeUndefined();
   });
 
-  it("matches codeless findings by title (the issue's 'code (or title)' rule)", () => {
+  it("matches an empty-id finding to an empty-code answered entry — the pre-id fallback pair", () => {
     const uncoded = entry({ code: "" });
     const { findings, verbatimReRaised } = applyAnswered(
-      [mkFinding({ code: undefined, title: "The same claim" })],
+      [mkFinding({ id: "", title: "The same claim" })],
       [uncoded],
     );
     expect(findings).toHaveLength(0);
     expect(verbatimReRaised).toHaveLength(1);
-    // A code-bearing finding never matches a codeless answered entry.
-    const { findings: coded } = applyAnswered([mkFinding({ code: "other-code" })], [uncoded]);
+    // An id-bearing finding never matches an empty-code answered entry.
+    const { findings: coded } = applyAnswered([mkFinding({ id: "other-code" })], [uncoded]);
     expect(coded).toHaveLength(1);
   });
 
   it("leaves unmatched findings untouched", () => {
     const { findings, reRaisedNotes, verbatimReRaised } = applyAnswered(
-      [mkFinding({ code: "fresh-code" }), mkFinding({ code: undefined })],
+      [mkFinding({ id: "fresh-code" }), mkFinding({ id: "" })],
       [entry()],
     );
     expect(findings).toHaveLength(2);

@@ -56,6 +56,7 @@ const baseEnvelope: ResultEnvelope = {
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
   path: "src/foo.ts",
+  id: "test-id",
   start_line: 42,
   end_line: 42,
   severity: "minor",
@@ -195,7 +196,7 @@ describe("suppressed-nit aside — issue #164", () => {
     });
 
   it("renders a collapsed NOTE aside listing the below-floor nits with their m", () => {
-    const out = renderWith([nit({ title: "Trivial thing", code: "c1", path: "src/a.ts" })]);
+    const out = renderWith([nit({ title: "Trivial thing", id: "c1", path: "src/a.ts" })]);
     expect(out).toContain("> [!NOTE]");
     expect(out).toContain("<details><summary>🔇 1 nit");
     expect(out).toContain("below the visibility floor");
@@ -375,7 +376,7 @@ describe("render", () => {
         prices,
         template,
         route: "mechanic",
-        rounds: [{ critical: 0, major: 0, minor: 1, nit: 0, codes: { a: 1 } }],
+        rounds: [{ critical: 0, major: 0, minor: 1, nit: 0, ids: { a: 1 } }],
       });
       expect(result).not.toContain("Scope metastasis");
     });
@@ -848,7 +849,7 @@ describe("render", () => {
       const findings = systemicFindings({
         systemic_problems: [
           mkSystemic({
-            finding_codes: ["widened-type"],
+            finding_ids: ["widened-type"],
             paths: ["src/upload/config.ts", "src/upload/client.ts"],
           }),
         ],
@@ -876,7 +877,7 @@ describe("render", () => {
       expect(result).toContain("> Second paragraph.");
     });
 
-    it("omits the meta line when the item carries neither paths nor finding_codes", () => {
+    it("omits the meta line when the item carries neither paths nor finding_ids", () => {
       const findings = systemicFindings({ systemic_problems: [mkSystemic()] });
       const result = render({ findings, envelope: baseEnvelope, prices, template });
       expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent");
@@ -913,14 +914,14 @@ describe("render", () => {
       expect(result).not.toContain("Systemic problems");
     });
 
-    it("escapes pipes in the title and backticks in paths and finding_codes (render safety, mirroring strays)", () => {
+    it("escapes pipes in the title and backticks in paths and finding_ids (render safety, mirroring strays)", () => {
       const findings = systemicFindings({
         systemic_problems: [
           mkSystemic({
             title: "Pipe | in title",
             description: "d",
             paths: ["src/bad`path`.ts"],
-            finding_codes: ["widened`type"],
+            finding_ids: ["widened`type"],
           }),
         ],
       });
@@ -2326,12 +2327,12 @@ describe("convergence score — issue #133", () => {
 });
 
 describe("scope metastasis + same-root notes — issue #145", () => {
-  const coded = (codes: Record<string, number>): RoundRecord => ({
+  const coded = (ids: Record<string, number>): RoundRecord => ({
     critical: 0,
     major: 0,
     minor: 0,
     nit: 0,
-    codes,
+    ids,
   });
 
   it("renders the advisory note when a mechanism streaks across 3 consecutive rounds", () => {
@@ -2361,12 +2362,12 @@ describe("scope metastasis + same-root notes — issue #145", () => {
 
   it("annotates a stray finding whose code recurred in a prior round", () => {
     const result = render({
-      findings: mkFindings([mkFinding({ code: "a" })]),
+      findings: mkFindings([mkFinding({ id: "a" })]),
       envelope: baseEnvelope,
       prices,
       template,
       convergenceRound: true,
-      strays: [mkFinding({ code: "a", title: "Recurring" })],
+      strays: [mkFinding({ id: "a", title: "Recurring" })],
       sameRootNotes: { a: "Same mechanism as round 2 (`a`) — re-opened." },
     });
     expect(result).toContain("Same mechanism as round 2");
@@ -2386,12 +2387,12 @@ describe("scope metastasis + same-root notes — issue #145", () => {
 
   it("hides the notes beside a suppressed convergence badge for an error-verdict doc", () => {
     const result = render({
-      findings: mkFindings([mkFinding({ code: "a" })], { verdict: "error" }),
+      findings: mkFindings([mkFinding({ id: "a" })], { verdict: "error" }),
       envelope: baseEnvelope,
       prices,
       template,
       rounds: [coded({ a: 1 }), coded({ a: 1 }), coded({ a: 1 })],
-      strays: [mkFinding({ code: "a" })],
+      strays: [mkFinding({ id: "a" })],
       sameRootNotes: { a: "Same mechanism as round 2 (`a`)." },
     });
     expect(result).not.toContain("Scope metastasis");

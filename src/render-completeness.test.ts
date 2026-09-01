@@ -68,8 +68,8 @@ const DOCUMENTED_EXCLUSIONS = [
   "schema_version",
 ];
 
-// Delimited with a suffix so no sentinel is a substring of another: `S_findings_code` sits inside
-// `S_findings_code_url`, which passed the code leaves via the code_url sentinel while the code fields
+// Delimited with a suffix so no sentinel is a substring of another: `S_findings_id` sits inside
+// `S_findings_id_url`, which passed the id leaves via the code_url sentinel while the id fields
 // themselves rendered nowhere and were asserted nowhere (issue #217 review r7).
 const sentinel = (leaf: string): string => `S_${leaf.replace(/\./g, "_")}_E`;
 
@@ -104,7 +104,7 @@ const VISIBLE_LEAVES: readonly (readonly [leaf: string, value: string, anchor: s
   // the note that carries it — the INTRO line is near-duplicate prose ("each fix keeps enabling the
   // next finding in that machinery"), so any prose fragment ("consecutive rounds", " findings in ")
   // is one wording edit away from colliding with it (issue #232 r1).
-  ["scope_metastasis.recurring.code", "`recurring-code`", "> **`"],
+  ["scope_metastasis.recurring.id", "`recurring-code`", "> **`"],
   ["scope_metastasis.recurring.consecutive_rounds", "in 3 consecutive rounds", "> **`"],
 ];
 
@@ -119,11 +119,11 @@ const CONVERGENCE_LEAF_VALUES: Readonly<Record<string, string>> = {
   "convergence.converged": '"converged":true',
   "convergence.rounds.round": '"round":1',
   "convergence.rounds.score": '"score":0.71',
-  "convergence.rounds.codes.*": '"sys-code"',
+  "convergence.rounds.ids.*": '"sys-code"',
   "convergence.rounds.sha": '"sha":"abc123def456"',
   "scope_metastasis.recurring.start_round": '"round":1',
   // Derived from the trajectory's codes rather than rendered as prose, so the marker is where it lives.
-  "scope_metastasis.recurring.code": '"recurring-code"',
+  "scope_metastasis.recurring.id": '"recurring-code"',
 };
 
 const NUMERIC_LEAVES = [
@@ -143,29 +143,29 @@ const findings = {
       reasoning: sentinel("systemic_problems.reasoning"),
       confidence: 0.81,
       likelihood: 0.82,
-      code: sentinel("systemic_problems.code"),
+      id: sentinel("systemic_problems.id"),
       code_url: `https://example.com/${sentinel("systemic_problems.code_url")}`,
-      finding_codes: [sentinel("systemic_problems.finding_codes")],
+      finding_ids: [sentinel("systemic_problems.finding_ids")],
       paths: [`src/${sentinel("systemic_problems.paths")}.ts`],
     },
   ],
   scope_metastasis: {
     decision_prompt: sentinel("scope_metastasis.decision_prompt"),
-    recurring: [{ code: "recurring-code", consecutive_rounds: 3, start_round: 1 }],
+    recurring: [{ id: "recurring-code", consecutive_rounds: 3, start_round: 1 }],
   },
   convergence: {
     score: 0.71,
     threshold: 1,
     converged: true,
-    // The recurring code MUST appear in three CONSECUTIVE rounds' codes: scope_metastasis is derived
+    // The recurring id MUST appear in three CONSECUTIVE rounds' ids: scope_metastasis is derived
     // from the round history, so the note only fires (and its rendered values only exist to assert)
     // when the fixture gives it a genuine streak — a one-round fixture rendered no note at all
     // (issue #217 review r7). The shas are distinct: a same-sha round is a CI retry, which the
     // streak detector collapses rather than counts.
     rounds: [
-      { round: 1, score: 0.71, codes: { "sys-code": 1, "recurring-code": 3 }, sha: "abc123def456" },
-      { round: 2, score: 0.71, codes: { "recurring-code": 3 }, sha: "abc123def457" },
-      { round: 3, score: 0.71, codes: { "recurring-code": 3 }, sha: "abc123def458" },
+      { round: 1, score: 0.71, ids: { "sys-code": 1, "recurring-code": 3 }, sha: "abc123def456" },
+      { round: 2, score: 0.71, ids: { "recurring-code": 3 }, sha: "abc123def457" },
+      { round: 3, score: 0.71, ids: { "recurring-code": 3 }, sha: "abc123def458" },
     ],
   },
   change_size: {
@@ -180,7 +180,7 @@ const findings = {
       end_line: 12,
       side: "RIGHT",
       severity: "major",
-      code: sentinel("findings.code"),
+      id: sentinel("findings.id"),
       code_url: `https://example.com/${sentinel("findings.code_url")}`,
       title: sentinel("findings.title"),
       description: sentinel("findings.description"),
@@ -197,7 +197,7 @@ const findings = {
       end_line: 22,
       side: "RIGHT",
       severity: "nit",
-      code: "S_nit_code",
+      id: "S_nit_id",
       code_url: "https://example.com/S_nit_url",
       title: "S_nit_title",
       description: "S_nit_description",
@@ -299,7 +299,7 @@ describe("the comment carries every field of the findings document (issue #217)"
     const out = rendered();
 
     for (const field of [
-      "S_nit_code",
+      "S_nit_id",
       "S_nit_description",
       "S_nit_recommendation",
       "S_nit_reasoning",
@@ -532,7 +532,7 @@ describe("the comment carries every field of the findings document (issue #217)"
   it("escapes code and code_url on the stray header", () => {
     const hostile = {
       ...findings.findings[0]!,
-      code: "a`b",
+      id: "a`b",
       code_url: "https://x/(y)",
     };
     const doc = { ...findings, findings: [hostile] } as unknown as Findings;
@@ -570,7 +570,7 @@ describe("the comment carries every field of the findings document (issue #217)"
     const noteCode = "a`b";
     const doc = {
       ...findings,
-      findings: [{ ...findings.findings[0]!, code: noteCode }],
+      findings: [{ ...findings.findings[0]!, id: noteCode }],
     } as unknown as Findings;
     const out = render({
       findings: doc,
@@ -604,10 +604,10 @@ describe("leafPaths — the walker the guard's coverage is built on (issue #217 
   it("descends into additionalProperties, recording the map value shape under `*`", () => {
     expect(
       leafPaths(
-        { properties: { codes: { type: "object", additionalProperties: { type: "integer" } } } },
+        { properties: { ids: { type: "object", additionalProperties: { type: "integer" } } } },
         "convergence.rounds",
       ),
-    ).toEqual(["convergence.rounds.codes.*"]);
+    ).toEqual(["convergence.rounds.ids.*"]);
   });
 
   it("descends into patternProperties, recording the pattern", () => {
@@ -627,6 +627,6 @@ describe("leafPaths — the walker the guard's coverage is built on (issue #217 
   });
 
   it("covers the real schema's map-typed leaf — a field under a future map node cannot dodge the walk", () => {
-    expect(leafPaths(schema)).toContain("convergence.rounds.codes.*");
+    expect(leafPaths(schema)).toContain("convergence.rounds.ids.*");
   });
 });

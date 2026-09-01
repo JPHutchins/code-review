@@ -11,7 +11,7 @@ import { buildInlineComments } from "../src/inline.js";
 import {
   reviewBodyPointer,
   buildConvergence,
-  computeCodeCounts,
+  computeIdCounts,
   findingsPointer,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "../src/surface.js";
@@ -101,7 +101,7 @@ const stampedFindings = isFullReviewRound
         DEFAULT_CONVERGENCE_THRESHOLD,
         [],
         1,
-        computeCodeCounts(findings.findings, findings.systemic_problems ?? []),
+        computeIdCounts(findings.findings, findings.systemic_problems ?? []),
         REVIEWED_SHA,
       ),
     }

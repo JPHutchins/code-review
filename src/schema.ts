@@ -2,6 +2,7 @@
 // DTO types exist elsewhere — import types from here.
 
 import * as t from "io-ts";
+import { createHash } from "node:crypto";
 
 const SeverityCodec = t.union([
   t.literal("critical"),
@@ -58,15 +59,16 @@ const UriString = t.refinement(
   "UriString",
 );
 
-// The stable rule identifier pair, shared by findings and systemic problems so the two shapes can
-// never diverge on it.
-const FindingRuleCodec = t.partial({
-  code: t.string,
+// The stable mechanism identifier pair, shared by findings and systemic problems so the two shapes
+// can never diverge on it. The `id` itself is REQUIRED on a finding (trackability across rounds and
+// discussions); the optional half of the pair is the URL documenting the rule it names.
+const RuleUrlCodec = t.partial({
   code_url: UriString,
 });
 
 const FindingShape = t.intersection([
   t.type({
+    id: t.string,
     path: t.string,
     start_line: LineNumber,
     end_line: LineNumber,
@@ -77,7 +79,7 @@ const FindingShape = t.intersection([
     confidence: Confidence,
     likelihood: Likelihood,
   }),
-  FindingRuleCodec,
+  RuleUrlCodec,
   t.partial({
     side: SideCodec,
     recommendation: t.string,
@@ -106,11 +108,12 @@ const SystemicRequired = t.type({
 });
 
 const SystemicOptional = t.partial({
-  finding_codes: t.array(t.string),
+  id: t.string,
+  finding_ids: t.array(t.string),
   paths: t.array(t.string),
 });
 
-const SystemicProblemShape = t.intersection([SystemicRequired, FindingRuleCodec, SystemicOptional]);
+const SystemicProblemShape = t.intersection([SystemicRequired, RuleUrlCodec, SystemicOptional]);
 
 // The schema declares additionalProperties: false, but t.exact only strips unknown keys on encode —
 // on decode it accepts them. The refinement closes the gap so the codec gate rejects exactly what
@@ -118,7 +121,7 @@ const SystemicProblemShape = t.intersection([SystemicRequired, FindingRuleCodec,
 // shape's own members, so it cannot drift from the declared fields.
 const SYSTEMIC_KEYS = new Set([
   ...Object.keys(SystemicRequired.props),
-  ...Object.keys(FindingRuleCodec.props),
+  ...Object.keys(RuleUrlCodec.props),
   ...Object.keys(SystemicOptional.props),
 ]);
 
@@ -132,7 +135,7 @@ const SystemicProblemStrict = t.refinement(
 export const SystemicProblemCodec = t.exact(SystemicProblemStrict);
 
 const RecurringShape = t.type({
-  code: t.string,
+  id: t.string,
   consecutive_rounds: t.refinement(
     t.number,
     (n): n is number => Number.isSafeInteger(n) && n >= 1,
@@ -187,15 +190,15 @@ const RoundNumber = t.refinement(
   "RoundNumber",
 );
 
-const CodeFrequency = t.record(
+const IdFrequency = t.record(
   t.string,
-  t.refinement(t.number, (n): n is number => Number.isSafeInteger(n) && n >= 0, "CodeFrequency"),
+  t.refinement(t.number, (n): n is number => Number.isSafeInteger(n) && n >= 0, "IdFrequency"),
 );
 
 const ConvergenceRoundRequired = t.type({ round: RoundNumber });
 const ConvergenceRoundOptional = t.partial({
   score: FiniteNumber,
-  codes: CodeFrequency,
+  ids: IdFrequency,
   sha: t.string,
 });
 const ConvergenceRoundShape = t.intersection([ConvergenceRoundRequired, ConvergenceRoundOptional]);
@@ -292,6 +295,252 @@ export const RECOVERABLE_OPTIONAL_FIELDS: ReadonlySet<string> = new Set([
   ...PIPELINE_STAMPED_FIELDS,
   "change_size",
 ]);
+
+// The content-derived identity a finding WITHOUT an id resolves to: deterministic across rounds (the
+// same path + title always synthesizes the same id), so a pre-id finding re-raised next round keys to
+// the same ledger entry. A systemic problem has no path; its synthesized id keys on the title alone.
+const synthesizedId = (parts: readonly string[], prefix: string): string =>
+  `${prefix}${createHash("sha256").update(parts.join("\u0000")).digest("base64url").slice(0, 12)}`;
+
+export const synthesizedFindingId = (path: string, title: string): string =>
+  synthesizedId([path, title], "f-");
+
+export const synthesizedSystemicId = (title: string): string => synthesizedId([title], "s-");
+
+// The pre-0.10 shape (schema/v0.9/findings.schema.json): findings carried an OPTIONAL `code` and no
+// `id`. Decoded only as a migration input — the registry's pre-0.10 entries normalize it to the 0.10
+// shape (code → id, or the synthesized content-derived id when a finding carried none). `id` is
+// accepted too: the legacy route is tolerant-in/strict-out, so a doc that already carries one passes
+// it through untouched.
+const LegacyRuleCodec = t.partial({
+  code: t.string,
+  id: t.string,
+  code_url: UriString,
+});
+
+const FindingShapeV09 = t.intersection([
+  t.type({
+    path: t.string,
+    start_line: LineNumber,
+    end_line: LineNumber,
+    severity: SeverityCodec,
+    title: t.string,
+    description: t.string,
+    reasoning: t.string,
+    confidence: Confidence,
+    likelihood: Likelihood,
+  }),
+  LegacyRuleCodec,
+  t.partial({
+    side: SideCodec,
+    recommendation: t.string,
+    patch: t.string,
+  }),
+]);
+
+const EndGeStartV09 = t.refinement(
+  FindingShapeV09,
+  (f): f is t.TypeOf<typeof FindingShapeV09> => f.end_line >= f.start_line,
+  "EndGeStartV09",
+);
+
+const FindingCodecV09 = t.exact(EndGeStartV09);
+
+const SystemicV09Optional = t.partial({
+  finding_codes: t.array(t.string),
+  finding_ids: t.array(t.string),
+  paths: t.array(t.string),
+});
+
+const SystemicV09Shape = t.intersection([SystemicRequired, LegacyRuleCodec, SystemicV09Optional]);
+
+const SYSTEMIC_V09_KEYS = new Set([
+  ...Object.keys(SystemicRequired.props),
+  ...Object.keys(LegacyRuleCodec.props),
+  ...Object.keys(SystemicV09Optional.props),
+]);
+
+const SystemicV09Strict = t.refinement(
+  SystemicV09Shape,
+  (s): s is t.TypeOf<typeof SystemicV09Shape> =>
+    Object.keys(s).every((k) => SYSTEMIC_V09_KEYS.has(k)),
+  "SystemicV09Strict",
+);
+
+const SystemicProblemCodecV09 = t.exact(SystemicV09Strict);
+
+const RecurringV09Shape = t.intersection([
+  t.partial({ code: t.string, id: t.string }),
+  t.type({
+    consecutive_rounds: t.refinement(
+      t.number,
+      (n): n is number => Number.isSafeInteger(n) && n >= 1,
+      "ConsecutiveRoundsV09",
+    ),
+    start_round: t.refinement(
+      t.number,
+      (n): n is number => Number.isSafeInteger(n) && n >= 1,
+      "StartRoundV09",
+    ),
+  }),
+]);
+
+const ScopeMetastasisV09Shape = t.type({
+  decision_prompt: t.string,
+  recurring: t.array(RecurringV09Shape),
+});
+
+const SCOPE_METASTASIS_V09_KEYS = new Set(Object.keys(ScopeMetastasisV09Shape.props));
+
+const ScopeMetastasisV09Strict = t.refinement(
+  ScopeMetastasisV09Shape,
+  (s): s is t.TypeOf<typeof ScopeMetastasisV09Shape> =>
+    Object.keys(s).every((k) => SCOPE_METASTASIS_V09_KEYS.has(k)),
+  "ScopeMetastasisV09Strict",
+);
+
+const ScopeMetastasisCodecV09 = t.exact(ScopeMetastasisV09Strict);
+
+const CodeFrequencyV09 = t.record(
+  t.string,
+  t.refinement(t.number, (n): n is number => Number.isSafeInteger(n) && n >= 0, "CodeFrequencyV09"),
+);
+
+const ConvergenceRoundV09Shape = t.intersection([
+  t.type({ round: RoundNumber }),
+  t.partial({ score: FiniteNumber, codes: CodeFrequencyV09, ids: CodeFrequencyV09, sha: t.string }),
+]);
+
+const CONVERGENCE_ROUND_V09_KEYS = new Set(["round", "score", "codes", "ids", "sha"]);
+
+const ConvergenceRoundV09Strict = t.refinement(
+  ConvergenceRoundV09Shape,
+  (r): r is t.TypeOf<typeof ConvergenceRoundV09Shape> =>
+    Object.keys(r).every((k) => CONVERGENCE_ROUND_V09_KEYS.has(k)),
+  "ConvergenceRoundV09Strict",
+);
+
+const ConvergenceRoundCodecV09 = t.exact(ConvergenceRoundV09Strict);
+
+const ConvergenceV09Shape = t.intersection([
+  ConvergenceCoreShape,
+  t.partial({ rounds: t.array(ConvergenceRoundCodecV09) }),
+]);
+
+const CONVERGENCE_V09_KEYS = new Set([...Object.keys(ConvergenceCoreShape.props), "rounds"]);
+
+const ConvergenceV09Strict = t.refinement(
+  ConvergenceV09Shape,
+  (c): c is t.TypeOf<typeof ConvergenceV09Shape> =>
+    Object.keys(c).every((k) => CONVERGENCE_V09_KEYS.has(k)),
+  "ConvergenceV09Strict",
+);
+
+const ConvergenceCodecV09 = t.exact(ConvergenceV09Strict);
+
+const FindingsV09Shape = t.intersection([
+  t.type({
+    // Any pre-0.10 minor — the registry dispatches on major.minor before decoding, so the codec
+    // accepts every legacy patch version (0.4.x through 0.9.x) through the one tolerant shape.
+    // SchemaVersion keeps the F3 strictness: a patch-less "0.4" or over-long "0.4.0.0" still fails
+    // the codec gate exactly as the ajv gate rejects it.
+    schema_version: SchemaVersion,
+    summary: t.string,
+    verdict: VerdictCodec,
+    findings: t.array(FindingCodecV09),
+  }),
+  t.partial({
+    systemic_problems: t.array(SystemicProblemCodecV09),
+    scope_metastasis: ScopeMetastasisCodecV09,
+    convergence: ConvergenceCodecV09,
+    change_size: ChangeSizeCodec,
+  }),
+]);
+
+export const FindingsCodecV09 = t.exact(FindingsV09Shape);
+
+// The registry's 0.9 upcast: a 0.9 document becomes a valid 0.10 document. `code` maps to `id`; a
+// finding (or systemic) without one gains the synthesized content-derived id, so pre-id findings
+// stay trackable across the migration boundary.
+export const normalizeV09 = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings => {
+  const findings = doc.findings.map(({ code, id, ...f }) => ({
+    ...f,
+    id:
+      id !== undefined && id !== ""
+        ? id
+        : code !== undefined && code !== ""
+          ? code
+          : synthesizedFindingId(f.path, f.title),
+  }));
+  const systemic_problems = doc.systemic_problems?.map(
+    ({ code, id, finding_codes, finding_ids, ...s }) => ({
+      ...s,
+      id:
+        id !== undefined && id !== ""
+          ? id
+          : code !== undefined && code !== ""
+            ? code
+            : synthesizedSystemicId(s.title),
+      ...(finding_ids !== undefined
+        ? { finding_ids }
+        : finding_codes !== undefined
+          ? { finding_ids: finding_codes }
+          : {}),
+    }),
+  );
+  const scope_metastasis =
+    doc.scope_metastasis === undefined
+      ? undefined
+      : {
+          decision_prompt: doc.scope_metastasis.decision_prompt,
+          // A legacy recurring item carrying neither code nor id names nothing — drop it rather than
+          // synthesize an id with nothing to key it on.
+          recurring: doc.scope_metastasis.recurring.flatMap((r) => {
+            const carried = r.id !== undefined && r.id !== "" ? r.id : r.code;
+            return carried === undefined || carried === ""
+              ? []
+              : [
+                  {
+                    id: carried,
+                    consecutive_rounds: r.consecutive_rounds,
+                    start_round: r.start_round,
+                  },
+                ];
+          }),
+        };
+  const convergence =
+    doc.convergence === undefined
+      ? undefined
+      : {
+          score: doc.convergence.score,
+          threshold: doc.convergence.threshold,
+          converged: doc.convergence.converged,
+          ...(doc.convergence.rounds !== undefined
+            ? {
+                rounds: doc.convergence.rounds.map((r) => ({
+                  round: r.round,
+                  ...(r.score !== undefined ? { score: r.score } : {}),
+                  ...(r.ids !== undefined
+                    ? { ids: r.ids }
+                    : r.codes !== undefined
+                      ? { ids: r.codes }
+                      : {}),
+                  ...(r.sha !== undefined ? { sha: r.sha } : {}),
+                })),
+              }
+            : {}),
+        };
+  return {
+    schema_version: DEFAULT_SCHEMA_VERSION,
+    summary: doc.summary,
+    verdict: doc.verdict,
+    findings,
+    ...(systemic_problems !== undefined ? { systemic_problems } : {}),
+    ...(scope_metastasis !== undefined ? { scope_metastasis } : {}),
+    ...(convergence !== undefined ? { convergence } : {}),
+    ...(doc.change_size !== undefined ? { change_size: doc.change_size } : {}),
+  };
+};
 
 export const TriageCodec = t.type({
   safe: t.boolean,
@@ -441,7 +690,7 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.9.0";
+export const DEFAULT_SCHEMA_VERSION = "0.10.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;

@@ -29,20 +29,20 @@ export interface InlineResult {
 
 export type SeverityCounts = Readonly<Record<Severity, number>>;
 
-// The per-mechanism finding counts a round records: code → number of findings carrying that code this
-// round (capped at MAX_CODES_PER_ROUND distinct codes). Absent on rounds recorded before the
-// same-root/metastasis feature, and on rounds with no coded findings — absence is "unknown", not
-// "zero", so a recurrence across an uncoded round is never counted as consecutive.
-export type CodeCounts = Readonly<Record<string, number>>;
+// The per-mechanism finding counts a round records: id → number of findings carrying that id this
+// round (capped at MAX_IDS_PER_ROUND distinct ids). Absent on rounds recorded before the
+// same-root/metastasis feature — absence is "unknown", not "zero", so a recurrence across an
+// uncounted round is never counted as consecutive.
+export type IdCounts = Readonly<Record<string, number>>;
 
 // One round's cross-round mechanism record: the severity counts plus, optionally, the round's
-// code-frequency map and the reviewed head SHA (short form). The enrichment is ADDITIVE — a count-only
-// round (pre-feature, or a round with no coded findings) is a valid RoundRecord with `codes` absent,
-// so the trajectory marker stays backward-compatible and a future-shaped round is never a parse
-// failure. The sha lets the streak detector recognize a same-head CI retry (which appends an identical
-// round) as the same review iteration re-examined, not new evidence of recurrence.
+// id-frequency map and the reviewed head SHA (short form). The enrichment is ADDITIVE — a count-only
+// round is a valid RoundRecord with `ids` absent, so the trajectory marker stays backward-compatible
+// and a future-shaped round is never a parse failure. The sha lets the streak detector recognize a
+// same-head CI retry (which appends an identical round) as the same review iteration re-examined,
+// not new evidence of recurrence.
 export type RoundRecord = SeverityCounts & {
-  readonly codes?: CodeCounts;
+  readonly ids?: IdCounts;
   readonly sha?: string;
   // The TRUE completed-round number (1-indexed) this record represents. A legacy rounds marker's array
   // position can drift from it when parseRounds filters a corrupt entry, and the trajectory label
@@ -51,9 +51,9 @@ export type RoundRecord = SeverityCounts & {
   readonly round?: number;
 };
 
-// A code's recurrence streak ending at the last recorded round: how many consecutive rounds carried a
-// finding with that code, and the 1-indexed round number where the streak began.
-export interface CodeStreak {
+// An id's recurrence streak ending at the last recorded round: how many consecutive rounds carried a
+// finding with that id, and the 1-indexed round number where the streak began.
+export interface IdStreak {
   readonly streak: number;
   readonly startRound: number;
 }

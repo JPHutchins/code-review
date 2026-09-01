@@ -1,7 +1,7 @@
 // The "already answered" state (issue #151): the deterministic registry of prior inline findings
 // whose threads a human reply answered, plus the two rules built on it — the re-review seed surfaces
 // the registry so the next-round agent does not re-raise, and post() treats a VERBATIM re-raise as
-// closed: identical match (code or title), identical claim TEXT (title + description + reasoning),
+// closed: identical match (id), identical claim TEXT (title + description + reasoning),
 // identical severity, and identical location/fix (path + patch — the line is deliberately excluded,
 // positional drift is not evidence), i.e. no new evidence by definition. The drop is removed from
 // the surfaced review and NAMED in the sticky; a re-raise with any changed component is kept and
@@ -11,6 +11,7 @@ import * as t from "io-ts";
 import { escapeCodeBackticks, parseFindingsMarker } from "./surface.js";
 import { parseJsonl } from "./transcript.js";
 import type { GhApi } from "./gh.js";
+import { synthesizedFindingId } from "./schema.js";
 import type { Finding, Severity } from "./schema.js";
 import { clipText, errMsg } from "./util.js";
 
@@ -55,8 +56,8 @@ export const ThreadCommentCodec = t.type({
 // The registry entry for one answered finding: the finding's identifying fields (the verbatim-match
 // targets), the thread link, and the last human reply's link + a clipped excerpt for the seed.
 export interface AnsweredEntry {
-  // "" when the answered finding carried no code — matching then falls back to title equality
-  // between two codeless findings (the issue's "code (or title)" rule).
+  // The answered finding's id; a pre-id marker resolves it the same way the registry's legacy
+  // upcast does (code → id, else synthesized), so the entry keys to the identical claim next round.
   readonly code: string;
   readonly title: string;
   readonly description: string;
@@ -203,7 +204,8 @@ export const answeredRegistryFrom = (
     const title = first["title"];
     const description = first["description"];
     const reasoning = first["reasoning"];
-    const code = first["code"];
+    const id = first["id"];
+    const legacyCode = first["code"];
     const severity = first["severity"];
     const path = first["path"];
     const patch = first["patch"];
@@ -216,7 +218,15 @@ export const answeredRegistryFrom = (
         severity === "minor" ||
         severity === "nit")
       ? {
-          code: typeof code === "string" ? code : "",
+          // A pre-id marker (or one written before the migration) carries `code`; a codeless one
+          // resolves to the same synthesized id the registry's legacy upcast derives, so the entry
+          // keys to the identical claim on the next round.
+          code:
+            typeof id === "string" && id !== ""
+              ? id
+              : typeof legacyCode === "string" && legacyCode !== ""
+                ? legacyCode
+                : synthesizedFindingId(path, title),
           title,
           description,
           reasoning,
@@ -274,16 +284,15 @@ export const answeredRegistryFrom = (
   for (const entry of [...entries].sort(
     (a, b) => (b.repliedAt ?? "").localeCompare(a.repliedAt ?? "") || b.replyId - a.replyId,
   )) {
-    const key = answeredNoteKey(entry);
+    const key = answeredNoteKey({ id: entry.code, title: entry.title });
     if (!byKey.has(key)) byKey.set(key, entry);
   }
   return [...byKey.values()];
 };
 
-// The "code (or title)" match: codes equal when the finding carries one; two codeless findings match
-// on equal titles. A code-bearing finding never matches a codeless answered entry (and vice versa).
-const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
-  f.code !== undefined && f.code !== "" ? e.code === f.code : e.code === "" && e.title === f.title;
+// The id match: 0.10 requires every finding to carry an id, and the legacy upcast gives every pre-id
+// finding one (code → id, or synthesized), so two rounds of the same claim always key to equal ids.
+const matches = (f: Finding, e: Pick<AnsweredEntry, "code">): boolean => e.code === f.id;
 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
@@ -309,11 +318,12 @@ export const isAnsweredDrop = (
   >,
 ): boolean => matches(f, e) && isVerbatimReRaise(f, e) && f.severity !== "critical";
 
-// The ONE note-key contract: a finding's annotation key is its code when it carries one, else
-// "title:<title>" — written once here, consumed by the registry builder, applyAnswered, and both
-// renderers, so the key can never drift between the writer and the lookups (issue #151 review r2).
-export const answeredNoteKey = (f: { code?: string; title: string }): string =>
-  f.code !== undefined && f.code !== "" ? f.code : `title:${f.title}`;
+// The ONE note-key contract: a finding's annotation key is its id; an empty id (a pre-id staged row,
+// or a reviewer-supplied empty id) falls back to "title:<title>" so the note still keys to something
+// — written once here, consumed by the registry builder, applyAnswered, and both renderers, so the
+// key can never drift between the writer and the lookups (issue #151 review r2).
+export const answeredNoteKey = (f: { id: string; title: string }): string =>
+  f.id !== "" ? f.id : `title:${f.title}`;
 
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
 // re-raise; the pipeline cannot judge whether the reply dismissed or acknowledged the finding, so the

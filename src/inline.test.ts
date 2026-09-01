@@ -15,6 +15,7 @@ const bundledInlineTemplate = readFileSync(
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
   path: "src/foo.ts",
+  id: "test-id",
   start_line: 10,
   end_line: 10,
   severity: "minor",

@@ -810,7 +810,7 @@ describe("cli — extract", () => {
 describe("cli — validate-patches", () => {
   const mkFindingsDoc = (finding: Record<string, unknown>): string =>
     JSON.stringify({
-      schema_version: "0.4.0",
+      schema_version: "0.10.0",
       summary: "s",
       verdict: "comment",
       findings: [
@@ -819,6 +819,7 @@ describe("cli — validate-patches", () => {
           start_line: 1,
           end_line: 1,
           severity: "minor",
+          id: "t",
           title: "t",
           description: "d",
           reasoning: "r",
@@ -1115,6 +1116,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         start_line: 3,
         end_line: 3,
         severity: "major",
+        id: "prior-finding",
         title: "Prior finding",
         description: "carried over from the prior review",
         reasoning: "still worth checking",
@@ -1228,7 +1230,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
           end_line: 1,
           severity: "nit",
           title: "below",
-          code: "b1",
+          id: "b1",
           description: "d",
           reasoning: "r",
           confidence: 0.5,
@@ -1267,7 +1269,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const { exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
     const suppressed = JSON.parse(readFileSync(priorSuppressedPath(out), "utf-8")) as unknown[];
-    expect(suppressed).toEqual([{ title: "below", code: "b1", path: "src/a.ts" }]);
+    expect(suppressed).toEqual([{ title: "below", id: "b1", path: "src/a.ts" }]);
   });
 
   it("writes no .prior-suppressed sidecar when the prior blob predates likelihood (fails open, issue #164)", async () => {
@@ -1310,7 +1312,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
           end_line: 1,
           severity: "nit",
           title: "mech-nit",
-          code: "m1",
+          id: "m1",
           description: "d",
           reasoning: "r",
           confidence: 0.5,
@@ -1338,7 +1340,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
           end_line: 1,
           severity: "nit",
           title: "below",
-          code: "b1",
+          id: "b1",
           description: "d",
           reasoning: "r",
           confidence: 0.5,
@@ -1362,7 +1364,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(exitCode).toBeNull(); // did NOT process.exit(1) — the always-exit-0 contract holds
     // degraded to the default floor 0.25, so the below-floor nit (m 0.20) is still delivered
     const suppressed = JSON.parse(readFileSync(priorSuppressedPath(out), "utf-8")) as unknown[];
-    expect(suppressed).toEqual([{ title: "below", code: "b1", path: "src/a.ts" }]);
+    expect(suppressed).toEqual([{ title: "below", id: "b1", path: "src/a.ts" }]);
   });
 
   it("seeds from a SURFACED 0.8.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
@@ -1387,8 +1389,8 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings;
-    // stripSurfaceFields restores the CURRENT draft version (0.9.0 after #163), not the surfaced 0.8.0.
-    expect(context.schema_version).toBe("0.9.0");
+    // stripSurfaceFields restores the CURRENT draft version (0.10.0 after the id migration), not the surfaced 0.8.0.
+    expect(context.schema_version).toBe("0.10.0");
     expect(context).not.toHaveProperty("convergence");
     expect(context).not.toHaveProperty("round");
     expect(context.findings).toHaveLength(1);
@@ -1397,7 +1399,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
   it("seeds a surfaced blob's scope_metastasis through to the context — the agent must see the recurrence data (issue #150)", async () => {
     const entry = {
       decision_prompt: "decide: commit to the expanding scope or narrow it",
-      recurring: [{ code: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
     };
     const surfaced = {
       ...priorFindings,
@@ -1416,7 +1418,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings & { scope_metastasis?: unknown };
-    expect(context.schema_version).toBe("0.9.0");
+    expect(context.schema_version).toBe("0.10.0");
     expect(context.scope_metastasis).toEqual(entry);
   });
 
@@ -1430,7 +1432,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1439,7 +1441,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1448,7 +1450,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1458,7 +1460,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       schema_version: "0.6.0",
       scope_metastasis: {
         decision_prompt: "stale echo",
-        recurring: [{ code: "stale-code", consecutive_rounds: 9, start_round: 1 }],
+        recurring: [{ id: "stale-code", consecutive_rounds: 9, start_round: 1 }],
       },
     };
     const prior = writePrior(
@@ -1476,7 +1478,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       };
     };
     expect(context.scope_metastasis?.recurring).toEqual([
-      { code: "fresh-code", consecutive_rounds: 3, start_round: 1 },
+      { id: "fresh-code", consecutive_rounds: 3, start_round: 1 },
     ]);
   });
 
@@ -1491,7 +1493,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1500,7 +1502,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1509,7 +1511,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1518,7 +1520,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "other-code": 1 },
+        ids: { "other-code": 1 },
         sha: "sha4",
         round: 4,
       },
@@ -1528,7 +1530,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       schema_version: "0.6.0",
       scope_metastasis: {
         decision_prompt: "stale echo",
-        recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+        recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
       },
     };
     const prior = writePrior(
@@ -1552,7 +1554,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     // different one — only a draft blob's entry is a droppable echo.
     const carried = {
       decision_prompt: "authoritative legacy stamp",
-      recurring: [{ code: "legacy-code", consecutive_rounds: 5, start_round: 1 }],
+      recurring: [{ id: "legacy-code", consecutive_rounds: 5, start_round: 1 }],
     };
     const rounds = [
       {
@@ -1560,7 +1562,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1569,7 +1571,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1578,7 +1580,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1621,7 +1623,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1630,7 +1632,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1639,7 +1641,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1686,7 +1688,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     writeFileSync(customSchema, JSON.stringify(bundled));
     const entry = {
       decision_prompt: "decide",
-      recurring: [{ code: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
     };
     const surfaced = {
       ...priorFindings,
@@ -1768,7 +1770,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1777,7 +1779,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1786,7 +1788,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1812,7 +1814,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     };
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
-      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
     });
   });
 
@@ -1823,7 +1825,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1832,7 +1834,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1841,7 +1843,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1867,7 +1869,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     };
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
-      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
     });
   });
 
@@ -1882,7 +1884,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1891,7 +1893,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1900,7 +1902,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1924,10 +1926,10 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ) as typeof priorFindings & {
       scope_metastasis?: unknown;
     };
-    expect(context.schema_version).toBe("0.9.0");
+    expect(context.schema_version).toBe("0.10.0");
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
-      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
     });
   });
 
@@ -2246,6 +2248,7 @@ index abc..def 100644
           start_line: 10,
           end_line: 10,
           severity: "minor",
+          id: "real-bug",
           title: "real-bug",
           description: "d",
           reasoning: "r",
@@ -2257,6 +2260,7 @@ index abc..def 100644
           start_line: 11,
           end_line: 11,
           severity: "nit",
+          id: "trivial-nit",
           title: "trivial-nit",
           description: "d",
           reasoning: "r",
@@ -2327,6 +2331,7 @@ describe("cli — render --nit-visibility-floor (issue #164)", () => {
           start_line: 1,
           end_line: 1,
           severity: "nit",
+          id: "trivial-nit",
           title: "trivial-nit",
           description: "d",
           reasoning: "r",

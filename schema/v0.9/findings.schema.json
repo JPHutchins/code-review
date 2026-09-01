@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/main/schema/findings.schema.json",
+  "$id": "https://raw.githubusercontent.com/JPHutchins/code-review/schema-v0.9.0/schema/findings.schema.json",
   "title": "Code Review — findings",
   "description": "Structured output of an agentic PR code review. The review agent emits this object (e.g. via a coding-agent CLI's structured-output mode, such as Claude Code's `--json-schema`, whose result lands in `.structured_output`, or a file).",
   "type": "object",
@@ -58,21 +58,21 @@
             "maximum": 1,
             "description": "Set to 1 for a systemic problem. A structural/cross-cutting observation has no single triggering input — it is definitionally always present — so the convergence score treats a systemic problem's likelihood as 1 and never discounts it. (Required for schema symmetry with a finding's likelihood; the written value is not read by the score.)"
           },
-          "id": {
+          "code": {
             "type": "string",
-            "description": "Stable mechanism identifier (e.g. \"repeated-null-check\") for rule-based filtering, suppression, and cross-run dedup — mirrors the finding field of the same name."
+            "description": "Stable rule identifier (e.g. \"repeated-null-check\") for rule-based filtering, suppression, and cross-run dedup — mirrors the finding field of the same name."
           },
           "code_url": {
             "type": "string",
             "format": "uri",
-            "description": "URL documenting the rule named by id."
+            "description": "URL documenting the rule named by code."
           },
-          "finding_ids": {
+          "finding_codes": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "The `id` values of the findings this systemic problem ties together."
+            "description": "The `code` values of the findings this systemic problem ties together, when those findings carry codes."
           },
           "paths": {
             "type": "array",
@@ -87,7 +87,7 @@
     "scope_metastasis": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Advisory (issue #150): the mechanisms whose findings recurred in consecutive prior full-review rounds — per-id consecutive-round counts plus a decision prompt. The review agent does NOT write this field: the commenter re-derives it from the carried round history and delivers it in the prior review context of a re-review. When it is present, respond to the decision prompt — state in your summary whether you are committing to the expanding scope (planning the remaining facets of the recurring mechanism(s) as one unit) or narrowing the scope — so the decision is made explicitly rather than left to emerge piecemeal.",
+      "description": "Advisory (issue #150): the mechanisms whose findings recurred in consecutive prior full-review rounds — per-code consecutive-round counts plus a decision prompt. The review agent does NOT write this field: the commenter re-derives it from the carried round history and delivers it in the prior review context of a re-review. When it is present, respond to the decision prompt — state in your summary whether you are committing to the expanding scope (planning the remaining facets of the recurring mechanism(s) as one unit) or narrowing the scope — so the decision is made explicitly rather than left to emerge piecemeal.",
       "required": ["decision_prompt", "recurring"],
       "properties": {
         "decision_prompt": {
@@ -96,21 +96,21 @@
         },
         "recurring": {
           "type": "array",
-          "description": "The mechanisms flagged: one entry per id whose findings recurred in `consecutive_rounds` or more consecutive completed full-review rounds.",
+          "description": "The mechanisms flagged: one entry per code whose findings recurred in `consecutive_rounds` or more consecutive completed full-review rounds.",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "consecutive_rounds", "start_round"],
+            "required": ["code", "consecutive_rounds", "start_round"],
             "properties": {
-              "id": {
+              "code": {
                 "type": "string",
-                "description": "The finding id of the recurring mechanism."
+                "description": "The finding code of the recurring mechanism."
               },
               "consecutive_rounds": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 9007199254740991,
-                "description": "How many consecutive completed full-review rounds (ending at the last completed round) carried a finding with this id. Same-head CI retries are collapsed by the streak detector, so this is the de-duplicated streak, not the raw span: it may be less than `round - start_round + 1` when the history contains retries."
+                "description": "How many consecutive completed full-review rounds (ending at the last completed round) carried a finding with this code. Same-head CI retries are collapsed by the streak detector, so this is the de-duplicated streak, not the raw span: it may be less than `round - start_round + 1` when the history contains retries."
               },
               "start_round": {
                 "type": "integer",
@@ -158,10 +158,10 @@
                 "type": "number",
                 "description": "That round's convergence score, carried verbatim from when the round completed. Absent only for a round migrated from a pre-#174 sticky, which stored no score."
               },
-              "ids": {
+              "codes": {
                 "type": "object",
                 "additionalProperties": { "type": "integer", "minimum": 0 },
-                "description": "That round's mechanism-frequency map: finding id -> number of findings carrying it. Feeds the same-mechanism and scope-metastasis recurrence signals."
+                "description": "That round's mechanism-frequency map: finding code -> number of findings carrying it. Feeds the same-mechanism and scope-metastasis recurrence signals."
               },
               "sha": {
                 "type": "string",
@@ -213,7 +213,6 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "id",
           "path",
           "start_line",
           "end_line",
@@ -250,14 +249,14 @@
             "enum": ["critical", "major", "minor", "nit"],
             "description": "Used for grouping and for folding nits into a collapsed section."
           },
-          "id": {
+          "code": {
             "type": "string",
-            "description": "Stable mechanism identifier (e.g. \"null-check-missing\") — REQUIRED so every finding is trackable across rounds and discussions. Two findings share an id exactly when they are the same mechanism; a re-raise reuses the id."
+            "description": "Stable rule identifier (e.g. \"null-check-missing\") for rule-based filtering, suppression, and cross-run dedup."
           },
           "code_url": {
             "type": "string",
             "format": "uri",
-            "description": "URL documenting the rule named by id."
+            "description": "URL documenting the rule named by code."
           },
           "title": {
             "type": "string",

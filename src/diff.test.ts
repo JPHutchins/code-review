@@ -19,6 +19,7 @@ index abc..def 100644
 `;
 
 const finding = (overrides: Partial<Finding>): Finding => ({
+  id: "test-id",
   path: "src/foo.ts",
   start_line: 1,
   end_line: 1,

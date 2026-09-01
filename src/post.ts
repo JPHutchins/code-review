@@ -11,7 +11,7 @@ import {
   buildConvergence,
   carriedConvergence,
   carryForwardMarkers,
-  computeCodeCounts,
+  computeIdCounts,
   computeSameRootNotes,
   findingsMarkerPair,
   inProgressConvergence,
@@ -876,23 +876,21 @@ export const post = async (
   // Everything downstream (counts, rounds, signal, inline, the embedded blob) reads the FILTERED
   // document — a closed verbatim re-raise is gone from the review, not just from the prose.
   // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
-  // stripped from any systemic problem's finding_codes — a "ties together" list must not dangle a
+  // stripped from any systemic problem's finding_ids — a "ties together" list must not dangle a
   // finding that is no longer in the document. Scoped to the actual drops: a systemic whose codes
   // were never dropped passes through untouched (issue #151 review r1).
-  const droppedCodes = new Set(verbatimReRaised.flatMap((e) => (e.code !== "" ? [e.code] : [])));
+  const droppedIds = new Set(verbatimReRaised.flatMap((e) => (e.code !== "" ? [e.code] : [])));
   // A dropped code is stripped only when NO KEPT finding still carries it — the drop removed one
   // instance of a mechanism, not the mechanism itself (issue #151 review r2).
-  const keptCodes = new Set(
-    answeredFilter.findings.flatMap((f) => (f.code !== undefined && f.code !== "" ? [f.code] : [])),
-  );
-  const trulyDropped = new Set([...droppedCodes].filter((c) => !keptCodes.has(c)));
+  const keptCodes = new Set(answeredFilter.findings.map((f) => f.id));
+  const trulyDropped = new Set([...droppedIds].filter((c) => !keptCodes.has(c)));
   const systemic =
     trulyDropped.size === 0
       ? (loadedFindings.systemic_problems ?? [])
       : (loadedFindings.systemic_problems ?? []).map((s) => {
-          if (s.finding_codes === undefined) return s;
-          const codes = s.finding_codes.filter((c) => !trulyDropped.has(c));
-          return codes.length === s.finding_codes.length ? s : { ...s, finding_codes: codes };
+          if (s.finding_ids === undefined) return s;
+          const codes = s.finding_ids.filter((c) => !trulyDropped.has(c));
+          return codes.length === s.finding_ids.length ? s : { ...s, finding_ids: codes };
         });
   const findings: Findings = {
     ...loadedFindings,
@@ -925,7 +923,7 @@ export const post = async (
       : null;
   const priorSuppressedKeys = new Set(
     priorBelowFloorNits(priorDocForNits, input.nitVisibilityFloor).map((n) =>
-      answeredNoteKey({ code: n.code, title: n.title }),
+      answeredNoteKey({ id: n.id ?? "", title: n.title }),
     ),
   );
   const isSuppressedNit = (f: Finding): boolean =>
@@ -1101,7 +1099,7 @@ export const post = async (
   // carries the prior convergence (the last completed round's, verbatim) forward, so the trajectory + last
   // score survive; render's incomplete gate keeps that off the human surface, so a carried "converged" is
   // never shown beside a run that produced no verdict (issue #141 reviews r2 + r4).
-  const currentCodes = computeCodeCounts(findings.findings, findings.systemic_problems ?? []);
+  const currentCodes = computeIdCounts(findings.findings, findings.systemic_problems ?? []);
   const roundNumber = priorRoundCount + 1;
   const convergence = isRound
     ? buildConvergence(

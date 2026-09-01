@@ -12,7 +12,7 @@ import {
   priorSuppressedPath,
   SEED_SENTINEL,
 } from "./budget.js";
-import { ResultEnvelopeCodec } from "./schema.js";
+import { ResultEnvelopeCodec, synthesizedFindingId } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -1163,6 +1163,60 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ) as typeof priorFindings;
     expect(context.findings).toHaveLength(1);
     expect(context.findings[0]!.title).toBe("Prior finding");
+  });
+
+  it("seeds a pre-0.10 prior whose findings carry `code` — the upcast runs before the 0.10 gates, so the legacy prior is not a cold re-review", async () => {
+    // What the previous release actually embedded: 0.9.0 with `code`, no `id`. The raw doc fails the
+    // 0.10 ajv gate; the resolved value (code → id, or synthesized) must be what both gates see.
+    const legacyPrior = {
+      schema_version: "0.9.0",
+      summary: "Prior review summary.",
+      verdict: "changes",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 3,
+          end_line: 3,
+          severity: "major",
+          code: "legacy-code",
+          title: "Prior finding",
+          description: "carried over from the prior review",
+          reasoning: "still worth checking",
+          confidence: 0.8,
+          likelihood: 1,
+        },
+        {
+          path: "src/b.ts",
+          start_line: 7,
+          end_line: 7,
+          severity: "minor",
+          title: "Codeless prior finding",
+          description: "carried over from the prior review",
+          reasoning: "still worth checking",
+          confidence: 0.8,
+          likelihood: 1,
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(legacyPrior)}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    assertSentinelOnly(out);
+    const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as {
+      schema_version: string;
+      findings: { id: string; title: string }[];
+    };
+    // The upcast value is what seeds: code → id for the coded finding, the synthesized id for the
+    // codeless one — a legacy prior is never a cold re-review.
+    expect(context.findings[0]!.id).toBe("legacy-code");
+    expect(context.findings[1]!.id).toBe(
+      synthesizedFindingId("src/b.ts", "Codeless prior finding"),
+    );
+    expect(context.schema_version).toBe("0.10.0");
   });
 
   it("seeds a gather-staged --prior-findings document from the staged file (issue #217)", async () => {

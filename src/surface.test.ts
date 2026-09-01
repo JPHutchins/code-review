@@ -24,6 +24,7 @@ import {
   changeSizeSummary,
   buildConvergence,
   parseConvergence,
+  parseConvergenceMarker,
   carriedConvergence,
   CONVERGENCE_TRAJECTORY_LIMIT,
   isBelowVisibilityFloor,
@@ -649,6 +650,31 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(carriedConvergence(decoded, "")).toEqual(conv);
   });
 
+  it("decodes a pre-0.10 compact convergence marker whose rounds carry legacy `codes` — the first post-migration round keeps the trajectory", () => {
+    // What buildConvergence wrote before 0.10: per-round mechanism maps under `codes`. The 0.10
+    // ConvergenceCodec is strict-keyed, so the marker reader maps the legacy spelling before the gate.
+    const marker =
+      "<!-- code-review:convergence;base64 " +
+      Buffer.from(
+        JSON.stringify({
+          score: 2,
+          threshold: 1,
+          converged: false,
+          rounds: [{ round: 1, score: 2, codes: { "null-check-missing": 1 }, sha: "abc123def456" }],
+        }),
+        "utf-8",
+      ).toString("base64") +
+      " -->";
+    expect(parseConvergenceMarker(marker)).toEqual({
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { "null-check-missing": 1 }, sha: "abc123def456" }],
+    });
+    // carriedConvergence reads it too, so priorTrajectory/carriedConvergence survive on the marker path.
+    expect(carriedConvergence(null, marker)).not.toBeNull();
+  });
+
   it("bounds the stamped trajectory to the most recent rounds without renumbering (#174)", () => {
     const prior = Array.from({ length: 70 }, (_, i) => ({ round: i + 1, score: i / 100 }));
     const conv = buildConvergence(docOf(["minor", 0.7]), 1, prior, 71, {});
@@ -1118,6 +1144,20 @@ describe("mechanism frequency rounds — issue #145", () => {
   it("parseRounds drops count-0 code entries so every consumer agrees 0 is absence", () => {
     const parsed = parseRounds(mkRoundsMarker([coded(counts(0, 0, 0, 0), { a: 0, b: 0, c: 1 })]));
     expect(parsed[0]?.ids).toEqual({ c: 1 });
+  });
+
+  it("parseRounds falls back to a valid legacy codes map when the ids field is present but malformed", () => {
+    const malformed = mkRoundsMarker([
+      {
+        critical: 0,
+        major: 0,
+        minor: 0,
+        nit: 0,
+        ids: "not a map",
+        codes: { "legacy-a": 2 },
+      } as unknown as RoundRecord,
+    ]);
+    expect(parseRounds(malformed)[0]?.ids).toEqual({ "legacy-a": 2 });
   });
 
   it("parseRounds's per-round cap prefers codes that recurred in the previous round", () => {

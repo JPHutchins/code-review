@@ -292,7 +292,11 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   let priorCodes: IdCounts | undefined;
   for (const u of (decoded as readonly unknown[]).filter(isSeverityCounts)) {
     const rec = u as Record<string, unknown>;
-    const codes = normalizeIdCounts(rec["ids"] ?? rec["codes"], priorCodes);
+    // ids first, with the legacy `codes` as a real fallback: `??` cannot express "valid-or-fallback",
+    // and a round carrying BOTH fields with a malformed/empty `ids` must not lose its mechanism map
+    // while a valid legacy `codes` sits beside it.
+    const codes =
+      normalizeIdCounts(rec["ids"], priorCodes) ?? normalizeIdCounts(rec["codes"], priorCodes);
     priorCodes = codes;
     const sha = rec["sha"];
     const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;
@@ -814,8 +818,28 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // `rounds` (or an empty one) is either a legacy pre-#156 surface blob's embedded stop signal or a
 // crafted/reset value — treat it as absent so the marker/legacy fallbacks reconstruct the whole thing,
 // and an empty trajectory can never silently reset the round count to 0 (issue #185 review).
+// A pre-0.10 sticky's compact convergence marker carries rounds whose mechanism maps use the legacy
+// `codes` spelling (0.10 renamed it to `ids`). Map the legacy rounds before the strict codec gate —
+// an `ids` field wins even when malformed (the strict decode then rejects it, fail-closed); `codes`
+// maps to `ids` verbatim, capped counts included, exactly as the pre-0.10 writer carried them.
+const withLegacyConvergenceIds = (raw: unknown): unknown => {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const rec = raw as Record<string, unknown>;
+  const rounds = rec["rounds"];
+  if (!Array.isArray(rounds)) return raw;
+  const mapped: unknown[] = rounds.map((r) => {
+    if (typeof r !== "object" || r === null) return r as unknown;
+    const round = r as Record<string, unknown>;
+    if (round["ids"] !== undefined) return round;
+    if (round["codes"] === undefined) return round;
+    const { codes: legacyCodes, ...rest } = round;
+    return { ...rest, ids: legacyCodes };
+  });
+  return { ...rec, rounds: mapped };
+};
+
 const validStampedConvergence = (raw: unknown): Convergence | null => {
-  const decoded = ConvergenceCodec.decode(raw);
+  const decoded = ConvergenceCodec.decode(withLegacyConvergenceIds(raw));
   return decoded._tag === "Right" &&
     decoded.right.rounds !== undefined &&
     decoded.right.rounds.length > 0

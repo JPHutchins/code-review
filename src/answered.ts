@@ -11,7 +11,7 @@ import * as t from "io-ts";
 import { escapeCodeBackticks, parseFindingsMarker } from "./surface.js";
 import { parseJsonl } from "./transcript.js";
 import type { GhApi } from "./gh.js";
-import { synthesizedFindingId } from "./schema.js";
+import { resolveFindingId, synthesizedFindingId } from "./schema.js";
 import type { Finding, Severity } from "./schema.js";
 import { clipText, errMsg } from "./util.js";
 
@@ -292,7 +292,11 @@ export const answeredRegistryFrom = (
 
 // The id match: 0.10 requires every finding to carry an id, and the legacy upcast gives every pre-id
 // finding one (code → id, or synthesized), so two rounds of the same claim always key to equal ids.
-const matches = (f: Finding, e: Pick<AnsweredEntry, "code">): boolean => e.code === f.id;
+// An EMPTY id resolves exactly the way the registry builder resolves a marker finding — the two sides
+// share resolveFindingId, so a verbatim re-raise of an empty-id finding still matches the entry its
+// marker synthesized.
+const matches = (f: Finding, e: Pick<AnsweredEntry, "code">): boolean =>
+  e.code === resolveFindingId(f);
 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.

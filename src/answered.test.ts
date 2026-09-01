@@ -320,10 +320,10 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
   });
 
   it("keys a kept re-raise with an EMPTY id under its title — the note key never vanishes (issue #151 review r1)", () => {
-    const uncoded = entry({ code: "" });
+    const synthesized = entry({ code: synthesizedFindingId("src/foo.ts", "The same claim") });
     const { findings, reRaisedNotes, verbatimReRaised } = applyAnswered(
       [mkFinding({ id: "", reasoning: "NEW evidence: persists on 3.14." })],
-      [uncoded],
+      [synthesized],
     );
     expect(findings).toHaveLength(1);
     expect(verbatimReRaised).toHaveLength(0);
@@ -331,16 +331,16 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes["recurring-a"]).toBeUndefined();
   });
 
-  it("matches an empty-id finding to an empty-code answered entry — the pre-id fallback pair", () => {
-    const uncoded = entry({ code: "" });
+  it("an empty-id finding resolves to the synthesized id and matches the entry its marker produced", () => {
+    const synthesized = entry({ code: synthesizedFindingId("src/foo.ts", "The same claim") });
     const { findings, verbatimReRaised } = applyAnswered(
       [mkFinding({ id: "", title: "The same claim" })],
-      [uncoded],
+      [synthesized],
     );
     expect(findings).toHaveLength(0);
     expect(verbatimReRaised).toHaveLength(1);
-    // An id-bearing finding never matches an empty-code answered entry.
-    const { findings: coded } = applyAnswered([mkFinding({ id: "other-code" })], [uncoded]);
+    // An id-bearing finding never matches a DIFFERENT entry.
+    const { findings: coded } = applyAnswered([mkFinding({ id: "other-code" })], [synthesized]);
     expect(coded).toHaveLength(1);
   });
 

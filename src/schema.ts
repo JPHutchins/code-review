@@ -307,6 +307,12 @@ export const synthesizedFindingId = (path: string, title: string): string =>
 
 export const synthesizedSystemicId = (title: string): string => synthesizedId([title], "s-");
 
+// The ONE resolution a finding's id goes through: an explicit id wins, and an empty one resolves to
+// the same synthesized id the legacy upcast derives — shared by the answered-registry builder and the
+// answered match, so the two sides can never disagree on what an empty id means.
+export const resolveFindingId = (f: { id: string; path: string; title: string }): string =>
+  f.id !== "" ? f.id : synthesizedFindingId(f.path, f.title);
+
 // The pre-0.10 shape (schema/v0.9/findings.schema.json): findings carried an OPTIONAL `code` and no
 // `id`. Decoded only as a migration input — the registry's pre-0.10 entries normalize it to the 0.10
 // shape (code → id, or the synthesized content-derived id when a finding carried none). `id` is

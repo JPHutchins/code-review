@@ -37,13 +37,15 @@ import { formatUtc } from "./format.js";
 import {
   ResultEnvelopeCodec,
   FindingsCodec,
+  FindingsCodecV09,
+  normalizeV09,
   PriceMapCodec,
   ScopeMetastasisCodec,
   TestSummaryCodec,
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
 } from "./schema.js";
-import type { Triage, Finding, PriceMap } from "./schema.js";
+import type { Triage, Finding, Findings, PriceMap } from "./schema.js";
 import {
   buildConvergence,
   computeScopeMetastasis,
@@ -94,6 +96,20 @@ import {
 } from "./sandbox.js";
 import { parseScope } from "./scope.js";
 import { annotationSafe, asRecord, errMsg, readFileOrNull, tryParseJson } from "./util.js";
+
+// The seed chain's shared upcast: a prior document (raw artifact, embedded marker, or a peeled
+// surfaced blob re-stamped with the CURRENT draft version) resolves through the registry, and — when
+// the strict entry rejects a legacy-shaped body carrying the new stamp — through the tolerant legacy
+// codec, so a pre-0.10 prior always yields its 0.10 shape (code → id, or the synthesized id) instead
+// of nothing. The ajv gate then validates the UPCAST value, never the raw doc: validating the raw doc
+// against the 0.10 schema would reject every legacy prior and seed the sentinel-only cold re-review
+// the migration exists to prevent.
+const resolvedPriorValue = (doc: unknown): Findings | null => {
+  const r = resolveRegistry("findings", doc);
+  if (r.kind === "ok") return r.value;
+  const legacy = FindingsCodecV09.decode(doc);
+  return legacy._tag === "Right" ? normalizeV09(legacy.right) : null;
+};
 
 const readJSON = (path: string): unknown => {
   try {
@@ -1106,20 +1122,28 @@ const seedDraftCmd = defineCommand({
         Array.isArray(strippedPrior)
       )
         return strippedPrior;
-      const raw = strippedPrior as Record<string, unknown>;
+      // The registry upcast runs FIRST (code → id, or the synthesized id), so the answered pre-filter
+      // below and the scope_metastasis carry both see the 0.10 shape — a raw legacy prior's findings
+      // have no `id`, and the pre-filter can only match an answered entry through one. A doc the
+      // upcast rejects (a malformed carried field) falls through raw: the adorn below and the gate's
+      // barePrior recovery still handle it.
+      const resolved = resolvedPriorValue(strippedPrior);
       // The artifact holds the agent's PRE-FILTER draft — uploaded before post's answered-filter
       // dropped verbatim re-raises — so the seed applies the SAME drop via the SAME shared
       // predicate (isAnsweredDrop, issue #233 r2): a finding the prior round closed as answered is
       // not open, and showing it as open wastes the next round on a claim post will suppress anyway.
       const doc: Record<string, unknown> =
-        answeredRegistry !== null && answeredRegistry.length > 0 && Array.isArray(raw["findings"])
-          ? {
-              ...raw,
-              findings: (raw["findings"] as Finding[]).filter(
-                (f) => !answeredRegistry.some((e) => isAnsweredDrop(f, e)),
-              ),
-            }
-          : raw;
+        resolved === null
+          ? (strippedPrior as Record<string, unknown>)
+          : {
+              ...resolved,
+              findings:
+                answeredRegistry !== null && answeredRegistry.length > 0
+                  ? resolved.findings.filter(
+                      (f) => !answeredRegistry.some((e) => isAnsweredDrop(f, e)),
+                    )
+                  : resolved.findings,
+            };
       // A carried entry only counts when it VALIDATES as the entry shape — for a draft blob it is
       // already dropped (only a legacy pipeline-stamped blob reaches here with one), and an explicit
       // null, an array, or a malformed object (all possible in a corrupt blob; genuine posts omit the
@@ -1197,7 +1221,8 @@ const seedDraftCmd = defineCommand({
               // the merge-to-release window, or a corrupt blob-carried entry), fall back to the
               // field-stripped doc: losing those fields beats losing ALL prior context (issue #150
               // review r2 + #174 + #182 review r2). Shares post's recovery set (SSOT) so the two
-              // recovery sites can never diverge. Covers BOTH gates (ajv + codec).
+              // recovery sites can never diverge. Covers BOTH gates (ajv + codec) — and both run on
+              // the UPCAST value (resolvedPriorValue), never the raw legacy doc.
               const barePrior =
                 typeof priorFindings === "object" && !Array.isArray(priorFindings)
                   ? Object.fromEntries(
@@ -1206,17 +1231,22 @@ const seedDraftCmd = defineCommand({
                       ),
                     )
                   : priorFindings;
-              const accepts = (doc: unknown): boolean =>
-                validateAgainstSchema(doc, schemaPath).valid &&
-                resolveRegistry("findings", doc).kind === "ok";
-              const seedDoc = accepts(priorFindings)
-                ? priorFindings
-                : accepts(barePrior)
-                  ? (process.stderr.write(
-                      `Note: the in-force schema rejects a carried recoverable field (scope_metastasis/convergence/change_size) — seeding the prior without it (issue #150 review r2 / #182 review r2)\n`,
-                    ),
-                    barePrior)
+              const accepts = (doc: unknown): Findings | null => {
+                const resolved = resolvedPriorValue(doc);
+                return resolved !== null && validateAgainstSchema(resolved, schemaPath).valid
+                  ? resolved
                   : null;
+              };
+              const seedDoc =
+                accepts(priorFindings) ??
+                ((): Findings | null => {
+                  const bare = accepts(barePrior);
+                  if (bare === null) return null;
+                  process.stderr.write(
+                    `Note: the in-force schema rejects a carried recoverable field (scope_metastasis/convergence/change_size) — seeding the prior without it (issue #150 review r2 / #182 review r2)\n`,
+                  );
+                  return bare;
+                })();
               if (seedDoc === null) return false;
               // Skip a prior that never completed (verdict "error" + no findings — the notice
               // signature, isIncompleteFindings) and a prior that is not unmistakably a completed
@@ -1225,15 +1255,12 @@ const seedDraftCmd = defineCommand({
               // reliable signal — round history can't identify the last review (a mechanic carries
               // a full review's rounds forward), so a no-route prior is unknown and skipped: one
               // cold review is cheaper than a false prior (issue #127 round-2).
-              const resolution = resolveRegistry("findings", seedDoc);
-              if (resolution.kind !== "ok") return false;
-              if (isIncompleteFindings(resolution.value)) return false;
+              if (isIncompleteFindings(seedDoc)) return false;
               if (parseReviewedRoute(priorBody ?? "") !== "full review") return false;
               writeFileSync(outPath, SEED_SENTINEL);
               writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
-              const count = resolution.value.findings.length;
               process.stderr.write(
-                `Seeded ${outPath} with the sentinel and wrote the prior review (${String(count)} finding(s)) to ${priorContextPath(outPath)} as context\n`,
+                `Seeded ${outPath} with the sentinel and wrote the prior review (${String(seedDoc.findings.length)} finding(s)) to ${priorContextPath(outPath)} as context\n`,
               );
               return true;
             } catch (err) {

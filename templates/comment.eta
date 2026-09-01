@@ -110,7 +110,7 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% } -%>
 
 <%~ f.description %>
-<% if (f.id && it.sameRootNotes && Object.prototype.hasOwnProperty.call(it.sameRootNotes, f.idKey)) { -%>
+<% if (it.sameRootNotes && Object.prototype.hasOwnProperty.call(it.sameRootNotes, f.idKey)) { -%>
 
 > ⚠️ <%~ it.sameRootNotes[f.idKey] %>
 <% } -%>

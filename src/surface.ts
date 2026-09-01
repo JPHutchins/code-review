@@ -845,7 +845,14 @@ const withLegacyConvergenceIds = (raw: unknown): unknown => {
     if (typeof r !== "object" || r === null) return r as unknown;
     const round = r as Record<string, unknown>;
     const ids = usableCountsMap(round["ids"]) ?? usableCountsMap(round["codes"]);
-    if (ids === undefined) return round;
+    if (ids === undefined) {
+      // Neither spelling usable: strip BOTH map fields (like parseRounds strips a bad map) rather
+      // than leaving the legacy `codes` key for the strict round gate to reject — a corrupted map
+      // must cost the round its mechanism data, never the whole trajectory.
+      return round["ids"] !== undefined || round["codes"] !== undefined
+        ? Object.fromEntries(Object.entries(round).filter(([k]) => k !== "ids" && k !== "codes"))
+        : round;
+    }
     const rest = Object.fromEntries(
       Object.entries(round).filter(([k]) => k !== "ids" && k !== "codes"),
     );

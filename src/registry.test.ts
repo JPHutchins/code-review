@@ -317,9 +317,12 @@ describe("schemaPathFor", () => {
     );
   });
 
-  it("resolves the latest minor (with or without patch) to the same flat file", () => {
-    expect(schemaPathFor("findings", "0.4")).toBe(schemaPathFor("findings"));
-    expect(schemaPathFor("findings", "0.4.7")).toBe(schemaPathFor("findings"));
+  it("resolves every pre-0.10 minor (with or without patch) to the frozen legacy schema, the latest to the flat file", () => {
+    const frozen = resolvePath(repoRoot, "schema", "v0.9", "findings.schema.json");
+    expect(schemaPathFor("findings", "0.4")).toBe(frozen);
+    expect(schemaPathFor("findings", "0.4.7")).toBe(frozen);
+    expect(schemaPathFor("findings", "0.9")).toBe(frozen);
+    expect(schemaPathFor("findings", "0.10")).toBe(schemaPathFor("findings"));
   });
 
   it("throws for a now-dropped older minor (0.2 is no longer supported)", () => {

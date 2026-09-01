@@ -11,7 +11,7 @@ import * as t from "io-ts";
 import { escapeCodeBackticks, parseFindingsMarker } from "./surface.js";
 import { parseJsonl } from "./transcript.js";
 import type { GhApi } from "./gh.js";
-import { resolveFindingId, synthesizedFindingId } from "./schema.js";
+import { isSynthesizedFindingId, resolveFindingId, synthesizedFindingId } from "./schema.js";
 import type { Finding, Severity } from "./schema.js";
 import { clipText, errMsg } from "./util.js";
 
@@ -294,12 +294,13 @@ export const answeredRegistryFrom = (
 // finding one (code → id, or synthesized), so two rounds of the same claim always key to equal ids.
 // An EMPTY id resolves exactly the way the registry builder resolves a marker finding — the two sides
 // share resolveFindingId, so a verbatim re-raise of an empty-id finding still matches the entry its
-// marker synthesized. A TITLE match is the second chance the pre-0.10 "code (or title)" rule gave: a
-// codeless claim whose answer pre-dates ids can only recover its annotation when the re-raise is
-// RELOCATED (the synthesized key is path-derived) or carries a fresh agent id — the full-claim
-// verbatim check is what actually gates the drop, so a title-only match can never drop a distinct claim.
+// marker synthesized. A TITLE match is the second chance the pre-0.10 "code (or title)" rule gave,
+// RESTRICTED to entries whose code was synthesized (isSynthesizedFindingId): a codeless claim whose
+// answer pre-dates ids can only recover its annotation when the re-raise is RELOCATED (the
+// synthesized key is path-derived) or carries a fresh agent id — while an unrelated same-title entry
+// with a real code can never mis-bind. The full-claim verbatim check still gates the drop.
 const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
-  e.code === resolveFindingId(f) || e.title === f.title;
+  e.code === resolveFindingId(f) || (isSynthesizedFindingId(e.code) && e.title === f.title);
 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
@@ -343,9 +344,15 @@ export interface AnsweredFilter {
   // code → note for KEPT re-raises with changed evidence; rendered under each such finding.
   readonly reRaisedNotes: Readonly<Record<string, string>>;
   // The entries whose findings were dropped: verbatim re-raises of an answered finding, named in the
-  // sticky rather than silently vanishing. DEDUPED by key — two findings sharing one dropped code (a
-  // code repeated within a round) list the answer once, never double-counted (issue #151 review r2).
+  // sticky rather than silently vanishing. DEDUPED by ENTRY — several findings dropped against one
+  // answer (an id repeated within a round, or same-title fresh-id re-raises of a synthesized entry)
+  // list the answer once, never double-counted (issue #151 review r2).
   readonly verbatimReRaised: readonly AnsweredEntry[];
+  // The dropped FINDINGS' ids (resolved): post strips these from systemic finding_ids — a title-
+  // matched drop keys the entry's synthesized code, but the systemic list names the finding's own id,
+  // so stripping by entry code alone would dangle a dropped finding (the two sides must agree on what
+  // a drop removes).
+  readonly droppedFindingIds: readonly string[];
   // The TRUE count of dropped findings (pre-dedup): the sticky's count must not understate the
   // suppression just because several findings shared one code (issue #151 review r5).
   readonly droppedCount: number;
@@ -367,10 +374,16 @@ export const applyAnswered = (
   // must become an OWN data key, never a prototype write that silently no-ops the annotation (the
   // same invariant the codebase's other code-keyed maps hold — issue #151 review r1).
   const noteEntries: [string, string][] = [];
-  const droppedByKey = new Map<string, AnsweredEntry>();
+  const droppedByEntry = new Map<number, AnsweredEntry>();
+  const droppedFindingIds: string[] = [];
   let droppedCount = 0;
   for (const f of findings) {
-    const entry = registry.find((e) => matches(f, e));
+    // ID match first across the WHOLE registry, title second chance only against synthesized
+    // entries: a finding title-matching an unrelated entry ahead of its true id-matched entry must
+    // not mis-bind its annotation (the id match wins wherever it exists).
+    const entry =
+      registry.find((e) => e.code === resolveFindingId(f)) ??
+      registry.find((e) => isSynthesizedFindingId(e.code) && e.title === f.title);
     if (entry === undefined) {
       kept.push(f);
       continue;
@@ -381,7 +394,8 @@ export const applyAnswered = (
     // claim) is not evidence (issue #151 review r3). patch is normalized (undefined → null) so an
     // absent patch on both sides compares equal.
     if (isAnsweredDrop(f, entry)) {
-      droppedByKey.set(answeredNoteKey(f), entry);
+      droppedByEntry.set(entry.replyId, entry);
+      droppedFindingIds.push(resolveFindingId(f));
       droppedCount += 1;
     } else {
       kept.push(f);
@@ -391,7 +405,8 @@ export const applyAnswered = (
   return {
     findings: kept,
     reRaisedNotes: Object.fromEntries(noteEntries),
-    verbatimReRaised: [...droppedByKey.values()],
+    verbatimReRaised: [...droppedByEntry.values()],
+    droppedFindingIds,
     droppedCount,
   };
 };

@@ -947,11 +947,15 @@ describe("cli — print-schema", () => {
     expect(stderr).toContain("bogus");
   });
 
-  it("--schema-version 0.4 matches the default (latest) output", async () => {
+  it("--schema-version 0.4 prints the FROZEN legacy schema (the tolerant-in 0.9 shape), the default prints the live 0.10 file", async () => {
     const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.4"]);
     const withoutVersion = await runCli(["print-schema", "findings"]);
     expect(withVersion.exitCode).toBeNull();
-    expect(withVersion.stdout).toBe(withoutVersion.stdout);
+    const printed = JSON.parse(withVersion.stdout) as Record<string, unknown>;
+    // The legacy file requires `code`-era fields optional and admits the tolerant `id` — not the
+    // live file's required id.
+    expect(printed["$id"]).toContain("schema-v0.9.0");
+    expect(withVersion.stdout).not.toBe(withoutVersion.stdout);
   });
 
   it("exits 1 for a now-dropped older --schema-version (0.2 is no longer supported)", async () => {

@@ -68,7 +68,11 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
     minor: "0.4",
     defaultVersion: "0.4.0",
-    schemaFile: "findings.schema.json",
+    // The frozen tolerant-in legacy schema, NOT the live 0.10 file: every ajv-gated channel
+    // (validate --schema-version, the extraction ladder) dispatches the RAW doc's declared minor
+    // through schemaPathFor, so the ajv gate must accept exactly what the tolerant legacy codec
+    // accepts — the live file (id required) would reject the legacy docs the upcast promises to read.
+    schemaFile: "v0.9/findings.schema.json",
     codec: legacyFindingsCodec,
     normalize: legacyFindingsNormalize,
     latest: false,
@@ -76,7 +80,7 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
     minor: "0.5",
     defaultVersion: "0.5.0",
-    schemaFile: "findings.schema.json",
+    schemaFile: "v0.9/findings.schema.json",
     codec: legacyFindingsCodec,
     normalize: legacyFindingsNormalize,
     latest: false,
@@ -84,7 +88,7 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
     minor: "0.6",
     defaultVersion: "0.6.0",
-    schemaFile: "findings.schema.json",
+    schemaFile: "v0.9/findings.schema.json",
     codec: legacyFindingsCodec,
     normalize: legacyFindingsNormalize,
     latest: false,

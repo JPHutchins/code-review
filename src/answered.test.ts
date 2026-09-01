@@ -361,6 +361,32 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r2");
   });
 
+  it("the ID match wins over a title-matched synthesized entry — an unrelated same-title answer never mis-binds the annotation", () => {
+    const unrelated = entry({
+      code: synthesizedFindingId("src/elsewhere.ts", "The same claim"),
+      replyId: 5,
+      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r5",
+    });
+    // The id-matched entry comes AFTER the unrelated title match in the registry order.
+    const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
+      [mkFinding({ id: "recurring-a" })],
+      [unrelated, entry()],
+    );
+    expect(findings).toHaveLength(0);
+    expect(verbatimReRaised).toHaveLength(1);
+    expect(verbatimReRaised[0]!.replyUrl).toContain("discussion_r2");
+    expect(reRaisedNotes).toEqual({});
+  });
+
+  it("the title second chance never fires for an entry whose code is REAL, only synthesized", () => {
+    // A real-code entry with the same title must NOT match a fresh-id finding by title alone.
+    const { findings } = applyAnswered(
+      [mkFinding({ id: "some-other-id" })],
+      [entry({ code: "recurring-a", title: "The same claim" })],
+    );
+    expect(findings).toHaveLength(1);
+  });
+
   it("leaves unmatched findings untouched", () => {
     const { findings, reRaisedNotes, verbatimReRaised } = applyAnswered(
       [

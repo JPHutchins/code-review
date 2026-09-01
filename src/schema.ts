@@ -327,6 +327,11 @@ export const synthesizedFindingId = (path: string, title: string): string =>
 
 export const synthesizedSystemicId = (title: string): string => synthesizedId([title], "s-");
 
+// Exactly the shape synthesizedFindingId emits (`f-` + 12 base64url chars) — the answered matcher's
+// title second chance applies ONLY to entries whose code was synthesized (the pre-0.10 codeless
+// pair), so a reviewer-supplied id that merely starts with `f-` can never open the fallback.
+export const isSynthesizedFindingId = (id: string): boolean => /^f-[A-Za-z0-9_-]{12}$/.test(id);
+
 // The ONE resolution a finding's id goes through: an explicit id wins, and an empty one resolves to
 // the same synthesized id the legacy upcast derives — shared by the answered-registry builder and the
 // answered match, so the two sides can never disagree on what an empty id means.

@@ -166,12 +166,22 @@
               {
                 "required": [
                   "code"
-                ]
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  }
+                }
               },
               {
                 "required": [
                   "id"
-                ]
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
               }
             ]
           }

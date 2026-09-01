@@ -26,6 +26,8 @@ import {
   parseReviewedSha,
   priorTrajectory,
   reviewBodyPointer,
+  CONVERGENCE_CEILINGS,
+  DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
 import {
   ResultEnvelopeCodec,
@@ -1122,7 +1124,17 @@ export const post = async (
         currentCodes,
         input.headSha.slice(0, 12),
       )
-    : priorConv;
+    : effectiveRoute === "mechanic"
+      ? // A mechanic pass means CI failed — whatever the carried prior says, its own stamp must
+        // never read "converged". Pinned at the critical ceiling (4), so no practical threshold
+        // converges it; the prior trajectory rides along verbatim as history (issue #224).
+        {
+          score: CONVERGENCE_CEILINGS.critical,
+          threshold: input.convergenceThreshold ?? DEFAULT_CONVERGENCE_THRESHOLD,
+          converged: false,
+          ...(priorConv?.rounds !== undefined ? { rounds: priorConv.rounds } : {}),
+        }
+      : priorConv;
   const stampedFindings = stampConvergence(findings, convergence);
   const currentRoundCount = isRound ? roundNumber : priorRoundCount;
 

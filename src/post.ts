@@ -936,10 +936,12 @@ export const post = async (
   const isSuppressedNit = (f: Finding): boolean =>
     f.severity === "nit" &&
     (isBelowVisibilityFloor(f, input.nitVisibilityFloor) ||
-      // BOTH key forms on the current side: the resolved id matches the prior side's synthesized
-      // codeless keys, and the answeredNoteKey form matches a pathless prior nit's title: key.
+      // ALL THREE key forms the prior side can emit: the resolved id (a coded or same-path
+      // synthesized prior), the answeredNoteKey form (an empty-id prior), and the bare title: key
+      // (a pathless codeless prior).
       priorSuppressedKeys.has(resolveFindingId(f)) ||
-      priorSuppressedKeys.has(answeredNoteKey(f)));
+      priorSuppressedKeys.has(answeredNoteKey(f)) ||
+      priorSuppressedKeys.has(`title:${f.title}`));
   const suppressedNits = findings.findings.filter(isSuppressedNit);
   const visibleFindings = findings.findings.filter((f) => !isSuppressedNit(f));
   // The drop note, shared by every surface that renders the filtered findings: the TRUE pre-dedup

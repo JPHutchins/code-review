@@ -66,26 +66,26 @@ const RuleUrlCodec = t.partial({
   code_url: UriString,
 });
 
-const FindingShape = t.intersection([
-  t.type({
-    id: t.string,
-    path: t.string,
-    start_line: LineNumber,
-    end_line: LineNumber,
-    severity: SeverityCodec,
-    title: t.string,
-    description: t.string,
-    reasoning: t.string,
-    confidence: Confidence,
-    likelihood: Likelihood,
-  }),
-  RuleUrlCodec,
-  t.partial({
-    side: SideCodec,
-    recommendation: t.string,
-    patch: t.string,
-  }),
-]);
+const FindingRequired = t.type({
+  id: t.string,
+  path: t.string,
+  start_line: LineNumber,
+  end_line: LineNumber,
+  severity: SeverityCodec,
+  title: t.string,
+  description: t.string,
+  reasoning: t.string,
+  confidence: Confidence,
+  likelihood: Likelihood,
+});
+
+const FindingOptional = t.partial({
+  side: SideCodec,
+  recommendation: t.string,
+  patch: t.string,
+});
+
+const FindingShape = t.intersection([FindingRequired, RuleUrlCodec, FindingOptional]);
 
 const EndGeStart = t.refinement(
   FindingShape,
@@ -93,7 +93,22 @@ const EndGeStart = t.refinement(
   "EndGeStart",
 );
 
-export const FindingCodec = t.exact(EndGeStart);
+// Strict-key refinement (see SystemicProblemStrict): the ajv gate rejects unknown keys but t.exact
+// accepts them on decode, so the codec gate must reject exactly what ajv rejects — the removed
+// `code` key must not ride through a 0.10 decode into a re-serialized blob.
+const FINDING_KEYS = new Set([
+  ...Object.keys(FindingRequired.props),
+  ...Object.keys(RuleUrlCodec.props),
+  ...Object.keys(FindingOptional.props),
+]);
+
+const FindingStrict = t.refinement(
+  EndGeStart,
+  (f): f is t.TypeOf<typeof EndGeStart> => Object.keys(f).every((k) => FINDING_KEYS.has(k)),
+  "FindingStrict",
+);
+
+export const FindingCodec = t.exact(FindingStrict);
 
 // Cross-cutting observations that tie findings together, with no required line anchor — mirrors
 // findings.schema.json's systemic_problems items exactly, reusing the shared rule-identifier pair.
@@ -338,6 +353,24 @@ export const isSynthesizedFindingId = (id: string): boolean => /^f-[A-Za-z0-9_-]
 export const resolveFindingId = (f: { id: string; path: string; title: string }): string =>
   f.id !== "" ? f.id : synthesizedFindingId(f.path, f.title);
 
+// The ONE legacy-spelling precedence for a RAW record (id → code → synthesized when a path exists):
+// shared by the legacy upcast, the answered-registry marker reader, and the below-floor nit reader,
+// so the three raw-document sites can never drift on which spelling wins. undefined only when the
+// record carries no usable spelling AND no path to synthesize from (a systemic's shape).
+export const resolveRuleId = (rec: {
+  readonly id?: string;
+  readonly code?: string;
+  readonly path?: string;
+  readonly title: string;
+}): string | undefined =>
+  rec.id !== undefined && rec.id !== ""
+    ? rec.id
+    : rec.code !== undefined && rec.code !== ""
+      ? rec.code
+      : rec.path !== undefined
+        ? synthesizedFindingId(rec.path, rec.title)
+        : undefined;
+
 // The ONE "usable counts map" predicate every round reader shares: every entry a positive safe
 // integer — a present-but-malformed/empty/all-zero map is absence, so a valid legacy `codes` map
 // sitting beside a bad `ids` takes over wherever a round's mechanism map is read (the round readers
@@ -507,21 +540,13 @@ export const normalizeV09 = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =
   const findings = doc.findings.map(({ code, id, ...f }) => ({
     ...f,
     id:
-      id !== undefined && id !== ""
-        ? id
-        : code !== undefined && code !== ""
-          ? code
-          : synthesizedFindingId(f.path, f.title),
+      resolveRuleId({ id, code, path: f.path, title: f.title }) ??
+      synthesizedFindingId(f.path, f.title),
   }));
   const systemic_problems = doc.systemic_problems?.map(
     ({ code, id, finding_codes, finding_ids, ...s }) => ({
       ...s,
-      id:
-        id !== undefined && id !== ""
-          ? id
-          : code !== undefined && code !== ""
-            ? code
-            : synthesizedSystemicId(s.title),
+      id: resolveRuleId({ id, code, title: s.title }) ?? synthesizedSystemicId(s.title),
       ...(finding_ids !== undefined && finding_ids.length > 0
         ? { finding_ids }
         : finding_codes !== undefined

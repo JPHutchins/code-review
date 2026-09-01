@@ -11,7 +11,12 @@ import * as t from "io-ts";
 import { escapeCodeBackticks, parseFindingsMarker } from "./surface.js";
 import { parseJsonl } from "./transcript.js";
 import type { GhApi } from "./gh.js";
-import { isSynthesizedFindingId, resolveFindingId, synthesizedFindingId } from "./schema.js";
+import {
+  isSynthesizedFindingId,
+  resolveFindingId,
+  resolveRuleId,
+  synthesizedFindingId,
+} from "./schema.js";
 import type { Finding, Severity } from "./schema.js";
 import { clipText, errMsg } from "./util.js";
 
@@ -218,15 +223,17 @@ export const answeredRegistryFrom = (
         severity === "minor" ||
         severity === "nit")
       ? {
-          // A pre-id marker (or one written before the migration) carries `code`; a codeless one
-          // resolves to the same synthesized id the registry's legacy upcast derives, so the entry
-          // keys to the identical claim on the next round.
+          // resolveRuleId: the ONE legacy-spelling precedence the upcast, this reader, and the
+          // below-floor nit reader share — a pre-id marker (or one written before the migration)
+          // carries `code`; a codeless one resolves to the same synthesized id the registry's
+          // legacy upcast derives, so the entry keys to the identical claim on the next round.
           code:
-            typeof id === "string" && id !== ""
-              ? id
-              : typeof legacyCode === "string" && legacyCode !== ""
-                ? legacyCode
-                : synthesizedFindingId(path, title),
+            resolveRuleId({
+              id: typeof id === "string" ? id : undefined,
+              code: typeof legacyCode === "string" ? legacyCode : undefined,
+              path,
+              title,
+            }) ?? synthesizedFindingId(path, title),
           title,
           description,
           reasoning,

@@ -6,7 +6,7 @@ import {
   ConvergenceCodec,
   DEFAULT_SCHEMA_VERSION,
   resolveFindingId,
-  synthesizedFindingId,
+  resolveRuleId,
   usableCountsMap,
 } from "./schema.js";
 import type {
@@ -665,18 +665,15 @@ export const priorBelowFloorNits = (
     const title = rec["title"];
     if (typeof title !== "string") continue;
     const path = typeof rec["path"] === "string" ? rec["path"] : undefined;
-    // The raw marker doc may predate id (a legacy `code`) — read both, emitting the id form; a
-    // CODELESS pre-id nit resolves to the same synthesized id the upcast derives, so post's
-    // stickiness key matches the 0.10 re-raise of the same claim instead of resetting on the
-    // migration round.
-    const id =
-      typeof rec["id"] === "string" && rec["id"] !== ""
-        ? rec["id"]
-        : typeof rec["code"] === "string" && rec["code"] !== ""
-          ? rec["code"]
-          : path !== undefined
-            ? synthesizedFindingId(path, title)
-            : undefined;
+    // resolveRuleId: the raw marker doc may predate id (a legacy `code`), and a CODELESS pre-id nit
+    // resolves to the same synthesized id the upcast derives — so post's stickiness key matches the
+    // 0.10 re-raise of the same claim instead of resetting on the migration round.
+    const id = resolveRuleId({
+      id: typeof rec["id"] === "string" ? rec["id"] : undefined,
+      code: typeof rec["code"] === "string" ? rec["code"] : undefined,
+      path,
+      title,
+    });
     nits.push({
       title,
       ...(id !== undefined ? { id } : {}),
@@ -841,6 +838,14 @@ const withLegacyConvergenceIds = (raw: unknown): unknown => {
   const rec = raw as Record<string, unknown>;
   const rounds = rec["rounds"];
   if (!Array.isArray(rounds)) return raw;
+  const needsMigration = (r: unknown): boolean => {
+    if (typeof r !== "object" || r === null) return false;
+    const round = r as Record<string, unknown>;
+    return round["codes"] !== undefined || usableCountsMap(round["ids"]) === undefined;
+  };
+  // Fast path: a current 0.10 doc whose rounds all carry usable ids maps needs no migration — the
+  // mapper runs on EVERY convergence decode, so the common case must not pay per-round rebuilds.
+  if (!rounds.some(needsMigration)) return raw;
   const mapped: unknown[] = rounds.map((r) => {
     if (typeof r !== "object" || r === null) return r as unknown;
     const round = r as Record<string, unknown>;

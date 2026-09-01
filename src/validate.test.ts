@@ -266,6 +266,9 @@ describe("validateAgainstSchema", () => {
     it("rejects the removed `code` field (0.10 renamed it to `id`)", () => {
       const result = validateAgainstSchema(doc([finding({ code: "old-field" })]), schemaPath);
       expect(result.valid).toBe(false);
+      // The codec gate now rejects it too (the strict-key refinement) — a 0.10-stamped finding
+      // carrying BOTH spellings must not pass one gate and fail the other.
+      expect(FindingCodec.decode(finding({ id: "keep-me", code: "old-field" }))._tag).toBe("Left");
     });
   });
 });

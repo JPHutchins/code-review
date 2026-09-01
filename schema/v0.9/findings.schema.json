@@ -137,7 +137,6 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "code",
               "consecutive_rounds",
               "start_round"
             ],
@@ -162,7 +161,19 @@
                 "type": "string",
                 "description": "The tolerant-in spelling of `code` (0.10 renamed it)."
               }
-            }
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "code"
+                ]
+              },
+              {
+                "required": [
+                  "id"
+                ]
+              }
+            ]
           }
         }
       }

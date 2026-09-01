@@ -37,8 +37,6 @@ import { formatUtc } from "./format.js";
 import {
   ResultEnvelopeCodec,
   FindingsCodec,
-  FindingsCodecV09,
-  normalizeV09,
   PriceMapCodec,
   ScopeMetastasisCodec,
   TestSummaryCodec,
@@ -76,7 +74,7 @@ import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName, TranscriptTelemetry } from "./adapt.js";
 import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
-import { schemaPathFor, declaredVersion, resolve as resolveRegistry } from "./registry.js";
+import { schemaPathFor, declaredVersion, resolveTolerantFindings } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
 import { validatePatch } from "./patch.js";
 import {
@@ -97,19 +95,11 @@ import {
 import { parseScope } from "./scope.js";
 import { annotationSafe, asRecord, errMsg, readFileOrNull, tryParseJson } from "./util.js";
 
-// The seed chain's shared upcast: a prior document (raw artifact, embedded marker, or a peeled
-// surfaced blob re-stamped with the CURRENT draft version) resolves through the registry, and — when
-// the strict entry rejects a legacy-shaped body carrying the new stamp — through the tolerant legacy
-// codec, so a pre-0.10 prior always yields its 0.10 shape (code → id, or the synthesized id) instead
-// of nothing. The ajv gate then validates the UPCAST value, never the raw doc: validating the raw doc
-// against the 0.10 schema would reject every legacy prior and seed the sentinel-only cold re-review
-// the migration exists to prevent.
-const resolvedPriorValue = (doc: unknown): Findings | null => {
-  const r = resolveRegistry("findings", doc);
-  if (r.kind === "ok") return r.value;
-  const legacy = FindingsCodecV09.decode(doc);
-  return legacy._tag === "Right" ? normalizeV09(legacy.right) : null;
-};
+// The seed's upcast (the registry's resolveTolerantFindings — the ONE place the migration policy
+// lives): the ajv gate then validates the UPCAST value, never the raw doc: validating the raw legacy
+// doc against the 0.10 schema would reject every pre-0.10 prior and seed the sentinel-only cold
+// re-review the migration exists to prevent.
+const resolvedPriorValue = resolveTolerantFindings;
 
 const readJSON = (path: string): unknown => {
   try {

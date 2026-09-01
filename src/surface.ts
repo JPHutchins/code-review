@@ -2,7 +2,12 @@
 // must agree on: severity→emoji, the machine-readable findings-json marker, and patch→suggestion
 // projection. Pure.
 
-import { ConvergenceCodec, DEFAULT_SCHEMA_VERSION } from "./schema.js";
+import {
+  ConvergenceCodec,
+  DEFAULT_SCHEMA_VERSION,
+  resolveFindingId,
+  synthesizedFindingId,
+} from "./schema.js";
 import type {
   ChangeSize,
   Convergence,
@@ -249,12 +254,23 @@ export const escapeCodeBackticks = (code: string): string =>
 // detector is watching), then alphabetically for a stable order. Malformed (or absent) codes decode to
 // undefined so the round's severity counts still stand — a crafted marker can't smuggle a bad codes
 // shape into the streak/note renderers.
-const normalizeIdCounts = (ids: unknown, priorCodes?: IdCounts): IdCounts | undefined => {
-  if (typeof ids !== "object" || ids === null || Array.isArray(ids)) return undefined;
-  const entries = Object.entries(ids as Record<string, unknown>).filter(
+// The ONE legacy-spelling precedence every round reader shares: a `codes` map is a usable legacy
+// `ids` map when every entry is a positive safe integer — a present-but-malformed/empty `ids` must
+// not defeat a valid `codes` sitting beside it (the migration policy is one, wherever a round's
+// mechanism map is read).
+const usableCounts = (v: unknown): IdCounts | undefined => {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+  const entries = Object.entries(v as Record<string, unknown>).filter(
     (e): e is [string, number] =>
       typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
   );
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+};
+
+// The bounded form for the ROUNDS marker (the carrier with the top-N cap): the same usableCounts
+// validation, then the cap + prior-preference.
+const normalizeIdCounts = (ids: unknown, priorCodes?: IdCounts): IdCounts | undefined => {
+  const entries = Object.entries(usableCounts(ids) ?? {});
   if (entries.length === 0) return undefined;
   const sorted = entries.sort((a, b) => {
     if (b[1] !== a[1]) return b[1] - a[1];
@@ -357,7 +373,9 @@ export const computeIdCounts = (
   // key like "__proto__" becomes an own property, never the map's prototype.
   const counts = new Map<string, number>();
   for (const code of [
-    ...findings.map((f) => f.id),
+    // resolveFindingId: an EMPTY id counts under the same synthesized key the answered match uses —
+    // one finding can never be simultaneously tracked (dropped-by-synthesis) and uncounted.
+    ...findings.map((f) => resolveFindingId(f)),
     ...systemic.flatMap((s) => [s.id, ...(s.finding_ids ?? [])]),
   ]) {
     if (code === undefined || code === "") continue;
@@ -488,7 +506,7 @@ export const computeSameRootNotes = (
   findings: readonly Finding[],
   currentSha?: string,
 ): Readonly<Record<string, string>> => {
-  const codes = findings.map((f) => f.id).filter((c) => c !== "");
+  const codes = findings.map((f) => resolveFindingId(f));
   const entries: [string, string][] = [];
   for (const code of codes) {
     let lastRound = 0;
@@ -657,14 +675,19 @@ export const priorBelowFloorNits = (
     if (!isBelowVisibilityFloor(rec, floor)) continue;
     const title = rec["title"];
     if (typeof title !== "string") continue;
-    // The raw marker doc may predate id (a legacy `code`) — read both, emitting the id form.
+    const path = typeof rec["path"] === "string" ? rec["path"] : undefined;
+    // The raw marker doc may predate id (a legacy `code`) — read both, emitting the id form; a
+    // CODELESS pre-id nit resolves to the same synthesized id the upcast derives, so post's
+    // stickiness key matches the 0.10 re-raise of the same claim instead of resetting on the
+    // migration round.
     const id =
       typeof rec["id"] === "string" && rec["id"] !== ""
         ? rec["id"]
         : typeof rec["code"] === "string" && rec["code"] !== ""
           ? rec["code"]
-          : undefined;
-    const path = typeof rec["path"] === "string" ? rec["path"] : undefined;
+          : path !== undefined
+            ? synthesizedFindingId(path, title)
+            : undefined;
     nits.push({
       title,
       ...(id !== undefined ? { id } : {}),
@@ -819,9 +842,11 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // crafted/reset value — treat it as absent so the marker/legacy fallbacks reconstruct the whole thing,
 // and an empty trajectory can never silently reset the round count to 0 (issue #185 review).
 // A pre-0.10 sticky's compact convergence marker carries rounds whose mechanism maps use the legacy
-// `codes` spelling (0.10 renamed it to `ids`). Map the legacy rounds before the strict codec gate —
-// an `ids` field wins even when malformed (the strict decode then rejects it, fail-closed); `codes`
-// maps to `ids` verbatim, capped counts included, exactly as the pre-0.10 writer carried them.
+// `codes` spelling (0.10 renamed it to `ids`). Map the legacy rounds before the strict codec gate,
+// with the SAME precedence parseRounds applies (usableCounts): an `ids` map wins only when it is a
+// usable counts map, else a usable `codes` map takes over — a round carrying both with a malformed
+// `ids` must not lose its mechanism map. The winner maps to `ids` verbatim minus the entries
+// usableCounts itself rejects (this carrier was never capped, unlike the rounds marker).
 const withLegacyConvergenceIds = (raw: unknown): unknown => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const rec = raw as Record<string, unknown>;
@@ -830,10 +855,12 @@ const withLegacyConvergenceIds = (raw: unknown): unknown => {
   const mapped: unknown[] = rounds.map((r) => {
     if (typeof r !== "object" || r === null) return r as unknown;
     const round = r as Record<string, unknown>;
-    if (round["ids"] !== undefined) return round;
-    if (round["codes"] === undefined) return round;
-    const { codes: legacyCodes, ...rest } = round;
-    return { ...rest, ids: legacyCodes };
+    const ids = usableCounts(round["ids"]) ?? usableCounts(round["codes"]);
+    if (ids === undefined) return round;
+    const rest = Object.fromEntries(
+      Object.entries(round).filter(([k]) => k !== "ids" && k !== "codes"),
+    );
+    return { ...rest, ids };
   });
   return { ...rec, rounds: mapped };
 };

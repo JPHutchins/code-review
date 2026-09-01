@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolve, schemaPathFor, defaultVersion, supportedVersions } from "./registry.js";
+import {
+  resolve,
+  resolveTolerantFindings,
+  schemaPathFor,
+  defaultVersion,
+  supportedVersions,
+} from "./registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolvePath(__dirname, "..");
@@ -168,6 +174,102 @@ describe('resolve("findings", ...) — 0.4 requires reasoning + confidence (sche
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
     expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10"]);
+  });
+});
+
+describe("resolveTolerantFindings — the seed chain's upcast", () => {
+  it("upcasts a legacy 0.9 doc (code → id) and a hybrid 0.10-stamped doc carrying `code`", () => {
+    const legacy = {
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "minor",
+          code: "legacy-a",
+          title: "t",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 1,
+        },
+      ],
+    };
+    expect(resolveTolerantFindings(legacy)?.findings[0]?.id).toBe("legacy-a");
+    // A peeled legacy surfaced blob: re-stamped with the CURRENT draft version while its findings
+    // still carry the pre-0.10 spelling.
+    const hybrid = { ...legacy, schema_version: "0.10.0" };
+    expect(resolveTolerantFindings(hybrid)?.findings[0]?.id).toBe("legacy-a");
+  });
+
+  it("returns null for an unsupported version stamp — the fallback never revives a version the allowlist refuses", () => {
+    const future = {
+      schema_version: "0.11.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "minor",
+          code: "legacy-a",
+          title: "t",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 1,
+        },
+      ],
+    };
+    expect(resolveTolerantFindings(future)).toBeNull();
+  });
+
+  it("prefers a POPULATED legacy spelling over a present-but-empty new one (the hybrid normalizeV09 admits)", () => {
+    const hybrid = {
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "p",
+          start_line: 1,
+          end_line: 1,
+          severity: "minor",
+          title: "t",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 1,
+        },
+      ],
+      systemic_problems: [
+        {
+          title: "S",
+          description: "d",
+          severity: "major",
+          reasoning: "r",
+          confidence: 0.8,
+          likelihood: 1,
+          code: "sys-a",
+          finding_ids: [],
+          finding_codes: ["legacy-link"],
+        },
+      ],
+      convergence: {
+        score: 2,
+        threshold: 1,
+        converged: false,
+        rounds: [{ round: 1, score: 2, ids: {}, codes: { "legacy-m": 3 } }],
+      },
+    };
+    const value = resolveTolerantFindings(hybrid);
+    expect(value?.systemic_problems?.[0]?.id).toBe("sys-a");
+    expect(value?.systemic_problems?.[0]?.finding_ids).toEqual(["legacy-link"]);
+    expect(value?.convergence?.rounds?.[0]?.ids).toEqual({ "legacy-m": 3 });
   });
 });
 

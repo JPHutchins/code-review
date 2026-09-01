@@ -1219,6 +1219,36 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.schema_version).toBe("0.10.0");
   });
 
+  it("a prior stamped with an UNSUPPORTED version is never upcast-laundered — the allowlist still governs the seed", async () => {
+    const futurePrior = {
+      schema_version: "0.11.0",
+      summary: "Prior review summary.",
+      verdict: "changes",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 3,
+          end_line: 3,
+          severity: "major",
+          code: "legacy-code",
+          title: "Prior finding",
+          description: "carried over from the prior review",
+          reasoning: "still worth checking",
+          confidence: 0.8,
+          likelihood: 1,
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(futurePrior)}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty-had-prior");
+    expect(existsSync(priorContextPath(out))).toBe(false);
+  });
+
   it("seeds a gather-staged --prior-findings document from the staged file (issue #217)", async () => {
     const prior = writePrior(
       `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n<!-- code-review:findings-json https://example.com/artifact.zip -->\nnew sticky`,

@@ -236,3 +236,18 @@ const resolvers: { readonly [K in SchemaKind]: (raw: unknown) => Resolution<K> }
 /** Decode + version-dispatch a raw document for a schema kind. Pure — no IO. */
 export const resolve = <K extends SchemaKind>(kind: K, raw: unknown): Resolution<K> =>
   resolvers[kind](raw);
+
+// The seed chain's tolerant findings resolution: the value when the document resolves, and — when the
+// STRICT entry rejects a body the migration's tolerant-in contract admits (a peeled legacy surfaced
+// blob re-stamped with the CURRENT draft version, or a hybrid doc whose findings carry the pre-0.10
+// `code` spelling) — the legacy codec's upcast value. null for an unsupported-version stamp: the
+// fallback must never revive a version the allowlist refuses (a dropped 0.2/0.3 minor, a future
+// 0.11+/1.x) and re-stamp it 0.10.0. The ONE place this upcast policy lives, shared by every raw-
+// document channel (the seed gate; the marker readers apply the same precedence on their fragments).
+export const resolveTolerantFindings = (doc: unknown): Findings | null => {
+  const r = resolveFindings(doc);
+  if (r.kind === "ok") return r.value;
+  if (r.kind === "unsupported-version") return null;
+  const legacy = FindingsCodecV09.decode(doc);
+  return legacy._tag === "Right" ? normalizeV09(legacy.right) : null;
+};

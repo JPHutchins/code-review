@@ -487,7 +487,7 @@ export const normalizeV09 = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =
           : code !== undefined && code !== ""
             ? code
             : synthesizedSystemicId(s.title),
-      ...(finding_ids !== undefined
+      ...(finding_ids !== undefined && finding_ids.length > 0
         ? { finding_ids }
         : finding_codes !== undefined
           ? { finding_ids: finding_codes }
@@ -526,7 +526,9 @@ export const normalizeV09 = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =
                 rounds: doc.convergence.rounds.map((r) => ({
                   round: r.round,
                   ...(r.score !== undefined ? { score: r.score } : {}),
-                  ...(r.ids !== undefined
+                  // A present-but-EMPTY new spelling must not discard a populated legacy one — the
+                  // hybrid the tolerant-in contract exists for (same rule as the finding_ids pair).
+                  ...(r.ids !== undefined && Object.keys(r.ids).length > 0
                     ? { ids: r.ids }
                     : r.codes !== undefined
                       ? { ids: r.codes }

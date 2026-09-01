@@ -45,7 +45,12 @@ import {
   MAX_IDS_PER_ROUND,
   reviewBodyPointer,
 } from "./surface.js";
-import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./schema.js";
+import {
+  DEFAULT_SCHEMA_VERSION,
+  FindingsCodec,
+  ScopeMetastasisCodec,
+  synthesizedFindingId,
+} from "./schema.js";
 import type { Finding, Findings, Severity } from "./schema.js";
 import type { SurfaceSignal } from "./surface.js";
 import type { RoundRecord, SeverityCounts } from "./types.js";
@@ -675,6 +680,22 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(carriedConvergence(null, marker)).not.toBeNull();
   });
 
+  it("a round carrying a malformed ids AND a valid legacy codes resolves through codes — the mapper shares parseRounds' precedence", () => {
+    const marker =
+      "<!-- code-review:convergence;base64 " +
+      Buffer.from(
+        JSON.stringify({
+          score: 2,
+          threshold: 1,
+          converged: false,
+          rounds: [{ round: 1, score: 2, ids: "not a map", codes: { "legacy-a": 2 } }],
+        }),
+        "utf-8",
+      ).toString("base64") +
+      " -->";
+    expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({ "legacy-a": 2 });
+  });
+
   it("bounds the stamped trajectory to the most recent rounds without renumbering (#174)", () => {
     const prior = Array.from({ length: 70 }, (_, i) => ({ round: i + 1, score: i / 100 }));
     const conv = buildConvergence(docOf(["minor", 0.7]), 1, prior, 71, {});
@@ -780,7 +801,7 @@ describe("nit visibility floor — issue #164", () => {
       findings: fs,
     });
 
-    it("extracts the below-floor nits' identifying bits (code, title, path)", () => {
+    it("extracts the below-floor nits' identifying bits (id, title, path)", () => {
       const doc = priorDoc([
         nit({ id: "c1", title: "T1", path: "src/a.ts" }), // m 0.20 — below
         nit({ likelihood: 0.9, title: "T2" }), // m 0.45 — above
@@ -789,12 +810,18 @@ describe("nit visibility floor — issue #164", () => {
       expect(priorBelowFloorNits(doc)).toEqual([{ title: "T1", id: "c1", path: "src/a.ts" }]);
     });
 
-    it("omits code when absent (title-keyed) and drops a titleless entry", () => {
+    it("synthesizes the id for a codeless legacy nit — the same key the upcast derives — and drops a titleless entry", () => {
       const doc = priorDoc([
         nit({ title: "only-title" }),
         nit({ title: 123 as unknown as string }),
       ]);
-      expect(priorBelowFloorNits(doc)).toEqual([{ title: "only-title", path: "src/x.ts" }]);
+      expect(priorBelowFloorNits(doc)).toEqual([
+        {
+          title: "only-title",
+          id: synthesizedFindingId("src/x.ts", "only-title"),
+          path: "src/x.ts",
+        },
+      ]);
     });
 
     it("returns [] for an old blob whose nits have no likelihood (fails open)", () => {
@@ -897,7 +924,7 @@ describe("mechanism frequency rounds — issue #145", () => {
     ids,
   });
 
-  it("computeIdCounts counts findings by id, ignoring empty-id findings", () => {
+  it("computeIdCounts counts findings by id, resolving an empty id to the synthesized mechanism key", () => {
     expect(
       computeIdCounts([
         mkFinding({ id: "null-check-missing" }),
@@ -905,7 +932,11 @@ describe("mechanism frequency rounds — issue #145", () => {
         mkFinding({ id: "body-reconstruction" }),
         mkFinding({ id: "" }),
       ]),
-    ).toEqual({ "null-check-missing": 2, "body-reconstruction": 1 });
+    ).toEqual({
+      "null-check-missing": 2,
+      "body-reconstruction": 1,
+      [synthesizedFindingId("src/x.ts", "t")]: 1,
+    });
   });
 
   it("parseRounds caps a round's decoded codes at the top-N by count", () => {

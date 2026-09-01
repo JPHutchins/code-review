@@ -13,7 +13,8 @@
       "description": "The `file` parameter may be undefined; add a guard before use.",
       "reasoning": "The handler dereferences `file` before any null check, and the caller can pass undefined.",
       "confidence": 0.7,
-      "likelihood": 1
+      "likelihood": 1,
+      "id": "f11-agent-file-0"
     }
   ]
 }

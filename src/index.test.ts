@@ -12,7 +12,7 @@ import {
   priorSuppressedPath,
   SEED_SENTINEL,
 } from "./budget.js";
-import { ResultEnvelopeCodec } from "./schema.js";
+import { ResultEnvelopeCodec, synthesizedFindingId } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -810,7 +810,7 @@ describe("cli — extract", () => {
 describe("cli — validate-patches", () => {
   const mkFindingsDoc = (finding: Record<string, unknown>): string =>
     JSON.stringify({
-      schema_version: "0.4.0",
+      schema_version: "0.10.0",
       summary: "s",
       verdict: "comment",
       findings: [
@@ -819,6 +819,7 @@ describe("cli — validate-patches", () => {
           start_line: 1,
           end_line: 1,
           severity: "minor",
+          id: "t",
           title: "t",
           description: "d",
           reasoning: "r",
@@ -946,11 +947,15 @@ describe("cli — print-schema", () => {
     expect(stderr).toContain("bogus");
   });
 
-  it("--schema-version 0.4 matches the default (latest) output", async () => {
+  it("--schema-version 0.4 prints the FROZEN legacy schema (the tolerant-in 0.9 shape), the default prints the live 0.10 file", async () => {
     const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.4"]);
     const withoutVersion = await runCli(["print-schema", "findings"]);
     expect(withVersion.exitCode).toBeNull();
-    expect(withVersion.stdout).toBe(withoutVersion.stdout);
+    const printed = JSON.parse(withVersion.stdout) as Record<string, unknown>;
+    // The legacy file requires `code`-era fields optional and admits the tolerant `id` — not the
+    // live file's required id.
+    expect(printed["$id"]).toContain("schema-v0.9.0");
+    expect(withVersion.stdout).not.toBe(withoutVersion.stdout);
   });
 
   it("exits 1 for a now-dropped older --schema-version (0.2 is no longer supported)", async () => {
@@ -1115,6 +1120,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         start_line: 3,
         end_line: 3,
         severity: "major",
+        id: "prior-finding",
         title: "Prior finding",
         description: "carried over from the prior review",
         reasoning: "still worth checking",
@@ -1161,6 +1167,90 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ) as typeof priorFindings;
     expect(context.findings).toHaveLength(1);
     expect(context.findings[0]!.title).toBe("Prior finding");
+  });
+
+  it("seeds a pre-0.10 prior whose findings carry `code` — the upcast runs before the 0.10 gates, so the legacy prior is not a cold re-review", async () => {
+    // What the previous release actually embedded: 0.9.0 with `code`, no `id`. The raw doc fails the
+    // 0.10 ajv gate; the resolved value (code → id, or synthesized) must be what both gates see.
+    const legacyPrior = {
+      schema_version: "0.9.0",
+      summary: "Prior review summary.",
+      verdict: "changes",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 3,
+          end_line: 3,
+          severity: "major",
+          code: "legacy-code",
+          title: "Prior finding",
+          description: "carried over from the prior review",
+          reasoning: "still worth checking",
+          confidence: 0.8,
+          likelihood: 1,
+        },
+        {
+          path: "src/b.ts",
+          start_line: 7,
+          end_line: 7,
+          severity: "minor",
+          title: "Codeless prior finding",
+          description: "carried over from the prior review",
+          reasoning: "still worth checking",
+          confidence: 0.8,
+          likelihood: 1,
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(legacyPrior)}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    assertSentinelOnly(out);
+    const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as {
+      schema_version: string;
+      findings: { id: string; title: string }[];
+    };
+    // The upcast value is what seeds: code → id for the coded finding, the synthesized id for the
+    // codeless one — a legacy prior is never a cold re-review.
+    expect(context.findings[0]!.id).toBe("legacy-code");
+    expect(context.findings[1]!.id).toBe(
+      synthesizedFindingId("src/b.ts", "Codeless prior finding"),
+    );
+    expect(context.schema_version).toBe("0.10.0");
+  });
+
+  it("a prior stamped with an UNSUPPORTED version is never upcast-laundered — the allowlist still governs the seed", async () => {
+    const futurePrior = {
+      schema_version: "0.11.0",
+      summary: "Prior review summary.",
+      verdict: "changes",
+      findings: [
+        {
+          path: "src/a.ts",
+          start_line: 3,
+          end_line: 3,
+          severity: "major",
+          code: "legacy-code",
+          title: "Prior finding",
+          description: "carried over from the prior review",
+          reasoning: "still worth checking",
+          confidence: 0.8,
+          likelihood: 1,
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(futurePrior)}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("empty-had-prior");
+    expect(existsSync(priorContextPath(out))).toBe(false);
   });
 
   it("seeds a gather-staged --prior-findings document from the staged file (issue #217)", async () => {
@@ -1228,7 +1318,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
           end_line: 1,
           severity: "nit",
           title: "below",
-          code: "b1",
+          id: "b1",
           description: "d",
           reasoning: "r",
           confidence: 0.5,
@@ -1267,7 +1357,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const { exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
     expect(exitCode).toBeNull();
     const suppressed = JSON.parse(readFileSync(priorSuppressedPath(out), "utf-8")) as unknown[];
-    expect(suppressed).toEqual([{ title: "below", code: "b1", path: "src/a.ts" }]);
+    expect(suppressed).toEqual([{ title: "below", id: "b1", path: "src/a.ts" }]);
   });
 
   it("writes no .prior-suppressed sidecar when the prior blob predates likelihood (fails open, issue #164)", async () => {
@@ -1310,7 +1400,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
           end_line: 1,
           severity: "nit",
           title: "mech-nit",
-          code: "m1",
+          id: "m1",
           description: "d",
           reasoning: "r",
           confidence: 0.5,
@@ -1338,7 +1428,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
           end_line: 1,
           severity: "nit",
           title: "below",
-          code: "b1",
+          id: "b1",
           description: "d",
           reasoning: "r",
           confidence: 0.5,
@@ -1362,7 +1452,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(exitCode).toBeNull(); // did NOT process.exit(1) — the always-exit-0 contract holds
     // degraded to the default floor 0.25, so the below-floor nit (m 0.20) is still delivered
     const suppressed = JSON.parse(readFileSync(priorSuppressedPath(out), "utf-8")) as unknown[];
-    expect(suppressed).toEqual([{ title: "below", code: "b1", path: "src/a.ts" }]);
+    expect(suppressed).toEqual([{ title: "below", id: "b1", path: "src/a.ts" }]);
   });
 
   it("seeds from a SURFACED 0.8.0 blob, stripping convergence/round and restoring the draft version (issue #141)", async () => {
@@ -1387,8 +1477,8 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings;
-    // stripSurfaceFields restores the CURRENT draft version (0.9.0 after #163), not the surfaced 0.8.0.
-    expect(context.schema_version).toBe("0.9.0");
+    // stripSurfaceFields restores the CURRENT draft version (0.10.0 after the id migration), not the surfaced 0.8.0.
+    expect(context.schema_version).toBe("0.10.0");
     expect(context).not.toHaveProperty("convergence");
     expect(context).not.toHaveProperty("round");
     expect(context.findings).toHaveLength(1);
@@ -1397,7 +1487,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
   it("seeds a surfaced blob's scope_metastasis through to the context — the agent must see the recurrence data (issue #150)", async () => {
     const entry = {
       decision_prompt: "decide: commit to the expanding scope or narrow it",
-      recurring: [{ code: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
     };
     const surfaced = {
       ...priorFindings,
@@ -1416,7 +1506,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings & { scope_metastasis?: unknown };
-    expect(context.schema_version).toBe("0.9.0");
+    expect(context.schema_version).toBe("0.10.0");
     expect(context.scope_metastasis).toEqual(entry);
   });
 
@@ -1430,7 +1520,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1439,7 +1529,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1448,7 +1538,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1458,7 +1548,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       schema_version: "0.6.0",
       scope_metastasis: {
         decision_prompt: "stale echo",
-        recurring: [{ code: "stale-code", consecutive_rounds: 9, start_round: 1 }],
+        recurring: [{ id: "stale-code", consecutive_rounds: 9, start_round: 1 }],
       },
     };
     const prior = writePrior(
@@ -1476,7 +1566,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       };
     };
     expect(context.scope_metastasis?.recurring).toEqual([
-      { code: "fresh-code", consecutive_rounds: 3, start_round: 1 },
+      { id: "fresh-code", consecutive_rounds: 3, start_round: 1 },
     ]);
   });
 
@@ -1491,7 +1581,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1500,7 +1590,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1509,7 +1599,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1518,7 +1608,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "other-code": 1 },
+        ids: { "other-code": 1 },
         sha: "sha4",
         round: 4,
       },
@@ -1528,7 +1618,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
       schema_version: "0.6.0",
       scope_metastasis: {
         decision_prompt: "stale echo",
-        recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+        recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
       },
     };
     const prior = writePrior(
@@ -1552,7 +1642,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     // different one — only a draft blob's entry is a droppable echo.
     const carried = {
       decision_prompt: "authoritative legacy stamp",
-      recurring: [{ code: "legacy-code", consecutive_rounds: 5, start_round: 1 }],
+      recurring: [{ id: "legacy-code", consecutive_rounds: 5, start_round: 1 }],
     };
     const rounds = [
       {
@@ -1560,7 +1650,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1569,7 +1659,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1578,7 +1668,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "fresh-code": 1 },
+        ids: { "fresh-code": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1621,7 +1711,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1630,7 +1720,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1639,7 +1729,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1686,7 +1776,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     writeFileSync(customSchema, JSON.stringify(bundled));
     const entry = {
       decision_prompt: "decide",
-      recurring: [{ code: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 4, start_round: 1 }],
     };
     const surfaced = {
       ...priorFindings,
@@ -1768,7 +1858,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1777,7 +1867,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1786,7 +1876,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1812,7 +1902,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     };
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
-      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
     });
   });
 
@@ -1823,7 +1913,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1832,7 +1922,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1841,7 +1931,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1867,7 +1957,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     };
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
-      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
     });
   });
 
@@ -1882,7 +1972,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha1",
         round: 1,
       },
@@ -1891,7 +1981,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha2",
         round: 2,
       },
@@ -1900,7 +1990,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
         major: 0,
         minor: 1,
         nit: 0,
-        codes: { "recurring-a": 1 },
+        ids: { "recurring-a": 1 },
         sha: "sha3",
         round: 3,
       },
@@ -1924,10 +2014,10 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ) as typeof priorFindings & {
       scope_metastasis?: unknown;
     };
-    expect(context.schema_version).toBe("0.9.0");
+    expect(context.schema_version).toBe("0.10.0");
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
-      recurring: [{ code: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],
     });
   });
 
@@ -2246,6 +2336,7 @@ index abc..def 100644
           start_line: 10,
           end_line: 10,
           severity: "minor",
+          id: "real-bug",
           title: "real-bug",
           description: "d",
           reasoning: "r",
@@ -2257,6 +2348,7 @@ index abc..def 100644
           start_line: 11,
           end_line: 11,
           severity: "nit",
+          id: "trivial-nit",
           title: "trivial-nit",
           description: "d",
           reasoning: "r",
@@ -2327,6 +2419,7 @@ describe("cli — render --nit-visibility-floor (issue #164)", () => {
           start_line: 1,
           end_line: 1,
           severity: "nit",
+          id: "trivial-nit",
           title: "trivial-nit",
           description: "d",
           reasoning: "r",

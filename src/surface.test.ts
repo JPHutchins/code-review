@@ -24,6 +24,7 @@ import {
   changeSizeSummary,
   buildConvergence,
   parseConvergence,
+  parseConvergenceMarker,
   carriedConvergence,
   CONVERGENCE_TRAJECTORY_LIMIT,
   isBelowVisibilityFloor,
@@ -35,16 +36,22 @@ import {
   SURFACE_SCHEMA_VERSION,
   SURFACE_SCHEMA_VERSIONS,
   DEFAULT_CONVERGENCE_THRESHOLD,
-  computeCodeCounts,
-  consecutiveCodeStreaks,
+  computeIdCounts,
+  consecutiveIdStreaks,
   metastasisNote,
   computeScopeMetastasis,
   SCOPE_METASTASIS_DECISION_PROMPT,
   computeSameRootNotes,
-  MAX_CODES_PER_ROUND,
+  MAX_IDS_PER_ROUND,
   reviewBodyPointer,
 } from "./surface.js";
-import { DEFAULT_SCHEMA_VERSION, FindingsCodec, ScopeMetastasisCodec } from "./schema.js";
+import {
+  ConvergenceCodec,
+  DEFAULT_SCHEMA_VERSION,
+  FindingsCodec,
+  ScopeMetastasisCodec,
+  synthesizedFindingId,
+} from "./schema.js";
 import type { Finding, Findings, Severity } from "./schema.js";
 import type { SurfaceSignal } from "./surface.js";
 import type { RoundRecord, SeverityCounts } from "./types.js";
@@ -103,6 +110,7 @@ const findings = {
       start_line: 1,
       end_line: 1,
       severity: "minor",
+      id: "t",
       title: "t",
       description: "d",
       reasoning: "r",
@@ -128,7 +136,7 @@ describe("parseFindingsMarker", () => {
           severity: "major",
           reasoning: "Each file implements its own policy.",
           confidence: 0.8,
-          finding_codes: ["widened-type"],
+          finding_ids: ["widened-type"],
           paths: ["src/a.ts"],
         },
       ],
@@ -648,6 +656,61 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(carriedConvergence(decoded, "")).toEqual(conv);
   });
 
+  it("decodes a pre-0.10 compact convergence marker whose rounds carry legacy `codes` — the first post-migration round keeps the trajectory", () => {
+    // What buildConvergence wrote before 0.10: per-round mechanism maps under `codes`. The 0.10
+    // ConvergenceCodec is strict-keyed, so the marker reader maps the legacy spelling before the gate.
+    const marker =
+      "<!-- code-review:convergence;base64 " +
+      Buffer.from(
+        JSON.stringify({
+          score: 2,
+          threshold: 1,
+          converged: false,
+          rounds: [{ round: 1, score: 2, codes: { "null-check-missing": 1 }, sha: "abc123def456" }],
+        }),
+        "utf-8",
+      ).toString("base64") +
+      " -->";
+    expect(parseConvergenceMarker(marker)).toEqual({
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { "null-check-missing": 1 }, sha: "abc123def456" }],
+    });
+    // carriedConvergence reads it too, so priorTrajectory/carriedConvergence survive on the marker path.
+    expect(carriedConvergence(null, marker)).not.toBeNull();
+  });
+
+  it("a round carrying a malformed ids AND a valid legacy codes resolves through codes — the mapper shares parseRounds' precedence", () => {
+    const marker =
+      "<!-- code-review:convergence;base64 " +
+      Buffer.from(
+        JSON.stringify({
+          score: 2,
+          threshold: 1,
+          converged: false,
+          rounds: [{ round: 1, score: 2, ids: "not a map", codes: { "legacy-a": 2 } }],
+        }),
+        "utf-8",
+      ).toString("base64") +
+      " -->";
+    expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({ "legacy-a": 2 });
+  });
+
+  it("the round codec preserves a `__proto__` mechanism key — the decode mirrors the writer's fromEntries discipline", () => {
+    const decoded = ConvergenceCodec.decode({
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { ["__proto__"]: 3 } }],
+    });
+    expect(decoded._tag).toBe("Right");
+    if (decoded._tag !== "Right") return;
+    const ids = decoded.right.rounds?.[0]?.ids;
+    expect(Object.prototype.hasOwnProperty.call(ids, "__proto__")).toBe(true);
+    expect(ids?.["__proto__"]).toBe(3);
+  });
+
   it("bounds the stamped trajectory to the most recent rounds without renumbering (#174)", () => {
     const prior = Array.from({ length: 70 }, (_, i) => ({ round: i + 1, score: i / 100 }));
     const conv = buildConvergence(docOf(["minor", 0.7]), 1, prior, 71, {});
@@ -753,21 +816,27 @@ describe("nit visibility floor — issue #164", () => {
       findings: fs,
     });
 
-    it("extracts the below-floor nits' identifying bits (code, title, path)", () => {
+    it("extracts the below-floor nits' identifying bits (id, title, path)", () => {
       const doc = priorDoc([
-        nit({ code: "c1", title: "T1", path: "src/a.ts" }), // m 0.20 — below
+        nit({ id: "c1", title: "T1", path: "src/a.ts" }), // m 0.20 — below
         nit({ likelihood: 0.9, title: "T2" }), // m 0.45 — above
         nit({ severity: "minor", title: "T3" }), // not a nit
       ]);
-      expect(priorBelowFloorNits(doc)).toEqual([{ title: "T1", code: "c1", path: "src/a.ts" }]);
+      expect(priorBelowFloorNits(doc)).toEqual([{ title: "T1", id: "c1", path: "src/a.ts" }]);
     });
 
-    it("omits code when absent (title-keyed) and drops a titleless entry", () => {
+    it("synthesizes the id for a codeless legacy nit — the same key the upcast derives — and drops a titleless entry", () => {
       const doc = priorDoc([
         nit({ title: "only-title" }),
         nit({ title: 123 as unknown as string }),
       ]);
-      expect(priorBelowFloorNits(doc)).toEqual([{ title: "only-title", path: "src/x.ts" }]);
+      expect(priorBelowFloorNits(doc)).toEqual([
+        {
+          title: "only-title",
+          id: synthesizedFindingId("src/x.ts", "only-title"),
+          path: "src/x.ts",
+        },
+      ]);
     });
 
     it("returns [] for an old blob whose nits have no likelihood (fails open)", () => {
@@ -853,6 +922,7 @@ describe("mechanism frequency rounds — issue #145", () => {
     nit,
   });
   const mkFinding = (overrides: Partial<Finding>): Finding => ({
+    id: "test-id",
     path: "src/x.ts",
     start_line: 1,
     end_line: 1,
@@ -864,30 +934,33 @@ describe("mechanism frequency rounds — issue #145", () => {
     likelihood: 1,
     ...overrides,
   });
-  const coded = (c: SeverityCounts, codes: Record<string, number>): RoundRecord => ({
+  const coded = (c: SeverityCounts, ids: Record<string, number>): RoundRecord => ({
     ...c,
-    codes,
+    ids,
   });
 
-  it("computeCodeCounts counts findings by code, ignoring uncoded and empty-code findings", () => {
+  it("computeIdCounts counts findings by id, resolving an empty id to the synthesized mechanism key", () => {
     expect(
-      computeCodeCounts([
-        mkFinding({ code: "null-check-missing" }),
-        mkFinding({ code: "null-check-missing" }),
-        mkFinding({ code: "body-reconstruction" }),
-        mkFinding({}),
-        mkFinding({ code: "" }),
+      computeIdCounts([
+        mkFinding({ id: "null-check-missing" }),
+        mkFinding({ id: "null-check-missing" }),
+        mkFinding({ id: "body-reconstruction" }),
+        mkFinding({ id: "" }),
       ]),
-    ).toEqual({ "null-check-missing": 2, "body-reconstruction": 1 });
+    ).toEqual({
+      "null-check-missing": 2,
+      "body-reconstruction": 1,
+      [synthesizedFindingId("src/x.ts", "t")]: 1,
+    });
   });
 
   it("parseRounds caps a round's decoded codes at the top-N by count", () => {
     const many = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`code-${String(i)}`, 1]));
     const parsed = parseRounds(
-      mkRoundsMarker([{ critical: 0, major: 0, minor: 0, nit: 0, codes: many }]),
+      mkRoundsMarker([{ critical: 0, major: 0, minor: 0, nit: 0, ids: many }]),
     );
-    expect(parsed[0]?.codes).toBeDefined();
-    expect(Object.keys(parsed[0]?.codes ?? {})).toHaveLength(MAX_CODES_PER_ROUND);
+    expect(parsed[0]?.ids).toBeDefined();
+    expect(Object.keys(parsed[0]?.ids ?? {})).toHaveLength(MAX_IDS_PER_ROUND);
   });
 
   it("parseRounds round-trips coded rounds and keeps count-only rounds beside them", () => {
@@ -901,11 +974,11 @@ describe("mechanism frequency rounds — issue #145", () => {
   it("parseRounds chains the PRECEDING round's NORMALIZED codes as priorCodes across 3+ rounds", () => {
     const hi = (prefix: string): Record<string, number> =>
       Object.fromEntries(
-        Array.from({ length: MAX_CODES_PER_ROUND }, (_, i) => [`${prefix}${String(i)}`, 5]),
+        Array.from({ length: MAX_IDS_PER_ROUND }, (_, i) => [`${prefix}${String(i)}`, 5]),
       );
     // "watched" recurs at a low count and survives each round via the prior-kept pass; "dropme" appears
     // from round 2 but is cut from round 2's NORMALIZED output (not in round 1's prior), so it must NOT
-    // reappear in round 3 — proving the chain feeds forward round 2's normalized codes, not its raw ones.
+    // reappear in round 3 — proving the chain feeds forward round 2's normalized ids, not its raw ones.
     const parsed = parseRounds(
       mkRoundsMarker([
         coded(counts(0, 0, 0, 0), { watched: 1 }),
@@ -913,10 +986,10 @@ describe("mechanism frequency rounds — issue #145", () => {
         coded(counts(0, 0, 0, 0), { ...hi("g"), watched: 1, dropme: 1 }),
       ]),
     );
-    expect(parsed[1]?.codes?.["watched"]).toBe(1);
-    expect(parsed[1]?.codes?.["dropme"]).toBeUndefined();
-    expect(parsed[2]?.codes?.["watched"]).toBe(1);
-    expect(parsed[2]?.codes?.["dropme"]).toBeUndefined();
+    expect(parsed[1]?.ids?.["watched"]).toBe(1);
+    expect(parsed[1]?.ids?.["dropme"]).toBeUndefined();
+    expect(parsed[2]?.ids?.["watched"]).toBe(1);
+    expect(parsed[2]?.ids?.["dropme"]).toBeUndefined();
   });
 
   it("parseRounds keeps a valid round number and drops an invalid one, preserving the counts", () => {
@@ -933,7 +1006,7 @@ describe("mechanism frequency rounds — issue #145", () => {
 
   it("parseRounds strips a malformed codes shape but keeps the round's severity counts", () => {
     const bad = Buffer.from(
-      JSON.stringify([{ critical: 0, major: 0, minor: 0, nit: 0, codes: "garbage" }]),
+      JSON.stringify([{ critical: 0, major: 0, minor: 0, nit: 0, ids: "garbage" }]),
       "utf-8",
     ).toString("base64");
     expect(parseRounds(`<!-- code-review:rounds;base64 ${bad} -->`)).toEqual([
@@ -941,14 +1014,14 @@ describe("mechanism frequency rounds — issue #145", () => {
     ]);
   });
 
-  it("consecutiveCodeStreaks counts trailing rounds per code and stops at an uncoded round", () => {
+  it("consecutiveIdStreaks counts trailing rounds per code and stops at an uncoded round", () => {
     const rounds: RoundRecord[] = [
       coded(counts(0, 0, 0, 0), { a: 1 }),
       counts(0, 0, 0, 0), // no codes record — ends every streak
       coded(counts(0, 0, 0, 0), { a: 1 }),
       coded(counts(0, 0, 0, 0), { a: 1, b: 1 }),
     ];
-    expect(consecutiveCodeStreaks(rounds)).toEqual({
+    expect(consecutiveIdStreaks(rounds)).toEqual({
       a: { streak: 2, startRound: 3 },
       b: { streak: 1, startRound: 4 },
     });
@@ -992,13 +1065,13 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(computeScopeMetastasis(twoStreak)).toBeNull();
     expect(computeScopeMetastasis(twoStreak, 2)).toEqual({
       decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
-      recurring: [{ code: "a", consecutive_rounds: 2, start_round: 1 }],
+      recurring: [{ id: "a", consecutive_rounds: 2, start_round: 1 }],
     });
   });
 
   it("computeScopeMetastasis reports per-code consecutive-round counts with the streak's start round", () => {
     // Streaks END at the last recorded round (a code absent there has no streak, like
-    // consecutiveCodeStreaks): `a` runs rounds 3-5, `b` rounds 4-5.
+    // consecutiveIdStreaks): `a` runs rounds 3-5, `b` rounds 4-5.
     const rounds: RoundRecord[] = [
       coded(counts(0, 0, 0, 0), { a: 1 }),
       counts(0, 0, 0, 0), // no codes record — ends every streak
@@ -1009,14 +1082,14 @@ describe("mechanism frequency rounds — issue #145", () => {
     // Default threshold 3: only `a`'s 3-streak is flagged.
     expect(computeScopeMetastasis(rounds)).toEqual({
       decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
-      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 3 }],
+      recurring: [{ id: "a", consecutive_rounds: 3, start_round: 3 }],
     });
     // A lower threshold admits `b`'s 2-streak too, with its own start round.
     expect(computeScopeMetastasis(rounds, 2)).toEqual({
       decision_prompt: SCOPE_METASTASIS_DECISION_PROMPT,
       recurring: [
-        { code: "a", consecutive_rounds: 3, start_round: 3 },
-        { code: "b", consecutive_rounds: 2, start_round: 4 },
+        { id: "a", consecutive_rounds: 3, start_round: 3 },
+        { id: "b", consecutive_rounds: 2, start_round: 4 },
       ],
     });
   });
@@ -1028,8 +1101,8 @@ describe("mechanism frequency rounds — issue #145", () => {
       coded(counts(0, 0, 0, 0), { a: 1, b: 1 }),
     ];
     const notes = computeSameRootNotes(prior, [
-      mkFinding({ code: "a" }),
-      mkFinding({ code: "b" }),
+      mkFinding({ id: "a" }),
+      mkFinding({ id: "b" }),
       mkFinding({}),
     ]);
     expect(notes["a"]).toContain("round 3");
@@ -1037,7 +1110,7 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(notes["c"]).toBeUndefined();
   });
 
-  it("computeCodeCounts folds in systemic problem finding_codes AND code so a systemic-only mechanism is visible", () => {
+  it("computeIdCounts folds in systemic problem finding_ids AND code so a systemic-only mechanism is visible", () => {
     const systemic = [
       {
         title: "s",
@@ -1046,22 +1119,22 @@ describe("mechanism frequency rounds — issue #145", () => {
         reasoning: "r",
         confidence: 0.8,
         likelihood: 1,
-        code: "body-reconstruction",
-        finding_codes: ["null-check-missing"],
+        id: "body-reconstruction",
+        finding_ids: ["null-check-missing"],
       },
     ];
-    expect(computeCodeCounts([mkFinding({ code: "null-check-missing" })], systemic)).toEqual({
+    expect(computeIdCounts([mkFinding({ id: "null-check-missing" })], systemic)).toEqual({
       "null-check-missing": 2,
       "body-reconstruction": 1,
     });
   });
 
-  it("computeCodeCounts treats prototype-collision codes as ordinary own keys", () => {
+  it("computeIdCounts treats prototype-collision codes as ordinary own keys", () => {
     expect(
-      computeCodeCounts([
-        mkFinding({ code: "constructor" }),
-        mkFinding({ code: "constructor" }),
-        mkFinding({ code: "__proto__" }),
+      computeIdCounts([
+        mkFinding({ id: "constructor" }),
+        mkFinding({ id: "constructor" }),
+        mkFinding({ id: "__proto__" }),
       ]),
     ).toEqual(
       Object.fromEntries([
@@ -1071,30 +1144,30 @@ describe("mechanism frequency rounds — issue #145", () => {
     );
   });
 
-  it("consecutiveCodeStreaks treats a same-head retry (identical sha) as one iteration, not new evidence", () => {
+  it("consecutiveIdStreaks treats a same-head retry (identical sha) as one iteration, not new evidence", () => {
     const rounds: RoundRecord[] = [
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "abc123" },
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "abc123" },
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "abc123" },
     ];
-    expect(consecutiveCodeStreaks(rounds)).toEqual({ a: { streak: 1, startRound: 1 } });
+    expect(consecutiveIdStreaks(rounds)).toEqual({ a: { streak: 1, startRound: 1 } });
   });
 
-  it("consecutiveCodeStreaks counts a new commit after a same-sha retry as a fresh round", () => {
+  it("consecutiveIdStreaks counts a new commit after a same-sha retry as a fresh round", () => {
     const rounds: RoundRecord[] = [
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha2" },
     ];
-    expect(consecutiveCodeStreaks(rounds)).toEqual({ a: { streak: 2, startRound: 1 } });
+    expect(consecutiveIdStreaks(rounds)).toEqual({ a: { streak: 2, startRound: 1 } });
   });
 
-  it("consecutiveCodeStreaks counts a code NEW in a same-sha retry round (issue #145 r2)", () => {
+  it("consecutiveIdStreaks counts a code NEW in a same-sha retry round (issue #145 r2)", () => {
     const rounds: RoundRecord[] = [
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
       { ...coded(counts(0, 0, 0, 0), { a: 1, b: 1 }), sha: "sha1" },
     ];
-    expect(consecutiveCodeStreaks(rounds)).toEqual({
+    expect(consecutiveIdStreaks(rounds)).toEqual({
       a: { streak: 1, startRound: 1 },
       b: { streak: 1, startRound: 2 },
     });
@@ -1108,15 +1181,29 @@ describe("mechanism frequency rounds — issue #145", () => {
     );
     const parsed = parseRounds(mkRoundsMarker(rounds));
     expect(parsed).toHaveLength(10);
-    expect(parsed[0]?.codes).toEqual({ "0": 1 });
+    expect(parsed[0]?.ids).toEqual({ "0": 1 });
     expect(parsed[0]?.sha).toBe("sha0");
-    expect(parsed[9]?.codes).toEqual({ a: 1 });
+    expect(parsed[9]?.ids).toEqual({ a: 1 });
     expect(parsed[9]?.sha).toBe("last");
   });
 
   it("parseRounds drops count-0 code entries so every consumer agrees 0 is absence", () => {
     const parsed = parseRounds(mkRoundsMarker([coded(counts(0, 0, 0, 0), { a: 0, b: 0, c: 1 })]));
-    expect(parsed[0]?.codes).toEqual({ c: 1 });
+    expect(parsed[0]?.ids).toEqual({ c: 1 });
+  });
+
+  it("parseRounds falls back to a valid legacy codes map when the ids field is present but malformed", () => {
+    const malformed = mkRoundsMarker([
+      {
+        critical: 0,
+        major: 0,
+        minor: 0,
+        nit: 0,
+        ids: "not a map",
+        codes: { "legacy-a": 2 },
+      } as unknown as RoundRecord,
+    ]);
+    expect(parseRounds(malformed)[0]?.ids).toEqual({ "legacy-a": 2 });
   });
 
   it("parseRounds's per-round cap prefers codes that recurred in the previous round", () => {
@@ -1124,9 +1211,9 @@ describe("mechanism frequency rounds — issue #145", () => {
     const parsed = parseRounds(
       mkRoundsMarker([coded(counts(0, 0, 0, 0), { "code-8": 1 }), coded(counts(0, 0, 0, 0), nine)]),
     );
-    expect(parsed[1]?.codes).toBeDefined();
-    expect(parsed[1]?.codes?.["code-8"]).toBe(1);
-    expect(Object.keys(parsed[1]?.codes ?? {})).toHaveLength(MAX_CODES_PER_ROUND);
+    expect(parsed[1]?.ids).toBeDefined();
+    expect(parsed[1]?.ids?.["code-8"]).toBe(1);
+    expect(Object.keys(parsed[1]?.ids ?? {})).toHaveLength(MAX_IDS_PER_ROUND);
   });
 
   it("computeSameRootNotes skips a same-sha prior round so a CI retry doesn't self-annotate", () => {
@@ -1135,12 +1222,10 @@ describe("mechanism frequency rounds — issue #145", () => {
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
     ];
     // currentSha sha1 → every prior round is a retry of the current commit → nothing to name.
-    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha1")["a"]).toBeUndefined();
+    expect(computeSameRootNotes(prior, [mkFinding({ id: "a" })], "sha1")["a"]).toBeUndefined();
     // currentSha sha2 → r2 is a retry of r1 (collapsed), so the last real prior round is round 1.
-    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha2")["a"]).toContain(
-      "round 1",
-    );
-    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha2")["a"]).not.toContain(
+    expect(computeSameRootNotes(prior, [mkFinding({ id: "a" })], "sha2")["a"]).toContain("round 1");
+    expect(computeSameRootNotes(prior, [mkFinding({ id: "a" })], "sha2")["a"]).not.toContain(
       "round 2",
     );
   });
@@ -1149,18 +1234,18 @@ describe("mechanism frequency rounds — issue #145", () => {
     // The rounds marker lost a corrupt entry, so position 1 actually represents round 5 — the
     // record's `round` field must win over the array index.
     const prior: RoundRecord[] = [{ ...coded(counts(0, 0, 0, 0), { a: 1 }), round: 5 }];
-    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })])["a"]).toContain("round 5");
+    expect(computeSameRootNotes(prior, [mkFinding({ id: "a" })])["a"]).toContain("round 5");
   });
 
   it("parseRounds's per-round cap never drops a code that recurred in the previous round, even at a low count (issue #145 r4)", () => {
-    const codes: Record<string, number> = Object.fromEntries([
+    const ids: Record<string, number> = Object.fromEntries([
       ...Array.from({ length: 8 }, (_, i) => [`bulk-${String(i)}`, 5] as [string, number]),
       ["watched", 1] as [string, number],
     ]);
     const parsed = parseRounds(
-      mkRoundsMarker([coded(counts(0, 0, 0, 0), { watched: 1 }), coded(counts(0, 0, 0, 0), codes)]),
+      mkRoundsMarker([coded(counts(0, 0, 0, 0), { watched: 1 }), coded(counts(0, 0, 0, 0), ids)]),
     );
-    expect(parsed[1]?.codes?.["watched"]).toBe(1);
+    expect(parsed[1]?.ids?.["watched"]).toBe(1);
   });
 
   it("computeSameRootNotes also collapses a same-sha retry DEEPER in the history (issue #145 r3)", () => {
@@ -1171,10 +1256,8 @@ describe("mechanism frequency rounds — issue #145", () => {
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
       { ...coded(counts(0, 0, 0, 0), { a: 1 }), sha: "sha1" },
     ];
-    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha2")["a"]).toContain(
-      "round 1",
-    );
-    expect(computeSameRootNotes(prior, [mkFinding({ code: "a" })], "sha2")["a"]).not.toContain(
+    expect(computeSameRootNotes(prior, [mkFinding({ id: "a" })], "sha2")["a"]).toContain("round 1");
+    expect(computeSameRootNotes(prior, [mkFinding({ id: "a" })], "sha2")["a"]).not.toContain(
       "round 2",
     );
   });
@@ -1240,7 +1323,7 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
   it("stamps the given scope_metastasis entry and omits it when none is given (issue #150)", () => {
     const entry = {
       decision_prompt: "decide",
-      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "a", consecutive_rounds: 3, start_round: 1 }],
     };
     expect(surfacedDoc(findings, null, entry).scope_metastasis).toEqual(entry);
     expect(surfacedDoc(findings, null).scope_metastasis).toBeUndefined();
@@ -1249,7 +1332,7 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
   it("the scope_metastasis codecs and the ajv gate reject the SAME extra keys — both sides asserted (issue #150 review r2)", () => {
     const clean = {
       decision_prompt: "decide",
-      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "a", consecutive_rounds: 3, start_round: 1 }],
     };
     expect(ScopeMetastasisCodec.decode(clean)._tag).toBe("Right");
     expect(
@@ -1259,7 +1342,7 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
     // — the codec's Strict refinements and the schema's additionalProperties:false agree.
     const smuggledItem = {
       decision_prompt: "decide",
-      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1, note: "x" }],
+      recurring: [{ id: "a", consecutive_rounds: 3, start_round: 1, note: "x" }],
     };
     expect(ScopeMetastasisCodec.decode(smuggledItem)._tag).toBe("Left");
     expect(
@@ -1277,7 +1360,7 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
     // review r3) — both gates reject it, and both accept an integer-valued 3.0.
     const nonSafe = {
       decision_prompt: "decide",
-      recurring: [{ code: "a", consecutive_rounds: 1e21, start_round: 1 }],
+      recurring: [{ id: "a", consecutive_rounds: 1e21, start_round: 1 }],
     };
     expect(ScopeMetastasisCodec.decode(nonSafe)._tag).toBe("Left");
     expect(
@@ -1285,7 +1368,7 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
     ).toBe(false);
     const integerValued = {
       decision_prompt: "decide",
-      recurring: [{ code: "a", consecutive_rounds: 3.0, start_round: 1 }],
+      recurring: [{ id: "a", consecutive_rounds: 3.0, start_round: 1 }],
     };
     expect(ScopeMetastasisCodec.decode(integerValued)._tag).toBe("Right");
     expect(
@@ -1302,12 +1385,12 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
       ...findings,
       scope_metastasis: {
         decision_prompt: "stale",
-        recurring: [{ code: "stale", consecutive_rounds: 9, start_round: 1 }],
+        recurring: [{ id: "stale", consecutive_rounds: 9, start_round: 1 }],
       },
     };
     const entry = {
       decision_prompt: "fresh",
-      recurring: [{ code: "fresh", consecutive_rounds: 3, start_round: 2 }],
+      recurring: [{ id: "fresh", consecutive_rounds: 3, start_round: 2 }],
     };
     const doc = surfacedDoc(crafted, null, entry);
     expect(doc.scope_metastasis).toEqual(entry);
@@ -1369,7 +1452,7 @@ describe("surface findings document — issue #141 (the legacy surfaced-blob sha
   it("stripSurfaceFields KEEPS the agent-facing scope_metastasis — the seed must deliver the recurrence data (issue #150)", () => {
     const entry = {
       decision_prompt: "decide",
-      recurring: [{ code: "a", consecutive_rounds: 3, start_round: 1 }],
+      recurring: [{ id: "a", consecutive_rounds: 3, start_round: 1 }],
     };
     const surfaced = surfacedDoc(findings, signal(1, counts(0, 0, 1, 0)), entry);
     expect(stripSurfaceFields(surfaced)).toEqual({

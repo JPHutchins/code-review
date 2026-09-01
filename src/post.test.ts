@@ -23,6 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
   path: "src/foo.ts",
+  id: "test-id",
   start_line: 10,
   end_line: 10,
   severity: "minor",
@@ -691,7 +692,8 @@ describe("post — systemic problems (issue #134)", () => {
           reasoning: "Each file implements its own policy.",
           confidence: 0.8,
           likelihood: 1,
-          finding_codes: ["widened-type"],
+          id: "retry-policy-inconsistent",
+          finding_ids: ["widened-type"],
           paths: ["src/foo.ts"],
         },
       ],
@@ -736,7 +738,11 @@ describe("post — systemic problems (issue #134)", () => {
     // without fetching anything.
     expect(body.body).not.toContain("findings-json;base64");
     const lastRound = parseConvergenceMarker(body.body)?.rounds?.at(-1);
-    expect(lastRound?.codes).toEqual({ "widened-type": 1 });
+    expect(lastRound?.ids).toEqual({
+      "test-id": 1,
+      "widened-type": 1,
+      "retry-policy-inconsistent": 1,
+    });
     expect(lastRound?.sha).toBe("abc123def456");
   });
 
@@ -916,7 +922,7 @@ describe("post — nit visibility floor (issue #164)", () => {
     write(
       doc([
         mkFinding({ severity: "minor", title: "real-bug", start_line: 10, end_line: 10 }),
-        belowFloorNit({ title: "trivial", code: "triv", start_line: 11, end_line: 11 }),
+        belowFloorNit({ title: "trivial", id: "triv", start_line: 11, end_line: 11 }),
       ]),
     );
     const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->\nno prior blob"));
@@ -937,14 +943,14 @@ describe("post — nit visibility floor (issue #164)", () => {
 
   it("keeps a re-rated still-nit hidden when it matches a prior below-floor nit (stickiness)", async () => {
     const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${legacyEmbeddedMarker(
-      doc([belowFloorNit({ title: "sticky", code: "sticky-nit" })]),
+      doc([belowFloorNit({ title: "sticky", id: "sticky-nit" })]),
     )}`;
     // Same code, now m = 0.9 × 0.9 = 0.81 (ABOVE the floor) but STILL a nit → stays suppressed.
     write(
       doc([
         mkFinding({
           severity: "nit",
-          code: "sticky-nit",
+          id: "sticky-nit",
           title: "sticky",
           confidence: 0.9,
           likelihood: 0.9,
@@ -963,7 +969,7 @@ describe("post — nit visibility floor (issue #164)", () => {
   it("does NOT read below-floor nits from a mechanic sticky (route-gated, like the seed chain)", async () => {
     // A mechanic pass writes its OWN blob; its nits are not this review's prior round.
     const mechanicSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n${legacyEmbeddedMarker(
-      doc([belowFloorNit({ title: "mech", code: "mech-nit" })]),
+      doc([belowFloorNit({ title: "mech", id: "mech-nit" })]),
     )}`;
     // Same code, now above the floor and still a nit — WITHOUT the gate this would stick hidden; the
     // gate ignores the mechanic sticky, so it materializes.
@@ -971,7 +977,7 @@ describe("post — nit visibility floor (issue #164)", () => {
       doc([
         mkFinding({
           severity: "nit",
-          code: "mech-nit",
+          id: "mech-nit",
           title: "mech",
           confidence: 0.9,
           likelihood: 0.9,
@@ -989,13 +995,13 @@ describe("post — nit visibility floor (issue #164)", () => {
 
   it("un-hides a prior below-floor nit that was PROMOTED to minor", async () => {
     const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${legacyEmbeddedMarker(
-      doc([belowFloorNit({ title: "promo", code: "promo" })]),
+      doc([belowFloorNit({ title: "promo", id: "promo" })]),
     )}`;
     write(
       doc([
         mkFinding({
           severity: "minor",
-          code: "promo",
+          id: "promo",
           title: "promo",
           start_line: 10,
           end_line: 10,
@@ -3939,8 +3945,8 @@ describe("post — convergence rounds (issue #125)", () => {
       join(tmpDir, "findings.json"),
       JSON.stringify(
         mkFindings([
-          mkFinding({ code: "null-check-missing" }),
-          mkFinding({ code: "null-check-missing" }),
+          mkFinding({ id: "null-check-missing" }),
+          mkFinding({ id: "null-check-missing" }),
         ]),
       ),
     );
@@ -3948,7 +3954,7 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "full review" }), api);
     const rounds = decodedBlob(calls()).convergence?.rounds;
     expect(rounds).toHaveLength(1);
-    expect(rounds?.[0]?.codes).toEqual({ "null-check-missing": 2 });
+    expect(rounds?.[0]?.ids).toEqual({ "null-check-missing": 2 });
   });
 
   it("a full review reading a #174-stamped prior appends the next round, carrying the trajectory verbatim", async () => {
@@ -3958,7 +3964,7 @@ describe("post — convergence rounds (issue #125)", () => {
         score: 2,
         threshold: 1,
         converged: false,
-        rounds: [{ round: 1, score: 2, codes: { "old-code": 1 } }],
+        rounds: [{ round: 1, score: 2, ids: { "old-code": 1 } }],
       },
     });
     const priorSticky = `<!-- code-review -->\n<!-- code-review:findings-json;base64 ${Buffer.from(
@@ -3971,7 +3977,7 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(rounds).toHaveLength(2);
     // The prior round 1 is carried VERBATIM (its score + codes); this run is appended as round 2, and
     // the default fixture (one minor at confidence 0.7) scores 0.73.
-    expect(rounds?.[0]).toMatchObject({ round: 1, score: 2, codes: { "old-code": 1 } });
+    expect(rounds?.[0]).toMatchObject({ round: 1, score: 2, ids: { "old-code": 1 } });
     expect(rounds?.[1]).toMatchObject({ round: 2, score: 0.73 });
   });
 
@@ -4006,7 +4012,7 @@ describe("post — convergence rounds (issue #125)", () => {
       score: 2,
       threshold: 1,
       converged: false,
-      rounds: [{ round: 1, score: 2, codes: { old: 1 } }],
+      rounds: [{ round: 1, score: 2, ids: { old: 1 } }],
     };
     const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
       priorConv,
@@ -4015,7 +4021,7 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "full review" }), api);
     const rounds = decodedBlob(calls()).convergence?.rounds;
     expect(rounds).toHaveLength(2);
-    expect(rounds?.[0]).toMatchObject({ round: 1, score: 2, codes: { old: 1 } });
+    expect(rounds?.[0]).toMatchObject({ round: 1, score: 2, ids: { old: 1 } });
     expect(rounds?.[1]?.round).toBe(2);
   });
 
@@ -4058,7 +4064,7 @@ describe("post — convergence rounds (issue #125)", () => {
   it("a mechanic pass carries the convergence trajectory forward with no code append (#145 / #174)", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),
-      JSON.stringify(mkFindings([mkFinding({ code: "null-check-missing" })])),
+      JSON.stringify(mkFindings([mkFinding({ id: "null-check-missing" })])),
     );
     // A prior round whose convergence carries codes — the mechanic pass must preserve the trajectory
     // verbatim (no new round, no code-map append), not drop it.
@@ -4068,7 +4074,7 @@ describe("post — convergence rounds (issue #125)", () => {
         score: 2,
         threshold: 1,
         converged: false,
-        rounds: [{ round: 1, score: 2, codes: { "null-check-missing": 1 } }],
+        rounds: [{ round: 1, score: 2, ids: { "null-check-missing": 1 } }],
       },
     });
     const priorSticky = `<!-- code-review -->\n<!-- code-review:findings-json;base64 ${Buffer.from(
@@ -4079,17 +4085,17 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "mechanic" }), api);
     const rounds = decodedBlob(calls()).convergence?.rounds;
     expect(rounds).toHaveLength(1);
-    expect(rounds?.[0]?.codes).toEqual({ "null-check-missing": 1 });
+    expect(rounds?.[0]?.ids).toEqual({ "null-check-missing": 1 });
   });
 
   it("renders a same-root note under a stray finding whose code recurred in a prior round (#145)", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),
-      JSON.stringify(mkFindings([mkFinding({ path: "src/other.ts", code: "null-check-missing" })])),
+      JSON.stringify(mkFindings([mkFinding({ path: "src/other.ts", id: "null-check-missing" })])),
     );
     const codedMarker = `<!-- code-review:rounds;base64 ${Buffer.from(
       JSON.stringify([
-        { critical: 0, major: 0, minor: 1, nit: 0, codes: { "null-check-missing": 1 } },
+        { critical: 0, major: 0, minor: 1, nit: 0, ids: { "null-check-missing": 1 } },
       ]),
       "utf-8",
     ).toString("base64")} -->`;
@@ -4108,7 +4114,7 @@ describe("post — convergence rounds (issue #125)", () => {
       readonly rounds?: readonly {
         readonly round: number;
         readonly score?: number;
-        readonly codes?: Record<string, number>;
+        readonly ids?: Record<string, number>;
         readonly sha?: string;
       }[];
     };
@@ -4408,7 +4414,7 @@ describe("post — answered findings (issue #151)", () => {
 
   it("treats a VERBATIM re-raise of an answered finding as closed — dropped from the review, the round counts, and the stop signal, named in the sticky", async () => {
     const answered = mkFinding({
-      code: "recurring-a",
+      id: "recurring-a",
       title: "The same claim",
       reasoning: "The same reasoning.",
     });
@@ -4429,12 +4435,12 @@ describe("post — answered findings (issue #151)", () => {
 
   it("keeps a re-raise with NEW evidence and annotates it with the prior answer's link — inline and sticky", async () => {
     const answered = mkFinding({
-      code: "recurring-a",
+      id: "recurring-a",
       title: "The same claim",
       reasoning: "The same reasoning.",
     });
     const changed = mkFinding({
-      code: "recurring-a",
+      id: "recurring-a",
       title: "The same claim",
       reasoning: "NEW evidence: the regression persists on the built 3.14 extension.",
     });
@@ -4459,7 +4465,7 @@ describe("post — answered findings (issue #151)", () => {
   it("never drops a CRITICAL verbatim re-raise — kept with the annotation", async () => {
     const answered = mkFinding({
       severity: "critical",
-      code: "recurring-a",
+      id: "recurring-a",
       title: "The same claim",
       reasoning: "The same reasoning.",
     });
@@ -4478,9 +4484,9 @@ describe("post — answered findings (issue #151)", () => {
     expect(payload.comments.some((c) => c.body.includes("Re-raised; prior answer at"))).toBe(true);
   });
 
-  it("strips a DROPPED re-raise's code from systemic finding_codes — a 'ties together' list never dangles (issue #151 review r1)", async () => {
+  it("strips a DROPPED re-raise's code from systemic finding_ids — a 'ties together' list never dangles (issue #151 review r1)", async () => {
     const answered = mkFinding({
-      code: "recurring-a",
+      id: "recurring-a",
       title: "The same claim",
       reasoning: "The same reasoning.",
     });
@@ -4496,7 +4502,7 @@ describe("post — answered findings (issue #151)", () => {
             reasoning: "r",
             confidence: 0.8,
             likelihood: 1,
-            finding_codes: ["recurring-a", "kept-code"],
+            finding_ids: ["recurring-a", "kept-code"],
             paths: ["src/foo.ts"],
           },
         ],
@@ -4531,7 +4537,7 @@ describe("post — answered findings (issue #151)", () => {
   it("a failed thread fetch degrades to an empty registry — the review posts unfiltered", async () => {
     writeFileSync(
       join(tmpDir, "findings.json"),
-      JSON.stringify(mkFindings([mkFinding({ code: "recurring-a" })])),
+      JSON.stringify(mkFindings([mkFinding({ id: "recurring-a" })])),
     );
     // Remove the thread-endpoint mock so the fetch actually REJECTS (an unmatched call throws) —
     // the failure path, not a silently-empty success (issue #151 review r2).

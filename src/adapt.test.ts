@@ -138,8 +138,8 @@ describe("adapt — claude-code", () => {
     const result = adapt("claude-code", nativeFixture);
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
-    expect(result.right.schema_version).toBe("0.4.0");
-    expect(result.right.findings.schema_version).toBe("0.4.0");
+    expect(result.right.schema_version).toBe("0.10.0");
+    expect(result.right.findings.schema_version).toBe("0.10.0");
   });
 
   it("defaults schema_version to DEFAULT_SCHEMA_VERSION when structured_output omits it", () => {
@@ -240,7 +240,7 @@ describe("adapt — claude-code — extraction ladder integration", () => {
             reasoning: "Each file implements its own policy.",
             confidence: 0.8,
             likelihood: 1,
-            finding_codes: ["widened-type"],
+            finding_ids: ["widened-type"],
           },
         ],
       },

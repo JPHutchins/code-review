@@ -12,6 +12,7 @@ import type { Finding } from "./schema.js";
 const KINDS = NOTICE_KINDS;
 
 const aFinding: Finding = {
+  id: "test-id",
   path: "src/x.ts",
   start_line: 1,
   end_line: 1,

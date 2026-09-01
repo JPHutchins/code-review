@@ -3,7 +3,7 @@
 import { Eta } from "eta";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
-import { isIncompleteFindings } from "./schema.js";
+import { isIncompleteFindings, resolveFindingId } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost, parseInstant } from "./cost.js";
 import {
@@ -85,10 +85,10 @@ const SUPPRESSED_NIT_BLOCK_OVERHEAD = 280;
 type StrayView = Finding & {
   readonly patchProjection: PatchProjection;
   readonly answeredNote: string;
-  // The RAW code, carried beside the escaped display form: the same-root note lookup in the
-  // template is keyed on raw codes, so a backtick/newline code must not lose its note through
+  // The RAW id, carried beside the escaped display form: the same-root note lookup in the
+  // template is keyed on raw ids, so a backtick/newline id must not lose its note through
   // the escaping (issue #233 r3).
-  readonly codeKey?: string;
+  readonly idKey: string;
   // The heading's collapsed line range (`start–end` via the shared lineRange collapse, so the
   // heading and the permalink anchor can never disagree — issue #231 r1).
   readonly rangeLabel: string;
@@ -124,7 +124,10 @@ const sanitizeFinding = (
     ...f,
     title: escapePipes(f.title),
     path: escapeCodeBackticks(f.path),
-    ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code), codeKey: f.code } : {}),
+    id: escapeCodeBackticks(f.id),
+    // The RESOLVED id: the same-root notes are keyed on resolveFindingId (an empty id resolves to
+    // its synthesized key), so the lookup must not miss the note on the raw id.
+    idKey: resolveFindingId(f),
     ...(f.code_url !== undefined ? { code_url: linkSafeUrl(f.code_url) } : {}),
     rangeLabel: lineRange(f.start_line, f.end_line, "–"),
     ...(permalink !== undefined ? { permalink, permalinkAnchored: anchored } : {}),
@@ -148,7 +151,7 @@ const sanitizeFinding = (
 // rest rides the machine channel beside it, where a hidden nit's detail belongs.
 type SuppressedNitView = {
   readonly title: string;
-  readonly code?: string;
+  readonly id: string;
   readonly codeUrl?: string;
   readonly path: string;
   // The machine location line renders start-end ALWAYS FULL (plain hyphen, no collapse) — a
@@ -175,7 +178,7 @@ const commentSafe = (text: string): string =>
 
 const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   title: escapeCodeBackticks(f.title),
-  ...(f.code !== undefined ? { code: escapeCodeBackticks(f.code) } : {}),
+  id: escapeCodeBackticks(f.id),
   ...(f.code_url !== undefined ? { codeUrl: linkSafeUrl(f.code_url) } : {}),
   path: commentSafe(escapeCodeBackticks(f.path)),
   startLine: f.start_line,
@@ -208,16 +211,14 @@ const carriedLines = (f: Finding): readonly string[] =>
     .map((line) => line.trimEnd());
 
 // The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
-// finding_codes render inside backticks too, so they get the same backtick escaping as paths.
+// finding_ids render inside backticks too, so they get the same backtick escaping as paths.
 const sanitizeSystemic = (s: SystemicProblem): SystemicProblem => ({
   ...s,
   title: escapePipes(s.title),
-  ...(s.code !== undefined ? { code: escapeCodeBackticks(s.code) } : {}),
+  ...(s.id !== undefined ? { id: escapeCodeBackticks(s.id) } : {}),
   ...(s.code_url !== undefined ? { code_url: linkSafeUrl(s.code_url) } : {}),
   ...(s.paths !== undefined ? { paths: s.paths.map(escapeCodeBackticks) } : {}),
-  ...(s.finding_codes !== undefined
-    ? { finding_codes: s.finding_codes.map(escapeCodeBackticks) }
-    : {}),
+  ...(s.finding_ids !== undefined ? { finding_ids: s.finding_ids.map(escapeCodeBackticks) } : {}),
 });
 
 const emptySeverityCounts = (): Record<Severity, number> => ({
@@ -328,14 +329,13 @@ export const render = (input: RenderInput): string => {
         SUPPRESSED_NIT_BLOCK_OVERHEAD +
         n.title.length +
         n.path.length * 2 +
-        (n.code?.length ?? 0) +
-        (n.codeUrl?.length ?? 0) +
+        // The id renders with its two wrapper backticks; the code_url adds the [](...) link form.
+        n.id.length * 2 +
+        2 +
+        (n.codeUrl !== undefined ? n.codeUrl.length + 4 : 0) +
         String(n.startLine).length * 2 +
         String(n.endLine).length +
-        (n.side !== undefined ? n.side.length + 2 : 0) +
-        // The summary line's wrappers: backticks around the code and the [](...) around the link.
-        (n.code !== undefined ? n.code.length + 2 : 0) +
-        (n.codeUrl !== undefined ? n.codeUrl.length + 4 : 0);
+        (n.side !== undefined ? n.side.length + 2 : 0);
       return acc.used + size > CARRIED_TOTAL_CHARS
         ? { list: acc.list, used: acc.used, dropped: acc.dropped + 1 }
         : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };

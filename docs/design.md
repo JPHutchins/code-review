@@ -219,13 +219,14 @@ this doc.
   round but has no way to say "this is the same mechanism as round N's finding," so on a long PR each
   fix keeps enabling the next finding in the same machinery (the salix#94 pattern: fourteen rounds,
   all in one body-`__new__` reconstruction mechanism). The reviewer is steered to tag each finding
-  with a stable `code` (the schema's optional rule identifier, which already existed for
-  dedup/suppression) and to name a same-root recurrence in its own description. The commenter then
-  does the deterministic half: each round record carries that round's code-frequency map (capped at a
-  top-N so the carried marker stays bounded), the sticky annotates a finding whose code appeared in a
-  prior round with "same mechanism as round N," and — when a code streaks across ≥ 3 consecutive
+  with a stable `id` (the schema's REQUIRED mechanism identifier, renamed from `code` in 0.10, which
+  already existed for dedup/suppression) and to name a same-root recurrence in its own description.
+  The commenter then
+  does the deterministic half: each round record carries that round's id-frequency map (capped at a
+  top-N so the carried marker stays bounded), the sticky annotates a finding whose id appeared in a
+  prior round with "same mechanism as round N," and — when an id streaks across ≥ 3 consecutive
   rounds — renders an advisory scope-metastasis note alongside the convergence trajectory, suggesting
-  a structural fix or a scope narrowing. Purely advisory: it derives from the reviewer's own codes and
+  a structural fix or a scope narrowing. Purely advisory: it derives from the reviewer's own ids and
   never alters any finding's severity or the verdict, mirroring the convergence badge's posture.
 
 `<!-- code-review -->` is the deliberate, fixed sticky-comment marker (a product constant, never
@@ -260,7 +261,7 @@ to.
 extraction ladder above ([`src/extract.ts`](../src/extract.ts)); a version-aware schema registry that
 dispatches on a document's `schema_version` against a supported allowlist
 ([`src/registry.ts`](../src/registry.ts), [`schema/VERSIONING.md`](../schema/VERSIONING.md); findings
-schema is now `0.9.0`); a CLI with `render`/`inline`/`post`/`adapt`/`cost`/`validate`/`print-schema`/`extract`
+schema is now `0.10.0`); a CLI with `render`/`inline`/`post`/`adapt`/`cost`/`validate`/`print-schema`/`extract`
 subcommands ([`src/index.ts`](../src/index.ts)), published to npm as `@jphutchins/code-review` via OIDC
 trusted publishing ([`.github/workflows/release.yaml`](../.github/workflows/release.yaml)); and the
 single-file reference workflow ([`examples/workflows/review.yaml`](../examples/workflows/review.yaml)).

@@ -5,8 +5,16 @@
 // matches at runtime, in dev, and from the published package.
 
 import { resolve as resolvePath } from "node:path";
+import type * as t from "io-ts";
 import type { Decoder, Encoder, Errors, ValidationError } from "io-ts";
-import { FindingsCodec, TriageCodec, PriceMapCodec, DEFAULT_SCHEMA_VERSION } from "./schema.js";
+import {
+  FindingsCodec,
+  FindingsCodecV09,
+  normalizeV09,
+  TriageCodec,
+  PriceMapCodec,
+  DEFAULT_SCHEMA_VERSION,
+} from "./schema.js";
 import type { Findings, Triage, PriceMap } from "./schema.js";
 
 export type SchemaKind = "findings" | "triage" | "prices";
@@ -17,17 +25,17 @@ export interface DecodedFor {
   readonly prices: PriceMap;
 }
 
-interface VersionEntry<K extends SchemaKind, A> {
+interface VersionEntry<K extends SchemaKind, A, D = A> {
   /** major.minor of `schema_version` this entry dispatches on; patch is ignored. */
   readonly minor: string;
   /** full semver stamped when a document omits `schema_version` (findings) or reported as the
    *  resolved version for kinds with no in-data signal (triage, prices). */
   readonly defaultVersion: string;
   readonly schemaFile: string;
-  readonly codec: Decoder<unknown, A> & Encoder<A, unknown>;
+  readonly codec: Decoder<unknown, D> & Encoder<D, unknown>;
   /** upcast to the latest shape for this kind; identity when the codec already accepts both
    *  shapes (e.g. an additive minor whose new field is optional). */
-  readonly normalize: (decoded: A) => DecodedFor[K];
+  readonly normalize: (decoded: D) => DecodedFor[K];
   readonly latest: boolean;
 }
 
@@ -43,41 +51,58 @@ export type Resolution<K extends SchemaKind> =
 
 const identity = <A>(decoded: A): A => decoded;
 
-// 0.5 widened the verdict enum with the pipeline-only "error" value and 0.6 added the optional
-// systemic_problems array — both backwards-compatible additions, so a 0.4/0.5 document is still a
-// valid 0.6 document and resolves through the same widened codec against the flat (now-0.6) schema
-// with an identity upcast. This differs from the dropped 0.2/0.3 minors, which could NOT be honestly
-// upcast (they lacked the required reasoning/confidence). 0.9 added a REQUIRED `likelihood` (the draft axis skips 0.7/0.8, which belong to the surface-signal axis — issue #156 — so the two version spaces stay distinct) — not a
-// backward-compatible addition, so a pre-0.7 document that lacks it no longer validates against the
-// shared codec (a stale sticky degrades to a cold re-review). Keeping the older minors live still
-// matches their declared version to a supported entry rather than reporting an unknown version.
+// 0.5 widened the verdict enum with the pipeline-only "error" value, 0.6 added the optional
+// systemic_problems array, and 0.9 added REQUIRED `likelihood` (the draft axis skips 0.7/0.8, which
+// belong to the surface-signal axis — issue #156 — so the two version spaces stay distinct). 0.10
+// made `id` REQUIRED (code → id), so every pre-0.10 minor now decodes through the one tolerant legacy
+// codec and upcasts to the 0.10 shape (code → id, or the synthesized content-derived id when a
+// finding carried none) — a pre-0.10 doc without an id still resolves, and the dropped 0.2/0.3 minors
+// still can't (they lack the required reasoning/confidence). Keeping the older minors live matches
+// their declared version to a supported entry rather than reporting an unknown version.
+const legacyFindingsCodec = FindingsCodecV09 as unknown as Decoder<unknown, Findings> &
+  Encoder<Findings, unknown>;
+const legacyFindingsNormalize = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =>
+  normalizeV09(doc);
+
 const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
     minor: "0.4",
     defaultVersion: "0.4.0",
-    schemaFile: "findings.schema.json",
-    codec: FindingsCodec,
-    normalize: identity,
+    // The frozen tolerant-in legacy schema, NOT the live 0.10 file: every ajv-gated channel
+    // (validate --schema-version, the extraction ladder) dispatches the RAW doc's declared minor
+    // through schemaPathFor, so the ajv gate must accept exactly what the tolerant legacy codec
+    // accepts — the live file (id required) would reject the legacy docs the upcast promises to read.
+    schemaFile: "v0.9/findings.schema.json",
+    codec: legacyFindingsCodec,
+    normalize: legacyFindingsNormalize,
     latest: false,
   },
   {
     minor: "0.5",
     defaultVersion: "0.5.0",
-    schemaFile: "findings.schema.json",
-    codec: FindingsCodec,
-    normalize: identity,
+    schemaFile: "v0.9/findings.schema.json",
+    codec: legacyFindingsCodec,
+    normalize: legacyFindingsNormalize,
     latest: false,
   },
   {
     minor: "0.6",
     defaultVersion: "0.6.0",
-    schemaFile: "findings.schema.json",
-    codec: FindingsCodec,
-    normalize: identity,
+    schemaFile: "v0.9/findings.schema.json",
+    codec: legacyFindingsCodec,
+    normalize: legacyFindingsNormalize,
     latest: false,
   },
   {
     minor: "0.9",
+    defaultVersion: "0.9.0",
+    schemaFile: "v0.9/findings.schema.json",
+    codec: legacyFindingsCodec,
+    normalize: legacyFindingsNormalize,
+    latest: false,
+  },
+  {
+    minor: "0.10",
     defaultVersion: DEFAULT_SCHEMA_VERSION,
     schemaFile: "findings.schema.json",
     codec: FindingsCodec,
@@ -215,3 +240,18 @@ const resolvers: { readonly [K in SchemaKind]: (raw: unknown) => Resolution<K> }
 /** Decode + version-dispatch a raw document for a schema kind. Pure — no IO. */
 export const resolve = <K extends SchemaKind>(kind: K, raw: unknown): Resolution<K> =>
   resolvers[kind](raw);
+
+// The seed chain's tolerant findings resolution: the value when the document resolves, and — when the
+// STRICT entry rejects a body the migration's tolerant-in contract admits (a peeled legacy surfaced
+// blob re-stamped with the CURRENT draft version, or a hybrid doc whose findings carry the pre-0.10
+// `code` spelling) — the legacy codec's upcast value. null for an unsupported-version stamp: the
+// fallback must never revive a version the allowlist refuses (a dropped 0.2/0.3 minor, a future
+// 0.11+/1.x) and re-stamp it 0.10.0. The ONE place this upcast policy lives, shared by every raw-
+// document channel (the seed gate; the marker readers apply the same precedence on their fragments).
+export const resolveTolerantFindings = (doc: unknown): Findings | null => {
+  const r = resolveFindings(doc);
+  if (r.kind === "ok") return r.value;
+  if (r.kind === "unsupported-version") return null;
+  const legacy = FindingsCodecV09.decode(doc);
+  return legacy._tag === "Right" ? normalizeV09(legacy.right) : null;
+};

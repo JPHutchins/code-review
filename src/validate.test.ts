@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { resolve, dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { validateAgainstSchema, decodeFindings } from "./validate.js";
 import type { Findings } from "./schema.js";
@@ -8,12 +9,13 @@ import { FindingsCodec, FindingCodec } from "./schema.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const schemaPath = resolve(__dirname, "..", "schema", "findings.schema.json");
 
-/** A finding conforming to the 0.4 shape — description, reasoning, confidence are all required. */
+/** A finding conforming to the current shape — id, description, reasoning, confidence all required. */
 const finding = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   path: "src/x.ts",
   start_line: 1,
   end_line: 1,
   severity: "minor",
+  id: "test-finding",
   title: "A finding",
   description: "What is wrong.",
   reasoning: "Why it holds.",
@@ -52,11 +54,11 @@ describe("validateAgainstSchema", () => {
     expect(result.errors).toHaveLength(0);
   });
 
-  it("validates findings with all optional fields (side, code, code_url, recommendation, patch)", () => {
+  it("validates findings with all optional fields (side, code_url, recommendation, patch)", () => {
     const full = doc([
       finding({
         side: "LEFT",
-        code: "widened-type",
+        id: "widened-type",
         code_url: "https://example.com/rules/widened-type",
         title: "Refactor",
         recommendation: "Add a `parseTimeout` helper at the edge.",
@@ -165,6 +167,13 @@ describe("validateAgainstSchema", () => {
       expect(result.valid).toBe(false);
       expect(result.errors.some((e) => e.includes("likelihood"))).toBe(true);
     });
+
+    it("rejects a finding missing id (0.10 renamed code → id and made it required)", () => {
+      const result = validateAgainstSchema(doc([findingWithout("id")]), schemaPath);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes("id"))).toBe(true);
+      expect(FindingCodec.decode(findingWithout("id"))._tag).toBe("Left");
+    });
   });
 
   describe("out-of-range values", () => {
@@ -253,6 +262,14 @@ describe("validateAgainstSchema", () => {
       const result = validateAgainstSchema(doc([finding({ body: "old field" })]), schemaPath);
       expect(result.valid).toBe(false);
     });
+
+    it("rejects the removed `code` field (0.10 renamed it to `id`)", () => {
+      const result = validateAgainstSchema(doc([finding({ code: "old-field" })]), schemaPath);
+      expect(result.valid).toBe(false);
+      // The codec gate now rejects it too (the strict-key refinement) — a 0.10-stamped finding
+      // carrying BOTH spellings must not pass one gate and fail the other.
+      expect(FindingCodec.decode(finding({ id: "keep-me", code: "old-field" }))._tag).toBe("Left");
+    });
   });
 });
 
@@ -286,6 +303,13 @@ describe("decodeFindings", () => {
 });
 
 describe("FindingsCodec (io-ts round-trip)", () => {
+  it("the preview fixture stays on the current shape — scripts/preview.ts decodes it through this codec", () => {
+    const preview = JSON.parse(
+      readFileSync(resolve(__dirname, "..", "test", "fixtures", "preview.findings.json"), "utf-8"),
+    ) as unknown;
+    expect(FindingsCodec.decode(preview)._tag).toBe("Right");
+  });
+
   it("encodes and decodes idempotently", () => {
     const data: Findings = {
       schema_version: "0.4.0",
@@ -293,6 +317,7 @@ describe("FindingsCodec (io-ts round-trip)", () => {
       verdict: "changes",
       findings: [
         {
+          id: "test-id",
           path: "src/r.ts",
           start_line: 5,
           end_line: 10,
@@ -313,20 +338,20 @@ describe("FindingsCodec (io-ts round-trip)", () => {
   });
 });
 
-describe("FindingCodec — code / code_url (REQ-SC-7)", () => {
-  it("accepts a finding with code and code_url", () => {
+describe("FindingCodec — id / code_url (REQ-SC-7)", () => {
+  it("accepts a finding with id and code_url", () => {
     const decoded = FindingCodec.decode(
-      finding({ code: "null-check-missing", code_url: "https://example.com/rules/x" }),
+      finding({ id: "null-check-missing", code_url: "https://example.com/rules/x" }),
     );
     expect(decoded._tag).toBe("Right");
   });
 
-  it("accepts a finding with code but no code_url (both optional)", () => {
-    const decoded = FindingCodec.decode(finding({ code: "rule-id-only" }));
+  it("accepts a finding with id but no code_url (code_url is optional)", () => {
+    const decoded = FindingCodec.decode(finding({ id: "rule-id-only" }));
     expect(decoded._tag).toBe("Right");
   });
 
-  it("accepts a finding with neither code nor code_url", () => {
+  it("accepts a finding with no code_url", () => {
     const decoded = FindingCodec.decode(finding());
     expect(decoded._tag).toBe("Right");
   });
@@ -383,13 +408,13 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
     expect(validateAgainstSchema(withSystemic([systemic()]), schemaPath).valid).toBe(true);
   });
 
-  it("accepts every optional field (code, code_url, finding_codes, paths)", () => {
+  it("accepts every optional field (code, code_url, finding_ids, paths)", () => {
     const result = validateAgainstSchema(
       withSystemic([
         systemic({
-          code: "retry-policy-inconsistent",
+          id: "retry-policy-inconsistent",
           code_url: "https://example.com/rules/retry-policy-inconsistent",
-          finding_codes: ["widened-type", "null-check-missing"],
+          finding_ids: ["widened-type", "null-check-missing"],
           paths: ["src/a.ts", "src/b.ts"],
         }),
       ]),
@@ -455,9 +480,9 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
     expect(result.valid).toBe(false);
   });
 
-  it("rejects a non-string finding_codes entry", () => {
+  it("rejects a non-string finding_ids entry", () => {
     const result = validateAgainstSchema(
-      withSystemic([systemic({ finding_codes: ["ok", 7] })]),
+      withSystemic([systemic({ finding_ids: ["ok", 7] })]),
       schemaPath,
     );
     expect(result.valid).toBe(false);
@@ -496,7 +521,7 @@ describe("systemic_problems (issue #134 — cross-cutting observations without l
           reasoning: "Each file implements its own policy.",
           confidence: 0.8,
           likelihood: 1,
-          finding_codes: ["widened-type"],
+          finding_ids: ["widened-type"],
         },
       ],
     };

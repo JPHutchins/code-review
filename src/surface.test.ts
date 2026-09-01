@@ -46,6 +46,7 @@ import {
   reviewBodyPointer,
 } from "./surface.js";
 import {
+  ConvergenceCodec,
   DEFAULT_SCHEMA_VERSION,
   FindingsCodec,
   ScopeMetastasisCodec,
@@ -694,6 +695,20 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
       ).toString("base64") +
       " -->";
     expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({ "legacy-a": 2 });
+  });
+
+  it("the round codec preserves a `__proto__` mechanism key — the decode mirrors the writer's fromEntries discipline", () => {
+    const decoded = ConvergenceCodec.decode({
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { ["__proto__"]: 3 } }],
+    });
+    expect(decoded._tag).toBe("Right");
+    if (decoded._tag !== "Right") return;
+    const ids = decoded.right.rounds?.[0]?.ids;
+    expect(Object.prototype.hasOwnProperty.call(ids, "__proto__")).toBe(true);
+    expect(ids?.["__proto__"]).toBe(3);
   });
 
   it("bounds the stamped trajectory to the most recent rounds without renumbering (#174)", () => {

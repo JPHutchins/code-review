@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { resolve, dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { validateAgainstSchema, decodeFindings } from "./validate.js";
 import type { Findings } from "./schema.js";
@@ -299,6 +300,13 @@ describe("decodeFindings", () => {
 });
 
 describe("FindingsCodec (io-ts round-trip)", () => {
+  it("the preview fixture stays on the current shape — scripts/preview.ts decodes it through this codec", () => {
+    const preview = JSON.parse(
+      readFileSync(resolve(__dirname, "..", "test", "fixtures", "preview.findings.json"), "utf-8"),
+    ) as unknown;
+    expect(FindingsCodec.decode(preview)._tag).toBe("Right");
+  });
+
   it("encodes and decodes idempotently", () => {
     const data: Findings = {
       schema_version: "0.4.0",

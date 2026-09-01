@@ -7,6 +7,7 @@ import {
   DEFAULT_SCHEMA_VERSION,
   resolveFindingId,
   synthesizedFindingId,
+  usableCountsMap,
 } from "./schema.js";
 import type {
   ChangeSize,
@@ -254,23 +255,11 @@ export const escapeCodeBackticks = (code: string): string =>
 // detector is watching), then alphabetically for a stable order. Malformed (or absent) codes decode to
 // undefined so the round's severity counts still stand — a crafted marker can't smuggle a bad codes
 // shape into the streak/note renderers.
-// The ONE legacy-spelling precedence every round reader shares: a `codes` map is a usable legacy
-// `ids` map when every entry is a positive safe integer — a present-but-malformed/empty `ids` must
-// not defeat a valid `codes` sitting beside it (the migration policy is one, wherever a round's
-// mechanism map is read).
-const usableCounts = (v: unknown): IdCounts | undefined => {
-  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
-  const entries = Object.entries(v as Record<string, unknown>).filter(
-    (e): e is [string, number] =>
-      typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
-  );
-  return entries.length === 0 ? undefined : Object.fromEntries(entries);
-};
-
-// The bounded form for the ROUNDS marker (the carrier with the top-N cap): the same usableCounts
-// validation, then the cap + prior-preference.
+// The bounded form for the ROUNDS marker (the carrier with the top-N cap): the shared
+// usableCountsMap validation (schema.ts — the one definition every round reader shares), then the
+// cap + prior-preference.
 const normalizeIdCounts = (ids: unknown, priorCodes?: IdCounts): IdCounts | undefined => {
-  const entries = Object.entries(usableCounts(ids) ?? {});
+  const entries = Object.entries(usableCountsMap(ids) ?? {});
   if (entries.length === 0) return undefined;
   const sorted = entries.sort((a, b) => {
     if (b[1] !== a[1]) return b[1] - a[1];
@@ -855,7 +844,7 @@ const withLegacyConvergenceIds = (raw: unknown): unknown => {
   const mapped: unknown[] = rounds.map((r) => {
     if (typeof r !== "object" || r === null) return r as unknown;
     const round = r as Record<string, unknown>;
-    const ids = usableCounts(round["ids"]) ?? usableCounts(round["codes"]);
+    const ids = usableCountsMap(round["ids"]) ?? usableCountsMap(round["codes"]);
     if (ids === undefined) return round;
     const rest = Object.fromEntries(
       Object.entries(round).filter(([k]) => k !== "ids" && k !== "codes"),

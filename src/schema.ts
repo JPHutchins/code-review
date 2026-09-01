@@ -190,10 +190,30 @@ const RoundNumber = t.refinement(
   "RoundNumber",
 );
 
-const IdFrequency = t.record(
-  t.string,
-  t.refinement(t.number, (n): n is number => Number.isSafeInteger(n) && n >= 0, "IdFrequency"),
-);
+// t.record decodes by plain assignment into a fresh object, and assigning a number to `__proto__`
+// hits the inherited accessor and silently no-ops — a reviewer-supplied `__proto__` id (which every
+// writer-side map preserves via Object.fromEntries) would vanish on the round-trip. The custom codec
+// rebuilds the map with Object.fromEntries, so the decode preserves exactly the keys the writer wrote.
+const idFrequencyCodec = (
+  name: string,
+): t.Type<Readonly<Record<string, number>>, Readonly<Record<string, number>>> =>
+  new t.Type<Readonly<Record<string, number>>, Readonly<Record<string, number>>>(
+    name,
+    (u): u is Readonly<Record<string, number>> =>
+      typeof u === "object" && u !== null && !Array.isArray(u),
+    (u, c) => {
+      if (typeof u !== "object" || u === null || Array.isArray(u)) return t.failure(u, c);
+      const entries: [string, number][] = [];
+      for (const [k, v] of Object.entries(u as Record<string, unknown>)) {
+        if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) return t.failure(v, c);
+        entries.push([k, v]);
+      }
+      return t.success(Object.fromEntries(entries));
+    },
+    (a) => a,
+  );
+
+const IdFrequency = idFrequencyCodec("IdFrequency");
 
 const ConvergenceRoundRequired = t.type({ round: RoundNumber });
 const ConvergenceRoundOptional = t.partial({
@@ -313,6 +333,19 @@ export const synthesizedSystemicId = (title: string): string => synthesizedId([t
 export const resolveFindingId = (f: { id: string; path: string; title: string }): string =>
   f.id !== "" ? f.id : synthesizedFindingId(f.path, f.title);
 
+// The ONE "usable counts map" predicate every round reader shares: every entry a positive safe
+// integer — a present-but-malformed/empty/all-zero map is absence, so a valid legacy `codes` map
+// sitting beside a bad `ids` takes over wherever a round's mechanism map is read (the round readers
+// and the legacy upcast both apply it, so they can never disagree on what a usable map is).
+export const usableCountsMap = (v: unknown): Readonly<Record<string, number>> | undefined => {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+  const entries = Object.entries(v as Record<string, unknown>).filter(
+    (e): e is [string, number] =>
+      typeof e[1] === "number" && Number.isSafeInteger(e[1]) && e[1] > 0,
+  );
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+};
+
 // The pre-0.10 shape (schema/v0.9/findings.schema.json): findings carried an OPTIONAL `code` and no
 // `id`. Decoded only as a migration input — the registry's pre-0.10 entries normalize it to the 0.10
 // shape (code → id, or the synthesized content-derived id when a finding carried none). `id` is
@@ -407,10 +440,7 @@ const ScopeMetastasisV09Strict = t.refinement(
 
 const ScopeMetastasisCodecV09 = t.exact(ScopeMetastasisV09Strict);
 
-const CodeFrequencyV09 = t.record(
-  t.string,
-  t.refinement(t.number, (n): n is number => Number.isSafeInteger(n) && n >= 0, "CodeFrequencyV09"),
-);
+const CodeFrequencyV09 = idFrequencyCodec("CodeFrequencyV09");
 
 const ConvergenceRoundV09Shape = t.intersection([
   t.type({ round: RoundNumber }),
@@ -523,18 +553,18 @@ export const normalizeV09 = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =
           converged: doc.convergence.converged,
           ...(doc.convergence.rounds !== undefined
             ? {
-                rounds: doc.convergence.rounds.map((r) => ({
-                  round: r.round,
-                  ...(r.score !== undefined ? { score: r.score } : {}),
-                  // A present-but-EMPTY new spelling must not discard a populated legacy one — the
-                  // hybrid the tolerant-in contract exists for (same rule as the finding_ids pair).
-                  ...(r.ids !== undefined && Object.keys(r.ids).length > 0
-                    ? { ids: r.ids }
-                    : r.codes !== undefined
-                      ? { ids: r.codes }
-                      : {}),
-                  ...(r.sha !== undefined ? { sha: r.sha } : {}),
-                })),
+                rounds: doc.convergence.rounds.map((r) => {
+                  // usableCountsMap: the upcast and the round readers share ONE definition of a
+                  // usable map, so a present-but-empty/all-zero new spelling can never discard a
+                  // populated legacy one (or diverge from the marker channel).
+                  const ids = usableCountsMap(r.ids) ?? usableCountsMap(r.codes);
+                  return {
+                    round: r.round,
+                    ...(r.score !== undefined ? { score: r.score } : {}),
+                    ...(ids !== undefined ? { ids } : {}),
+                    ...(r.sha !== undefined ? { sha: r.sha } : {}),
+                  };
+                }),
               }
             : {}),
         };

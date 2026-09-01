@@ -1,23 +1,32 @@
 {
-  "schema_version": "0.6.0",
+  "schema_version": "0.10.0",
   "change_size": {
-    "code": { "added": 240, "removed": 80 },
-    "tests": { "added": 120, "removed": 10 },
-    "docs": { "added": 30, "removed": 0 }
+    "code": {
+      "added": 240,
+      "removed": 80
+    },
+    "tests": {
+      "added": 120,
+      "removed": 10
+    },
+    "docs": {
+      "added": 30,
+      "removed": 0
+    }
   },
   "summary": "The verdict is `changes`: the change is focused, but it lands a type widening existing callers cannot satisfy and a retry story that does not hold together across the touched files. The specific defects, their evidence, and the cross-cutting pattern are in the findings and systemic problems below.",
   "verdict": "changes",
   "systemic_problems": [
     {
       "title": "Retry plumbing is inconsistent across the upload path",
-      "description": "The retry wrapper is applied in the client but not in the config layer, and the legacy path still loops unbounded — three spots, three policies. The individual findings below each touch one instance; the pattern itself is the problem.",
+      "description": "The retry wrapper is applied in the client but not in the config layer, and the legacy path still loops unbounded \u2014 three spots, three policies. The individual findings below each touch one instance; the pattern itself is the problem.",
       "severity": "major",
-      "reasoning": "Each touched file implements its own retry policy (one wrapper, one absent, one unbounded loop) with no shared helper — grep for the three call sites confirms none of them consult the others.",
+      "reasoning": "Each touched file implements its own retry policy (one wrapper, one absent, one unbounded loop) with no shared helper \u2014 grep for the three call sites confirms none of them consult the others.",
       "confidence": 0.8,
       "likelihood": 1,
-      "code": "retry-policy-inconsistent",
-      "finding_codes": ["widened-type"],
-      "paths": ["src/upload/config.ts", "src/upload/client.ts", "src/legacy/old_code.ts"]
+      "paths": ["src/upload/config.ts", "src/upload/client.ts", "src/legacy/old_code.ts"],
+      "id": "retry-policy-inconsistent",
+      "finding_ids": ["widened-type"]
     }
   ],
   "findings": [
@@ -27,14 +36,14 @@
       "end_line": 4,
       "side": "RIGHT",
       "severity": "major",
-      "code": "widened-type",
       "title": "timeout type widened from number to number | string",
-      "description": "Widening `timeout` to `number | string` breaks every call site that does arithmetic on it — those now either type-error or silently coerce.",
+      "description": "Widening `timeout` to `number | string` breaks every call site that does arithmetic on it \u2014 those now either type-error or silently coerce.",
       "recommendation": "Keep `timeout: number` and coerce string inputs at the edge with a small `parseTimeout` helper.",
       "reasoning": "The diff changes the field type without updating any consumer; a grep for `.timeout` shows arithmetic use in the client, which `number | string` no longer satisfies.",
       "confidence": 0.9,
       "likelihood": 1,
-      "patch": "@@ -4 +4 @@\n-  timeout: number | string;\n+  timeout: number;\n"
+      "patch": "@@ -4 +4 @@\n-  timeout: number | string;\n+  timeout: number;\n",
+      "id": "widened-type"
     },
     {
       "path": "src/upload/client.ts",
@@ -47,7 +56,8 @@
       "recommendation": "Name what it retries and the backoff policy, or drop the comment.",
       "reasoning": "A future reader cannot tell from the comment what the wrapper does; the retry logic it refers to is several lines above.",
       "confidence": 0.55,
-      "likelihood": 1
+      "likelihood": 1,
+      "id": "vague-comment"
     },
     {
       "path": "src/upload/__init__.py",
@@ -57,10 +67,11 @@
       "severity": "minor",
       "title": "Declare a package version alongside __all__",
       "description": "The package exposes `__all__` but no `__version__`; downstream tooling that reads `pkg.__version__` will fail.",
-      "reasoning": "Pure-insertion fix — there is no line to replace, so this projects to a raw ```patch block rather than a GitHub suggestion (demonstrates the fallback).",
+      "reasoning": "Pure-insertion fix \u2014 there is no line to replace, so this projects to a raw ```patch block rather than a GitHub suggestion (demonstrates the fallback).",
       "confidence": 0.6,
       "likelihood": 1,
-      "patch": "@@ -3 +3,2 @@\n __all__ = ['UploadClient']\n+__version__ = '1.0.0'\n"
+      "patch": "@@ -3 +3,2 @@\n __all__ = ['UploadClient']\n+__version__ = '1.0.0'\n",
+      "id": "package-version-declared"
     },
     {
       "path": "src/legacy/old_code.ts",
@@ -70,11 +81,12 @@
       "severity": "minor",
       "title": "Retry loop has no upper bound (finding outside the diff)",
       "description": "The legacy retry loop can spin forever if the endpoint stays down. Not in this diff, so it is demoted to the summary as a stray.",
-      "reasoning": "`old_code.ts` is unchanged by this PR, so lines 120–124 are outside every diff hunk and cannot be anchored inline — the commenter surfaces it in the sticky's strays section with its reasoning fold instead of dropping it.",
+      "reasoning": "`old_code.ts` is unchanged by this PR, so lines 120\u2013124 are outside every diff hunk and cannot be anchored inline \u2014 the commenter surfaces it in the sticky's strays section with its reasoning fold instead of dropping it.",
       "confidence": 0.45,
       "likelihood": 1,
       "recommendation": "Bound the loop with a max-attempts counter and back off between tries.",
-      "patch": "@@ -120,3 +120,4 @@\n while (!ok) {\n-    retry();\n+    if (++attempts > MAX_ATTEMPTS) break;\n+    retry();\n }\n"
+      "patch": "@@ -120,3 +120,4 @@\n while (!ok) {\n-    retry();\n+    if (++attempts > MAX_ATTEMPTS) break;\n+    retry();\n }\n",
+      "id": "retry-no-upper-bound"
     }
   ]
 }

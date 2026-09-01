@@ -35,6 +35,7 @@ import {
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
 } from "./schema.js";
+import { resolveFindingId } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -929,7 +930,9 @@ export const post = async (
   const isSuppressedNit = (f: Finding): boolean =>
     f.severity === "nit" &&
     (isBelowVisibilityFloor(f, input.nitVisibilityFloor) ||
-      priorSuppressedKeys.has(answeredNoteKey(f)));
+      // resolveFindingId on the current side: the prior side already synthesizes codeless ids
+      // (priorBelowFloorNits), so an empty-id re-raise must compare under the same resolved key.
+      priorSuppressedKeys.has(resolveFindingId(f)));
   const suppressedNits = findings.findings.filter(isSuppressedNit);
   const visibleFindings = findings.findings.filter((f) => !isSuppressedNit(f));
   // The drop note, shared by every surface that renders the filtered findings: the TRUE pre-dedup

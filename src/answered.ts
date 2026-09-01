@@ -294,9 +294,12 @@ export const answeredRegistryFrom = (
 // finding one (code → id, or synthesized), so two rounds of the same claim always key to equal ids.
 // An EMPTY id resolves exactly the way the registry builder resolves a marker finding — the two sides
 // share resolveFindingId, so a verbatim re-raise of an empty-id finding still matches the entry its
-// marker synthesized.
-const matches = (f: Finding, e: Pick<AnsweredEntry, "code">): boolean =>
-  e.code === resolveFindingId(f);
+// marker synthesized. A TITLE match is the second chance the pre-0.10 "code (or title)" rule gave: a
+// codeless claim whose answer pre-dates ids can only recover its annotation when the re-raise is
+// RELOCATED (the synthesized key is path-derived) or carries a fresh agent id — the full-claim
+// verbatim check is what actually gates the drop, so a title-only match can never drop a distinct claim.
+const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
+  e.code === resolveFindingId(f) || e.title === f.title;
 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.

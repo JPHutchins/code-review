@@ -339,14 +339,34 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     );
     expect(findings).toHaveLength(0);
     expect(verbatimReRaised).toHaveLength(1);
-    // An id-bearing finding never matches a DIFFERENT entry.
-    const { findings: coded } = applyAnswered([mkFinding({ id: "other-code" })], [synthesized]);
+    // A DIFFERENT claim (fresh id AND fresh title) never matches.
+    const { findings: coded } = applyAnswered(
+      [mkFinding({ id: "other-code", title: "A different claim" })],
+      [synthesized],
+    );
     expect(coded).toHaveLength(1);
+  });
+
+  it("a RELOCATED re-raise of a pre-id codeless claim keeps its prior-answer annotation via the title second chance", () => {
+    const synthesized = entry({ code: synthesizedFindingId("src/foo.ts", "The same claim") });
+    // Same claim text, different path: not verbatim (the location changed), so it is kept — but the
+    // annotation must survive even though the synthesized key is path-derived and the agent's id is
+    // fresh.
+    const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
+      [mkFinding({ id: "fresh-agent-id", path: "src/other.ts" })],
+      [synthesized],
+    );
+    expect(findings).toHaveLength(1);
+    expect(verbatimReRaised).toHaveLength(0);
+    expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r2");
   });
 
   it("leaves unmatched findings untouched", () => {
     const { findings, reRaisedNotes, verbatimReRaised } = applyAnswered(
-      [mkFinding({ id: "fresh-code" }), mkFinding({ id: "" })],
+      [
+        mkFinding({ id: "fresh-code", title: "A different claim" }),
+        mkFinding({ id: "", title: "Another different claim" }),
+      ],
       [entry()],
     );
     expect(findings).toHaveLength(2);

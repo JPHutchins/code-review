@@ -3,7 +3,7 @@
 import { Eta } from "eta";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
-import { isIncompleteFindings } from "./schema.js";
+import { isIncompleteFindings, resolveFindingId } from "./schema.js";
 import type { RenderInput, SeverityCounts } from "./types.js";
 import { computeCost, parseInstant } from "./cost.js";
 import {
@@ -125,7 +125,9 @@ const sanitizeFinding = (
     title: escapePipes(f.title),
     path: escapeCodeBackticks(f.path),
     id: escapeCodeBackticks(f.id),
-    idKey: f.id,
+    // The RESOLVED id: the same-root notes are keyed on resolveFindingId (an empty id resolves to
+    // its synthesized key), so the lookup must not miss the note on the raw id.
+    idKey: resolveFindingId(f),
     ...(f.code_url !== undefined ? { code_url: linkSafeUrl(f.code_url) } : {}),
     rangeLabel: lineRange(f.start_line, f.end_line, "–"),
     ...(permalink !== undefined ? { permalink, permalinkAnchored: anchored } : {}),

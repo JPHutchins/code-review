@@ -2222,7 +2222,7 @@ describe("post — --effort threading", () => {
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toContain("🏁");
     const conv = parseConvergenceMarker(body);
-    expect(conv?.score).toBe(4);
+    expect(conv?.score).toBe(1.01);
     expect(conv?.converged).toBe(false);
     // The prior trajectory rides along verbatim as history.
     expect(conv?.rounds).toHaveLength(1);
@@ -4259,7 +4259,7 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "mechanic" }), api);
     const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
-    expect(blob.convergence).toEqual({ score: 4, threshold: 1, converged: false });
+    expect(blob.convergence).toEqual({ score: 1.01, threshold: 1, converged: false });
   });
 
   it("an incomplete full review carries the prior convergence forward in its blob, not a fresh one (issue #141 review r2 + r3 / #174)", async () => {
@@ -4340,7 +4340,7 @@ describe("post — convergence rounds (issue #125)", () => {
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "mechanic", convergenceThreshold: 3 }), api);
     const blob = stickySignal(calls());
-    expect(blob.convergence).toEqual({ score: 4, threshold: 3, converged: false });
+    expect(blob.convergence).toEqual({ score: 3.01, threshold: 3, converged: false });
   });
 
   it("an envelope-loss NOTICE carries the prior convergence forward, not a fresh one (same rule as every non-round post / #174)", async () => {
@@ -4398,7 +4398,7 @@ describe("post — convergence rounds (issue #125)", () => {
     await post(mkInput({ route: "mechanic" }), api);
     const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
-    expect(blob.convergence).toEqual({ score: 4, threshold: 1, converged: false });
+    expect(blob.convergence).toEqual({ score: 1.01, threshold: 1, converged: false });
   });
 });
 

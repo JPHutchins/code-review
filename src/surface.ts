@@ -537,7 +537,7 @@ export const computeSameRootNotes = (
 // modulation cannot erode; critical's is threshold-relative (CRITICAL_FLOOR_MARGIN) so an open critical
 // is never converged at any practical threshold (the margin degrades only where FP precision drops
 // 0.01, i.e. thresholds ≳ 1e14). ADVISORY ONLY: never alters the verdict.
-export const CONVERGENCE_CEILINGS: SeverityCounts = { critical: 4, major: 2, minor: 1, nit: 0 };
+const CONVERGENCE_CEILINGS: SeverityCounts = { critical: 4, major: 2, minor: 1, nit: 0 };
 // > 0 so a lone critical fails `score ≤ threshold`; 0.01 survives round2 (a coarser round would erase it).
 const CRITICAL_FLOOR_MARGIN = 0.01;
 // A minor's floor (issue #178): the weight the modulation cannot erode, so a PILE of low-likelihood
@@ -554,6 +554,26 @@ const convergenceFloor = (severity: Severity, threshold: number): number =>
       : severity === "minor"
         ? MINOR_FLOOR
         : 0;
+
+// A mechanic (CI-fix) pass stamps a never-converged convergence over the prior trajectory: CI
+// failed, so whatever the prior round said, this run's stamp must not read "converged". The score is
+// the THRESHOLD-RELATIVE critical floor (threshold + CRITICAL_FLOOR_MARGIN) — the same guarantee
+// convergenceFloor gives an open critical — so the score ≤ threshold triple buildConvergence
+// documents stays consistent at every threshold the CLI accepts. null when no prior round exists: a
+// stamp without a trajectory is one the reader gate (validStampedConvergence) rejects, and no marker
+// is the honest form of "nothing to carry" (issue #224).
+export const mechanicConvergence = (
+  prior: Convergence | null,
+  threshold: number,
+): Convergence | null =>
+  prior === null
+    ? null
+    : {
+        score: convergenceFloor("critical", threshold),
+        threshold,
+        converged: false,
+        rounds: prior.rounds,
+      };
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 

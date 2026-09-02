@@ -900,7 +900,7 @@ jobs:
           # is paid on every failure run for a near-zero collision).
           mkdir -p "$RUNNER_TEMP/gather-staged"
           cp -a failed_jobs.json pr.diff full.diff commits.json pr_context.json pr_conversation.json "$RUNNER_TEMP/gather-staged/" 2>/dev/null || true
-          if git ls-tree -r --name-only "$HEAD_SHA" 2>/dev/null | grep -qE '^job_[0-9]+\.log$'; then
+          if git ls-tree -r --name-only "$HEAD_SHA" 2>/dev/null | grep -E '^job_[0-9]+\.log($|/)' >/dev/null; then
             cp -a job_*.log "$RUNNER_TEMP/gather-staged/" 2>/dev/null || true
           fi
           git -c advice.detachedHead=false checkout --quiet --force "$HEAD_SHA" \

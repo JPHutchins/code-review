@@ -136,8 +136,9 @@ describe("route budget parity — the example's literals mirror the reusable inp
 
   const exampleRouteLiterals = (): {
     mechanic: string;
-    grace: string;
+    mechanicGrace: string;
     full: string;
+    fullGrace: string;
     usd: string;
   } => {
     const lines = runScripts("examples/workflows/review.yaml")
@@ -145,17 +146,49 @@ describe("route budget parity — the example's literals mirror the reusable inp
       .map((line) => line.trim());
     const routeLine = lines.find((l) => l.includes("AGENT_WALL=")) ?? "";
     const usdLine = lines.find((l) => l.startsWith("USD_LIMIT=")) ?? "";
-    const mechanic = /AGENT_WALL=(\S+); GRACE=(\S+); else AGENT_WALL=(\S+); GRACE=(\S+)/.exec(
+    const mechanic = /AGENT_WALL=(\S+); GRACE=(\S+); else AGENT_WALL=(\S+); GRACE=([^;\s]+)/.exec(
       routeLine,
     );
     const usd = /USD_LIMIT=(\S+)/.exec(usdLine)?.[1];
     if (mechanic === null || usd === undefined) throw new Error("example route literals not found");
     return {
       mechanic: mechanic[1]!,
-      grace: mechanic[2]!,
+      mechanicGrace: mechanic[2]!,
       full: mechanic[3]!,
+      fullGrace: mechanic[4]!,
       usd,
     };
+  };
+
+  // The empty-string coercion fallbacks a consumer actually receives when it wires an unset var —
+  // `${{ inputs.X != '' && inputs.X || '<literal>' }}` — are budget sites of their own.
+  const envCoercionFallbacks = (workflowPath: string): Readonly<Record<string, string>> => {
+    const doc = parseYaml(readRepoFile(workflowPath)) as {
+      jobs?: Record<
+        string,
+        { env?: Record<string, string>; steps?: ReadonlyArray<{ env?: Record<string, string> }> }
+      >;
+    };
+    const fallbacks: Record<string, string> = {};
+    for (const job of Object.values(doc.jobs ?? {})) {
+      const envBlocks = [job.env ?? {}, ...(job.steps ?? []).map((step) => step.env ?? {})];
+      for (const env of envBlocks) {
+        for (const [k, v] of Object.entries(env)) {
+          const m = /\|\|\s*['"]?([^'"]+)['"]?\s*\}\}\s*$/.exec(v);
+          if (m !== null) fallbacks[k] = m[1]!;
+        }
+      }
+    }
+    return fallbacks;
+  };
+
+  const ENV_TO_INPUT: Readonly<Record<string, string>> = {
+    FULL_TIME_LIMIT: "full_review_time_limit",
+    FULL_GRACE: "full_review_grace_period",
+    FULL_USD: "full_review_usd_limit",
+    MECHANIC_TIME_LIMIT: "mechanic_time_limit",
+    MECHANIC_GRACE: "mechanic_grace_period",
+    MECHANIC_USD: "mechanic_usd_limit",
   };
 
   it("the example's mechanic/full literals equal both reusables' input defaults", () => {
@@ -163,10 +196,12 @@ describe("route budget parity — the example's literals mirror the reusable inp
     const facade = inputDefaults(".github/workflows/review-on-comment-reusable.yaml");
     const example = exampleRouteLiterals();
     expect(reusable["mechanic_time_limit"]).toBe(example.mechanic);
-    expect(reusable["mechanic_grace_period"]).toBe(example.grace);
+    expect(reusable["mechanic_grace_period"]).toBe(example.mechanicGrace);
     expect(reusable["full_review_time_limit"]).toBe(example.full);
-    // The example carries ONE shared cap; the reusables' per-route inputs currently agree.
-    expect(reusable["mechanic_usd_limit"]).toBe(example.usd);
+    expect(reusable["full_review_grace_period"]).toBe(example.fullGrace);
+    // The example carries ONE shared cap modeled on the full route's; per-route USD inputs in the
+    // reusables stay independently retunable (their agreement is pinned below, not their equality
+    // with the example).
     expect(reusable["full_review_usd_limit"]).toBe(example.usd);
     // The two reusables must agree with each other on every budget default.
     for (const key of [
@@ -178,6 +213,14 @@ describe("route budget parity — the example's literals mirror the reusable inp
       "full_review_usd_limit",
     ]) {
       expect(facade[key], key).toBe(reusable[key]);
+    }
+  });
+
+  it("every env-coercion fallback equals its input default — an unset consumer var receives the default, not a drift", () => {
+    const reusable = inputDefaults(".github/workflows/review-reusable.yaml");
+    const fallbacks = envCoercionFallbacks(".github/workflows/review-reusable.yaml");
+    for (const [envKey, inputKey] of Object.entries(ENV_TO_INPUT)) {
+      expect(fallbacks[envKey], envKey).toBe(reusable[inputKey]);
     }
   });
 });

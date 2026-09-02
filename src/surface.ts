@@ -555,6 +555,26 @@ const convergenceFloor = (severity: Severity, threshold: number): number =>
         ? MINOR_FLOOR
         : 0;
 
+// A mechanic (CI-fix) pass stamps a never-converged convergence over the prior trajectory: CI
+// failed, so whatever the prior round said, this run's stamp must not read "converged". The score is
+// the THRESHOLD-RELATIVE critical floor (threshold + CRITICAL_FLOOR_MARGIN) — the same guarantee
+// convergenceFloor gives an open critical — so the score ≤ threshold triple buildConvergence
+// documents stays consistent at every threshold the CLI accepts. null when no prior round exists: a
+// stamp without a trajectory is one the reader gate (validStampedConvergence) rejects, and no marker
+// is the honest form of "nothing to carry" (issue #224).
+export const mechanicConvergence = (
+  prior: Convergence | null,
+  threshold: number,
+): Convergence | null =>
+  prior === null
+    ? null
+    : {
+        score: convergenceFloor("critical", threshold),
+        threshold,
+        converged: false,
+        rounds: prior.rounds,
+      };
+
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
 
 // One finding/systemic-problem's contribution: floor(severity) + confidence-and-likelihood-weighted

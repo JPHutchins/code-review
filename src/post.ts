@@ -26,6 +26,8 @@ import {
   parseReviewedSha,
   priorTrajectory,
   reviewBodyPointer,
+  mechanicConvergence,
+  DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
 import {
   ResultEnvelopeCodec,
@@ -798,12 +800,24 @@ export const post = async (
   }
   const template = readFileSync(input.templatePath, "utf-8");
   const inlineRequested = input.inline === true;
+  // Loaded before the notice paths: their convergence stamps read the route, exactly like the main
+  // path (issue #224's mechanic pin must hold on EVERY write path).
+  const envelope = loadEnvelope(input.envelopePath);
 
   const renderNotice = (message: string): string => {
     // The notice carries the prior convergence forward IN its blob so the trajectory + last score
     // survive; render's incomplete gate keeps the badge/trajectory off the human surface, so a carried
-    // "converged" is never shown beside a run that produced no verdict (issue #141 review r2).
-    const findings = stampConvergence(incompleteFindings(`### ⚠️ ${message}`), priorConv);
+    // "converged" is never shown beside a run that produced no verdict (issue #141 review r2). A
+    // MECHANIC notice stamps the never-converged pin instead — CI failed, whatever the prior said
+    // (issue #224: the pin holds on every write path, not just the main one).
+    const noticeConvergence =
+      (input.route ?? envelope?.route) === "mechanic"
+        ? mechanicConvergence(
+            priorConv,
+            input.convergenceThreshold ?? DEFAULT_CONVERGENCE_THRESHOLD,
+          )
+        : priorConv;
+    const findings = stampConvergence(incompleteFindings(`### ⚠️ ${message}`), noticeConvergence);
     return formatMarkdown(
       render({
         findings,
@@ -954,7 +968,6 @@ export const post = async (
       ? "\n> _The stop signal reflects the kept findings — this round carries none._"
       : "");
 
-  const envelope = loadEnvelope(input.envelopePath);
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
   const clocDiff = input.clocDiffPath ? loadClocDiff(input.clocDiffPath) : undefined;
 
@@ -977,8 +990,17 @@ export const post = async (
     if (emptyMechanicWouldBury(effectiveRoute, envelopelessIncomplete) && existingSticky !== null)
       await emptyMechanicLeaveOrNote(existingSticky);
     // A lost envelope is not a completed round, so the prior convergence is carried forward in the
-    // blob unchanged rather than a new round being built (issue #174).
-    const stampedFindings = stampConvergence(findings, priorConv);
+    // blob unchanged rather than a new round being built (issue #174) — except on the mechanic
+    // route, whose pin applies here exactly as on the main path (issue #224).
+    const stampedFindings = stampConvergence(
+      findings,
+      effectiveRoute === "mechanic"
+        ? mechanicConvergence(
+            priorConv,
+            input.convergenceThreshold ?? DEFAULT_CONVERGENCE_THRESHOLD,
+          )
+        : priorConv,
+    );
     // This branch lists every visible finding, exactly like the inline-off default, so it can exceed
     // GitHub's comment limit the same way — and here a 422 is the difference between a notice and
     // nothing at all.
@@ -1122,7 +1144,12 @@ export const post = async (
         currentCodes,
         input.headSha.slice(0, 12),
       )
-    : priorConv;
+    : effectiveRoute === "mechanic"
+      ? // A mechanic pass means CI failed — whatever the carried prior says, its own stamp must
+        // never read "converged". The threshold-relative critical floor keeps the carried triple
+        // consistent at every threshold; null (no marker) when no prior round exists (issue #224).
+        mechanicConvergence(priorConv, input.convergenceThreshold ?? DEFAULT_CONVERGENCE_THRESHOLD)
+      : priorConv;
   const stampedFindings = stampConvergence(findings, convergence);
   const currentRoundCount = isRound ? roundNumber : priorRoundCount;
 

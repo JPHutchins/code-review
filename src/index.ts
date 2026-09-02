@@ -334,6 +334,8 @@ const renderCmd = defineCommand({
     // blob all read the same stored score, the same decision post makes (issue #141 reviews r2 + r4).
     // Mirror post's stamp: convergence is pipeline-owned and always overwritten, so a draft's echoed
     // value never rides the preview blob — a round previews a fresh round-1 stamp, a non-round none.
+    // post's mechanic stamp needs the prior trajectory this command has no access to, so a mechanic
+    // preview stamps none — exactly what post stamps for a no-prior mechanic (mechanicConvergence null).
     const stampedFindings = {
       ...findings,
       convergence: isRound ? buildConvergence(findings, threshold) : undefined,

@@ -94,7 +94,9 @@ describe("mechanic route prose — the reusable workflow and the example teach t
     runScripts(workflowPath)
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
-      .filter((line) => /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE)="/.test(line))
+      .filter((line) =>
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE)="/.test(line),
+      )
       .sort();
 
   it("every mechanic steer line is byte-identical between review-reusable.yaml and the example", () => {
@@ -115,6 +117,67 @@ describe("mechanic prompt assembly — the notes reach the prompt in the same or
         script.includes("$ROUTE_NOTE$LOG_SUBSET_NOTE"),
       );
       expect(splices, `${workflowPath} splice`).not.toHaveLength(0);
+    }
+  });
+});
+
+describe("route budget parity — the example's literals mirror the reusable input defaults", () => {
+  const inputDefaults = (workflowPath: string): Readonly<Record<string, string>> => {
+    const doc = parseYaml(readRepoFile(workflowPath)) as {
+      on?: { workflow_call?: { inputs?: Record<string, { default?: string | number }> } };
+    };
+    const inputs = doc.on?.workflow_call?.inputs ?? {};
+    return Object.fromEntries(
+      Object.entries(inputs).flatMap(([k, v]) =>
+        v.default === undefined ? [] : [[k, String(v.default)]],
+      ),
+    );
+  };
+
+  const exampleRouteLiterals = (): {
+    mechanic: string;
+    grace: string;
+    full: string;
+    usd: string;
+  } => {
+    const lines = runScripts("examples/workflows/review.yaml")
+      .flatMap(({ script }) => script.split("\n"))
+      .map((line) => line.trim());
+    const routeLine = lines.find((l) => l.includes("AGENT_WALL=")) ?? "";
+    const usdLine = lines.find((l) => l.startsWith("USD_LIMIT=")) ?? "";
+    const mechanic = /AGENT_WALL=(\S+); GRACE=(\S+); else AGENT_WALL=(\S+); GRACE=(\S+)/.exec(
+      routeLine,
+    );
+    const usd = /USD_LIMIT=(\S+)/.exec(usdLine)?.[1];
+    if (mechanic === null || usd === undefined) throw new Error("example route literals not found");
+    return {
+      mechanic: mechanic[1]!,
+      grace: mechanic[2]!,
+      full: mechanic[3]!,
+      usd,
+    };
+  };
+
+  it("the example's mechanic/full literals equal both reusables' input defaults", () => {
+    const reusable = inputDefaults(".github/workflows/review-reusable.yaml");
+    const facade = inputDefaults(".github/workflows/review-on-comment-reusable.yaml");
+    const example = exampleRouteLiterals();
+    expect(reusable["mechanic_time_limit"]).toBe(example.mechanic);
+    expect(reusable["mechanic_grace_period"]).toBe(example.grace);
+    expect(reusable["full_review_time_limit"]).toBe(example.full);
+    // The example carries ONE shared cap; the reusables' per-route inputs currently agree.
+    expect(reusable["mechanic_usd_limit"]).toBe(example.usd);
+    expect(reusable["full_review_usd_limit"]).toBe(example.usd);
+    // The two reusables must agree with each other on every budget default.
+    for (const key of [
+      "mechanic_time_limit",
+      "mechanic_grace_period",
+      "mechanic_usd_limit",
+      "full_review_time_limit",
+      "full_review_grace_period",
+      "full_review_usd_limit",
+    ]) {
+      expect(facade[key], key).toBe(reusable[key]);
     }
   });
 });

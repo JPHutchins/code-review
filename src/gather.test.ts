@@ -147,9 +147,7 @@ const jobsMatch = (a: readonly string[]): boolean =>
 // What `gh api --paginate --jq '.jobs[] | …'` actually emits: one job per line, across all pages.
 const jobRows = (
   ...jobs: ReadonlyArray<{ id: number; conclusion: string | null; name?: string }>
-): string =>
-  jobs.map((j) => JSON.stringify({ name: j.name ?? `job-${String(j.id)}`, ...j })).join("\n") +
-  "\n";
+): string => jobs.map((j) => JSON.stringify({ name: j.name ?? null, ...j })).join("\n") + "\n";
 const logsMatch = (a: readonly string[]): boolean =>
   (a[0]?.startsWith("repos/owner/repo/actions/jobs/") ?? false) &&
   (a[0]?.endsWith("/logs") ?? false);
@@ -996,7 +994,7 @@ describe("gather — failing-job logs", () => {
     await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
 
     expect(JSON.parse(outFile("failed_jobs.json"))).toEqual([
-      { name: "job-11", conclusion: "failure" },
+      { name: null, conclusion: "failure" },
     ]);
   });
 

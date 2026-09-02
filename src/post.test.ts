@@ -2229,7 +2229,7 @@ describe("post — --effort threading", () => {
       {
         match: (a: readonly string[]) =>
           a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `${JSON.stringify({ id: 999, body: convergedPrior })}\n`,
+        response: commentRow(999, convergedPrior),
       },
       {
         match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",

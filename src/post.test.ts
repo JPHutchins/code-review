@@ -2204,6 +2204,61 @@ describe("post — --effort threading", () => {
     expect(body.body).toContain("mechanic");
   });
 
+  it("a mechanic pass never shows the review converged — its stamp is pinned at the critical ceiling even when the prior round converged (issue #224)", async () => {
+    const convergedPrior = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${convergenceMarker(
+      {
+        score: 0.42,
+        threshold: 1,
+        converged: true,
+        rounds: [{ round: 1, score: 0.42, ids: {}, sha: "abc123def456" }],
+      },
+    )}\n${legacyEmbeddedMarker(mkFindings([mkFinding({ severity: "minor", id: "prior" })]))}`;
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ severity: "minor", id: "ci-fix" })])),
+    );
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: inlineDiff,
+      },
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        response: `${JSON.stringify({ id: 999, body: convergedPrior })}\n`,
+      },
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
+        response: "",
+      },
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+        response: "",
+      },
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews",
+        response: "",
+      },
+    ]);
+    await post(mkInput({ route: "mechanic" }), api);
+
+    const stickyCall = calls().find(
+      (c) => c.args[0] === "repos/owner/repo/issues/comments/999" && c.stdin !== undefined,
+    );
+    const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    expect(body).not.toContain("🏁");
+    const conv = parseConvergenceMarker(body);
+    expect(conv?.score).toBe(1.01);
+    expect(conv?.converged).toBe(false);
+    // The prior trajectory rides along verbatim as history.
+    expect(conv?.rounds).toHaveLength(1);
+  });
+
   it("renders route/effort from the envelope when no override is passed (SSOT)", async () => {
     writeFileSync(
       join(tmpDir, "envelope.json"),
@@ -4228,13 +4283,14 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 1.7, threshold: 1, converged: false });
   });
 
-  it("a mechanic pass carries the last completed round's convergence forward in the compact marker (issue #141 item 3)", async () => {
-    // The prior round is {major: 1} → score 2 > threshold 1 → iterating; a mechanic is not a round.
+  it("a mechanic pass carries the last completed round's history in the compact marker, stamped never-converged (issue #141 item 3 / #224)", async () => {
+    // The prior round is {major: 1} → score 2 > threshold 1 → iterating; a mechanic is not a round,
+    // and its own stamp is pinned at the critical ceiling regardless of what the prior said.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "mechanic" }), api);
     const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
-    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+    expect(blob.convergence).toEqual({ score: 1.01, threshold: 1, converged: false });
   });
 
   it("an incomplete full review carries the prior convergence forward in its blob, not a fresh one (issue #141 review r2 + r3 / #174)", async () => {
@@ -4308,14 +4364,14 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
   });
 
-  it("a mechanic pass carries the prior round's signal VERBATIM — a changed current threshold must not flip it (issue #141 review)", async () => {
+  it("a mechanic pass never carries the prior round's converged signal — its stamp is pinned at the critical ceiling, judged at the CURRENT threshold (issue #224)", async () => {
     // The prior round was judged at threshold 1 (score 2 → not converged); the operator now
-    // configures threshold 3. Recomputing the carried signal would flip it to converged — the blob
-    // must keep the round's own threshold and verdict.
+    // configures threshold 3. The mechanic stamp is not the carried signal at all: CI failed, so it
+    // reads score 4 (never converged at any practical threshold) at the threshold THIS run uses.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1 }));
     await post(mkInput({ route: "mechanic", convergenceThreshold: 3 }), api);
     const blob = stickySignal(calls());
-    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+    expect(blob.convergence).toEqual({ score: 3.01, threshold: 3, converged: false });
   });
 
   it("an envelope-loss NOTICE carries the prior convergence forward, not a fresh one (same rule as every non-round post / #174)", async () => {
@@ -4365,14 +4421,15 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(blob.convergence).toEqual({ score: 0.73, threshold: 1, converged: true });
   });
 
-  it("an oversized prior review's signal survives via the compact marker — a mechanic still carries it (issue #141 review r2)", async () => {
+  it("an oversized prior review's signal survives via the compact marker — a mechanic still carries the history, stamped never-converged (issue #141 review r2 / #224)", async () => {
     // The prior sticky's findings marker fell to the link form (payload over EMBED_LIMIT); only the
-    // compact signal marker remains, and the carry must still find it.
+    // compact signal marker remains, and the carry must still find it — with the mechanic's own
+    // never-converged stamp over the carried trajectory.
     const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 1, blobLink: true }));
     await post(mkInput({ route: "mechanic" }), api);
     const blob = stickySignal(calls());
     expect(blob.round).toBe(1);
-    expect(blob.convergence).toEqual({ score: 2, threshold: 1, converged: false });
+    expect(blob.convergence).toEqual({ score: 1.01, threshold: 1, converged: false });
   });
 });
 

@@ -104,3 +104,17 @@ describe("mechanic route prose — the reusable workflow and the example teach t
     expect(example).toEqual(reusable);
   });
 });
+
+describe("mechanic prompt assembly — the notes reach the prompt in the same order in both files", () => {
+  it("the prompt splice delivers $ROUTE_NOTE then $LOG_SUBSET_NOTE in both workflows", () => {
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      const splices = runScripts(workflowPath).filter(({ script }) =>
+        script.includes("$ROUTE_NOTE$LOG_SUBSET_NOTE"),
+      );
+      expect(splices, `${workflowPath} splice`).not.toHaveLength(0);
+    }
+  });
+});

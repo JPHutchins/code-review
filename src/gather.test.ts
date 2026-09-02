@@ -1440,3 +1440,29 @@ describe("gather → seed-draft seam (issue #232)", () => {
     expect(context.findings[0]!.title).toBe("Prior finding");
   });
 });
+
+describe("gather — failing-job identity", () => {
+  it("tolerates a job row whose name is null — a nameless entry degrades instead of aborting the gather", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: JSON.stringify({ id: 11, name: null, conclusion: "failure" }) + "\n",
+      },
+      { match: logsMatch, response: "no log available\n" },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", failingJobs: 1, stagedJobLogs: 1 });
+    expect(JSON.parse(outFile("failed_jobs.json"))).toEqual([
+      { name: null, conclusion: "failure" },
+    ]);
+  });
+});

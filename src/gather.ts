@@ -97,7 +97,9 @@ type IssueComment = t.TypeOf<typeof IssueCommentCodec>;
 
 const JobCodec = t.type({
   id: t.number,
-  name: t.string,
+  // A null name (an API edge) degrades to a nameless entry rather than aborting the whole gather —
+  // the identity the reproduction steer needs is best-effort, never load-bearing.
+  name: t.union([t.string, t.null]),
   conclusion: t.union([t.string, t.null]),
 });
 
@@ -383,7 +385,7 @@ const downloadFailingJobLogs = async (
   }
   // The failing jobs' identities ride along even when their log bodies cannot: a zero-logs mechanic
   // pass still knows WHICH jobs failed (name + conclusion), so its reproduction instruction has a
-  // defined target instead of a bare count.
+  // defined target instead of a bare count. A null name stays null — best-effort, never load-bearing.
   writeFileSync(
     join(outDir, "failed_jobs.json"),
     `${JSON.stringify(

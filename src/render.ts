@@ -130,6 +130,32 @@ const discussionLinksCost = (links: readonly DiscussionLink[]): number =>
   links.reduce((sum, d) => sum + d.author.length + d.when.length + d.url.length, 0) +
   links.length * 12;
 
+const escapeHtml = (text: string): string =>
+  text.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
+  );
+
+// The aside's list + truncation note, composed ONCE here — the stray, systemic, and suppressed
+// surfaces all render this exact snippet (with the suppressed variant's blockquote prefix), so the
+// list markup and the "showing the N newest of M" wording have one owner. The template wraps it in
+// the <details> shell.
+const discussionAsideHtml = (
+  links: readonly DiscussionLink[],
+  truncated: number | undefined,
+  prefix: string,
+): string =>
+  [
+    ...links.map((d) => `${prefix}- [${escapeHtml(d.author)} · ${d.when}](${d.url})`),
+    ...(truncated !== undefined
+      ? [
+          `${prefix}_(showing the ${String(PER_FINDING_LINKS)} newest of ${String(
+            truncated,
+          )} replies — the rest live on the comment thread.)_`,
+        ]
+      : []),
+  ].join("\n") + "\n";
+
 type StrayView = Finding & {
   readonly patchProjection: PatchProjection;
   readonly answeredNote: string;
@@ -153,6 +179,9 @@ type StrayView = Finding & {
   // The pre-cap reply count when the 6-newest cap trimmed this finding's list — the aside names
   // its cut instead of rendering indistinguishably from a short thread.
   readonly discussionTruncated?: number;
+  // The aside's composed list + truncation note (discussionAsideHtml) — empty when there is no
+  // aside to render.
+  readonly discussionHtml?: string;
 };
 
 // The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
@@ -236,6 +265,8 @@ type SuppressedNitView = {
   // discussion surface like the strays').
   readonly discussion: readonly DiscussionLink[];
   readonly discussionTruncated?: number;
+  // The aside's composed list + truncation note, blockquote-prefixed (discussionAsideHtml).
+  readonly discussionHtml: string;
 };
 
 // HTML comments cannot nest, so a `-->` inside a carried field would close the block early and spill
@@ -264,6 +295,8 @@ const sanitizeSuppressedNit = (
   carried: carriedLines(f),
   discussion,
   ...(discussionTruncated !== undefined ? { discussionTruncated } : {}),
+  discussionHtml:
+    discussion.length > 0 ? discussionAsideHtml(discussion, discussionTruncated, ">   ") : "",
 });
 
 // Each carried field is clipped. Every below-floor nit's full finding rides in the sticky body, and
@@ -294,11 +327,14 @@ const sanitizeSystemic = (
 ): SystemicProblem & {
   readonly discussion: readonly DiscussionLink[];
   readonly discussionTruncated?: number;
+  readonly discussionHtml: string;
 } => ({
   ...s,
   title: escapePipes(s.title),
   discussion,
   ...(discussionTruncated !== undefined ? { discussionTruncated } : {}),
+  discussionHtml:
+    discussion.length > 0 ? discussionAsideHtml(discussion, discussionTruncated, "") : "",
   ...(s.id !== undefined ? { id: escapeCodeBackticks(s.id) } : {}),
   ...(s.code_url !== undefined ? { code_url: linkSafeUrl(s.code_url) } : {}),
   ...(s.paths !== undefined ? { paths: s.paths.map(escapeCodeBackticks) } : {}),
@@ -448,16 +484,23 @@ export const render = (input: RenderInput): string => {
       : undefined;
   const unanchored = new Set(input.unanchoredStrays ?? []);
 
-  const strayViews = (input.strays ?? []).map((f) =>
-    sanitizeFinding(
+  const strayViews = (input.strays ?? []).map((f) => {
+    const view = sanitizeFinding(
       f,
       input.answeredNotes,
       input.discussionByFinding,
       permalinkBase,
       unanchored,
       input.discussionTruncated,
-    ),
-  );
+    );
+    return {
+      ...view,
+      discussionHtml:
+        view.discussion.length > 0
+          ? discussionAsideHtml(view.discussion, view.discussionTruncated, "")
+          : "",
+    };
+  });
   // The discussion aside is additive to the one body post deliberately never sheds: the orphaned
   // section and the per-finding asides draw from ONE budget, whole asides dropped past it, the cut
   // named in the template, never silent. An aside whose finding has no replies costs nothing and
@@ -475,22 +518,24 @@ export const render = (input: RenderInput): string => {
       view.discussion.length > 0
         ? DISCUSSION_BLOCK_OVERHEAD + discussionLinksCost(view.discussion)
         : 0,
-    (view) => ({ ...view, discussion: [] }),
+    (view) => ({ ...view, discussion: [], discussionHtml: "" }),
   );
   // The systemic asides draw from the SAME pool, third in line: orphaned (permanent cut) first,
   // then the strays' asides, then the systemics'.
   const systemicBudget = budgetBySize(
-    (input.findings.systemic_problems ?? []).map((s) =>
-      sanitizeSystemic(
-        s,
-        s.id !== undefined ? discussionLinksFor(s.id) : [],
-        s.id !== undefined ? discussionTruncatedFor(s.id) : undefined,
-      ),
-    ),
+    (input.findings.systemic_problems ?? []).map((s) => {
+      const links = s.id !== undefined ? discussionLinksFor(s.id) : [];
+      const cap = s.id !== undefined ? discussionTruncatedFor(s.id) : undefined;
+      const view = sanitizeSystemic(s, links, cap);
+      return {
+        ...view,
+        discussionHtml: links.length > 0 ? discussionAsideHtml(links, cap, "") : "",
+      };
+    }),
     DISCUSSION_TOTAL_CHARS - orphanedBudget.used - discussionBudget.used,
     (s) =>
       s.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + discussionLinksCost(s.discussion) : 0,
-    (s) => ({ ...s, discussion: [] }),
+    (s) => ({ ...s, discussion: [], discussionHtml: "" }),
   );
 
   return eta.renderString(input.template, {

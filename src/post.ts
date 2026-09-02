@@ -513,14 +513,23 @@ const ORPHAN_TOKEN_CAP = 8;
 
 // The raw id → escaped DISPLAY spelling index: the sticky renders ids through escapeCodeBackticks
 // (backticks → '-', newlines → ' '), so a reply quoting the DISPLAYED spelling of an id must land
-// in the same bucket as a reply quoting the raw one.
+// in the same bucket as a reply quoting the raw one. The escaping is not injective (escape-twin ids
+// display identically), and an ambiguous spelling must NOT be silently assigned a winner — the
+// token stays unmatched and the raw spellings remain the only keys.
 const escapedIdIndex = (ids: readonly string[]): ReadonlyMap<string, string> => {
-  const index = new Map<string, string>();
+  const owners = new Map<string, string[]>();
   for (const id of ids) {
     const escaped = escapeCodeBackticks(id);
-    if (escaped !== id) index.set(escaped, id);
+    if (escaped === id) continue;
+    const list = owners.get(escaped);
+    if (list === undefined) owners.set(escaped, [id]);
+    else list.push(id);
   }
-  return index;
+  return new Map(
+    [...owners.entries()].flatMap(([escaped, raws]) =>
+      raws.length === 1 && raws[0] !== undefined ? ([[escaped, raws[0]]] as const) : [],
+    ),
+  );
 };
 
 // The rows whose reply chain reaches the sticky (the walk memoized per row). The sticky's own row
@@ -1064,7 +1073,45 @@ export const post = async (
   // path (issue #224's mechanic pin must hold on EVERY write path).
   const envelope = loadEnvelope(input.envelopePath);
 
-  const renderNotice = (message: string): string => {
+  const reachable = existingSticky !== null ? reachableReplies(commentRows, existingSticky.id) : [];
+
+  // The notice overwrites the sticky with no findings of its own — the pointer trail a replied-to
+  // prior sticky carries must survive the overwrite. Resolved and grouped ONLY when a notice
+  // actually exits (the rare path); a normal round never pays this. The prior document's ids are
+  // the whole departed set for a notice (the notice reports nothing), and only a full-review prior
+  // may feed it — a mechanic pass's own findings are not this review's departed findings.
+  const noticeDiscussion = async (): Promise<{
+    readonly orphanedDiscussion: Readonly<Record<string, readonly DiscussionLink[]>>;
+    readonly orphanedTotal: number;
+    readonly orphanedTruncated: Readonly<Record<string, number>>;
+    readonly orphanedUnresolvable: boolean;
+  }> => {
+    if (existingSticky === null) {
+      return {
+        orphanedDiscussion: {},
+        orphanedTotal: 0,
+        orphanedTruncated: {},
+        orphanedUnresolvable: false,
+      };
+    }
+    const wantsPrior =
+      isFullReviewSticky(existingSticky.body) && mentionsOutsideKnown(reachable, []);
+    const resolved = wantsPrior
+      ? await resolvePriorFindings(existingSticky.body, readArtifact)
+      : null;
+    const built = buildStickyDiscussion(reachable, [], priorIdsFrom(resolved));
+    return {
+      orphanedDiscussion: built.orphaned,
+      orphanedTotal: built.orphanedTotal,
+      orphanedTruncated: built.orphanedTruncated,
+      orphanedUnresolvable: wantsPrior && resolved === null,
+    };
+  };
+
+  const renderNotice = (
+    message: string,
+    discussion: Awaited<ReturnType<typeof noticeDiscussion>>,
+  ): string => {
     // The notice carries the prior convergence forward IN its blob so the trajectory + last score
     // survive; render's incomplete gate keeps the badge/trajectory off the human surface, so a carried
     // "converged" is never shown beside a run that produced no verdict (issue #141 review r2). A
@@ -1096,17 +1143,22 @@ export const post = async (
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(findings),
         postedAt: input.postedAt,
+        orphanedDiscussion: discussion.orphanedDiscussion,
+        orphanedTotal: discussion.orphanedTotal,
+        orphanedTruncated: discussion.orphanedTruncated,
+        orphanedUnresolvable: discussion.orphanedUnresolvable,
       }),
     );
   };
 
   if (isEmptyDiff(diff)) {
     if (wouldBuryCompleted(true)) leaveInPlace();
+    const discussion = await noticeDiscussion();
     await upsertSticky(
       input.repo,
       prNumber,
       existingSticky,
-      renderNotice("The diff for this PR is empty — nothing to review."),
+      renderNotice("The diff for this PR is empty — nothing to review.", discussion),
       ghApi,
     );
     process.exit(0);
@@ -1115,11 +1167,12 @@ export const post = async (
   const findingsResult = loadFindings(input.findingsPath);
   if (findingsResult.kind !== "ok") {
     if (wouldBuryCompleted(true)) leaveInPlace();
+    const discussion = await noticeDiscussion();
     await upsertSticky(
       input.repo,
       prNumber,
       existingSticky,
-      renderNotice(noticeMessageFor(findingsResult)),
+      renderNotice(noticeMessageFor(findingsResult), discussion),
       ghApi,
     );
     process.exit(0);
@@ -1200,7 +1253,6 @@ export const post = async (
   // orphan bucket is non-empty only when a reply names an id-shaped token this round does not
   // report (with no prior ids the bucket is empty either way, so that gate skips a fetch it could
   // not use, never an output it could change).
-  const reachable = existingSticky !== null ? reachableReplies(commentRows, existingSticky.id) : [];
   // The PROVISIONAL known set (every finding id + the systemics) gates the fetch BEFORE the nit
   // split: the split's stickiness reads the prior document, so the exact set cannot be computed
   // until the resolve has happened. The provisional set is a superset of the exact one, so a round
@@ -1216,9 +1268,15 @@ export const post = async (
   const nitWantsPrior =
     roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body);
   const broadWantsPrior =
-    existingSticky !== null && mentionsOutsideKnown(reachable, broadCurrentIds);
+    existingSticky !== null &&
+    isFullReviewSticky(existingSticky.body) &&
+    mentionsOutsideKnown(reachable, broadCurrentIds);
+  // Whether the resolve was already attempted above — a failed attempt is not retried below (a
+  // second download of an unresolvable artifact buys no new information, and each attempt can take
+  // the full timeout on the critical path).
+  const priorResolveAttempted = nitWantsPrior || broadWantsPrior;
   const resolvedPrior =
-    existingSticky !== null && (nitWantsPrior || broadWantsPrior)
+    existingSticky !== null && priorResolveAttempted
       ? await resolvePriorFindings(existingSticky.body, readArtifact)
       : null;
   const priorDocForNits = nitWantsPrior ? resolvedPrior : null;
@@ -1263,9 +1321,14 @@ export const post = async (
       .map((s) => s.id)
       .filter((id): id is string => id !== undefined && id !== ""),
   ];
+  // The exact set differs from the provisional one only when findings can post inline — otherwise
+  // the two are set-equal and the second scan would re-run the identical predicate.
+  const exactSetDiffers = input.inline === true && envelope !== null;
   const discussionWantsPrior =
-    resolvedPrior === null &&
+    !priorResolveAttempted &&
+    exactSetDiffers &&
     existingSticky !== null &&
+    isFullReviewSticky(existingSticky.body) &&
     mentionsOutsideKnown(reachable, currentIds);
   const resolvedPriorFinal = discussionWantsPrior
     ? await resolvePriorFindings(existingSticky.body, readArtifact)
@@ -1276,6 +1339,11 @@ export const post = async (
     existingSticky !== null &&
     (broadWantsPrior || discussionWantsPrior) &&
     resolvedPriorFinal === null;
+  // The departed set is the prior document's ids MINUS every id still live this round — an
+  // inline-posted finding's id persists in the prior doc while the finding is still current, so it
+  // must never be published under the "no longer reports" header.
+  const broadLive = new Set(broadCurrentIds);
+  const departedIds = priorIdsFrom(resolvedPriorFinal).filter((id) => !broadLive.has(id));
 
   // The discussion aside's reply chain (issue #246): built from the rows ALREADY fetched for the
   // sticky lookup — pure, so a round pays one history fetch total. Built whenever a sticky exists,
@@ -1284,7 +1352,7 @@ export const post = async (
   // the lost-envelope branch so that surface carries the same trail as the main path.
   const stickyDiscussion =
     existingSticky !== null
-      ? buildStickyDiscussion(reachable, currentIds, priorIdsFrom(resolvedPriorFinal))
+      ? buildStickyDiscussion(reachable, currentIds, departedIds)
       : { byFinding: {}, orphaned: {}, orphanedTotal: 0, truncated: {}, orphanedTruncated: {} };
   const discussionByFinding = stickyDiscussion.byFinding;
   const orphanedDiscussion = stickyDiscussion.orphaned;
@@ -1532,6 +1600,14 @@ export const post = async (
     straysOverride?: readonly Finding[],
     unanchoredCount?: number,
     unanchoredStrays?: readonly Finding[],
+    discussionOverride?: Pick<
+      RenderInput,
+      | "discussionByFinding"
+      | "orphanedDiscussion"
+      | "orphanedTotal"
+      | "discussionTruncated"
+      | "orphanedTruncated"
+    >,
   ): string =>
     formatMarkdown(
       render({
@@ -1541,6 +1617,7 @@ export const post = async (
         ...(unanchoredStrays !== undefined && unanchoredStrays.length > 0
           ? { unanchoredStrays }
           : {}),
+        ...(discussionOverride ?? {}),
         inlineDisposition,
         reviewUrl,
       }) + longFilesNote,
@@ -1633,6 +1710,17 @@ export const post = async (
   // never a false "posted". Best-effort — the sticky and review are already posted.
   const unanchoredCount = unposted.length;
   const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
+  // GitHub-rejected in-diff findings render on the final sticky as strays — the discussion grouping
+  // was built before their rejection was knowable, so it is rebuilt with their ids in the known set:
+  // their asides render, and their replies never land in the "no longer reports" bucket.
+  const finalDiscussion =
+    unanchoredCount > 0
+      ? buildStickyDiscussion(
+          reachable,
+          [...currentIds, ...unposted.map((f) => f.id).filter((id) => id !== "")],
+          departedIds,
+        )
+      : null;
   if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
     const finalDisposition: InlineDisposition =
       inlinePosted > 0
@@ -1642,7 +1730,22 @@ export const post = async (
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount, unposted),
+        renderBody(
+          finalDisposition,
+          reviewUrl,
+          finalStrays,
+          unanchoredCount,
+          unposted,
+          finalDiscussion !== null
+            ? {
+                discussionByFinding: finalDiscussion.byFinding,
+                orphanedDiscussion: finalDiscussion.orphaned,
+                orphanedTotal: finalDiscussion.orphanedTotal,
+                discussionTruncated: finalDiscussion.truncated,
+                orphanedTruncated: finalDiscussion.orphanedTruncated,
+              }
+            : undefined,
+        ),
         ghApi,
       );
       process.stderr.write(

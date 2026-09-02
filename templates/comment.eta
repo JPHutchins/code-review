@@ -53,17 +53,11 @@
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_ids && s.finding_ids.length > 0) { meta.push('Ties together: ' + s.finding_ids.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
 <%~ s.description %>
-<% if (s.discussion.length > 0) { -%>
+<% if (s.discussionHtml) { -%>
 
 <details><summary>💬 Discussion</summary>
 
-<% s.discussion.forEach(function(d) { -%>
-- [<%= d.author %> · <%= d.when %>](<%~ d.url %>)
-<% }) -%>
-<% if (s.discussionTruncated) { -%>
-_(showing the <%= it.discussionCap %> newest of <%= s.discussionTruncated %> replies — the rest live on the comment thread.)_
-<% } -%>
-
+<%~ s.discussionHtml %>
 </details>
 <% } -%>
 
@@ -147,17 +141,11 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <%~ f.patchProjection.raw %>
 ```
 <% } -%>
-<% if (f.discussion.length > 0) { -%>
+<% if (f.discussionHtml) { -%>
 
 <details><summary>💬 Discussion</summary>
 
-<% f.discussion.forEach(function(d) { -%>
-- [<%= d.author %> · <%= d.when %>](<%~ d.url %>)
-<% }) -%>
-<% if (f.discussionTruncated) { -%>
-_(showing the <%= it.discussionCap %> newest of <%= f.discussionTruncated %> replies — the rest live on the comment thread.)_
-<% } -%>
-
+<%~ f.discussionHtml %>
 </details>
 <% } -%>
 
@@ -169,16 +157,17 @@ _(showing the <%= it.discussionCap %> newest of <%= f.discussionTruncated %> rep
 >
 > </details>
 <% }) %>
+<% } %>
+
 <% if (it.discussionDropped > 0) { %>
 _<%= it.discussionDropped %> discussion thread<%= it.discussionDropped === 1 ? '' : 's' %> not listed<% if ((it.discussionDroppedIds && it.discussionDroppedIds.length > 0) || (it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0)) { %> (<% if (it.discussionDroppedIds && it.discussionDroppedIds.length > 0) { %>finding<%= it.discussionDroppedIds.length === 1 ? '' : 's' %> <% it.discussionDroppedIds.forEach(function(id) { %>`<%= id %>` <% }) %><% if (it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0) { %>· <% } %><% } %><% if (it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0) { %>systemic<%= it.discussionDroppedSystemicIds.length === 1 ? '' : 's' %> <% it.discussionDroppedSystemicIds.forEach(function(id) { %>`<%= id %>` <% }) %><% } %>)<% } %> — the links live on the comment thread._
-<% } %>
 <% } %>
 
 <% if ((it.orphanedDiscussion && Object.keys(it.orphanedDiscussion).length > 0) || it.orphanedUnresolvable) { %>
 ## 💬 Discussions on findings from earlier rounds
 
 <% if (it.orphanedUnresolvable && (!it.orphanedDiscussion || Object.keys(it.orphanedDiscussion).length === 0)) { %>
-_Replies naming findings this round no longer reports could not be matched — the prior findings artifact could not be resolved, so the departed set is unknown._
+_Replies naming tokens outside this round's report could not be matched against the prior findings — the prior findings artifact could not be resolved, so whether they name departed findings is unknown._
 <% } else { %>
 <details><summary>Replies naming findings this round no longer reports (fixed or re-id'd) — the conversation stays discoverable.<% if (it.orphanedTotal > Object.keys(it.orphanedDiscussion).length) { %> (showing <%= Object.keys(it.orphanedDiscussion).length %> of <%= it.orphanedTotal %>)<% } %></summary>
 
@@ -200,12 +189,7 @@ _Replies naming findings this round no longer reports could not be matched — t
 > <%~ 'severity: ' + n.severity %>
 > <%~ 'location: ' + n.path + ':' + n.startLine + '-' + n.endLine + (n.side ? ' (' + n.side + ')' : '') %>
 > <%~ 'confidence: ' + n.confidence + ' \u00b7 likelihood: ' + n.likelihood %>
-<% n.discussion.forEach(function(d) { -%>
->   - [<%= d.author %> · <%= d.when %>](<%~ d.url %>)
-<% }) -%>
-<% if (n.discussionTruncated) { -%>
->   _(showing the <%= it.discussionCap %> newest of <%= n.discussionTruncated %> replies \u2014 the rest live on the comment thread.)_
-<% } -%>
+<% if (n.discussionHtml) { %><%~ n.discussionHtml %><% } %>
 <% n.carried.forEach(function(cl) { -%>
 > <%~ cl %>
 <% }) -%>

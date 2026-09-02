@@ -4933,6 +4933,62 @@ describe("buildStickyDiscussion — the r5 disciplines", () => {
     const d = buildStickyDiscussion(reachableReplies(rows, 900), ["weird`id"], []);
     expect(d.byFinding["weird`id"]).toHaveLength(2);
   });
+
+  it("never assigns an ambiguous escaped spelling a winner — escape-twin ids stay raw-keyed only", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "see `a-b`" }),
+    ];
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["a-b", "a`b"], []);
+    // The reply quotes the RAW `a-b`; the twin `a`b` (whose escaped form collides with it) must
+    // not silently inherit the display-spelling replies.
+    expect(d.byFinding["a-b"]).toHaveLength(1);
+    expect(d.byFinding["a`b"]).toHaveLength(0);
+  });
+});
+
+describe("post — notice overwrites carry the discussion trail", () => {
+  const patchedBody = (calls: readonly RecordedCall[]): string =>
+    (
+      JSON.parse(
+        calls.find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+      ) as CommentBody
+    ).body;
+
+  it("an empty-diff notice carries the orphaned pointer trail of the replied-to prior", async () => {
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    const priorDoc = mkFindings([mkFinding({ id: "old-id", severity: "minor" })]);
+    const readArtifact: ArtifactReader = () => Promise.resolve(JSON.stringify(priorDoc));
+    const reply = JSON.stringify({
+      id: 1000,
+      in_reply_to_id: 999,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "what about `old-id`?",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    // An EMPTY diff (first-match wins over mkMocks' non-empty one) — the notice path.
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api, readArtifact)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const body = patchedBody(calls());
+    expect(body).toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(body).toContain("**`old-id`**");
+  });
 });
 
 describe("post — the orphan gate resolves the prior findings through the ARTIFACT LINK", () => {

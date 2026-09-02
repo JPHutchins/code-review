@@ -2634,4 +2634,29 @@ describe("discussion aside — the per-finding linked list (issue #246)", () => 
     expect(out).toContain("1 discussion thread not listed");
     expect(out).toContain("systemic `sys-id`");
   });
+
+  it("names a dropped systemic aside on a zero-stray round", () => {
+    const huge = Array.from({ length: 200 }, (_, i) =>
+      link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),
+    );
+    const out = renderWith({
+      strays: [],
+      findings: mkFindings([], {
+        systemic_problems: [
+          {
+            title: "Retry plumbing is inconsistent",
+            description: "Three spots, three retry policies.",
+            severity: "major",
+            reasoning: "Each file implements its own policy.",
+            confidence: 0.8,
+            likelihood: 1,
+            id: "sys-id",
+          },
+        ],
+      }),
+      discussionByFinding: { "sys-id": huge },
+    });
+    expect(out).toContain("1 discussion thread not listed");
+    expect(out).toContain("systemic `sys-id`");
+  });
 });

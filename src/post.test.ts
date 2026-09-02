@@ -13,6 +13,7 @@ import {
   findBotComment,
   mentionsOutsideKnown,
   priorIdsFrom,
+  reachableReplies,
 } from "./post.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
 import type {
@@ -4671,7 +4672,7 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
       row({ id: 1, parent: 900, body: "what about `f-a`?" }),
       row({ id: 2, parent: 1, body: "also `f-b`", author: "bob" }),
     ];
-    const d = buildStickyDiscussion(rows, 900, ["f-a", "f-b"], []);
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a", "f-b"], []);
     expect(d.byFinding["f-a"]).toHaveLength(1);
     expect(d.byFinding["f-a"]![0]!.author).toBe("alice");
     expect(d.byFinding["f-b"]![0]!.author).toBe("bob");
@@ -4686,7 +4687,7 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
       row({ id: 3, parent: 4, body: "cycle, mentions `f-a`" }),
       row({ id: 4, parent: 3, body: "cycle, mentions `f-a`" }),
     ];
-    const d = buildStickyDiscussion(rows, 900, ["f-a"], []);
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a"], []);
     expect(d.byFinding["f-a"]).toHaveLength(0);
   });
 
@@ -4707,7 +4708,7 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
       reply(9, "old-id"),
       reply(10, "old-id"),
     ];
-    const d = buildStickyDiscussion(rows, 900, ["f-a"], ["old-id"]);
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a"], ["old-id"]);
     const faLinks = d.byFinding["f-a"] ?? [];
     expect(faLinks).toHaveLength(6);
     // Newest first: only the six most recent dates survive.
@@ -4731,14 +4732,14 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
         created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
       });
     const rows = [stickyRow, ...Array.from({ length: 8 }, (_, i) => reply(i + 1))];
-    const d = buildStickyDiscussion(rows, 900, ["f-a"], []);
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a"], []);
     expect(d.byFinding["f-a"]).toHaveLength(6);
     expect(d.truncated["f-a"]).toBe(8);
   });
 
   it("leaves the truncated map absent for a finding under the cap", () => {
     const rows = [stickyRow, row({ id: 1, parent: 900, body: "mention `f-a`" })];
-    const d = buildStickyDiscussion(rows, 900, ["f-a"], []);
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a"], []);
     expect(d.truncated).toEqual({});
   });
 });
@@ -4752,11 +4753,11 @@ describe("fetchIssueCommentRows — the sticky lookup never mistakes corruption 
     ).rejects.toThrow("refusing to treat a corrupted history as an absent sticky");
   });
 
-  it("skips a well-formed ghost row (deleted user projects null) instead of treating it as corruption", async () => {
+  it('keeps a ghost row (the projection coalesces a deleted user to "(deleted)") and never mistakes it for the sticky', async () => {
     const ghost = JSON.stringify({
       id: 998,
       in_reply_to_id: null,
-      user: null,
+      user: "(deleted)",
       created_at: "2026-09-01T00:00:00Z",
       html_url: "https://github.com/owner/repo/pull/1#issuecomment-998",
       body: "a deleted account's reply",
@@ -4799,7 +4800,7 @@ describe("mentionsOutsideKnown — the orphan-resolve gate", () => {
       row({ id: 900, body: "<!-- code-review -->" }),
       row({ id: 1, parent: 900, body: "see `departed-id`" }),
     ];
-    expect(mentionsOutsideKnown(rows, 900, ["f-a"])).toBe(true);
+    expect(mentionsOutsideKnown(reachableReplies(rows, 900), ["f-a"])).toBe(true);
   });
 
   it("is false when every mentioned token is known", () => {
@@ -4807,7 +4808,7 @@ describe("mentionsOutsideKnown — the orphan-resolve gate", () => {
       row({ id: 900, body: "<!-- code-review -->" }),
       row({ id: 1, parent: 900, body: "see `f-a` and `sys-a`" }),
     ];
-    expect(mentionsOutsideKnown(rows, 900, ["f-a", "sys-a"])).toBe(false);
+    expect(mentionsOutsideKnown(reachableReplies(rows, 900), ["f-a", "sys-a"])).toBe(false);
   });
 
   it("ignores a token only an unreachable comment mentions — the gate skips a fetch it could not use", () => {
@@ -4815,7 +4816,7 @@ describe("mentionsOutsideKnown — the orphan-resolve gate", () => {
       row({ id: 900, body: "<!-- code-review -->" }),
       row({ id: 1, parent: null, body: "top-level, mentions `departed-id`" }),
     ];
-    expect(mentionsOutsideKnown(rows, 900, ["f-a"])).toBe(false);
+    expect(mentionsOutsideKnown(reachableReplies(rows, 900), ["f-a"])).toBe(false);
   });
 });
 
@@ -4832,6 +4833,105 @@ describe("priorIdsFrom — the orphan bucket's departed set", () => {
     expect(priorIdsFrom(null)).toEqual([]);
     expect(priorIdsFrom("junk")).toEqual([]);
     expect(priorIdsFrom([1, 2])).toEqual([]);
+  });
+});
+
+describe("buildStickyDiscussion — the r5 disciplines", () => {
+  const row = (
+    overrides: Record<string, unknown>,
+  ): Parameters<typeof buildStickyDiscussion>[0][number] => ({
+    id: 1,
+    parent: null,
+    author: "alice",
+    created: "2026-09-01T12:00:00Z",
+    url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+    body: "plain",
+    ...overrides,
+  });
+
+  it("traverses a ghost reply as a chain node so its live descendants still reach the sticky", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, author: "(deleted)", body: "spam removed later" }),
+      row({ id: 2, parent: 1, body: "see `departed-id`" }),
+    ];
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a"], ["departed-id"]);
+    expect(d.orphaned["departed-id"]).toHaveLength(1);
+  });
+
+  it("reports the pre-cap total when the 6-newest cap trims an orphaned entry's links", () => {
+    const reply = (day: number) =>
+      row({
+        id: day,
+        parent: 900,
+        body: "mention `departed-id`",
+        created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+      });
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      ...Array.from({ length: 8 }, (_, i) => reply(i + 1)),
+    ];
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), [], ["departed-id"]);
+    expect(d.orphaned["departed-id"]).toHaveLength(6);
+    expect(d.orphanedTruncated["departed-id"]).toBe(8);
+  });
+
+  it("breaks same-day ties in the 8-newest orphan cap by the full timestamp", () => {
+    const reply = (id: number, token: string, hour: number) =>
+      row({
+        id,
+        parent: 900,
+        body: `mention \`${token}\``,
+        created: `2026-09-01T${String(hour).padStart(2, "0")}:00:00Z`,
+      });
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      reply(1, "early", 1),
+      reply(2, "later", 2),
+      ...Array.from({ length: 7 }, (_, i) => reply(i + 10, `pad-${String(i)}`, 3)),
+    ];
+    const d = buildStickyDiscussion(
+      reachableReplies(rows, 900),
+      [],
+      ["early", "later", ...Array.from({ length: 7 }, (_, i) => `pad-${String(i)}`)],
+    );
+    // 9 departed ids, all on the same calendar day: the 8-token cap cuts exactly one, and the
+    // date-only display string would tie all nine — the full timestamp must keep the seven hour-3
+    // pads plus "later" (hour 2), cutting "early" (hour 1).
+    expect(Object.keys(d.orphaned)).toHaveLength(8);
+    expect(d.orphaned["later"]).toBeDefined();
+    expect(d.orphaned["early"]).toBeUndefined();
+  });
+
+  it("dedupes rows by id — a comment edited mid-pagination pushes one link, not two", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({
+        id: 1,
+        parent: 900,
+        body: "mention `f-a`",
+        url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+      }),
+      row({
+        id: 1,
+        parent: 900,
+        body: "mention `f-a` edited",
+        url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+      }),
+    ];
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a"], []);
+    expect(d.byFinding["f-a"]).toHaveLength(1);
+    expect(d.truncated).toEqual({});
+  });
+
+  it("groups a reply quoting the ESCAPED display spelling of an id into the raw id's bucket", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "see `weird-id` — the sticky shows it as `weird-id`" }),
+      row({ id: 2, parent: 900, body: "the displayed form is `weird-id`" }),
+    ];
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["weird`id"], []);
+    expect(d.byFinding["weird`id"]).toHaveLength(2);
   });
 });
 
@@ -4945,7 +5045,7 @@ describe("buildStickyDiscussion — the orphan bucket is prior-id-only", () => {
       row({ id: 1, parent: 900, body: "mention `main-merge` and `well-known`" }),
       row({ id: 2, parent: 900, body: "mention `departed-id`" }),
     ];
-    const d = buildStickyDiscussion(rows, 900, [], ["departed-id"]);
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), [], ["departed-id"]);
     expect(d.orphaned["departed-id"]).toHaveLength(1);
     expect(d.orphaned["main-merge"]).toBeUndefined();
     expect(d.orphaned["well-known"]).toBeUndefined();
@@ -4956,7 +5056,7 @@ describe("buildStickyDiscussion — the orphan bucket is prior-id-only", () => {
       row({ id: 900, body: "<!-- code-review -->" }),
       row({ id: 1, parent: 900, body: "mention `sys-a` and `f-a`" }),
     ];
-    const d = buildStickyDiscussion(rows, 900, ["f-a", "sys-a"], ["sys-a"]);
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a", "sys-a"], ["sys-a"]);
     expect(d.byFinding["f-a"]).toHaveLength(1);
     expect(d.byFinding["sys-a"]).toHaveLength(1);
     expect(d.orphaned).toEqual({});
@@ -4967,7 +5067,7 @@ describe("buildStickyDiscussion — the orphan bucket is prior-id-only", () => {
       row({ id: 900, body: "<!-- code-review -->" }),
       row({ id: 1, parent: 900, body: "still seeing `f-a` … re-run with `f-a`" }),
     ];
-    const d = buildStickyDiscussion(rows, 900, ["f-a"], []);
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["f-a"], []);
     expect(d.byFinding["f-a"]).toHaveLength(1);
   });
 
@@ -4984,8 +5084,7 @@ describe("buildStickyDiscussion — the orphan bucket is prior-id-only", () => {
       ...Array.from({ length: 10 }, (_, i) => reply(i + 1, `departed-${String(i + 1)}`)),
     ];
     const d = buildStickyDiscussion(
-      rows,
-      900,
+      reachableReplies(rows, 900),
       [],
       Array.from({ length: 10 }, (_, i) => `departed-${String(i + 1)}`),
     );

@@ -93,6 +93,10 @@ const DISCUSSION_BLOCK_OVERHEAD = 120;
 // The orphaned entry's fixed wrapper (bullet, `**` bold + backtick span, colon, newline) — the
 // links themselves are budgeted at their true rendered size like every other link list.
 const ORPHANED_ENTRY_OVERHEAD = 14;
+// The newest-first cap every discussion list keeps (per-finding, per-orphan-token, and the
+// suppressed aside's slots). LIVES HERE so the template's "showing the N newest of M" notes
+// interpolate it — a cap change cannot leave a rendered note lying.
+export const PER_FINDING_LINKS = 6;
 
 // The shared "budget by rendered size" walk both collateral asides use: items are added in order
 // while the ACCUMULATED size fits the cap; past it, onDrop decides each dropped item's fate
@@ -228,6 +232,10 @@ type SuppressedNitView = {
   // Pre-split into blockquote-safe lines: the aside is a `>` blockquote, so an unprefixed line would
   // break out of it and spill a hidden nit's detail into the visible prose.
   readonly carried: readonly string[];
+  // Replies naming this hidden nit's id (the aside's discussion slot — the suppressed aside is a
+  // discussion surface like the strays').
+  readonly discussion: readonly DiscussionLink[];
+  readonly discussionTruncated?: number;
 };
 
 // HTML comments cannot nest, so a `-->` inside a carried field would close the block early and spill
@@ -237,7 +245,11 @@ type SuppressedNitView = {
 const commentSafe = (text: string): string =>
   text.replace(/--+(?=>)/g, (dashes) => `${dashes}\u200b`);
 
-const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
+const sanitizeSuppressedNit = (
+  f: Finding,
+  discussion: readonly DiscussionLink[],
+  discussionTruncated?: number,
+): SuppressedNitView => ({
   title: escapeCodeBackticks(f.title),
   id: escapeCodeBackticks(f.id),
   ...(f.code_url !== undefined ? { codeUrl: linkSafeUrl(f.code_url) } : {}),
@@ -250,6 +262,8 @@ const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   likelihood: formatConfidence(f.likelihood),
   m: formatConfidence(f.confidence * f.likelihood),
   carried: carriedLines(f),
+  discussion,
+  ...(discussionTruncated !== undefined ? { discussionTruncated } : {}),
 });
 
 // Each carried field is clipped. Every below-floor nit's full finding rides in the sticky body, and
@@ -383,15 +397,30 @@ export const render = (input: RenderInput): string => {
   // suppressed convergence badge.
   const advisoryAllowed = isFullReviewRound;
 
+  // The discussion links a below-floor nit's aside slot renders — keyed by the RAW id like every
+  // other discussion lookup.
+  const discussionLinksFor = (id: string): readonly DiscussionLink[] =>
+    input.discussionByFinding !== undefined &&
+    Object.prototype.hasOwnProperty.call(input.discussionByFinding, id)
+      ? (input.discussionByFinding[id] ?? [])
+      : [];
+  const discussionTruncatedFor = (id: string): number | undefined =>
+    input.discussionTruncated !== undefined &&
+    Object.prototype.hasOwnProperty.call(input.discussionTruncated, id)
+      ? input.discussionTruncated[id]
+      : undefined;
+
   const suppressedBudget = budgetBySize(
-    (input.suppressedNits ?? []).map(sanitizeSuppressedNit),
+    (input.suppressedNits ?? []).map((f) =>
+      sanitizeSuppressedNit(f, discussionLinksFor(f.id), discussionTruncatedFor(f.id)),
+    ),
     CARRIED_TOTAL_CHARS,
     (n) =>
       // The fixed overhead covers the summary line's structure; the reviewer-controlled variable
       // parts are budgeted at their true RENDERED size — the title, the path TWICE (summary +
       // location line), the code/code_url the summary line renders, each carried line's `> `
-      // blockquote prefix (length + 3: prefix + newline), and the location line's line numbers
-      // and side label (issue #233 r6 + #235 + #236 r1).
+      // blockquote prefix (length + 3: prefix + newline), the location line's line numbers and
+      // side label, and the discussion slot's link list.
       n.carried.reduce((sum, line) => sum + line.length + 3, 0) +
       SUPPRESSED_NIT_BLOCK_OVERHEAD +
       n.title.length +
@@ -402,7 +431,8 @@ export const render = (input: RenderInput): string => {
       (n.codeUrl !== undefined ? n.codeUrl.length + 4 : 0) +
       String(n.startLine).length * 2 +
       String(n.endLine).length +
-      (n.side !== undefined ? n.side.length + 2 : 0),
+      (n.side !== undefined ? n.side.length + 2 : 0) +
+      discussionLinksCost(n.discussion),
     () => null,
   );
 
@@ -447,6 +477,21 @@ export const render = (input: RenderInput): string => {
         : 0,
     (view) => ({ ...view, discussion: [] }),
   );
+  // The systemic asides draw from the SAME pool, third in line: orphaned (permanent cut) first,
+  // then the strays' asides, then the systemics'.
+  const systemicBudget = budgetBySize(
+    (input.findings.systemic_problems ?? []).map((s) =>
+      sanitizeSystemic(
+        s,
+        s.id !== undefined ? discussionLinksFor(s.id) : [],
+        s.id !== undefined ? discussionTruncatedFor(s.id) : undefined,
+      ),
+    ),
+    DISCUSSION_TOTAL_CHARS - orphanedBudget.used - discussionBudget.used,
+    (s) =>
+      s.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + discussionLinksCost(s.discussion) : 0,
+    (s) => ({ ...s, discussion: [] }),
+  );
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -473,28 +518,30 @@ export const render = (input: RenderInput): string => {
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
     strays: discussionBudget.kept,
-    orphanedDiscussion: Object.fromEntries(orphanedBudget.kept),
-    discussionDropped: discussionBudget.droppedItems.length,
-    discussionDroppedIds: discussionBudget.droppedItems.map((v) => v.idKey),
+    orphanedDiscussion: Object.fromEntries(
+      orphanedBudget.kept.map(([token, links]) => [escapeCodeBackticks(token), links]),
+    ),
+    orphanedTruncated:
+      input.orphanedTruncated !== undefined
+        ? Object.fromEntries(
+            Object.entries(input.orphanedTruncated).map(([token, n]) => [
+              escapeCodeBackticks(token),
+              n,
+            ]),
+          )
+        : undefined,
+    orphanedUnresolvable: input.orphanedUnresolvable === true,
+    discussionDropped: discussionBudget.droppedItems.length + systemicBudget.droppedItems.length,
+    discussionDroppedIds: discussionBudget.droppedItems.map((v) => escapeCodeBackticks(v.idKey)),
+    discussionDroppedSystemicIds: systemicBudget.droppedItems.flatMap((s) =>
+      s.id !== undefined ? [s.id] : [],
+    ),
+    discussionCap: PER_FINDING_LINKS,
     orphanedTotal: input.orphanedTotal ?? 0,
     suppressedNits: suppressedBudget.kept,
     carriedDroppedNits: suppressedBudget.droppedItems.length,
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,
-    systemic: (input.findings.systemic_problems ?? []).map((s) => {
-      const byId = input.discussionByFinding;
-      const links =
-        s.id !== undefined && byId !== undefined && Object.prototype.hasOwnProperty.call(byId, s.id)
-          ? (byId[s.id] ?? [])
-          : [];
-      const trimmed = input.discussionTruncated;
-      const cap =
-        s.id !== undefined &&
-        trimmed !== undefined &&
-        Object.prototype.hasOwnProperty.call(trimmed, s.id)
-          ? trimmed[s.id]
-          : undefined;
-      return sanitizeSystemic(s, links, cap);
-    }),
+    systemic: systemicBudget.kept,
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,
     unverifiedNoLogs: input.unverifiedNoLogs === true,

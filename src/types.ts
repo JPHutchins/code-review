@@ -155,6 +155,14 @@ export interface RenderInput {
   // How many distinct departed ids the orphaned section holds in total — the section renders
   // "(showing N of M)" when the 8-token cap trimmed some, so the cut is named, never silent.
   readonly orphanedTotal?: number;
+  // Departed token → the pre-cap reply count for orphaned entries the 6-newest cap trimmed — the
+  // entry names its cut exactly like a per-finding aside's. Omitted/empty ⇒ every shown list is
+  // complete.
+  readonly orphanedTruncated?: Readonly<Record<string, number>>;
+  // A reply named a departed-candidate token but the prior findings artifact could not be resolved
+  // (expired, transport failure), so the departed set is unknown and the orphaned section is empty
+  // WITHOUT evidence of none — the sticky names the unresolved trail instead of silence.
+  readonly orphanedUnresolvable?: boolean;
   // The sticky note naming findings dropped as verbatim re-raises of answered findings (issue #151):
   // the suppression is never silent. Built by post from the dropped entries; omitted ⇒ no note.
   readonly answeredReRaiseNote?: string;

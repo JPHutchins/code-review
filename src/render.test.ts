@@ -2575,4 +2575,63 @@ describe("discussion aside — the per-finding linked list (issue #246)", () => 
     expect(out).toContain("finding `test-id`");
     expect(out).not.toContain("2 discussion threads");
   });
+
+  it("renders the discussion slot inside the suppressed-nit aside", () => {
+    const out = renderWith({
+      suppressedNits: [
+        mkFinding({ severity: "nit", confidence: 0.5, likelihood: 0.4, id: "nit-id" }),
+      ],
+      discussionByFinding: {
+        "nit-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-1"),
+        ],
+      },
+    });
+    expect(out).toContain(
+      "- [alice · 2026-09-01](https://github.com/owner/repo/pull/1#issuecomment-1)",
+    );
+  });
+
+  it("names the orphaned entry's per-token 6-newest cut", () => {
+    const out = renderWith({
+      orphanedDiscussion: {
+        "old-id": [
+          link("bob", "2026-08-30", "https://github.com/owner/repo/pull/1#issuecomment-7"),
+        ],
+      },
+      orphanedTruncated: { "old-id": 9 },
+    });
+    expect(out).toContain("showing the 6 newest of 9");
+  });
+
+  it("names an unresolved prior document instead of silently dropping the orphaned section", () => {
+    const out = renderWith({ orphanedUnresolvable: true });
+    expect(out).toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(out).toContain("the prior findings artifact could not be resolved");
+  });
+
+  it("budgets a systemic aside out of the same pool and names a systemic cut", () => {
+    const huge = Array.from({ length: 200 }, (_, i) =>
+      link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),
+    );
+    const out = renderWith({
+      findings: mkFindings([], {
+        systemic_problems: [
+          {
+            title: "Retry plumbing is inconsistent",
+            description: "Three spots, three retry policies.",
+            severity: "major",
+            reasoning: "Each file implements its own policy.",
+            confidence: 0.8,
+            likelihood: 1,
+            id: "sys-id",
+          },
+        ],
+      }),
+      discussionByFinding: { "sys-id": huge },
+    });
+    expect(out).not.toContain("- [alice");
+    expect(out).toContain("1 discussion thread not listed");
+    expect(out).toContain("systemic `sys-id`");
+  });
 });

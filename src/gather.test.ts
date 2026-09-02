@@ -145,8 +145,11 @@ const compareCommitsMatch = (a: readonly string[]): boolean =>
 const jobsMatch = (a: readonly string[]): boolean =>
   a[0] === "repos/owner/repo/actions/runs/RUN1/jobs" && a.includes("--paginate");
 // What `gh api --paginate --jq '.jobs[] | …'` actually emits: one job per line, across all pages.
-const jobRows = (...jobs: ReadonlyArray<{ id: number; conclusion: string | null }>): string =>
-  jobs.map((j) => JSON.stringify(j)).join("\n") + "\n";
+const jobRows = (
+  ...jobs: ReadonlyArray<{ id: number; conclusion: string | null; name?: string }>
+): string =>
+  jobs.map((j) => JSON.stringify({ name: j.name ?? `job-${String(j.id)}`, ...j })).join("\n") +
+  "\n";
 const logsMatch = (a: readonly string[]): boolean =>
   (a[0]?.startsWith("repos/owner/repo/actions/jobs/") ?? false) &&
   (a[0]?.endsWith("/logs") ?? false);
@@ -985,6 +988,16 @@ describe("gather — failing-job logs", () => {
 
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
+  });
+
+  it("stages the failing jobs' names in failed_jobs.json even when no log body downloads", async () => {
+    const { api } = mkMockGhApi(oneFailingJob(new Error("403")));
+
+    await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(JSON.parse(outFile("failed_jobs.json"))).toEqual([
+      { name: "job-11", conclusion: "failure" },
+    ]);
   });
 
   it("never calls the jobs endpoint when conclusion is success", async () => {

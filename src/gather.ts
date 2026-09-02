@@ -95,13 +95,19 @@ const IssueCommentCodec = t.intersection([
 ]);
 type IssueComment = t.TypeOf<typeof IssueCommentCodec>;
 
-const JobCodec = t.type({ id: t.number, conclusion: t.union([t.string, t.null]) });
+const JobCodec = t.type({
+  id: t.number,
+  name: t.string,
+  conclusion: t.union([t.string, t.null]),
+});
 
 // One job per row across all pages, for the same reason the conversation fetches project with --jq:
 // `--paginate` alone concatenates each page into an invalid `{..}{..}` stream. Unpaginated, a failing
 // job past the first page is invisible — and everything this route reports (the staged count, the
 // "(N failing job(s) reported)" line, the unverified stamp) would be computed from a truncated list.
-const JOBS_JQ = ".jobs[] | {id: .id, conclusion: .conclusion}";
+// `name` rides along so a zero-logs pass can still tell the agent WHICH jobs failed (failed_jobs.json),
+// not just how many.
+const JOBS_JQ = ".jobs[] | {id: .id, name: .name, conclusion: .conclusion}";
 
 const fetchPrMeta = async (repo: string, prNumber: number, ghApi: GhApi): Promise<PrMeta> => {
   const stdout = await ghApi([
@@ -375,6 +381,17 @@ const downloadFailingJobLogs = async (
       );
     }
   }
+  // The failing jobs' identities ride along even when their log bodies cannot: a zero-logs mechanic
+  // pass still knows WHICH jobs failed (name + conclusion), so its reproduction instruction has a
+  // defined target instead of a bare count.
+  writeFileSync(
+    join(outDir, "failed_jobs.json"),
+    `${JSON.stringify(
+      failing.map((j) => ({ name: j.name, conclusion: j.conclusion })),
+      null,
+      2,
+    )}\n`,
+  );
   if (failing.length > selected.length) {
     process.stderr.write(
       `::warning::${annotationSafe(`${String(failing.length)} failing job(s) in run ${runId}; staged ${String(staged)} of the first ${String(selected.length)} log(s) — the review does not see the rest`)}\n`,
@@ -384,9 +401,9 @@ const downloadFailingJobLogs = async (
     // stderr, like every other annotation here: this command's STDOUT is the step's $GITHUB_OUTPUT,
     // so a line written there would not render as an annotation and would corrupt the outputs.
     // ::warning:: rather than a plain line because this says the fast-fix route is about to reason
-    // from the diff alone, which is the thing it exists to replace.
+    // without its primary evidence source — the failing logs — which is the thing it exists to read.
     process.stderr.write(
-      `::warning::${annotationSafe(`No failing-job logs could be staged for run ${runId} (${String(failing.length)} failing job(s) reported) — the review has only the diff to work from`)}\n`,
+      `::warning::${annotationSafe(`No failing-job logs could be staged for run ${runId} (${String(failing.length)} failing job(s) reported) — the review must reproduce the failures itself (the failing jobs are listed in failed_jobs.json)`)}\n`,
     );
   }
   return { staged, failing: failing.length };

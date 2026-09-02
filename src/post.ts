@@ -783,7 +783,7 @@ export const post = async (
       noticeBody(
         `${DEFAULT_MARKER}\n\n⚠️ **CI-fix pass completed with no findings** for \`${input.headSha.slice(0, 7)}\`${
           input.unverifiedNoLogs === true
-            ? ' — **but no failing-job logs were available**, so it had only the diff to work from and "no findings" is not evidence of none'
+            ? ' — **but no failing-job logs were available**, so it worked from the diff and any local reproduction of the checks, and "no findings" is not evidence of none'
             : ""
         } — the completed full review of \`${priorSha ? priorSha.slice(0, 7) : "an earlier commit"}\` is preserved below.${dropNote ? `\n\n${dropNote}` : ""}`,
         sticky.body,

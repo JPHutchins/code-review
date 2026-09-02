@@ -139,7 +139,7 @@ on:
       # The mechanic route is reachable now that the trigger honors a 'failure' CI conclusion, so its
       # budgets are forwarded too (a comment's duration/usd overrides still apply on top, either route).
       mechanic_time_limit:
-        description: Wall-clock budget for the fast fix (CI-failure) route
+        description: Wall-clock budget for the fast fix (CI-failure) route, sized to leave room to reproduce the failure when no job logs are staged
         type: string
         required: false
         default: 20m

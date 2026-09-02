@@ -20,6 +20,15 @@ export interface InlineComment {
   readonly body: string;
 }
 
+// One reply to the sticky comment, listed under the finding whose id the reply mentions — a POINTER
+// (author, date, link), never the reply's prose: the discussion aside is the conversation's linked
+// list, and the implementer reads the replies at the links (issue #246).
+export interface DiscussionLink {
+  readonly author: string;
+  readonly when: string;
+  readonly url: string;
+}
+
 export interface InlineResult {
   readonly comments: readonly InlineComment[];
   readonly strays: readonly Finding[];
@@ -128,6 +137,9 @@ export interface RenderInput {
   // answered prior inline thread but whose evidence changed (issue #151) — the reviewer re-raised
   // with new evidence, so it stays, annotated with the prior answer's link. Omitted/empty ⇒ none.
   readonly answeredNotes?: Readonly<Record<string, string>>;
+  // Finding id → replies to the sticky comment that mention that id (issue #246's discussion aside):
+  // rendered as a collapsed linked list under each finding. Omitted/empty ⇒ no aside.
+  readonly discussionByFinding?: Readonly<Record<string, readonly DiscussionLink[]>>;
   // The sticky note naming findings dropped as verbatim re-raises of answered findings (issue #151):
   // the suppression is never silent. Built by post from the dropped entries; omitted ⇒ no note.
   readonly answeredReRaiseNote?: string;

@@ -4,7 +4,7 @@ import { Eta } from "eta";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings, resolveFindingId } from "./schema.js";
-import type { RenderInput, SeverityCounts } from "./types.js";
+import type { DiscussionLink, RenderInput, SeverityCounts } from "./types.js";
 import { computeCost, parseInstant } from "./cost.js";
 import {
   severityEmoji,
@@ -99,6 +99,9 @@ type StrayView = Finding & {
   // False for a stray GitHub rejected inline: its permalink links the path only, so the template
   // can tell an anchored link (which carries the agent-reported qualifier) from a bare one.
   readonly permalinkAnchored?: boolean;
+  // Replies to the sticky comment that mention this finding's id (issue #246): the discussion
+  // aside's linked list — pointers only, never reply prose.
+  readonly discussion: readonly DiscussionLink[];
 };
 
 // The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
@@ -108,6 +111,7 @@ type StrayView = Finding & {
 const sanitizeFinding = (
   f: Finding,
   answeredNotes: Readonly<Record<string, string>> | undefined,
+  discussionByFinding: Readonly<Record<string, readonly DiscussionLink[]>> | undefined,
   permalinkBase?: string,
   unanchored?: ReadonlySet<Finding>,
 ): StrayView => {
@@ -136,6 +140,11 @@ const sanitizeFinding = (
       answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
         ? (answeredNotes[key] ?? "")
         : "",
+    discussion:
+      discussionByFinding !== undefined &&
+      Object.prototype.hasOwnProperty.call(discussionByFinding, f.id)
+        ? (discussionByFinding[f.id] ?? [])
+        : [],
   };
 };
 
@@ -380,7 +389,7 @@ export const render = (input: RenderInput): string => {
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
     strays: (input.strays ?? []).map((f) =>
-      sanitizeFinding(f, input.answeredNotes, permalinkBase, unanchored),
+      sanitizeFinding(f, input.answeredNotes, input.discussionByFinding, permalinkBase, unanchored),
     ),
     suppressedNits: suppressedBudget.list,
     carriedDroppedNits: suppressedBudget.dropped,

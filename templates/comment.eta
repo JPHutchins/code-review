@@ -10,7 +10,7 @@
 <%~ it.findingsPointer %>
 <% } -%>
 
-### <%= it.verdictBadge(it.findings.verdict) %>
+## <%= it.verdictBadge(it.findings.verdict) %>
 
 <% const meta = [] %><% if (it.postedAt) { meta.push('**Reviewed** `' + it.reviewedSha.slice(0, 7) + '` at ' + it.postedAt) } %><% if (it.route) { meta.push('**route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.hasUsage) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><sub><%~ meta.join(' · ') %></sub>
 <% if (!it.incomplete) { -%>
@@ -45,15 +45,15 @@
 
 <% if (!it.incomplete && it.systemic.length > 0) { -%>
 
-### 🔗 Systemic problems
+## 🔗 Systemic problems
 
 <% it.systemic.forEach(function(s) { -%>
-#### <%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <%= s.title %><% if (s.id) { %> (<% if (s.code_url) { %>[`<%= s.id %>`](<%~ s.code_url %>)<% } else { %>`<%= s.id %>`<% } %>)<% } %> · confidence <%= it.formatConfidence(s.confidence) %>
+### <%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <%= s.title %>
+<sub>confidence <%= it.formatConfidence(s.confidence) %><% if (s.id) { %> · id <% if (s.code_url) { %>[`<%= s.id %>`](<%~ s.code_url %>)<% } else { %>`<%= s.id %>`<% } %><% } %></sub>
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_ids && s.finding_ids.length > 0) { meta.push('Ties together: ' + s.finding_ids.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
 <%~ s.description %>
 
-> [!TIP]
 > <details><summary>Reasoning</summary>
 >
 <% s.reasoning.split("\n").forEach(function(rl) { -%>
@@ -93,7 +93,7 @@
 <% } %>
 
 <% if (it.strays.length > 0) { %>
-### <% if (it.inlineDisposition && (it.inlineDisposition.kind === 'disabled' || it.inlineDisposition.kind === 'whole-document')) { %>Findings<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
+## <% if (it.inlineDisposition && (it.inlineDisposition.kind === 'disabled' || it.inlineDisposition.kind === 'whole-document')) { %>Findings<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>
 _Every finding is listed below — the inline review could not be built because the result envelope was missing._
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'whole-document') { %>
@@ -103,7 +103,8 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% } %>
 
 <% it.strays.forEach(function(f) { -%>
-#### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.rangeLabel %><% if (f.side) { %> (<%= f.side %>)<% } %>` — <%= f.title %><% if (f.id) { %> (<% if (f.code_url) { %>[`<%= f.id %>`](<%~ f.code_url %>)<% } else { %>`<%= f.id %>`<% } %>)<% } %> · confidence <%= it.formatConfidence(f.confidence) %> · likelihood <%= it.formatConfidence(f.likelihood) %>
+### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.rangeLabel %><% if (f.side) { %> (<%= f.side %>)<% } %>` — <%= f.title %>
+<sub>confidence <%= it.formatConfidence(f.confidence) %> · likelihood <%= it.formatConfidence(f.likelihood) %><% if (f.id) { %> · id <% if (f.code_url) { %>[`<%= f.id %>`](<%~ f.code_url %>)<% } else { %>`<%= f.id %>`<% } %><% } %></sub>
 <% if (f.permalink) { -%>
 
 <%~ f.permalink %><% if (f.permalinkAnchored) { %> · _agent-reported location_<% } %>
@@ -133,9 +134,18 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <%~ f.patchProjection.raw %>
 ```
 <% } -%>
+<% if (f.discussion.length > 0) { -%>
 
-> [!TIP]
-> <details><summary>Reasoning (<%= it.formatConfidence(f.confidence) %> confidence · <%= it.formatConfidence(f.likelihood) %> likelihood)</summary>
+<details><summary>💬 Discussion (<%= f.discussion.length %>)</summary>
+
+<% f.discussion.forEach(function(d) { -%>
+- [<%= d.author %> · <%= d.when %>](<%~ d.url %>)
+<% }) -%>
+
+</details>
+<% } -%>
+
+> <details><summary>Reasoning</summary>
 >
 <% f.reasoning.split("\n").forEach(function(rl) { -%>
 > <%= rl %>

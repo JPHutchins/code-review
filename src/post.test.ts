@@ -330,7 +330,7 @@ describe("post — run summary (issue #205)", () => {
       post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
     ).rejects.toThrow("process.exit");
 
-    expect(readFileSync(summaryPath(), "utf-8")).toContain("### Findings");
+    expect(readFileSync(summaryPath(), "utf-8")).toContain("## Findings");
   });
 
   // A round with no verdict is still a record of the run, but it is not a review — and the sticky
@@ -395,7 +395,7 @@ describe("post — run summary (issue #205)", () => {
   it("heads the list 'Findings', never 'outside the diff'", async () => {
     const { summary } = await runWithSummary("");
 
-    expect(summary).toContain("### Findings");
+    expect(summary).toContain("## Findings");
     expect(summary).not.toContain("Findings outside the diff");
   });
 
@@ -499,7 +499,7 @@ describe("post — inline off by default (issue #179)", () => {
     const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
     // The finding anchors to a diff line, so with inline ON it would have gone to the review and been
     // absent here; the heading also drops the "outside the diff" qualifier, which no longer applies.
-    expect(body).toContain("### Findings");
+    expect(body).toContain("## Findings");
     expect(body).not.toContain("Findings outside the diff");
   });
 
@@ -524,7 +524,7 @@ describe("post — inline off by default (issue #179)", () => {
 
     const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
     const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
-    expect(body).toContain("### Findings");
+    expect(body).toContain("## Findings");
     expect(body).not.toContain("result envelope lost");
     expect(body).not.toContain("no inline review");
   });
@@ -730,7 +730,7 @@ describe("post — systemic problems (issue #134)", () => {
     );
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
-    expect(body.body).toContain("### 🔗 Systemic problems");
+    expect(body.body).toContain("## 🔗 Systemic problems");
     expect(body.body).toContain("Retry plumbing is inconsistent");
     // The systemic array itself now lives in the artifact rather than the comment (issue #217), so what
     // the sticky owes is the prose above and the convergence marker below. The mechanism map is the

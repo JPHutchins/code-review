@@ -2,7 +2,7 @@
 // the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
 import { readFileSync, appendFileSync } from "node:fs";
-import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
+import type { DiscussionLink, InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
 import { render, computeSeverityCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
@@ -400,6 +400,84 @@ const postComment = async (
     JSON.stringify({ body }),
   );
   return parseCommentRef(stdout);
+};
+
+// The discussion aside's reply chain (issue #246): every issue comment whose reply chain reaches the
+// sticky comment, grouped by the finding ids its body mentions (backtick-quoted — the same form the
+// sticky renders). Best-effort like the answered fetch: a transport error yields no aside, never a
+// failed post. Pointers only — the implementer reads the replies at the links.
+const fetchStickyDiscussion = async (
+  repo: string,
+  prNumber: number,
+  stickyId: number,
+  findingIds: readonly string[],
+  ghApi: GhApi,
+): Promise<Readonly<Record<string, readonly DiscussionLink[]>>> => {
+  if (findingIds.length === 0) return {};
+  let raw: string;
+  try {
+    raw = await ghApi([
+      `repos/${repo}/issues/${String(prNumber)}/comments`,
+      "--paginate",
+      "--jq",
+      ".[] | {id, in_reply_to_id, user: .user.login, created_at, html_url, body}",
+    ]);
+  } catch {
+    return {};
+  }
+  interface ThreadRow {
+    readonly id: number;
+    readonly parent: number | null;
+    readonly author: string;
+    readonly created: string;
+    readonly url: string;
+    readonly body: string;
+  }
+  const rows: ThreadRow[] = raw
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((line) => {
+      const parsed = tryParseJson(line);
+      if (!parsed.ok) return [];
+      const rec = asRecord(parsed.value);
+      if (rec === null) return [];
+      const id = rec["id"];
+      const parent = rec["in_reply_to_id"];
+      const author = rec["user"];
+      const created = rec["created_at"];
+      const url = rec["html_url"];
+      const body = rec["body"];
+      return typeof id === "number" &&
+        (parent === null || typeof parent === "number") &&
+        typeof author === "string" &&
+        typeof created === "string" &&
+        typeof url === "string" &&
+        typeof body === "string"
+        ? [{ id, parent, author, created, url, body }]
+        : [];
+    });
+  const byId = new Map(rows.map((c) => [c.id, c]));
+  const reachesSticky = (c: ThreadRow): boolean => {
+    const seen = new Set<number>();
+    let current: ThreadRow | undefined = c;
+    while (current !== undefined && current.parent !== null && !seen.has(current.id)) {
+      seen.add(current.id);
+      if (current.parent === stickyId) return true;
+      current = byId.get(current.parent);
+    }
+    return false;
+  };
+  const grouped = Object.fromEntries(findingIds.map((id): [string, DiscussionLink[]] => [id, []]));
+  for (const c of rows) {
+    if (c.id === stickyId || !reachesSticky(c)) continue;
+    for (const id of findingIds) {
+      if (c.body.includes(`\`${id}\``))
+        (grouped[id] ?? []).push({ author: c.author, when: c.created.slice(0, 10), url: c.url });
+    }
+  }
+  for (const links of Object.values(grouped)) links.reverse().splice(6);
+  return grouped;
 };
 
 // The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
@@ -1126,6 +1204,19 @@ export const post = async (
   const stampedFindings = stampConvergence(findings, convergence);
   const currentRoundCount = isRound ? roundNumber : priorRoundCount;
 
+  // The discussion aside's reply chain (issue #246): replies to the sticky, grouped by the finding
+  // ids they mention — best-effort, one paginated fetch, pointers only.
+  const discussionByFinding =
+    existingSticky !== null
+      ? await fetchStickyDiscussion(
+          input.repo,
+          prNumber,
+          existingSticky.id,
+          findings.findings.map((f) => f.id).filter((id) => id !== ""),
+          ghApi,
+        )
+      : {};
+
   // Encode the whole-document marker once — the agent's COMPLETE document with the pipeline-stamped
   // convergence inside it (issues #156 + #174), reused across the sticky + review body; each inline
   // comment embeds only its own finding instead.
@@ -1148,6 +1239,7 @@ export const post = async (
     sameRootNotes,
     answeredNotes: reRaisedNotes,
     answeredReRaiseNote: answeredDropNote,
+    discussionByFinding,
     roundCount: currentRoundCount,
     convergenceThreshold: input.convergenceThreshold,
     nitVisibilityFloor: input.nitVisibilityFloor,

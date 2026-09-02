@@ -380,6 +380,7 @@ export const render = (input: RenderInput): string => {
     readonly list: typeof strayViews;
     readonly used: number;
     readonly dropped: number;
+    readonly droppedIds: string[];
   }>(
     (acc, view) => {
       const size =
@@ -389,16 +390,24 @@ export const render = (input: RenderInput): string => {
           0,
         ) +
         view.discussion.length * 12;
-      if (size > DISCUSSION_TOTAL_CHARS) {
+      // The ACCUMULATED total is the budget — a single aside is ~1KB; only the sum over a
+      // discussion-heavy round can exhaust it (the suppressed-nit reduce above is the same pattern).
+      if (acc.used + size > DISCUSSION_TOTAL_CHARS) {
         return {
           list: [...acc.list, { ...view, discussion: [] }],
           used: acc.used,
           dropped: acc.dropped + 1,
+          droppedIds: [...acc.droppedIds, view.idKey],
         };
       }
-      return { list: [...acc.list, view], used: acc.used + size, dropped: acc.dropped };
+      return {
+        list: [...acc.list, view],
+        used: acc.used + size,
+        dropped: acc.dropped,
+        droppedIds: acc.droppedIds,
+      };
     },
-    { list: [], used: 0, dropped: 0 },
+    { list: [], used: 0, dropped: 0, droppedIds: [] },
   );
 
   return eta.renderString(input.template, {
@@ -428,6 +437,8 @@ export const render = (input: RenderInput): string => {
     strays: discussionBudget.list,
     orphanedDiscussion: input.orphanedDiscussion ?? null,
     discussionDropped: discussionBudget.dropped,
+    discussionDroppedIds: discussionBudget.droppedIds,
+    orphanedTotal: input.orphanedTotal ?? 0,
     suppressedNits: suppressedBudget.list,
     carriedDroppedNits: suppressedBudget.dropped,
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,

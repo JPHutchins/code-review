@@ -144,9 +144,13 @@ export interface RenderInput {
   // collapsed "earlier rounds" section so a fixed/re-id'd finding's conversation stays discoverable.
   // Omitted/empty ⇒ no section.
   readonly orphanedDiscussion?: Readonly<Record<string, readonly DiscussionLink[]>>;
-  // How many per-finding discussion asides the budget dropped (render-side; the cut is named, never
-  // silent). Omitted/0 ⇒ no marker line.
+  // How many per-finding discussion asides the budget dropped, and WHICH findings lost them
+  // (render-side; the cut is named, never silent). Omitted/0 ⇒ no marker line.
   readonly discussionDropped?: number;
+  readonly discussionDroppedIds?: readonly string[];
+  // How many distinct departed ids the orphaned section holds in total — the section renders
+  // "(showing N of M)" when the 8-token cap trimmed some, so the cut is named, never silent.
+  readonly orphanedTotal?: number;
   // The sticky note naming findings dropped as verbatim re-raises of answered findings (issue #151):
   // the suppression is never silent. Built by post from the dropped entries; omitted ⇒ no note.
   readonly answeredReRaiseNote?: string;

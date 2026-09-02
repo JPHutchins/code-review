@@ -5,13 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
-import {
-  post,
-  announce,
-  reportIncomplete,
-  buildStickyDiscussion,
-  fetchStickyDiscussion,
-} from "./post.js";
+import { post, announce, reportIncomplete, buildStickyDiscussion, findBotComment } from "./post.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
 import type {
   Convergence,
@@ -4668,7 +4662,7 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
       row({ id: 1, parent: 900, body: "what about `f-a`?" }),
       row({ id: 2, parent: 1, body: "also `f-b`", author: "bob" }),
     ];
-    const d = buildStickyDiscussion(rows, 900, ["f-a", "f-b"]);
+    const d = buildStickyDiscussion(rows, 900, ["f-a", "f-b"], []);
     expect(d.byFinding["f-a"]).toHaveLength(1);
     expect(d.byFinding["f-a"]![0]!.author).toBe("alice");
     expect(d.byFinding["f-b"]![0]!.author).toBe("bob");
@@ -4683,7 +4677,7 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
       row({ id: 3, parent: 4, body: "cycle, mentions `f-a`" }),
       row({ id: 4, parent: 3, body: "cycle, mentions `f-a`" }),
     ];
-    const d = buildStickyDiscussion(rows, 900, ["f-a"]);
+    const d = buildStickyDiscussion(rows, 900, ["f-a"], []);
     expect(d.byFinding["f-a"]).toHaveLength(0);
   });
 
@@ -4704,7 +4698,7 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
       reply(9, "old-id"),
       reply(10, "old-id"),
     ];
-    const d = buildStickyDiscussion(rows, 900, ["f-a"]);
+    const d = buildStickyDiscussion(rows, 900, ["f-a"], ["old-id"]);
     const faLinks = d.byFinding["f-a"] ?? [];
     expect(faLinks).toHaveLength(6);
     // Newest first: only the six most recent dates survive.
@@ -4720,10 +4714,82 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
   });
 });
 
-describe("fetchStickyDiscussion — best-effort fetch", () => {
-  it("returns empty maps on a transport error and never throws", async () => {
-    const api: GhApi = () => Promise.reject(new Error("network down"));
-    const d = await fetchStickyDiscussion("owner/repo", 1, 900, ["f-a"], api);
-    expect(d).toEqual({ byFinding: {}, orphaned: {} });
+describe("fetchIssueCommentRows — the sticky lookup never mistakes corruption for absence", () => {
+  it("throws when a row fails to decode, so a corrupted history cannot mint a duplicate sticky", async () => {
+    const api: GhApi = () =>
+      Promise.resolve('{"id": 999, "body": "<!-- code-review -->"}\nnot-json\n');
+    await expect(
+      findBotComment("owner/repo", 1, "github-actions[bot]", "<!-- code-review -->", api),
+    ).rejects.toThrow("refusing to treat a corrupted history as an absent sticky");
+  });
+});
+
+describe("buildStickyDiscussion — the orphan bucket is prior-id-only", () => {
+  const row = (
+    overrides: Record<string, unknown>,
+  ): Parameters<typeof buildStickyDiscussion>[0][number] => ({
+    id: 1,
+    parent: null,
+    author: "alice",
+    created: "2026-09-01T12:00:00Z",
+    url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+    body: "plain",
+    ...overrides,
+  });
+
+  it("never publishes shape-guessed prose as a departed finding — only a token the prior sticky carried", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "mention `main-merge` and `well-known`" }),
+      row({ id: 2, parent: 900, body: "mention `departed-id`" }),
+    ];
+    const d = buildStickyDiscussion(rows, 900, [], ["departed-id"]);
+    expect(d.orphaned["departed-id"]).toHaveLength(1);
+    expect(d.orphaned["main-merge"]).toBeUndefined();
+    expect(d.orphaned["well-known"]).toBeUndefined();
+  });
+
+  it("does not mislabel ids this round still reports (a systemic id counts as known)", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "mention `sys-a` and `f-a`" }),
+    ];
+    const d = buildStickyDiscussion(rows, 900, ["f-a", "sys-a"], ["sys-a"]);
+    expect(d.byFinding["f-a"]).toHaveLength(1);
+    expect(d.byFinding["sys-a"]).toHaveLength(1);
+    expect(d.orphaned).toEqual({});
+  });
+
+  it("dedupes a reply that quotes the same id twice — one link per comment per token", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "still seeing `f-a` … re-run with `f-a`" }),
+    ];
+    const d = buildStickyDiscussion(rows, 900, ["f-a"], []);
+    expect(d.byFinding["f-a"]).toHaveLength(1);
+  });
+
+  it("caps the orphan bucket at the 8 NEWEST departed ids and reports the true total", () => {
+    const reply = (day: number, token: string) =>
+      row({
+        id: day,
+        parent: 900,
+        body: `mention \`${token}\``,
+        created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+      });
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      ...Array.from({ length: 10 }, (_, i) => reply(i + 1, `departed-${String(i + 1)}`)),
+    ];
+    const d = buildStickyDiscussion(
+      rows,
+      900,
+      [],
+      Array.from({ length: 10 }, (_, i) => `departed-${String(i + 1)}`),
+    );
+    expect(d.orphanedTotal).toBe(10);
+    expect(Object.keys(d.orphaned)).toHaveLength(8);
+    // Newest first: the highest-day tokens survive.
+    expect(Object.keys(d.orphaned)[0]).toBe("departed-10");
   });
 });

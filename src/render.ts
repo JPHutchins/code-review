@@ -82,6 +82,12 @@ const permalinkFor = (base: string, f: Finding, anchor: boolean): string | undef
 const CARRIED_TOTAL_CHARS = 40_000;
 const SUPPRESSED_NIT_BLOCK_OVERHEAD = 280;
 
+// The discussion aside's budget: per-finding asides are additive to the one body post never sheds
+// (issue #246 review r1), so a discussion-heavy round drops WHOLE asides past this total — the cut
+// is named in the template, never silent (the same discipline the suppressed-nit budget applies).
+const DISCUSSION_TOTAL_CHARS = 8_000;
+const DISCUSSION_BLOCK_OVERHEAD = 120;
+
 type StrayView = Finding & {
   readonly patchProjection: PatchProjection;
   readonly answeredNote: string;
@@ -364,6 +370,37 @@ export const render = (input: RenderInput): string => {
       : undefined;
   const unanchored = new Set(input.unanchoredStrays ?? []);
 
+  const strayViews = (input.strays ?? []).map((f) =>
+    sanitizeFinding(f, input.answeredNotes, input.discussionByFinding, permalinkBase, unanchored),
+  );
+  // The discussion aside is additive to the one body post deliberately never sheds (issue #246 review
+  // r1): per-finding asides are budgeted like the suppressed-nit blocks — whole asides dropped past
+  // the budget, the cut named in the template, never silent.
+  const discussionBudget = strayViews.reduce<{
+    readonly list: typeof strayViews;
+    readonly used: number;
+    readonly dropped: number;
+  }>(
+    (acc, view) => {
+      const size =
+        DISCUSSION_BLOCK_OVERHEAD +
+        view.discussion.reduce(
+          (sum, d) => sum + d.author.length + d.when.length + d.url.length,
+          0,
+        ) +
+        view.discussion.length * 12;
+      if (size > DISCUSSION_TOTAL_CHARS) {
+        return {
+          list: [...acc.list, { ...view, discussion: [] }],
+          used: acc.used,
+          dropped: acc.dropped + 1,
+        };
+      }
+      return { list: [...acc.list, view], used: acc.used + size, dropped: acc.dropped };
+    },
+    { list: [], used: 0, dropped: 0 },
+  );
+
   return eta.renderString(input.template, {
     findings: input.findings,
     envelope: input.envelope,
@@ -388,9 +425,9 @@ export const render = (input: RenderInput): string => {
       : convergence
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
-    strays: (input.strays ?? []).map((f) =>
-      sanitizeFinding(f, input.answeredNotes, input.discussionByFinding, permalinkBase, unanchored),
-    ),
+    strays: discussionBudget.list,
+    orphanedDiscussion: input.orphanedDiscussion ?? null,
+    discussionDropped: discussionBudget.dropped,
     suppressedNits: suppressedBudget.list,
     carriedDroppedNits: suppressedBudget.dropped,
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,

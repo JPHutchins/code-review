@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
-import { post, announce, reportIncomplete } from "./post.js";
+import {
+  post,
+  announce,
+  reportIncomplete,
+  buildStickyDiscussion,
+  fetchStickyDiscussion,
+} from "./post.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
 import type {
   Convergence,
@@ -144,6 +150,18 @@ const roundsMarkerFor = (n: number): string =>
     "utf-8",
   ).toString("base64")} -->`;
 
+// The shared issue-comment projection row (ISSUE_COMMENTS_JQ): the sticky lookup and the
+// discussion aside both read these fields, so the mock emits what the one paginated fetch returns.
+const commentRow = (id: number, body: string): string =>
+  `${JSON.stringify({
+    id,
+    in_reply_to_id: null,
+    user: "github-actions[bot]",
+    created_at: "2026-09-01T00:00:00Z",
+    html_url: `https://github.com/owner/repo/pull/42#issuecomment-${String(id)}`,
+    body,
+  })}\n`;
+
 // Shared by the sticky-precedence describes: the bot's own prior sticky + the post call surface.
 const mkMocks = (stickyBody: string) => [
   {
@@ -157,7 +175,16 @@ const mkMocks = (stickyBody: string) => [
   {
     match: (a: readonly string[]) =>
       a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-    response: `${JSON.stringify({ id: 999, body: stickyBody })}\n`,
+    // The shared issue-comment projection (ISSUE_COMMENTS_JQ): the sticky lookup and the discussion
+    // aside read the same rows.
+    response: `${JSON.stringify({
+      id: 999,
+      in_reply_to_id: null,
+      user: "github-actions[bot]",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-999",
+      body: stickyBody,
+    })}\n`,
   },
   {
     match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -236,7 +263,7 @@ describe("post — run summary (issue #205)", () => {
   ): Promise<{ summary: string; inline: string; stickyBody: string }> => {
     writeFileSync(summaryPath(), seed);
     setSummaryEnv(summaryPath());
-    const { api, calls } = mkMockGhApi(mkMocks(""));
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
     await post(input, api);
     const review = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -324,7 +351,7 @@ describe("post — run summary (issue #205)", () => {
   it("writes a summary on the branch that posts and exits", async () => {
     writeFileSync(summaryPath(), "");
     setSummaryEnv(summaryPath());
-    const { api } = mkMockGhApi(mkMocks(""));
+    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
 
     await expect(
       post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
@@ -340,7 +367,7 @@ describe("post — run summary (issue #205)", () => {
     writeFileSync(envelopePath, JSON.stringify({ ...baseEnvelope, models: [], incomplete: true }));
     writeFileSync(summaryPath(), "");
     setSummaryEnv(summaryPath());
-    const { api } = mkMockGhApi(mkMocks(""));
+    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
 
     await post(mkInput({ envelopePath }), api);
     const summary = readFileSync(summaryPath(), "utf-8");
@@ -375,7 +402,7 @@ describe("post — run summary (issue #205)", () => {
     // nothing warned — an unset variable must return early, not attempt the write and report failing.
     writeFileSync(summaryPath(), "untouched");
     setSummaryEnv(undefined);
-    const { api } = mkMockGhApi(mkMocks(""));
+    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
@@ -413,7 +440,7 @@ describe("post — run summary (issue #205)", () => {
 
     // Only the two rejection behaviours are bespoke; everything else delegates to the shared mock,
     // so a new route added there is not silently missing from this test.
-    const { api: shared } = mkMockGhApi(mkMocks(""));
+    const { api: shared } = mkMockGhApi(mkMocks("<!-- code-review -->"));
     const api: GhApi = (args, stdin, env) => {
       const a = [...args];
       if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--input"))
@@ -582,7 +609,7 @@ describe("post — upsert sticky comment", () => {
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: '{"id": 999, "body": "<!-- code-review -->\\nold content"}\n',
+        response: commentRow(999, "<!-- code-review -->\nold content"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -1350,7 +1377,7 @@ describe("post — injection discipline", () => {
     }
   });
 
-  it("passes bot login and marker to jq via env, never interpolated into the filter text (jq hardening)", async () => {
+  it("selects the bot's marker-prefixed sticky client-side — no login or marker text reaches the API call (jq hardening)", async () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
@@ -1362,10 +1389,14 @@ describe("post — injection discipline", () => {
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: "",
+        response: commentRow(999, "<!-- code-review -->\nold content"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        response: "",
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
         response: "",
       },
       {
@@ -1381,13 +1412,10 @@ describe("post — injection discipline", () => {
     );
     expect(findCommentsCall).toBeDefined();
     expect(findCommentsCall?.args.some((a) => a.includes("github-actions[bot]"))).toBe(false);
-    expect(
-      findCommentsCall?.args.some(
-        (a) => a.includes("env.CODE_REVIEW_BOT_LOGIN") && a.includes("env.CODE_REVIEW_MARKER"),
-      ),
-    ).toBe(true);
-    expect(findCommentsCall?.env?.["CODE_REVIEW_BOT_LOGIN"]).toBe("github-actions[bot]");
-    expect(findCommentsCall?.env?.["CODE_REVIEW_MARKER"]).toBe("<!-- code-review -->");
+    expect(findCommentsCall?.args.some((a) => a.includes("CODE_REVIEW"))).toBe(false);
+    // The filter ran client-side: the marker-prefixed row was selected, so post PATCHED it rather
+    // than creating a new sticky.
+    expect(calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")).toBeDefined();
   });
 });
 
@@ -1697,7 +1725,10 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
       {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
         // A placeholder sticky already carrying THIS head SHA in its marker (the #5 trigger).
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nplaceholder"}\n`,
+        response: commentRow(
+          999,
+          "<!-- code-review -->\n<!-- reviewed-sha: abc123def456 -->\nplaceholder",
+        ),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -1748,7 +1779,7 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nold"}\n`,
+        response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: abc123def456 -->\nold"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -1815,7 +1846,7 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+        response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -1878,7 +1909,7 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+        response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -2414,7 +2445,7 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+        response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
         // A real PATCH to an issue comment returns the full updated comment object (id included).
@@ -2506,7 +2537,7 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
       }
       if (args[0] === "repos/owner/repo/issues/42/comments" && args.includes("--paginate")) {
         return Promise.resolve(
-          `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nold"}\n`,
+          commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: abc123def456 -->\nold"),
         );
       }
       if (args[0] === "repos/owner/repo/issues/comments/999") {
@@ -3076,7 +3107,7 @@ describe("announce — in-progress sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3117,7 +3148,7 @@ describe("announce — in-progress sticky", () => {
     const existing = `<!-- code-review -->\n${legacyEmbeddedMarker(priorDoc)}`;
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3147,7 +3178,7 @@ describe("announce — in-progress sticky", () => {
     )}`;
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3190,7 +3221,7 @@ describe("announce — in-progress sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3215,7 +3246,7 @@ describe("announce — in-progress sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3272,7 +3303,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3295,7 +3326,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3318,7 +3349,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3338,7 +3369,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3385,7 +3416,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3408,7 +3439,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3435,7 +3466,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3461,7 +3492,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3851,7 +3882,7 @@ describe("post — convergence rounds (issue #125)", () => {
       {
         match: (a: readonly string[]) =>
           a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n${markers}\\nold"}\n`,
+        response: commentRow(999, `<!-- code-review -->\n${markers}\nold`),
       },
       {
         match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -4556,5 +4587,86 @@ describe("post — answered findings (issue #151)", () => {
     expect(review).toBeDefined();
     const payload = JSON.parse(review!.stdin!) as ReviewBody;
     expect(payload.comments.some((c) => c.body.includes("Test finding"))).toBe(true);
+  });
+});
+
+describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)", () => {
+  const row = (
+    overrides: Record<string, unknown>,
+  ): Parameters<typeof buildStickyDiscussion>[0][number] => ({
+    id: 1,
+    parent: null,
+    author: "alice",
+    created: "2026-09-01T12:00:00Z",
+    url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+    body: "plain",
+    ...overrides,
+  });
+
+  const stickyRow = row({ id: 900, parent: null, body: "<!-- code-review -->" });
+
+  it("groups direct replies and nested chains by the backtick-quoted finding ids they mention", () => {
+    const rows = [
+      stickyRow,
+      row({ id: 1, parent: 900, body: "what about `f-a`?" }),
+      row({ id: 2, parent: 1, body: "also `f-b`", author: "bob" }),
+    ];
+    const d = buildStickyDiscussion(rows, 900, ["f-a", "f-b"]);
+    expect(d.byFinding["f-a"]).toHaveLength(1);
+    expect(d.byFinding["f-a"]![0]!.author).toBe("alice");
+    expect(d.byFinding["f-b"]![0]!.author).toBe("bob");
+    expect(d.orphaned).toEqual({});
+  });
+
+  it("excludes non-replies, the sticky itself, and a cycle that never reaches the sticky", () => {
+    const rows = [
+      stickyRow,
+      row({ id: 1, parent: null, body: "top-level, mentions `f-a`" }),
+      row({ id: 2, parent: 5, body: "parent missing, mentions `f-a`" }),
+      row({ id: 3, parent: 4, body: "cycle, mentions `f-a`" }),
+      row({ id: 4, parent: 3, body: "cycle, mentions `f-a`" }),
+    ];
+    const d = buildStickyDiscussion(rows, 900, ["f-a"]);
+    expect(d.byFinding["f-a"]).toHaveLength(0);
+  });
+
+  it("caps each finding's links at the 6 NEWEST and buckets unknown id-shaped tokens as orphaned", () => {
+    const reply = (
+      day: number,
+      token: string,
+    ): Parameters<typeof buildStickyDiscussion>[0][number] =>
+      row({
+        id: day,
+        parent: 900,
+        body: `mention \`${token}\``,
+        created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+      });
+    const rows = [
+      stickyRow,
+      ...Array.from({ length: 8 }, (_, i) => reply(i + 1, "f-a")),
+      reply(9, "old-id"),
+      reply(10, "old-id"),
+    ];
+    const d = buildStickyDiscussion(rows, 900, ["f-a"]);
+    const faLinks = d.byFinding["f-a"] ?? [];
+    expect(faLinks).toHaveLength(6);
+    // Newest first: only the six most recent dates survive.
+    expect(faLinks.map((l) => l.when)).toEqual([
+      "2026-09-08",
+      "2026-09-07",
+      "2026-09-06",
+      "2026-09-05",
+      "2026-09-04",
+      "2026-09-03",
+    ]);
+    expect(d.orphaned["old-id"]).toHaveLength(2);
+  });
+});
+
+describe("fetchStickyDiscussion — best-effort fetch", () => {
+  it("returns empty maps on a transport error and never throws", async () => {
+    const api: GhApi = () => Promise.reject(new Error("network down"));
+    const d = await fetchStickyDiscussion("owner/repo", 1, 900, ["f-a"], api);
+    expect(d).toEqual({ byFinding: {}, orphaned: {} });
   });
 });

@@ -58,6 +58,7 @@ import {
   fetchThreadComments,
 } from "./answered.js";
 import { asRecord, errMsg, tryParseJson } from "./util.js";
+import { parseJsonl } from "./transcript.js";
 
 export interface PostInput {
   readonly repo: string;
@@ -339,6 +340,56 @@ const postInlineReview = async (
   }
 };
 
+// ONE projection for every issue-comment consumer: the sticky lookup (findBotComment) and the
+// discussion aside (fetchStickyDiscussion) read the same rows from the SAME paginated fetch, so a
+// round never pays the full history twice (issue #246 review r1). Transport errors PROPAGATE — the
+// callers that must not mistake a failed fetch for an absent sticky let the rejection through.
+const ISSUE_COMMENTS_JQ =
+  ".[] | {id, in_reply_to_id, user: .user.login, created_at, html_url, body}";
+
+interface IssueCommentRow {
+  readonly id: number;
+  readonly parent: number | null;
+  readonly author: string;
+  readonly created: string;
+  readonly url: string;
+  readonly body: string;
+}
+
+const parseIssueCommentRows = (raw: string): readonly IssueCommentRow[] =>
+  parseJsonl(raw).flatMap((line) => {
+    const rec = asRecord(line);
+    if (rec === null) return [];
+    const id = rec["id"];
+    const parent = rec["in_reply_to_id"];
+    const author = rec["user"];
+    const created = rec["created_at"];
+    const url = rec["html_url"];
+    const body = rec["body"];
+    return typeof id === "number" &&
+      (parent === null || typeof parent === "number") &&
+      typeof author === "string" &&
+      typeof created === "string" &&
+      typeof url === "string" &&
+      typeof body === "string"
+      ? [{ id, parent, author, created, url, body }]
+      : [];
+  });
+
+const fetchIssueCommentRows = async (
+  repo: string,
+  prNumber: number,
+  ghApi: GhApi,
+): Promise<readonly IssueCommentRow[]> => {
+  const raw = await ghApi([
+    `repos/${repo}/issues/${String(prNumber)}/comments`,
+    "--paginate",
+    "--jq",
+    ISSUE_COMMENTS_JQ,
+  ]);
+  return parseIssueCommentRows(raw);
+};
+
 const findBotComment = async (
   repo: string,
   prNumber: number,
@@ -346,22 +397,10 @@ const findBotComment = async (
   marker: string,
   ghApi: GhApi,
 ): Promise<{ readonly id: number; readonly body: string } | null> => {
-  const stdout = await ghApi(
-    [
-      `repos/${repo}/issues/${String(prNumber)}/comments`,
-      "--paginate",
-      "--jq",
-      ".[] | select(.user.login == env.CODE_REVIEW_BOT_LOGIN and (.body | startswith(env.CODE_REVIEW_MARKER))) | {id: .id, body: .body}",
-    ],
-    undefined,
-    { CODE_REVIEW_BOT_LOGIN: botLogin, CODE_REVIEW_MARKER: marker },
-  );
-  const lines = stdout.trim().split("\n").filter(Boolean);
-  if (lines.length === 0) return null;
-  const last = lines[lines.length - 1] ?? null;
-  if (last === null) return null;
-  const parsed = JSON.parse(last) as { id: number; body: string };
-  return { id: parsed.id, body: parsed.body };
+  const rows = await fetchIssueCommentRows(repo, prNumber, ghApi);
+  const bot = rows.filter((r) => r.author === botLogin && r.body.startsWith(marker));
+  const last = bot[bot.length - 1];
+  return last === undefined ? null : { id: last.id, body: last.body };
 };
 
 const parseCommentRef = (
@@ -406,61 +445,28 @@ const postComment = async (
 // sticky comment, grouped by the finding ids its body mentions (backtick-quoted — the same form the
 // sticky renders). Best-effort like the answered fetch: a transport error yields no aside, never a
 // failed post. Pointers only — the implementer reads the replies at the links.
-const fetchStickyDiscussion = async (
-  repo: string,
-  prNumber: number,
+export interface StickyDiscussion {
+  readonly byFinding: Readonly<Record<string, readonly DiscussionLink[]>>;
+  // Replies mentioning an id-SHAPED token that is not one of this round's findings: a finding that
+  // was fixed or re-id'd between rounds. The sticky is overwritten every round (issue #205), so
+  // without this bucket the conversation's pointers vanish from the review surface exactly when the
+  // finding left the report.
+  readonly orphaned: Readonly<Record<string, readonly DiscussionLink[]>>;
+}
+
+// The pure thread→discussion grouping (issue #246): replies whose in_reply_to chain reaches the
+// sticky, grouped by the backtick-quoted finding ids their bodies mention — pointers only, never
+// reply prose; capped 6 newest-first per id. Extracted pure so the chain-walk, the cycle guard, and
+// the caps are unit-testable without an API mock.
+export const buildStickyDiscussion = (
+  rows: readonly IssueCommentRow[],
   stickyId: number,
   findingIds: readonly string[],
-  ghApi: GhApi,
-): Promise<Readonly<Record<string, readonly DiscussionLink[]>>> => {
-  if (findingIds.length === 0) return {};
-  let raw: string;
-  try {
-    raw = await ghApi([
-      `repos/${repo}/issues/${String(prNumber)}/comments`,
-      "--paginate",
-      "--jq",
-      ".[] | {id, in_reply_to_id, user: .user.login, created_at, html_url, body}",
-    ]);
-  } catch {
-    return {};
-  }
-  interface ThreadRow {
-    readonly id: number;
-    readonly parent: number | null;
-    readonly author: string;
-    readonly created: string;
-    readonly url: string;
-    readonly body: string;
-  }
-  const rows: ThreadRow[] = raw
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => {
-      const parsed = tryParseJson(line);
-      if (!parsed.ok) return [];
-      const rec = asRecord(parsed.value);
-      if (rec === null) return [];
-      const id = rec["id"];
-      const parent = rec["in_reply_to_id"];
-      const author = rec["user"];
-      const created = rec["created_at"];
-      const url = rec["html_url"];
-      const body = rec["body"];
-      return typeof id === "number" &&
-        (parent === null || typeof parent === "number") &&
-        typeof author === "string" &&
-        typeof created === "string" &&
-        typeof url === "string" &&
-        typeof body === "string"
-        ? [{ id, parent, author, created, url, body }]
-        : [];
-    });
+): StickyDiscussion => {
   const byId = new Map(rows.map((c) => [c.id, c]));
-  const reachesSticky = (c: ThreadRow): boolean => {
+  const reachesSticky = (c: IssueCommentRow): boolean => {
     const seen = new Set<number>();
-    let current: ThreadRow | undefined = c;
+    let current: IssueCommentRow | undefined = c;
     while (current !== undefined && current.parent !== null && !seen.has(current.id)) {
       seen.add(current.id);
       if (current.parent === stickyId) return true;
@@ -468,16 +474,51 @@ const fetchStickyDiscussion = async (
     }
     return false;
   };
-  const grouped = Object.fromEntries(findingIds.map((id): [string, DiscussionLink[]] => [id, []]));
+  const idShape = /`([a-z][a-z0-9-]{1,63})`/g;
+  const known = new Set(findingIds);
+  const byFinding = Object.fromEntries(
+    findingIds.map((id): [string, DiscussionLink[]] => [id, []]),
+  );
+  const orphaned = new Map<string, DiscussionLink[]>();
   for (const c of rows) {
     if (c.id === stickyId || !reachesSticky(c)) continue;
-    for (const id of findingIds) {
-      if (c.body.includes(`\`${id}\``))
-        (grouped[id] ?? []).push({ author: c.author, when: c.created.slice(0, 10), url: c.url });
+    const link = { author: c.author, when: c.created.slice(0, 10), url: c.url };
+    for (const m of c.body.matchAll(idShape)) {
+      const token = m[1];
+      if (token === undefined) continue;
+      const knownLinks = known.has(token) ? byFinding[token] : undefined;
+      if (knownLinks !== undefined) knownLinks.push(link);
+      else {
+        const links = orphaned.get(token);
+        if (links === undefined) orphaned.set(token, [link]);
+        else links.push(link);
+      }
     }
   }
-  for (const links of Object.values(grouped)) links.reverse().splice(6);
-  return grouped;
+  for (const links of Object.values(byFinding)) links.reverse().splice(6);
+  for (const links of orphaned.values()) links.reverse().splice(6);
+  // Bound the orphan bucket too: the pointer trail is best-effort, not unbounded.
+  const capped = new Map([...orphaned.entries()].slice(0, 8));
+  return { byFinding, orphaned: Object.fromEntries(capped) };
+};
+
+export const fetchStickyDiscussion = async (
+  repo: string,
+  prNumber: number,
+  stickyId: number,
+  findingIds: readonly string[],
+  ghApi: GhApi,
+): Promise<StickyDiscussion> => {
+  if (findingIds.length === 0) return { byFinding: {}, orphaned: {} };
+  try {
+    return buildStickyDiscussion(
+      await fetchIssueCommentRows(repo, prNumber, ghApi),
+      stickyId,
+      findingIds,
+    );
+  } catch {
+    return { byFinding: {}, orphaned: {} };
+  }
 };
 
 // The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
@@ -1205,17 +1246,17 @@ export const post = async (
   const currentRoundCount = isRound ? roundNumber : priorRoundCount;
 
   // The discussion aside's reply chain (issue #246): replies to the sticky, grouped by the finding
-  // ids they mention — best-effort, one paginated fetch, pointers only.
-  const discussionByFinding =
-    existingSticky !== null
-      ? await fetchStickyDiscussion(
-          input.repo,
-          prNumber,
-          existingSticky.id,
-          findings.findings.map((f) => f.id).filter((id) => id !== ""),
-          ghApi,
-        )
-      : {};
+  // ids they mention — best-effort, shared with findBotComment's paginated fetch, pointers only.
+  // Gated on strays: only a sticky-stray renders the aside (an inline-on round with every finding
+  // in-diff, or a mechanic pass, pays no fetch), and only the ids the template can actually render
+  // are grouped.
+  const strayIds = strays.map((f) => f.id).filter((id) => id !== "");
+  const stickyDiscussion =
+    existingSticky !== null && strayIds.length > 0
+      ? await fetchStickyDiscussion(input.repo, prNumber, existingSticky.id, strayIds, ghApi)
+      : { byFinding: {}, orphaned: {} };
+  const discussionByFinding = stickyDiscussion.byFinding;
+  const orphanedDiscussion = stickyDiscussion.orphaned;
 
   // Encode the whole-document marker once — the agent's COMPLETE document with the pipeline-stamped
   // convergence inside it (issues #156 + #174), reused across the sticky + review body; each inline
@@ -1240,6 +1281,7 @@ export const post = async (
     answeredNotes: reRaisedNotes,
     answeredReRaiseNote: answeredDropNote,
     discussionByFinding,
+    orphanedDiscussion,
     roundCount: currentRoundCount,
     convergenceThreshold: input.convergenceThreshold,
     nitVisibilityFloor: input.nitVisibilityFloor,

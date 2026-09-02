@@ -2445,3 +2445,65 @@ describe("time-slot pricing via envelope.generated_at (issue #170)", () => {
     expect(offPeak).toContain("$1.00");
   });
 });
+
+describe("discussion aside — the per-finding linked list (issue #246)", () => {
+  const renderWith = (over: Partial<Parameters<typeof render>[0]> = {}): string =>
+    render({
+      findings: mkFindings([mkFinding({})]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [mkFinding({})],
+      ...over,
+    });
+
+  const link = (author: string, when: string, url: string) => ({ author, when, url });
+
+  it("renders the collapsed pointer list for a finding whose id has replies, never the reply prose", () => {
+    const out = renderWith({
+      discussionByFinding: {
+        "test-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-1"),
+        ],
+      },
+    });
+    expect(out).toContain("<details><summary>💬 Discussion</summary>");
+    expect(out).toContain(
+      "- [alice · 2026-09-01](https://github.com/owner/repo/pull/1#issuecomment-1)",
+    );
+    // Pointers only — the reply's own prose never renders.
+    expect(out).not.toContain("the reply prose");
+  });
+
+  it("renders no aside when the finding has no replies", () => {
+    const out = renderWith({ discussionByFinding: {} });
+    expect(out).not.toContain("💬 Discussion");
+  });
+
+  it("renders the orphaned-discussions section for ids this round no longer reports", () => {
+    const out = renderWith({
+      orphanedDiscussion: {
+        "old-id": [
+          link("bob", "2026-08-30", "https://github.com/owner/repo/pull/1#issuecomment-7"),
+        ],
+      },
+    });
+    expect(out).toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(out).toContain("**`old-id`**");
+    expect(out).toContain(
+      "[bob · 2026-08-30](https://github.com/owner/repo/pull/1#issuecomment-7)",
+    );
+  });
+
+  it("drops whole asides past the discussion budget and names the cut", () => {
+    // A finding whose aside alone exceeds the budget is dropped, and the marker says so.
+    const huge = Array.from({ length: 200 }, (_, i) =>
+      link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),
+    );
+    const out = renderWith({
+      discussionByFinding: { "test-id": huge },
+    });
+    expect(out).not.toContain("<details><summary>💬 Discussion</summary>");
+    expect(out).toContain("discussion thread not listed");
+  });
+});

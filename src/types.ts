@@ -140,6 +140,13 @@ export interface RenderInput {
   // Finding id → replies to the sticky comment that mention that id (issue #246's discussion aside):
   // rendered as a collapsed linked list under each finding. Omitted/empty ⇒ no aside.
   readonly discussionByFinding?: Readonly<Record<string, readonly DiscussionLink[]>>;
+  // Replies mentioning an id-shaped token that is NOT one of this round's findings: rendered as one
+  // collapsed "earlier rounds" section so a fixed/re-id'd finding's conversation stays discoverable.
+  // Omitted/empty ⇒ no section.
+  readonly orphanedDiscussion?: Readonly<Record<string, readonly DiscussionLink[]>>;
+  // How many per-finding discussion asides the budget dropped (render-side; the cut is named, never
+  // silent). Omitted/0 ⇒ no marker line.
+  readonly discussionDropped?: number;
   // The sticky note naming findings dropped as verbatim re-raises of answered findings (issue #151):
   // the suppression is never silent. Built by post from the dropped entries; omitted ⇒ no note.
   readonly answeredReRaiseNote?: string;

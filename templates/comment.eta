@@ -136,7 +136,7 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% } -%>
 <% if (f.discussion.length > 0) { -%>
 
-<details><summary>💬 Discussion (<%= f.discussion.length %>)</summary>
+<details><summary>💬 Discussion</summary>
 
 <% f.discussion.forEach(function(d) { -%>
 - [<%= d.author %> · <%= d.when %>](<%~ d.url %>)
@@ -153,6 +153,21 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 >
 > </details>
 <% }) %>
+<% if (it.discussionDropped > 0) { %>
+_<%= it.discussionDropped %> discussion thread<%= it.discussionDropped === 1 ? '' : 's' %> not listed — the links live on the comment thread._
+<% } %>
+<% } %>
+
+<% if (it.orphanedDiscussion && Object.keys(it.orphanedDiscussion).length > 0) { %>
+## 💬 Discussions on findings from earlier rounds
+
+<details><summary>Replies naming findings this round no longer reports (fixed or re-id'd) — the conversation stays discoverable.</summary>
+
+<% Object.entries(it.orphanedDiscussion).forEach(function([token, links]) { -%>
+- **`<%= token %>`**: <% links.forEach(function(d) { %>[<%= d.author %> · <%= d.when %>](<%~ d.url %>) <% }) %>
+<% }) -%>
+
+</details>
 <% } %>
 
 <% if (it.suppressedNits && it.suppressedNits.length > 0) { %>

@@ -610,7 +610,7 @@ jobs:
               *) echo "${BASH_REMATCH[1]}" ;;
             esac
           }
-          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; GRACE=3m; USD_LIMIT=0.10; else AGENT_WALL=24m; GRACE=12m; USD_LIMIT=1; fi
+          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=20m; GRACE=6m; USD_LIMIT=0.50; else AGENT_WALL=24m; GRACE=12m; USD_LIMIT=1; fi
           HARD_KILL=$(( $(dur_to_secs "$AGENT_WALL") + $(dur_to_secs "$GRACE") ))
 
           # Compose the review agent's hooks into one settings file, written to

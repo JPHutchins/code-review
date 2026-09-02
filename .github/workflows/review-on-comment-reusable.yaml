@@ -139,20 +139,20 @@ on:
       # The mechanic route is reachable now that the trigger honors a 'failure' CI conclusion, so its
       # budgets are forwarded too (a comment's duration/usd overrides still apply on top, either route).
       mechanic_time_limit:
-        description: Wall-clock budget for the fast fix (CI-failure) route
+        description: Wall-clock budget for the fast fix (CI-failure) route — sized to REPRODUCE the failure when no job logs were staged, not just to read them (issue #219)
         type: string
         required: false
-        default: 6m
+        default: 20m
       mechanic_grace_period:
         description: Time past mechanic_time_limit before the hard SIGTERM (keep ≥ ~1m)
         type: string
         required: false
-        default: 3m
+        default: 6m
       mechanic_usd_limit:
         description: USD spend cap for the mechanic route (needs a committed .github/prices.json to price the run)
         type: string
         required: false
-        default: "0.10"
+        default: "0.50"
       extra_endpoints:
         description: Extra harden-runner allowed endpoints (single space-separated line). E.g. your package registries or the model host if not deepseek/anthropic.
         type: string

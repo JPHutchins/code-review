@@ -144,20 +144,20 @@ on:
         required: false
         default: "1"
       mechanic_time_limit:
-        description: Wall-clock budget for the fast fix (CI-failure) route
+        description: Wall-clock budget for the fast fix (CI-failure) route — sized to REPRODUCE the failure when no job logs were staged, not just to read them (issue #219)
         type: string
         required: false
-        default: 6m
+        default: 20m
       mechanic_grace_period:
         description: Time past mechanic_time_limit before the hard SIGTERM (required; keep ≥ ~1m)
         type: string
         required: false
-        default: 3m
+        default: 6m
       mechanic_usd_limit:
         description: Dollar spend cap for the mechanic route (takes effect only with a committed .github/prices.json to price the run)
         type: string
         required: false
-        default: "0.10"
+        default: "0.50"
       duration_override:
         description: >-
           Override the full-review wall for this run (e.g. from a ChatOps /code-review comment).

@@ -83,3 +83,144 @@ describe("workflow run scripts — argument lines stay attached to their command
     expect(orphanedArguments(continued)).toEqual([]);
   });
 });
+
+describe("mechanic route prose — the reusable workflow and the example teach the SAME instructions", () => {
+  // The mechanic PROMPT and its log-state notes steer the route's whole deliverable; the reusable
+  // workflow and the consumer template carry byte-identical copies that must not drift (a template
+  // consumer would otherwise get a different mechanic than a reusable consumer — e.g. one that still
+  // reads logs without the reproduce-when-absent clause). Extracted from the parsed run scripts, not
+  // grepped, so a missing copy shows up as a mismatch instead of passing silently.
+  const steerLines = (workflowPath: string): readonly string[] =>
+    runScripts(workflowPath)
+      .flatMap(({ script }) => script.split("\n"))
+      .map((line) => line.trim())
+      .filter((line) =>
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE)="/.test(line),
+      )
+      .sort();
+
+  it("every mechanic steer line is byte-identical between review-reusable.yaml and the example", () => {
+    const reusable = steerLines(".github/workflows/review-reusable.yaml");
+    const example = steerLines("examples/workflows/review.yaml");
+    expect(reusable.length).toBeGreaterThan(0);
+    expect(example).toEqual(reusable);
+  });
+});
+
+describe("mechanic prompt assembly — the notes reach the prompt in the same order in both files", () => {
+  it("the prompt splice delivers $ROUTE_NOTE then $LOG_SUBSET_NOTE in both workflows", () => {
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      const splices = runScripts(workflowPath).filter(({ script }) =>
+        script.includes("$ROUTE_NOTE$LOG_SUBSET_NOTE"),
+      );
+      expect(splices, `${workflowPath} splice`).not.toHaveLength(0);
+    }
+  });
+});
+
+describe("route budget parity — the example's literals mirror the reusable input defaults", () => {
+  const inputDefaults = (workflowPath: string): Readonly<Record<string, string>> => {
+    const doc = parseYaml(readRepoFile(workflowPath)) as {
+      on?: { workflow_call?: { inputs?: Record<string, { default?: string | number }> } };
+    };
+    const inputs = doc.on?.workflow_call?.inputs ?? {};
+    return Object.fromEntries(
+      Object.entries(inputs).flatMap(([k, v]) =>
+        v.default === undefined ? [] : [[k, String(v.default)]],
+      ),
+    );
+  };
+
+  const exampleRouteLiterals = (): {
+    mechanic: string;
+    mechanicGrace: string;
+    full: string;
+    fullGrace: string;
+    usd: string;
+  } => {
+    const lines = runScripts("examples/workflows/review.yaml")
+      .flatMap(({ script }) => script.split("\n"))
+      .map((line) => line.trim());
+    const routeLine = lines.find((l) => l.includes("AGENT_WALL=")) ?? "";
+    const usdLine = lines.find((l) => l.startsWith("USD_LIMIT=")) ?? "";
+    const mechanic = /AGENT_WALL=(\S+); GRACE=(\S+); else AGENT_WALL=(\S+); GRACE=([^;\s]+)/.exec(
+      routeLine,
+    );
+    const usd = /USD_LIMIT=(\S+)/.exec(usdLine)?.[1];
+    if (mechanic === null || usd === undefined) throw new Error("example route literals not found");
+    return {
+      mechanic: mechanic[1]!,
+      mechanicGrace: mechanic[2]!,
+      full: mechanic[3]!,
+      fullGrace: mechanic[4]!,
+      usd,
+    };
+  };
+
+  // The empty-string coercion fallbacks a consumer actually receives when it wires an unset var —
+  // `${{ inputs.X != '' && inputs.X || '<literal>' }}` — are budget sites of their own.
+  const envCoercionFallbacks = (workflowPath: string): Readonly<Record<string, string>> => {
+    const doc = parseYaml(readRepoFile(workflowPath)) as {
+      jobs?: Record<
+        string,
+        { env?: Record<string, string>; steps?: ReadonlyArray<{ env?: Record<string, string> }> }
+      >;
+    };
+    const fallbacks: Record<string, string> = {};
+    for (const job of Object.values(doc.jobs ?? {})) {
+      const envBlocks = [job.env ?? {}, ...(job.steps ?? []).map((step) => step.env ?? {})];
+      for (const env of envBlocks) {
+        for (const [k, v] of Object.entries(env)) {
+          const m = /\|\|\s*['"]?([^'"]+)['"]?\s*\}\}\s*$/.exec(v);
+          if (m !== null) fallbacks[k] = m[1]!;
+        }
+      }
+    }
+    return fallbacks;
+  };
+
+  const ENV_TO_INPUT: Readonly<Record<string, string>> = {
+    FULL_TIME_LIMIT: "full_review_time_limit",
+    FULL_GRACE: "full_review_grace_period",
+    FULL_USD: "full_review_usd_limit",
+    MECHANIC_TIME_LIMIT: "mechanic_time_limit",
+    MECHANIC_GRACE: "mechanic_grace_period",
+    MECHANIC_USD: "mechanic_usd_limit",
+  };
+
+  it("the example's mechanic/full literals equal both reusables' input defaults", () => {
+    const reusable = inputDefaults(".github/workflows/review-reusable.yaml");
+    const facade = inputDefaults(".github/workflows/review-on-comment-reusable.yaml");
+    const example = exampleRouteLiterals();
+    expect(reusable["mechanic_time_limit"]).toBe(example.mechanic);
+    expect(reusable["mechanic_grace_period"]).toBe(example.mechanicGrace);
+    expect(reusable["full_review_time_limit"]).toBe(example.full);
+    expect(reusable["full_review_grace_period"]).toBe(example.fullGrace);
+    // The example carries ONE shared cap modeled on the full route's; per-route USD inputs in the
+    // reusables stay independently retunable (their agreement is pinned below, not their equality
+    // with the example).
+    expect(reusable["full_review_usd_limit"]).toBe(example.usd);
+    // The two reusables must agree with each other on every budget default.
+    for (const key of [
+      "mechanic_time_limit",
+      "mechanic_grace_period",
+      "mechanic_usd_limit",
+      "full_review_time_limit",
+      "full_review_grace_period",
+      "full_review_usd_limit",
+    ]) {
+      expect(facade[key], key).toBe(reusable[key]);
+    }
+  });
+
+  it("every env-coercion fallback equals its input default — an unset consumer var receives the default, not a drift", () => {
+    const reusable = inputDefaults(".github/workflows/review-reusable.yaml");
+    const fallbacks = envCoercionFallbacks(".github/workflows/review-reusable.yaml");
+    for (const [envKey, inputKey] of Object.entries(ENV_TO_INPUT)) {
+      expect(fallbacks[envKey], envKey).toBe(reusable[inputKey]);
+    }
+  });
+});

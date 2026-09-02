@@ -145,8 +145,9 @@ const compareCommitsMatch = (a: readonly string[]): boolean =>
 const jobsMatch = (a: readonly string[]): boolean =>
   a[0] === "repos/owner/repo/actions/runs/RUN1/jobs" && a.includes("--paginate");
 // What `gh api --paginate --jq '.jobs[] | …'` actually emits: one job per line, across all pages.
-const jobRows = (...jobs: ReadonlyArray<{ id: number; conclusion: string | null }>): string =>
-  jobs.map((j) => JSON.stringify(j)).join("\n") + "\n";
+const jobRows = (
+  ...jobs: ReadonlyArray<{ id: number; conclusion: string | null; name?: string }>
+): string => jobs.map((j) => JSON.stringify({ name: j.name ?? null, ...j })).join("\n") + "\n";
 const logsMatch = (a: readonly string[]): boolean =>
   (a[0]?.startsWith("repos/owner/repo/actions/jobs/") ?? false) &&
   (a[0]?.endsWith("/logs") ?? false);
@@ -987,6 +988,16 @@ describe("gather — failing-job logs", () => {
     stderrSpy.mockRestore();
   });
 
+  it("stages the failing jobs' names in failed_jobs.json even when no log body downloads", async () => {
+    const { api } = mkMockGhApi(oneFailingJob(new Error("403")));
+
+    await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(JSON.parse(outFile("failed_jobs.json"))).toEqual([
+      { name: null, conclusion: "failure" },
+    ]);
+  });
+
   it("never calls the jobs endpoint when conclusion is success", async () => {
     const { api, calls } = mkMockGhApi([
       {
@@ -1425,5 +1436,31 @@ describe("gather → seed-draft seam (issue #232)", () => {
     expect(stderr).toContain("wrote the prior review (1 finding(s))");
     const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as typeof doc;
     expect(context.findings[0]!.title).toBe("Prior finding");
+  });
+});
+
+describe("gather — failing-job identity", () => {
+  it("tolerates a job row whose name is null — a nameless entry degrades instead of aborting the gather", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: JSON.stringify({ id: 11, name: null, conclusion: "failure" }) + "\n",
+      },
+      { match: logsMatch, response: "no log available\n" },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", failingJobs: 1, stagedJobLogs: 1 });
+    expect(JSON.parse(outFile("failed_jobs.json"))).toEqual([
+      { name: null, conclusion: "failure" },
+    ]);
   });
 });

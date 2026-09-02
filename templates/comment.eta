@@ -53,6 +53,19 @@
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_ids && s.finding_ids.length > 0) { meta.push('Ties together: ' + s.finding_ids.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
 <%~ s.description %>
+<% if (s.discussion.length > 0) { -%>
+
+<details><summary>💬 Discussion</summary>
+
+<% s.discussion.forEach(function(d) { -%>
+- [<%= d.author %> · <%= d.when %>](<%~ d.url %>)
+<% }) -%>
+<% if (s.discussionTruncated) { -%>
+_(showing the 6 newest of <%= s.discussionTruncated %> replies — the rest live on the comment thread.)_
+<% } -%>
+
+</details>
+<% } -%>
 
 > <details><summary>Reasoning</summary>
 >
@@ -141,6 +154,9 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% f.discussion.forEach(function(d) { -%>
 - [<%= d.author %> · <%= d.when %>](<%~ d.url %>)
 <% }) -%>
+<% if (f.discussionTruncated) { -%>
+_(showing the 6 newest of <%= f.discussionTruncated %> replies — the rest live on the comment thread.)_
+<% } -%>
 
 </details>
 <% } -%>

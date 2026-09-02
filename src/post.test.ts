@@ -5,7 +5,15 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
-import { post, announce, reportIncomplete, buildStickyDiscussion, findBotComment } from "./post.js";
+import {
+  post,
+  announce,
+  reportIncomplete,
+  buildStickyDiscussion,
+  findBotComment,
+  mentionsOutsideKnown,
+  priorIdsFrom,
+} from "./post.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
 import type {
   Convergence,
@@ -16,6 +24,7 @@ import type {
   ModelUsageEntry,
   TestSummary,
 } from "./schema.js";
+import type { ArtifactReader } from "./artifact.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -4712,6 +4721,26 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
     ]);
     expect(d.orphaned["old-id"]).toHaveLength(2);
   });
+
+  it("reports the pre-cap total when the 6-newest cap trims a finding's links", () => {
+    const reply = (day: number) =>
+      row({
+        id: day,
+        parent: 900,
+        body: "mention `f-a`",
+        created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+      });
+    const rows = [stickyRow, ...Array.from({ length: 8 }, (_, i) => reply(i + 1))];
+    const d = buildStickyDiscussion(rows, 900, ["f-a"], []);
+    expect(d.byFinding["f-a"]).toHaveLength(6);
+    expect(d.truncated["f-a"]).toBe(8);
+  });
+
+  it("leaves the truncated map absent for a finding under the cap", () => {
+    const rows = [stickyRow, row({ id: 1, parent: 900, body: "mention `f-a`" })];
+    const d = buildStickyDiscussion(rows, 900, ["f-a"], []);
+    expect(d.truncated).toEqual({});
+  });
 });
 
 describe("fetchIssueCommentRows — the sticky lookup never mistakes corruption for absence", () => {
@@ -4721,6 +4750,179 @@ describe("fetchIssueCommentRows — the sticky lookup never mistakes corruption 
     await expect(
       findBotComment("owner/repo", 1, "github-actions[bot]", "<!-- code-review -->", api),
     ).rejects.toThrow("refusing to treat a corrupted history as an absent sticky");
+  });
+
+  it("skips a well-formed ghost row (deleted user projects null) instead of treating it as corruption", async () => {
+    const ghost = JSON.stringify({
+      id: 998,
+      in_reply_to_id: null,
+      user: null,
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/1#issuecomment-998",
+      body: "a deleted account's reply",
+    });
+    const sticky = JSON.stringify({
+      id: 999,
+      in_reply_to_id: null,
+      user: "github-actions[bot]",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/1#issuecomment-999",
+      body: "<!-- code-review -->",
+    });
+    const api: GhApi = () => Promise.resolve(`${ghost}\n${sticky}\n`);
+    const found = await findBotComment(
+      "owner/repo",
+      1,
+      "github-actions[bot]",
+      "<!-- code-review -->",
+      api,
+    );
+    expect(found?.id).toBe(999);
+  });
+});
+
+describe("mentionsOutsideKnown — the orphan-resolve gate", () => {
+  const row = (
+    overrides: Record<string, unknown>,
+  ): Parameters<typeof buildStickyDiscussion>[0][number] => ({
+    id: 1,
+    parent: null,
+    author: "alice",
+    created: "2026-09-01T12:00:00Z",
+    url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+    body: "plain",
+    ...overrides,
+  });
+
+  it("is true when a reachable reply names a token outside the known set", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "see `departed-id`" }),
+    ];
+    expect(mentionsOutsideKnown(rows, 900, ["f-a"])).toBe(true);
+  });
+
+  it("is false when every mentioned token is known", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "see `f-a` and `sys-a`" }),
+    ];
+    expect(mentionsOutsideKnown(rows, 900, ["f-a", "sys-a"])).toBe(false);
+  });
+
+  it("ignores a token only an unreachable comment mentions — the gate skips a fetch it could not use", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: null, body: "top-level, mentions `departed-id`" }),
+    ];
+    expect(mentionsOutsideKnown(rows, 900, ["f-a"])).toBe(false);
+  });
+});
+
+describe("priorIdsFrom — the orphan bucket's departed set", () => {
+  it("reads the findings and systemic ids a resolved prior document carries", () => {
+    const doc = {
+      findings: [{ id: "f-1" }, { id: "" }, { title: "no id" }],
+      systemic_problems: [{ id: "sys-1" }],
+    };
+    expect(priorIdsFrom(doc)).toEqual(["f-1", "sys-1"]);
+  });
+
+  it("yields nothing for a non-document", () => {
+    expect(priorIdsFrom(null)).toEqual([]);
+    expect(priorIdsFrom("junk")).toEqual([]);
+    expect(priorIdsFrom([1, 2])).toEqual([]);
+  });
+});
+
+describe("post — the orphan gate resolves the prior findings through the ARTIFACT LINK", () => {
+  const patchedBody = (calls: readonly RecordedCall[]): string =>
+    (
+      JSON.parse(
+        calls.find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+      ) as CommentBody
+    ).body;
+
+  it("orphans a reply naming a departed finding or systemic id read from the prior document", async () => {
+    const priorConv: Convergence = {
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { "old-id": 1 } }],
+    };
+    // The prior sticky names its findings by LINK — the form every post writes. The retired
+    // base64 embed decoder is not what feeds the orphan bucket.
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
+      priorConv,
+    )}\nold`;
+    const priorDoc = {
+      ...mkFindings([mkFinding({ id: "old-id", severity: "minor" })]),
+      systemic_problems: [
+        {
+          title: "A systemic",
+          description: "desc",
+          severity: "major",
+          reasoning: "reasoning",
+          confidence: 0.8,
+          likelihood: 1,
+          id: "sys-old",
+        },
+      ],
+    };
+    const readUrls: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      readUrls.push(url);
+      return Promise.resolve(JSON.stringify(priorDoc));
+    };
+    const reply = JSON.stringify({
+      id: 1000,
+      in_reply_to_id: 999,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "what about `old-id` and `sys-old`?",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
+    expect(readUrls).toEqual(["https://artifacts.example.com/prior.zip"]);
+    const body = patchedBody(calls());
+    expect(body).toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(body).toContain("**`old-id`**");
+    expect(body).toContain("**`sys-old`**");
+    expect(body).toContain(
+      "[alice · 2026-09-01](https://github.com/owner/repo/pull/42#issuecomment-1000)",
+    );
+  });
+
+  it("pays no prior-artifact fetch when no reply names a departed id", async () => {
+    const priorConv: Convergence = {
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: {} }],
+    };
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
+      priorConv,
+    )}\nold`;
+    const readUrls: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      readUrls.push(url);
+      return Promise.resolve("null");
+    };
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${commentRow(1000, "looks good")}` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
+    expect(readUrls).toEqual([]);
+    expect(patchedBody(calls())).not.toContain("earlier rounds");
   });
 });
 

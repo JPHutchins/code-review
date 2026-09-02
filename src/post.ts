@@ -2,6 +2,7 @@
 // the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
 import { readFileSync, appendFileSync } from "node:fs";
+import { ancestors } from "./comment-chain.js";
 import type { DiscussionLink, InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff } from "./diff.js";
@@ -389,9 +390,11 @@ const parseIssueCommentRows = (
       typeof body === "string"
     ) {
       rows.push({ id, parent, author, created, url, body });
-    } else {
-      malformed += 1;
     }
+    // A well-formed row that fails the shape guard is dropped, not malformed: a deleted "ghost"
+    // account projects `user: null` (a legitimate GitHub state) and can never be the bot's sticky
+    // (its own comments always carry a login), so skipping it cannot mint a duplicate. Only a line
+    // that will not parse is corruption.
   }
   return { rows, malformed };
 };
@@ -491,7 +494,53 @@ export interface StickyDiscussion {
   // How many distinct departed ids were mentioned in total — the rendered section shows
   // "(showing N of M)" when the cap trimmed some, so the cut is named, never silent.
   readonly orphanedTotal: number;
+  // Finding id → the pre-cap link total, present only when the 6-newest cap trimmed that finding's
+  // list — the aside names its cut instead of rendering indistinguishably from a short thread.
+  readonly truncated: Readonly<Record<string, number>>;
 }
+
+const ID_TOKEN_RE = /`([^`\n]{1,64})`/g;
+const PER_FINDING_LINKS = 6;
+const ORPHAN_TOKEN_CAP = 8;
+
+// The rows whose reply chain reaches the sticky (the walk memoized per row — the full history is
+// walked once per round, and a fresh climb per row is pure churn on the post path). The sticky's
+// own row may or may not be in the set: a reply's direct parent being the sticky counts either way.
+export const reachableReplies = (
+  rows: readonly IssueCommentRow[],
+  stickyId: number,
+): readonly IssueCommentRow[] => {
+  const byId = new Map(rows.map((c) => [c.id, c]));
+  const reachMemo = new Map<number, boolean>();
+  const reachesSticky = (c: IssueCommentRow): boolean => {
+    const memoized = reachMemo.get(c.id);
+    if (memoized !== undefined) return memoized;
+    const reached = [
+      ...ancestors(c, (n) => (n.parent === null ? null : (byId.get(n.parent) ?? null))),
+    ].some((a) => a.id === stickyId || a.parent === stickyId);
+    reachMemo.set(c.id, reached);
+    return reached;
+  };
+  return rows.filter((c) => c.id !== stickyId && reachesSticky(c));
+};
+
+// Whether any reply that reaches the sticky names a backtick token this round does NOT report —
+// the only case the orphan bucket can be non-empty, and therefore the only case the prior sticky's
+// findings document is worth resolving for it.
+export const mentionsOutsideKnown = (
+  rows: readonly IssueCommentRow[],
+  stickyId: number,
+  currentIds: readonly string[],
+): boolean => {
+  const known = new Set(currentIds);
+  for (const c of reachableReplies(rows, stickyId)) {
+    for (const m of c.body.matchAll(ID_TOKEN_RE)) {
+      const token = m[1];
+      if (token !== undefined && !known.has(token)) return true;
+    }
+  }
+  return false;
+};
 
 // The pure thread→discussion grouping: replies whose in_reply_to chain reaches the sticky, grouped
 // by the backtick-quoted ids they mention — capped 6 newest-first per id. The orphan bucket holds
@@ -504,40 +553,17 @@ export const buildStickyDiscussion = (
   currentIds: readonly string[],
   priorIds: readonly string[],
 ): StickyDiscussion => {
-  const byId = new Map(rows.map((c) => [c.id, c]));
-  // Memoized per-row reachability: the walk is deterministic over byId, and the full history is
-  // walked once per round — a fresh Set + chain climb per row is pure churn on the post path.
-  const reachMemo = new Map<number, boolean>();
-  const reachesSticky = (c: IssueCommentRow): boolean => {
-    const memoized = reachMemo.get(c.id);
-    if (memoized !== undefined) return memoized;
-    const seen = new Set<number>();
-    let current: IssueCommentRow | undefined = c;
-    let reached = false;
-    while (current !== undefined && current.parent !== null && !seen.has(current.id)) {
-      seen.add(current.id);
-      if (current.parent === stickyId) {
-        reached = true;
-        break;
-      }
-      current = byId.get(current.parent);
-    }
-    reachMemo.set(c.id, reached);
-    return reached;
-  };
-  const idShape = /`([^`\n]{1,64})`/g;
   const known = new Set(currentIds);
   const departed = new Set(priorIds);
   const byFinding = Object.fromEntries(
     currentIds.map((id): [string, DiscussionLink[]] => [id, []]),
   );
   const orphaned = new Map<string, DiscussionLink[]>();
-  for (const c of rows) {
-    if (c.id === stickyId || !reachesSticky(c)) continue;
+  for (const c of reachableReplies(rows, stickyId)) {
     const link = { author: c.author, when: c.created.slice(0, 10), url: c.url };
     // One link per (comment, token): a reply quoting the same id twice must not crowd the cap.
     const pushed = new Set<string>();
-    for (const m of c.body.matchAll(idShape)) {
+    for (const m of c.body.matchAll(ID_TOKEN_RE)) {
       const token = m[1];
       if (token === undefined || pushed.has(token)) continue;
       pushed.add(token);
@@ -550,8 +576,15 @@ export const buildStickyDiscussion = (
       }
     }
   }
-  for (const links of Object.values(byFinding)) links.reverse().splice(6);
-  for (const links of orphaned.values()) links.reverse().splice(6);
+  const truncated: Record<string, number> = {};
+  for (const [id, links] of Object.entries(byFinding)) {
+    links.reverse();
+    if (links.length > PER_FINDING_LINKS) {
+      truncated[id] = links.length;
+      links.splice(PER_FINDING_LINKS);
+    }
+  }
+  for (const links of orphaned.values()) links.reverse().splice(PER_FINDING_LINKS);
   // Bound the orphan bucket at the 8 NEWEST departed ids (by their latest reply), matching the
   // newest-first discipline the per-finding lists keep.
   const orphanedTotal = orphaned.size;
@@ -560,9 +593,26 @@ export const buildStickyDiscussion = (
   );
   return {
     byFinding,
-    orphaned: Object.fromEntries(byLatestReply.slice(0, 8)),
+    orphaned: Object.fromEntries(byLatestReply.slice(0, ORPHAN_TOKEN_CAP)),
     orphanedTotal,
+    truncated,
   };
+};
+
+// The prior findings document's finding + systemic ids — the full departed set the orphan bucket may
+// hold (a departed systemic id orphans exactly like a departed finding id). Tolerant over the
+// resolved shape: a non-document yields no ids, so the bucket fails open to empty.
+export const priorIdsFrom = (doc: unknown): readonly string[] => {
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return [];
+  const rec = doc as Record<string, unknown>;
+  const idsOf = (field: string): readonly string[] =>
+    (Array.isArray(rec[field]) ? rec[field] : []).flatMap((raw) => {
+      const item = typeof raw === "object" && raw !== null ? asRecord(raw) : null;
+      return item !== null && typeof item["id"] === "string" && item["id"] !== ""
+        ? [item["id"]]
+        : [];
+    });
+  return [...idsOf("findings"), ...idsOf("systemic_problems")];
 };
 
 // The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
@@ -1096,14 +1146,28 @@ export const post = async (
   // yields no keys, so stickiness fails open to visible.
   // Resolved rather than decoded: the prior sticky's marker names the findings artifact (issue #217),
   // so this fetches it — and still reads an embedded blob on a sticky written before that change.
-  // Gated on this round HAVING a nit: the keys only ever match a nit, and the resolve is a download
-  // plus an unzip subprocess on the critical path before the sticky write. A round with no nits paid
-  // that for a set it could not use.
+  // One resolve serves BOTH consumers — the nit stickiness keys and the discussion orphan gate —
+  // and the resolve is a download plus an unzip subprocess on the critical path before the sticky
+  // write, so it is paid only when one of them can use it. The nit keys only ever match a nit; the
+  // orphan bucket is non-empty only when a reply names an id-shaped token this round does not
+  // report (with no prior ids the bucket is empty either way, so that gate skips a fetch it could
+  // not use, never an output it could change).
+  const currentIds = [
+    ...findings.findings.map((f) => f.id).filter((id) => id !== ""),
+    ...(findings.systemic_problems ?? [])
+      .map((s) => s.id)
+      .filter((id): id is string => id !== undefined && id !== ""),
+  ];
   const roundHasNit = findings.findings.some((f) => f.severity === "nit");
-  const priorDocForNits =
-    roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body)
+  const nitWantsPrior =
+    roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body);
+  const discussionWantsPrior =
+    existingSticky !== null && mentionsOutsideKnown(commentRows, existingSticky.id, currentIds);
+  const resolvedPrior =
+    existingSticky !== null && (nitWantsPrior || discussionWantsPrior)
       ? await resolvePriorFindings(existingSticky.body, readArtifact)
       : null;
+  const priorDocForNits = nitWantsPrior ? resolvedPrior : null;
   const priorSuppressedKeys = new Set(
     priorBelowFloorNits(priorDocForNits, input.nitVisibilityFloor).map((n) =>
       answeredNoteKey({ id: n.id ?? "", title: n.title }),
@@ -1129,6 +1193,25 @@ export const post = async (
     (verbatimReRaised.length > 0 && findings.findings.length === 0
       ? "\n> _The stop signal reflects the kept findings — this round carries none._"
       : "");
+
+  // The discussion aside's reply chain (issue #246): built from the rows ALREADY fetched for the
+  // sticky lookup — pure, so a round pays one history fetch total. Built whenever a sticky exists,
+  // including zero-stray rounds: the orphaned bucket is exactly the case where the last stray left
+  // the report, and the overwrite (issue #205) would otherwise drop the pointer trail. Hoisted above
+  // the lost-envelope branch so that surface carries the same trail as the main path.
+  const stickyDiscussion =
+    existingSticky !== null
+      ? buildStickyDiscussion(
+          commentRows,
+          existingSticky.id,
+          currentIds,
+          priorIdsFrom(resolvedPrior),
+        )
+      : { byFinding: {}, orphaned: {}, orphanedTotal: 0, truncated: {} };
+  const discussionByFinding = stickyDiscussion.byFinding;
+  const orphanedDiscussion = stickyDiscussion.orphaned;
+  const orphanedTotal = stickyDiscussion.orphanedTotal;
+  const discussionTruncated = stickyDiscussion.truncated;
 
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
   const clocDiff = input.clocDiffPath ? loadClocDiff(input.clocDiffPath) : undefined;
@@ -1201,6 +1284,10 @@ export const post = async (
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(stampedFindings),
         postedAt: input.postedAt,
+        discussionByFinding,
+        orphanedDiscussion,
+        orphanedTotal,
+        discussionTruncated,
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
@@ -1315,43 +1402,6 @@ export const post = async (
   const stampedFindings = stampConvergence(findings, convergence);
   const currentRoundCount = isRound ? roundNumber : priorRoundCount;
 
-  // The discussion aside's reply chain (issue #246): replies to the sticky, grouped by the finding
-  // ids they mention — best-effort, shared with findBotComment's paginated fetch, pointers only.
-  // Gated on strays: only a sticky-stray renders the aside (an inline-on round with every finding
-  // in-diff, or a mechanic pass, pays no fetch), and only the ids the template can actually render
-  // are grouped.
-  // The discussion aside's reply chain (issue #246): built from the rows ALREADY fetched for the
-  // sticky lookup — pure, so a round pays one history fetch total. Built whenever a sticky exists,
-  // including zero-stray rounds: the orphaned bucket is exactly the case where the last stray left
-  // the report, and the overwrite (issue #205) would otherwise drop the pointer trail.
-  const currentIds = [
-    ...findings.findings.map((f) => f.id).filter((id) => id !== ""),
-    ...(findings.systemic_problems ?? [])
-      .map((s) => s.id)
-      .filter((id): id is string => id !== undefined && id !== ""),
-  ];
-  // The prior sticky's own findings name the ids the orphaned bucket may hold: only a token that WAS
-  // a finding id last round can be published as a departed finding — never shape-guessed prose.
-  const priorStickyDoc = existingSticky !== null ? parseFindingsMarker(existingSticky.body) : null;
-  const priorFindings =
-    priorStickyDoc !== null && typeof priorStickyDoc === "object"
-      ? (priorStickyDoc as Record<string, unknown>)["findings"]
-      : undefined;
-  const priorIds = (Array.isArray(priorFindings) ? priorFindings : []).flatMap((raw) => {
-    const f = typeof raw === "object" && raw !== null ? asRecord(raw) : null;
-    return f !== null && typeof f["id"] === "string" && f["id"] !== "" ? [f["id"]] : [];
-  });
-  const stickyDiscussion =
-    existingSticky !== null
-      ? buildStickyDiscussion(commentRows, existingSticky.id, currentIds, priorIds)
-      : { byFinding: {}, orphaned: {}, orphanedTotal: 0 };
-  const discussionByFinding = stickyDiscussion.byFinding;
-  const orphanedDiscussion = stickyDiscussion.orphaned;
-  const orphanedTotal = stickyDiscussion.orphanedTotal;
-
-  // Encode the whole-document marker once — the agent's COMPLETE document with the pipeline-stamped
-  // convergence inside it (issues #156 + #174), reused across the sticky + review body; each inline
-  // comment embeds only its own finding instead.
   const findingsMarker = findingsBlob(stampedFindings);
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
@@ -1374,6 +1424,7 @@ export const post = async (
     discussionByFinding,
     orphanedDiscussion,
     orphanedTotal,
+    discussionTruncated,
     roundCount: currentRoundCount,
     convergenceThreshold: input.convergenceThreshold,
     nitVisibilityFloor: input.nitVisibilityFloor,

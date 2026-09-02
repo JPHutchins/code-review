@@ -148,6 +148,10 @@ export interface RenderInput {
   // (render-side; the cut is named, never silent). Omitted/0 ⇒ no marker line.
   readonly discussionDropped?: number;
   readonly discussionDroppedIds?: readonly string[];
+  // Finding id → the pre-cap reply count for asides the 6-newest cap trimmed: the aside names its
+  // cut ("showing the 6 newest of N") instead of rendering indistinguishably from a short thread.
+  // Omitted/empty ⇒ every shown list is complete.
+  readonly discussionTruncated?: Readonly<Record<string, number>>;
   // How many distinct departed ids the orphaned section holds in total — the section renders
   // "(showing N of M)" when the 8-token cap trimmed some, so the cut is named, never silent.
   readonly orphanedTotal?: number;

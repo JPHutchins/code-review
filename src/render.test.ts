@@ -2506,4 +2506,73 @@ describe("discussion aside — the per-finding linked list (issue #246)", () => 
     expect(out).not.toContain("<details><summary>💬 Discussion</summary>");
     expect(out).toContain("discussion thread not listed");
   });
+
+  it("renders the discussion aside under a systemic problem whose id has replies", () => {
+    const out = renderWith({
+      findings: mkFindings([], {
+        systemic_problems: [
+          {
+            title: "Retry plumbing is inconsistent",
+            description: "Three spots, three retry policies.",
+            severity: "major",
+            reasoning: "Each file implements its own policy.",
+            confidence: 0.8,
+            likelihood: 1,
+            id: "sys-id",
+          },
+        ],
+      }),
+      discussionByFinding: {
+        "sys-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-2"),
+        ],
+      },
+    });
+    expect(out).toContain("### 🟠 (major) Retry plumbing is inconsistent");
+    expect(out).toContain(
+      "- [alice · 2026-09-01](https://github.com/owner/repo/pull/1#issuecomment-2)",
+    );
+  });
+
+  it("names the 6-newest cap cut when a finding's reply list was trimmed", () => {
+    const out = renderWith({
+      discussionByFinding: {
+        "test-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-1"),
+        ],
+      },
+      discussionTruncated: { "test-id": 9 },
+    });
+    expect(out).toContain("showing the 6 newest of 9 replies");
+  });
+
+  it("draws the orphaned section from the SAME budget as the asides — orphans keep their share", () => {
+    // One orphan entry sized to leave under an aside's worth of budget: the orphaned section
+    // renders, the per-finding aside is dropped and named.
+    const url = `https://github.com/owner/repo/pull/1#issuecomment-${"x".repeat(7_856)}`;
+    const out = renderWith({
+      discussionByFinding: {
+        "test-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-1"),
+        ],
+      },
+      orphanedDiscussion: { "old-id": [link("bob", "2026-08-30", url)] },
+    });
+    expect(out).toContain("**`old-id`**");
+    expect(out).not.toContain("- [alice");
+    expect(out).toContain("discussion thread not listed");
+  });
+
+  it("never counts a finding with no replies as a dropped thread", () => {
+    const huge = Array.from({ length: 200 }, (_, i) =>
+      link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),
+    );
+    const out = renderWith({
+      strays: [mkFinding({}), mkFinding({ id: "second-id" })],
+      discussionByFinding: { "test-id": huge },
+    });
+    expect(out).toContain("1 discussion thread not listed");
+    expect(out).toContain("finding `test-id`");
+    expect(out).not.toContain("2 discussion threads");
+  });
 });

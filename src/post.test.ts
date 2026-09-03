@@ -4991,6 +4991,74 @@ describe("post — notice overwrites carry the discussion trail", () => {
   });
 });
 
+describe("post — a GitHub-rejected inline anchor renders its discussion aside", () => {
+  it("the final sticky patch lists the rejected finding with its reply trail", async () => {
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    const reply = JSON.stringify({
+      id: 1000,
+      in_reply_to_id: 999,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "still seeing `b-id`",
+    });
+    const findings = mkFindings([
+      mkFinding({
+        path: "src/foo.ts",
+        start_line: 11,
+        end_line: 11,
+        title: "Finding B",
+        id: "b-id",
+      }),
+    ]);
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(findings));
+    const calls: RecordedCall[] = [];
+    const api: GhApi = (args, stdin) => {
+      calls.push({ args: [...args], stdin });
+      const a = args;
+      if (a[0]?.startsWith("repos/owner/repo/commits/"))
+        return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
+      if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
+        return Promise.resolve(inlineDiff);
+      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))
+        return Promise.resolve(`${commentRow(999, priorSticky)}${reply}\n`);
+      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
+      if (a[0] === "repos/owner/repo/issues/comments/999")
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
+      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"))
+        return Promise.resolve("");
+      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"))
+        return Promise.resolve("[]");
+      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--input")) {
+        const body = JSON.parse(stdin ?? "{}") as ReviewBody;
+        return body.comments.length > 0
+          ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
+          : Promise.resolve('{"html_url": "https://gh/review"}\n');
+      }
+      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input")) {
+        const c = JSON.parse(stdin ?? "{}") as { line: number };
+        return c.line === 11
+          ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
+          : Promise.resolve('{"id": 1, "html_url": "https://gh/comment"}\n');
+      }
+      if (a[0] === "graphql") return Promise.resolve("");
+      return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
+    };
+    await expect(post(mkInlineInput({}), api)).resolves.toBeUndefined();
+    const stickyPatches = calls.filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const finalBody = (JSON.parse(stickyPatches[stickyPatches.length - 1]!.stdin!) as CommentBody)
+      .body;
+    expect(finalBody).toContain("couldn't be posted as inline");
+    expect(finalBody).toContain("Finding B");
+    // The rejected finding joined the known set on the final patch: its discussion aside renders
+    // the reply that names its id.
+    expect(finalBody).toContain(
+      "- [alice · 2026-09-01](https://github.com/owner/repo/pull/42#issuecomment-1000)",
+    );
+  });
+});
+
 describe("post — the orphan gate resolves the prior findings through the ARTIFACT LINK", () => {
   const patchedBody = (calls: readonly RecordedCall[]): string =>
     (

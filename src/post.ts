@@ -523,7 +523,9 @@ const escapedIdIndex = (ids: readonly string[]): ReadonlyMap<string, string> => 
     if (escaped === id) continue;
     const list = owners.get(escaped);
     if (list === undefined) owners.set(escaped, [id]);
-    else list.push(id);
+    // Deduped: ONE distinct raw id owns its spelling regardless of how many times it appears in
+    // the input (a current id also carried by the prior doc); only DISTINCT escape-twins drop it.
+    else if (!list.includes(id)) list.push(id);
   }
   return new Map(
     [...owners.entries()].flatMap(([escaped, raws]) =>
@@ -1074,6 +1076,12 @@ export const post = async (
   const envelope = loadEnvelope(input.envelopePath);
 
   const reachable = existingSticky !== null ? reachableReplies(commentRows, existingSticky.id) : [];
+  // The discussion orphan gate excludes ONLY a mechanic prior: its own findings are not this
+  // review's departed findings. Every other prior feeds the bucket — a full review, a pre-rounds
+  // sticky (no route marker, but its embedded blob still resolves), and a placeholder (whose
+  // carried link resolves the last full review's document).
+  const priorIsMechanic =
+    existingSticky !== null && parseReviewedRoute(existingSticky.body) === "mechanic";
 
   // The notice overwrites the sticky with no findings of its own — the pointer trail a replied-to
   // prior sticky carries must survive the overwrite. Resolved and grouped ONLY when a notice
@@ -1094,8 +1102,7 @@ export const post = async (
         orphanedUnresolvable: false,
       };
     }
-    const wantsPrior =
-      isFullReviewSticky(existingSticky.body) && mentionsOutsideKnown(reachable, []);
+    const wantsPrior = !priorIsMechanic && mentionsOutsideKnown(reachable, []);
     const resolved = wantsPrior
       ? await resolvePriorFindings(existingSticky.body, readArtifact)
       : null;
@@ -1125,6 +1132,12 @@ export const post = async (
           )
         : priorConv;
     const findings = stampConvergence(incompleteFindings(`### ⚠️ ${message}`), noticeConvergence);
+    // The notice's own blob holds no findings — stamping its link would point the NEXT round's
+    // resolve at an empty document and sever the departed set the trail needs. The prior sticky's
+    // findings link is carried instead (the same convention noticeBody keeps for the other notice
+    // paths).
+    const priorFindingsLink =
+      existingSticky !== null ? findingsArtifactUrl(existingSticky.body) : null;
     return formatMarkdown(
       render({
         findings,
@@ -1141,7 +1154,10 @@ export const post = async (
         convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
-        findingsPointer: findingsBlob(findings),
+        findingsPointer:
+          priorFindingsLink !== null
+            ? findingsMarkerPair(priorFindingsLink, findings.convergence)
+            : findingsBlob(findings),
         postedAt: input.postedAt,
         orphanedDiscussion: discussion.orphanedDiscussion,
         orphanedTotal: discussion.orphanedTotal,
@@ -1268,9 +1284,7 @@ export const post = async (
   const nitWantsPrior =
     roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body);
   const broadWantsPrior =
-    existingSticky !== null &&
-    isFullReviewSticky(existingSticky.body) &&
-    mentionsOutsideKnown(reachable, broadCurrentIds);
+    existingSticky !== null && !priorIsMechanic && mentionsOutsideKnown(reachable, broadCurrentIds);
   // Whether the resolve was already attempted above — a failed attempt is not retried below (a
   // second download of an unresolvable artifact buys no new information, and each attempt can take
   // the full timeout on the critical path).
@@ -1328,7 +1342,7 @@ export const post = async (
     !priorResolveAttempted &&
     exactSetDiffers &&
     existingSticky !== null &&
-    isFullReviewSticky(existingSticky.body) &&
+    !priorIsMechanic &&
     mentionsOutsideKnown(reachable, currentIds);
   const resolvedPriorFinal = discussionWantsPrior
     ? await resolvePriorFindings(existingSticky.body, readArtifact)

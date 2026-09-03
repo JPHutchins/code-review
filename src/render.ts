@@ -4,7 +4,7 @@ import { Eta } from "eta";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings, resolveFindingId } from "./schema.js";
-import type { RenderInput, SeverityCounts } from "./types.js";
+import type { DiscussionLink, RenderInput, SeverityCounts } from "./types.js";
 import { computeCost, parseInstant } from "./cost.js";
 import {
   severityEmoji,
@@ -82,6 +82,80 @@ const permalinkFor = (base: string, f: Finding, anchor: boolean): string | undef
 const CARRIED_TOTAL_CHARS = 40_000;
 const SUPPRESSED_NIT_BLOCK_OVERHEAD = 280;
 
+// The discussion surface's budget: the per-finding asides AND the orphaned "earlier rounds"
+// section are additive to the one body post never sheds, so a discussion-heavy round drops whole
+// asides past this total — the cut is named in the template, never silent (the same discipline
+// the suppressed-nit budget applies). The orphaned section draws FIRST: its cut is permanent (a
+// departed id never re-enters a prior round's findings, so a dropped orphan is never re-listed),
+// while an aside cut recovers next round when the finding is still current.
+const DISCUSSION_TOTAL_CHARS = 8_000;
+const DISCUSSION_BLOCK_OVERHEAD = 120;
+// The orphaned entry's fixed wrapper (bullet, `**` bold + backtick span, colon, newline) — the
+// links themselves are budgeted at their true rendered size like every other link list.
+const ORPHANED_ENTRY_OVERHEAD = 14;
+// The newest-first cap every discussion list keeps (per-finding, per-orphan-token, and the
+// suppressed aside's slots). LIVES HERE so the template's "showing the N newest of M" notes
+// interpolate it — a cap change cannot leave a rendered note lying.
+export const PER_FINDING_LINKS = 6;
+
+// The shared "budget by rendered size" walk both collateral asides use: items are added in order
+// while the ACCUMULATED size fits the cap; past it, onDrop decides each dropped item's fate
+// (null drops it entirely, a transformed item stays rendered emptied). The two budgets were
+// near-twins that drifted into a dead-budget bug — one walk, one cap comparison.
+const budgetBySize = <T>(
+  items: readonly T[],
+  cap: number,
+  sizeOf: (item: T) => number,
+  onDrop: (item: T) => T | null,
+): { readonly kept: readonly T[]; readonly droppedItems: readonly T[]; readonly used: number } => {
+  const kept: T[] = [];
+  const droppedItems: T[] = [];
+  let used = 0;
+  for (const item of items) {
+    const size = sizeOf(item);
+    if (used + size > cap) {
+      droppedItems.push(item);
+      const replaced = onDrop(item);
+      if (replaced !== null) kept.push(replaced);
+      continue;
+    }
+    kept.push(item);
+    used += size;
+  }
+  return { kept, droppedItems, used };
+};
+
+// A discussion link list's rendered size: author + date + url plus each link's `- [ · ]()` wrapper.
+const discussionLinksCost = (links: readonly DiscussionLink[]): number =>
+  links.reduce((sum, d) => sum + d.author.length + d.when.length + d.url.length, 0) +
+  links.length * 12;
+
+const escapeHtml = (text: string): string =>
+  text.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
+  );
+
+// The aside's list + truncation note, composed ONCE here — the stray, systemic, and suppressed
+// surfaces all render this exact snippet (with the suppressed variant's blockquote prefix), so the
+// list markup and the "showing the N newest of M" wording have one owner. The template wraps it in
+// the <details> shell.
+const discussionAsideHtml = (
+  links: readonly DiscussionLink[],
+  truncated: number | undefined,
+  prefix: string,
+): string =>
+  [
+    ...links.map((d) => `${prefix}- [${escapeHtml(d.author)} · ${d.when}](${d.url})`),
+    ...(truncated !== undefined
+      ? [
+          `${prefix}_(showing the ${String(PER_FINDING_LINKS)} newest of ${String(
+            truncated,
+          )} replies — the rest live on the comment thread.)_`,
+        ]
+      : []),
+  ].join("\n") + "\n";
+
 type StrayView = Finding & {
   readonly patchProjection: PatchProjection;
   readonly answeredNote: string;
@@ -99,6 +173,15 @@ type StrayView = Finding & {
   // False for a stray GitHub rejected inline: its permalink links the path only, so the template
   // can tell an anchored link (which carries the agent-reported qualifier) from a bare one.
   readonly permalinkAnchored?: boolean;
+  // Replies to the sticky comment that mention this finding's id (issue #246): the discussion
+  // aside's linked list — pointers only, never reply prose.
+  readonly discussion: readonly DiscussionLink[];
+  // The pre-cap reply count when the 6-newest cap trimmed this finding's list — the aside names
+  // its cut instead of rendering indistinguishably from a short thread.
+  readonly discussionTruncated?: number;
+  // The aside's composed list + truncation note (discussionAsideHtml) — empty when there is no
+  // aside to render.
+  readonly discussionHtml?: string;
 };
 
 // The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
@@ -108,8 +191,10 @@ type StrayView = Finding & {
 const sanitizeFinding = (
   f: Finding,
   answeredNotes: Readonly<Record<string, string>> | undefined,
+  discussionByFinding: Readonly<Record<string, readonly DiscussionLink[]>> | undefined,
   permalinkBase?: string,
   unanchored?: ReadonlySet<Finding>,
+  discussionTruncated?: Readonly<Record<string, number>>,
 ): StrayView => {
   const key = answeredNoteKey(f);
   // Reference identity, not a location key: post spreads the SAME finding objects into both
@@ -136,6 +221,15 @@ const sanitizeFinding = (
       answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
         ? (answeredNotes[key] ?? "")
         : "",
+    discussion:
+      discussionByFinding !== undefined &&
+      Object.prototype.hasOwnProperty.call(discussionByFinding, f.id)
+        ? (discussionByFinding[f.id] ?? [])
+        : [],
+    ...(discussionTruncated !== undefined &&
+    Object.prototype.hasOwnProperty.call(discussionTruncated, f.id)
+      ? { discussionTruncated: discussionTruncated[f.id] }
+      : {}),
   };
 };
 
@@ -167,6 +261,12 @@ type SuppressedNitView = {
   // Pre-split into blockquote-safe lines: the aside is a `>` blockquote, so an unprefixed line would
   // break out of it and spill a hidden nit's detail into the visible prose.
   readonly carried: readonly string[];
+  // Replies naming this hidden nit's id (the aside's discussion slot — the suppressed aside is a
+  // discussion surface like the strays').
+  readonly discussion: readonly DiscussionLink[];
+  readonly discussionTruncated?: number;
+  // The aside's composed list + truncation note, blockquote-prefixed (discussionAsideHtml).
+  readonly discussionHtml: string;
 };
 
 // HTML comments cannot nest, so a `-->` inside a carried field would close the block early and spill
@@ -176,7 +276,11 @@ type SuppressedNitView = {
 const commentSafe = (text: string): string =>
   text.replace(/--+(?=>)/g, (dashes) => `${dashes}\u200b`);
 
-const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
+const sanitizeSuppressedNit = (
+  f: Finding,
+  discussion: readonly DiscussionLink[],
+  discussionTruncated?: number,
+): SuppressedNitView => ({
   title: escapeCodeBackticks(f.title),
   id: escapeCodeBackticks(f.id),
   ...(f.code_url !== undefined ? { codeUrl: linkSafeUrl(f.code_url) } : {}),
@@ -189,6 +293,10 @@ const sanitizeSuppressedNit = (f: Finding): SuppressedNitView => ({
   likelihood: formatConfidence(f.likelihood),
   m: formatConfidence(f.confidence * f.likelihood),
   carried: carriedLines(f),
+  discussion,
+  ...(discussionTruncated !== undefined ? { discussionTruncated } : {}),
+  discussionHtml:
+    discussion.length > 0 ? discussionAsideHtml(discussion, discussionTruncated, ">   ") : "",
 });
 
 // Each carried field is clipped. Every below-floor nit's full finding rides in the sticky body, and
@@ -212,9 +320,21 @@ const carriedLines = (f: Finding): readonly string[] =>
 
 // The same render-safety escaping as strays: pipes break tables, backticks break inline code spans.
 // finding_ids render inside backticks too, so they get the same backtick escaping as paths.
-const sanitizeSystemic = (s: SystemicProblem): SystemicProblem => ({
+const sanitizeSystemic = (
+  s: SystemicProblem,
+  discussion: readonly DiscussionLink[],
+  discussionTruncated?: number,
+): SystemicProblem & {
+  readonly discussion: readonly DiscussionLink[];
+  readonly discussionTruncated?: number;
+  readonly discussionHtml: string;
+} => ({
   ...s,
   title: escapePipes(s.title),
+  discussion,
+  ...(discussionTruncated !== undefined ? { discussionTruncated } : {}),
+  discussionHtml:
+    discussion.length > 0 ? discussionAsideHtml(discussion, discussionTruncated, "") : "",
   ...(s.id !== undefined ? { id: escapeCodeBackticks(s.id) } : {}),
   ...(s.code_url !== undefined ? { code_url: linkSafeUrl(s.code_url) } : {}),
   ...(s.paths !== undefined ? { paths: s.paths.map(escapeCodeBackticks) } : {}),
@@ -313,34 +433,43 @@ export const render = (input: RenderInput): string => {
   // suppressed convergence badge.
   const advisoryAllowed = isFullReviewRound;
 
-  const suppressedBudget = (input.suppressedNits ?? []).map(sanitizeSuppressedNit).reduce<{
-    readonly list: SuppressedNitView[];
-    readonly used: number;
-    readonly dropped: number;
-  }>(
-    (acc, n) => {
+  // The discussion links a below-floor nit's aside slot renders — keyed by the RAW id like every
+  // other discussion lookup.
+  const discussionLinksFor = (id: string): readonly DiscussionLink[] =>
+    input.discussionByFinding !== undefined &&
+    Object.prototype.hasOwnProperty.call(input.discussionByFinding, id)
+      ? (input.discussionByFinding[id] ?? [])
+      : [];
+  const discussionTruncatedFor = (id: string): number | undefined =>
+    input.discussionTruncated !== undefined &&
+    Object.prototype.hasOwnProperty.call(input.discussionTruncated, id)
+      ? input.discussionTruncated[id]
+      : undefined;
+
+  const suppressedBudget = budgetBySize(
+    (input.suppressedNits ?? []).map((f) =>
+      sanitizeSuppressedNit(f, discussionLinksFor(f.id), discussionTruncatedFor(f.id)),
+    ),
+    CARRIED_TOTAL_CHARS,
+    (n) =>
       // The fixed overhead covers the summary line's structure; the reviewer-controlled variable
       // parts are budgeted at their true RENDERED size — the title, the path TWICE (summary +
       // location line), the code/code_url the summary line renders, each carried line's `> `
-      // blockquote prefix (length + 3: prefix + newline), and the location line's line numbers
-      // and side label (issue #233 r6 + #235 + #236 r1).
-      const size =
-        n.carried.reduce((sum, line) => sum + line.length + 3, 0) +
-        SUPPRESSED_NIT_BLOCK_OVERHEAD +
-        n.title.length +
-        n.path.length * 2 +
-        // The id renders with its two wrapper backticks; the code_url adds the [](...) link form.
-        n.id.length * 2 +
-        2 +
-        (n.codeUrl !== undefined ? n.codeUrl.length + 4 : 0) +
-        String(n.startLine).length * 2 +
-        String(n.endLine).length +
-        (n.side !== undefined ? n.side.length + 2 : 0);
-      return acc.used + size > CARRIED_TOTAL_CHARS
-        ? { list: acc.list, used: acc.used, dropped: acc.dropped + 1 }
-        : { list: [...acc.list, n], used: acc.used + size, dropped: acc.dropped };
-    },
-    { list: [], used: 0, dropped: 0 },
+      // blockquote prefix (length + 3: prefix + newline), the location line's line numbers and
+      // side label, and the discussion slot's link list.
+      n.carried.reduce((sum, line) => sum + line.length + 3, 0) +
+      SUPPRESSED_NIT_BLOCK_OVERHEAD +
+      n.title.length +
+      n.path.length * 2 +
+      // The id renders with its two wrapper backticks; the code_url adds the [](...) link form.
+      n.id.length * 2 +
+      2 +
+      (n.codeUrl !== undefined ? n.codeUrl.length + 4 : 0) +
+      String(n.startLine).length * 2 +
+      String(n.endLine).length +
+      (n.side !== undefined ? n.side.length + 2 : 0) +
+      discussionLinksCost(n.discussion),
+    () => null,
   );
 
   // The permalink identity is ONE optional: repo + reviewedSha only mean something together, and a
@@ -354,6 +483,60 @@ export const render = (input: RenderInput): string => {
       ? `https://github.com/${input.repo}/blob/${input.reviewedSha}/`
       : undefined;
   const unanchored = new Set(input.unanchoredStrays ?? []);
+
+  const strayViews = (input.strays ?? []).map((f) => {
+    const view = sanitizeFinding(
+      f,
+      input.answeredNotes,
+      input.discussionByFinding,
+      permalinkBase,
+      unanchored,
+      input.discussionTruncated,
+    );
+    return {
+      ...view,
+      discussionHtml:
+        view.discussion.length > 0
+          ? discussionAsideHtml(view.discussion, view.discussionTruncated, "")
+          : "",
+    };
+  });
+  // The discussion aside is additive to the one body post deliberately never sheds: the orphaned
+  // section and the per-finding asides draw from ONE budget, whole asides dropped past it, the cut
+  // named in the template, never silent. An aside whose finding has no replies costs nothing and
+  // is never counted as dropped — only a thread that existed can be "not listed".
+  const orphanedBudget = budgetBySize(
+    Object.entries(input.orphanedDiscussion ?? {}),
+    DISCUSSION_TOTAL_CHARS,
+    ([token, links]) => token.length + ORPHANED_ENTRY_OVERHEAD + discussionLinksCost(links),
+    () => null,
+  );
+  const discussionBudget = budgetBySize(
+    strayViews,
+    DISCUSSION_TOTAL_CHARS - orphanedBudget.used,
+    (view) =>
+      view.discussion.length > 0
+        ? DISCUSSION_BLOCK_OVERHEAD + discussionLinksCost(view.discussion)
+        : 0,
+    (view) => ({ ...view, discussion: [], discussionHtml: "" }),
+  );
+  // The systemic asides draw from the SAME pool, third in line: orphaned (permanent cut) first,
+  // then the strays' asides, then the systemics'.
+  const systemicBudget = budgetBySize(
+    (input.findings.systemic_problems ?? []).map((s) => {
+      const links = s.id !== undefined ? discussionLinksFor(s.id) : [];
+      const cap = s.id !== undefined ? discussionTruncatedFor(s.id) : undefined;
+      const view = sanitizeSystemic(s, links, cap);
+      return {
+        ...view,
+        discussionHtml: links.length > 0 ? discussionAsideHtml(links, cap, "") : "",
+      };
+    }),
+    DISCUSSION_TOTAL_CHARS - orphanedBudget.used - discussionBudget.used,
+    (s) =>
+      s.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + discussionLinksCost(s.discussion) : 0,
+    (s) => ({ ...s, discussion: [], discussionHtml: "" }),
+  );
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -379,13 +562,31 @@ export const render = (input: RenderInput): string => {
       : convergence
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
-    strays: (input.strays ?? []).map((f) =>
-      sanitizeFinding(f, input.answeredNotes, permalinkBase, unanchored),
+    strays: discussionBudget.kept,
+    orphanedDiscussion: Object.fromEntries(
+      orphanedBudget.kept.map(([token, links]) => [escapeCodeBackticks(token), links]),
     ),
-    suppressedNits: suppressedBudget.list,
-    carriedDroppedNits: suppressedBudget.dropped,
+    orphanedTruncated:
+      input.orphanedTruncated !== undefined
+        ? Object.fromEntries(
+            Object.entries(input.orphanedTruncated).map(([token, n]) => [
+              escapeCodeBackticks(token),
+              n,
+            ]),
+          )
+        : undefined,
+    orphanedUnresolvable: input.orphanedUnresolvable === true,
+    discussionDropped: discussionBudget.droppedItems.length + systemicBudget.droppedItems.length,
+    discussionDroppedIds: discussionBudget.droppedItems.map((v) => escapeCodeBackticks(v.idKey)),
+    discussionDroppedSystemicIds: systemicBudget.droppedItems.flatMap((s) =>
+      s.id !== undefined ? [s.id] : [],
+    ),
+    discussionCap: PER_FINDING_LINKS,
+    orphanedTotal: input.orphanedTotal ?? 0,
+    suppressedNits: suppressedBudget.kept,
+    carriedDroppedNits: suppressedBudget.droppedItems.length,
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,
-    systemic: (input.findings.systemic_problems ?? []).map(sanitizeSystemic),
+    systemic: systemicBudget.kept,
     unanchoredCount: input.unanchoredCount ?? 0,
     inlineDisposition: input.inlineDisposition ?? null,
     unverifiedNoLogs: input.unverifiedNoLogs === true,

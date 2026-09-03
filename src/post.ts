@@ -2,10 +2,17 @@
 // the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
 import { readFileSync, appendFileSync } from "node:fs";
-import type { InlineComment, InlineDisposition, RenderInput } from "./types.js";
+import { ancestors } from "./comment-chain.js";
+import type { DiscussionLink, InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
-import { isEmptyDiff } from "./diff.js";
-import { render, computeSeverityCounts, isConvergenceRound, isReviewVerdict } from "./render.js";
+import { isEmptyDiff, indexDiff, partitionFindings } from "./diff.js";
+import {
+  render,
+  computeSeverityCounts,
+  isConvergenceRound,
+  isReviewVerdict,
+  PER_FINDING_LINKS,
+} from "./render.js";
 import { formatMarkdown } from "./format.js";
 import {
   buildConvergence,
@@ -27,6 +34,7 @@ import {
   priorTrajectory,
   reviewBodyPointer,
   mechanicConvergence,
+  escapeCodeBackticks,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
 import {
@@ -341,30 +349,106 @@ const postInlineReview = async (
   }
 };
 
-const findBotComment = async (
+// ONE projection + ONE fetch for every issue-comment consumer: the sticky lookup (findBotComment)
+// and the discussion aside read the same rows. post() fetches the history once per round and passes
+// the rows to both; announce routes through findBotComment, which fetches on its own. Transport
+// errors PROPAGATE — the callers that must not mistake a failed fetch for an absent sticky let the
+// rejection through.
+const ISSUE_COMMENTS_JQ =
+  '.[] | {id, in_reply_to_id, user: (.user.login // "(deleted)"), created_at, html_url, body}';
+
+interface IssueCommentRow {
+  readonly id: number;
+  readonly parent: number | null;
+  readonly author: string;
+  readonly created: string;
+  readonly url: string;
+  readonly body: string;
+}
+
+const parseIssueCommentRows = (
+  raw: string,
+): { readonly rows: readonly IssueCommentRow[]; readonly malformed: number } => {
+  let malformed = 0;
+  const rows: IssueCommentRow[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed) as unknown;
+    } catch {
+      malformed += 1;
+      continue;
+    }
+    const rec = asRecord(parsed);
+    const id = rec?.["id"];
+    const parent = rec?.["in_reply_to_id"];
+    const author = rec?.["user"];
+    const created = rec?.["created_at"];
+    const url = rec?.["html_url"];
+    const body = rec?.["body"];
+    if (
+      typeof id === "number" &&
+      (parent === null || typeof parent === "number") &&
+      typeof author === "string" &&
+      typeof created === "string" &&
+      typeof url === "string" &&
+      typeof body === "string"
+    ) {
+      rows.push({ id, parent, author, created, url, body });
+    }
+    // A well-formed row that fails the shape guard is dropped, not malformed: a deleted "ghost"
+    // account projects `user: null` (a legitimate GitHub state) and can never be the bot's sticky
+    // (its own comments always carry a login), so skipping it cannot mint a duplicate. Only a line
+    // that will not parse is corruption.
+  }
+  return { rows, malformed };
+};
+
+const fetchIssueCommentRows = async (
+  repo: string,
+  prNumber: number,
+  ghApi: GhApi,
+): Promise<readonly IssueCommentRow[]> => {
+  const raw = await ghApi([
+    `repos/${repo}/issues/${String(prNumber)}/comments`,
+    "-f",
+    "per_page=100",
+    "--paginate",
+    "--jq",
+    ISSUE_COMMENTS_JQ,
+  ]);
+  const { rows, malformed } = parseIssueCommentRows(raw);
+  // A sticky lookup is a WRITE-GATING decision: a corrupted fetch that silently read as "no sticky"
+  // would mint a duplicate sticky while the real one is still live. Fail loudly instead (the
+  // pre-parseJsonl code threw on garbage for exactly this reason).
+  if (malformed > 0) {
+    throw new Error(
+      `${String(malformed)} issue-comment row(s) failed to decode — refusing to treat a corrupted history as an absent sticky`,
+    );
+  }
+  return rows;
+};
+
+const selectBotComment = (
+  rows: readonly IssueCommentRow[],
+  botLogin: string,
+  marker: string,
+): { readonly id: number; readonly body: string } | null => {
+  const bot = rows.filter((r) => r.author === botLogin && r.body.startsWith(marker));
+  const last = bot[bot.length - 1];
+  return last === undefined ? null : { id: last.id, body: last.body };
+};
+
+export const findBotComment = async (
   repo: string,
   prNumber: number,
   botLogin: string,
   marker: string,
   ghApi: GhApi,
-): Promise<{ readonly id: number; readonly body: string } | null> => {
-  const stdout = await ghApi(
-    [
-      `repos/${repo}/issues/${String(prNumber)}/comments`,
-      "--paginate",
-      "--jq",
-      ".[] | select(.user.login == env.CODE_REVIEW_BOT_LOGIN and (.body | startswith(env.CODE_REVIEW_MARKER))) | {id: .id, body: .body}",
-    ],
-    undefined,
-    { CODE_REVIEW_BOT_LOGIN: botLogin, CODE_REVIEW_MARKER: marker },
-  );
-  const lines = stdout.trim().split("\n").filter(Boolean);
-  if (lines.length === 0) return null;
-  const last = lines[lines.length - 1] ?? null;
-  if (last === null) return null;
-  const parsed = JSON.parse(last) as { id: number; body: string };
-  return { id: parsed.id, body: parsed.body };
-};
+): Promise<{ readonly id: number; readonly body: string } | null> =>
+  selectBotComment(await fetchIssueCommentRows(repo, prNumber, ghApi), botLogin, marker);
 
 const parseCommentRef = (
   raw: string,
@@ -402,6 +486,192 @@ const postComment = async (
     JSON.stringify({ body }),
   );
   return parseCommentRef(stdout);
+};
+
+// The discussion aside's reply chain (issue #246): every issue comment whose reply chain reaches the
+// sticky comment, grouped by the backtick-quoted finding ids its body mentions (the same form the
+// sticky renders). Pointers only — the implementer reads the replies at the links.
+export interface StickyDiscussion {
+  readonly byFinding: Readonly<Record<string, readonly DiscussionLink[]>>;
+  // Replies naming an id THIS round's report no longer carries but the PRIOR sticky's findings did:
+  // a finding that was fixed or re-id'd between rounds. The sticky is overwritten every round
+  // (issue #205), so without this bucket the conversation's pointers vanish from the review surface
+  // exactly when the finding left the report.
+  readonly orphaned: Readonly<Record<string, readonly DiscussionLink[]>>;
+  // How many distinct departed ids were mentioned in total — the rendered section shows
+  // "(showing N of M)" when the cap trimmed some, so the cut is named, never silent.
+  readonly orphanedTotal: number;
+  // Finding id → the pre-cap link total, present only when the 6-newest cap trimmed that finding's
+  // list — the aside names its cut instead of rendering indistinguishably from a short thread.
+  readonly truncated: Readonly<Record<string, number>>;
+  // The same per-token pre-cap totals for the orphaned bucket's entries.
+  readonly orphanedTruncated: Readonly<Record<string, number>>;
+}
+
+const ID_TOKEN_RE = /`([^`\n]{1,64})`/g;
+const ORPHAN_TOKEN_CAP = 8;
+
+// The raw id → escaped DISPLAY spelling index: the sticky renders ids through escapeCodeBackticks
+// (backticks → '-', newlines → ' '), so a reply quoting the DISPLAYED spelling of an id must land
+// in the same bucket as a reply quoting the raw one. The escaping is not injective (escape-twin ids
+// display identically), and an ambiguous spelling must NOT be silently assigned a winner — the
+// token stays unmatched and the raw spellings remain the only keys.
+const escapedIdIndex = (ids: readonly string[]): ReadonlyMap<string, string> => {
+  const owners = new Map<string, string[]>();
+  for (const id of ids) {
+    const escaped = escapeCodeBackticks(id);
+    if (escaped === id) continue;
+    const list = owners.get(escaped);
+    if (list === undefined) owners.set(escaped, [id]);
+    // Deduped: ONE distinct raw id owns its spelling regardless of how many times it appears in
+    // the input (a current id also carried by the prior doc); only DISTINCT escape-twins drop it.
+    else if (!list.includes(id)) list.push(id);
+  }
+  return new Map(
+    [...owners.entries()].flatMap(([escaped, raws]) =>
+      raws.length === 1 && raws[0] !== undefined ? ([[escaped, raws[0]]] as const) : [],
+    ),
+  );
+};
+
+// The rows whose reply chain reaches the sticky (the walk memoized per row). The sticky's own row
+// may or may not be in the set: a reply's direct parent being the sticky counts either way.
+// Rows are deduped by id, first occurrence wins — gh --paginate fetches pages sequentially, and a
+// comment edited mid-pagination can legitimately appear on two pages; two rows for one comment
+// must not push two links into one aside. Computed ONCE per round and shared by the gate and the
+// grouping.
+export const reachableReplies = (
+  rows: readonly IssueCommentRow[],
+  stickyId: number,
+): readonly IssueCommentRow[] => {
+  const byId = new Map(rows.map((c) => [c.id, c]));
+  const reachMemo = new Map<number, boolean>();
+  const reachesSticky = (c: IssueCommentRow): boolean => {
+    const memoized = reachMemo.get(c.id);
+    if (memoized !== undefined) return memoized;
+    const reached = [
+      ...ancestors(c, (n) => (n.parent === null ? null : (byId.get(n.parent) ?? null))),
+    ].some((a) => a.id === stickyId || a.parent === stickyId);
+    reachMemo.set(c.id, reached);
+    return reached;
+  };
+  const seen = new Set<number>();
+  return rows.filter((c) => {
+    if (seen.has(c.id)) return false;
+    seen.add(c.id);
+    return c.id !== stickyId && reachesSticky(c);
+  });
+};
+
+// Whether any reply that reaches the sticky names a backtick token this round does NOT report —
+// the only case the orphan bucket can be non-empty, and therefore the only case the prior sticky's
+// findings document is worth resolving for it. A necessary-not-sufficient condition: a reply
+// quoting a code snippet or path in backticks fires it too, and the round pays the artifact
+// download for a token that was never a finding id — the local alternative (the sticky's carried
+// rounds marker) records ids top-N-capped, so pre-filtering on it would skip real departed ids.
+export const mentionsOutsideKnown = (
+  reachable: readonly IssueCommentRow[],
+  currentIds: readonly string[],
+): boolean => {
+  const known = new Set(currentIds);
+  const escapedToRaw = escapedIdIndex(currentIds);
+  for (const c of reachable) {
+    for (const m of c.body.matchAll(ID_TOKEN_RE)) {
+      const token = m[1];
+      if (token === undefined) continue;
+      const raw = known.has(token) ? token : escapedToRaw.get(token);
+      if (raw === undefined || !known.has(raw)) return true;
+    }
+  }
+  return false;
+};
+
+// The pure thread→discussion grouping: replies whose in_reply_to chain reaches the sticky, grouped
+// by the backtick-quoted ids they mention — capped 6 newest-first per id. The orphan bucket holds
+// ONLY tokens the PRIOR sticky's findings actually carried (priorIds), never shape-guessed prose:
+// a backtick token that was never a finding id is not published as one. Extracted pure so the
+// chain-walk, the cycle guard, and the caps are unit-testable without an API mock.
+export const buildStickyDiscussion = (
+  reachable: readonly IssueCommentRow[],
+  currentIds: readonly string[],
+  priorIds: readonly string[],
+): StickyDiscussion => {
+  const known = new Set(currentIds);
+  const departed = new Set(priorIds);
+  const escapedToRaw = escapedIdIndex([...currentIds, ...priorIds]);
+  const byFinding = Object.fromEntries(
+    currentIds.map((id): [string, DiscussionLink[]] => [id, []]),
+  );
+  const orphaned = new Map<string, DiscussionLink[]>();
+  const latestAt = new Map<string, string>();
+  for (const c of reachable) {
+    const link = { author: c.author, when: c.created.slice(0, 10), url: c.url };
+    // One link per (comment, token): a reply quoting the same id twice must not crowd the cap.
+    const pushed = new Set<string>();
+    for (const m of c.body.matchAll(ID_TOKEN_RE)) {
+      const token = m[1];
+      if (token === undefined || pushed.has(token)) continue;
+      pushed.add(token);
+      const raw = known.has(token) ? token : escapedToRaw.get(token);
+      if (raw !== undefined && known.has(raw)) {
+        byFinding[raw]?.push(link);
+      } else if (raw !== undefined ? departed.has(raw) : departed.has(token)) {
+        const key = raw ?? token;
+        const links = orphaned.get(key);
+        if (links === undefined) orphaned.set(key, [link]);
+        else links.push(link);
+        const latest = latestAt.get(key);
+        if (latest === undefined || c.created.localeCompare(latest) > 0)
+          latestAt.set(key, c.created);
+      }
+    }
+  }
+  const truncated: Record<string, number> = {};
+  for (const [id, links] of Object.entries(byFinding)) {
+    links.reverse();
+    if (links.length > PER_FINDING_LINKS) {
+      truncated[id] = links.length;
+      links.splice(PER_FINDING_LINKS);
+    }
+  }
+  const orphanedTruncated: Record<string, number> = {};
+  for (const [token, links] of orphaned) {
+    links.reverse();
+    if (links.length > PER_FINDING_LINKS) {
+      orphanedTruncated[token] = links.length;
+      links.splice(PER_FINDING_LINKS);
+    }
+  }
+  // Bound the orphan bucket at the 8 NEWEST departed ids (by their latest reply's FULL timestamp —
+  // the date-only display string would tie same-day replies and let the stable sort cut the newer
+  // one), matching the newest-first discipline the per-finding lists keep.
+  const orphanedTotal = orphaned.size;
+  const byLatestReply = [...orphaned.entries()].sort((a, b) =>
+    (latestAt.get(b[0]) ?? "").localeCompare(latestAt.get(a[0]) ?? ""),
+  );
+  return {
+    byFinding,
+    orphaned: Object.fromEntries(byLatestReply.slice(0, ORPHAN_TOKEN_CAP)),
+    orphanedTotal,
+    truncated,
+    orphanedTruncated,
+  };
+};
+
+// The prior findings document's finding + systemic ids — the full departed set the orphan bucket may
+// hold (a departed systemic id orphans exactly like a departed finding id). Tolerant over the
+// resolved shape: a non-document yields no ids, so the bucket fails open to empty.
+export const priorIdsFrom = (doc: unknown): readonly string[] => {
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return [];
+  const rec = doc as Record<string, unknown>;
+  const idsOf = (field: string): readonly string[] =>
+    (Array.isArray(rec[field]) ? rec[field] : []).flatMap((raw) => {
+      const item = typeof raw === "object" && raw !== null ? asRecord(raw) : null;
+      return item !== null && typeof item["id"] === "string" && item["id"] !== ""
+        ? [item["id"]]
+        : [];
+    });
+  return [...idsOf("findings"), ...idsOf("systemic_problems")];
 };
 
 // The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
@@ -641,10 +911,11 @@ export const post = async (
   }
   const prNumber = resolution.prNumber;
 
-  const [diff, existingSticky] = await Promise.all([
+  const [diff, commentRows] = await Promise.all([
     fetchDiff(input.repo, prNumber, ghApi),
-    findBotComment(input.repo, prNumber, input.botLogin, DEFAULT_MARKER, ghApi),
+    fetchIssueCommentRows(input.repo, prNumber, ghApi),
   ]);
+  const existingSticky = selectBotComment(commentRows, input.botLogin, DEFAULT_MARKER);
 
   // An incomplete result (a notice, not a completed review) must never overwrite a sticky that
   // already shows a completed review — else a superseded/killed/late run buries a real review under a
@@ -804,7 +1075,50 @@ export const post = async (
   // path (issue #224's mechanic pin must hold on EVERY write path).
   const envelope = loadEnvelope(input.envelopePath);
 
-  const renderNotice = (message: string): string => {
+  const reachable = existingSticky !== null ? reachableReplies(commentRows, existingSticky.id) : [];
+  // The discussion orphan gate excludes ONLY a mechanic prior: its own findings are not this
+  // review's departed findings. Every other prior feeds the bucket — a full review, a pre-rounds
+  // sticky (no route marker, but its embedded blob still resolves), and a placeholder (whose
+  // carried link resolves the last full review's document).
+  const priorIsMechanic =
+    existingSticky !== null && parseReviewedRoute(existingSticky.body) === "mechanic";
+
+  // The notice overwrites the sticky with no findings of its own — the pointer trail a replied-to
+  // prior sticky carries must survive the overwrite. Resolved and grouped ONLY when a notice
+  // actually exits (the rare path); a normal round never pays this. The prior document's ids are
+  // the whole departed set for a notice (the notice reports nothing), and only a full-review prior
+  // may feed it — a mechanic pass's own findings are not this review's departed findings.
+  const noticeDiscussion = async (): Promise<{
+    readonly orphanedDiscussion: Readonly<Record<string, readonly DiscussionLink[]>>;
+    readonly orphanedTotal: number;
+    readonly orphanedTruncated: Readonly<Record<string, number>>;
+    readonly orphanedUnresolvable: boolean;
+  }> => {
+    if (existingSticky === null) {
+      return {
+        orphanedDiscussion: {},
+        orphanedTotal: 0,
+        orphanedTruncated: {},
+        orphanedUnresolvable: false,
+      };
+    }
+    const wantsPrior = !priorIsMechanic && mentionsOutsideKnown(reachable, []);
+    const resolved = wantsPrior
+      ? await resolvePriorFindings(existingSticky.body, readArtifact)
+      : null;
+    const built = buildStickyDiscussion(reachable, [], priorIdsFrom(resolved));
+    return {
+      orphanedDiscussion: built.orphaned,
+      orphanedTotal: built.orphanedTotal,
+      orphanedTruncated: built.orphanedTruncated,
+      orphanedUnresolvable: wantsPrior && resolved === null,
+    };
+  };
+
+  const renderNotice = (
+    message: string,
+    discussion: Awaited<ReturnType<typeof noticeDiscussion>>,
+  ): string => {
     // The notice carries the prior convergence forward IN its blob so the trajectory + last score
     // survive; render's incomplete gate keeps the badge/trajectory off the human surface, so a carried
     // "converged" is never shown beside a run that produced no verdict (issue #141 review r2). A
@@ -818,6 +1132,12 @@ export const post = async (
           )
         : priorConv;
     const findings = stampConvergence(incompleteFindings(`### ⚠️ ${message}`), noticeConvergence);
+    // The notice's own blob holds no findings — stamping its link would point the NEXT round's
+    // resolve at an empty document and sever the departed set the trail needs. The prior sticky's
+    // findings link is carried instead (the same convention noticeBody keeps for the other notice
+    // paths).
+    const priorFindingsLink =
+      existingSticky !== null ? findingsArtifactUrl(existingSticky.body) : null;
     return formatMarkdown(
       render({
         findings,
@@ -834,19 +1154,27 @@ export const post = async (
         convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
-        findingsPointer: findingsBlob(findings),
+        findingsPointer:
+          priorFindingsLink !== null
+            ? findingsMarkerPair(priorFindingsLink, findings.convergence)
+            : findingsBlob(findings),
         postedAt: input.postedAt,
+        orphanedDiscussion: discussion.orphanedDiscussion,
+        orphanedTotal: discussion.orphanedTotal,
+        orphanedTruncated: discussion.orphanedTruncated,
+        orphanedUnresolvable: discussion.orphanedUnresolvable,
       }),
     );
   };
 
   if (isEmptyDiff(diff)) {
     if (wouldBuryCompleted(true)) leaveInPlace();
+    const discussion = await noticeDiscussion();
     await upsertSticky(
       input.repo,
       prNumber,
       existingSticky,
-      renderNotice("The diff for this PR is empty — nothing to review."),
+      renderNotice("The diff for this PR is empty — nothing to review.", discussion),
       ghApi,
     );
     process.exit(0);
@@ -855,11 +1183,12 @@ export const post = async (
   const findingsResult = loadFindings(input.findingsPath);
   if (findingsResult.kind !== "ok") {
     if (wouldBuryCompleted(true)) leaveInPlace();
+    const discussion = await noticeDiscussion();
     await upsertSticky(
       input.repo,
       prNumber,
       existingSticky,
-      renderNotice(noticeMessageFor(findingsResult)),
+      renderNotice(noticeMessageFor(findingsResult), discussion),
       ghApi,
     );
     process.exit(0);
@@ -934,14 +1263,37 @@ export const post = async (
   // yields no keys, so stickiness fails open to visible.
   // Resolved rather than decoded: the prior sticky's marker names the findings artifact (issue #217),
   // so this fetches it — and still reads an embedded blob on a sticky written before that change.
-  // Gated on this round HAVING a nit: the keys only ever match a nit, and the resolve is a download
-  // plus an unzip subprocess on the critical path before the sticky write. A round with no nits paid
-  // that for a set it could not use.
+  // One resolve serves BOTH consumers — the nit stickiness keys and the discussion orphan gate —
+  // and the resolve is a download plus an unzip subprocess on the critical path before the sticky
+  // write, so it is paid only when one of them can use it. The nit keys only ever match a nit; the
+  // orphan bucket is non-empty only when a reply names an id-shaped token this round does not
+  // report (with no prior ids the bucket is empty either way, so that gate skips a fetch it could
+  // not use, never an output it could change).
+  // The PROVISIONAL known set (every finding id + the systemics) gates the fetch BEFORE the nit
+  // split: the split's stickiness reads the prior document, so the exact set cannot be computed
+  // until the resolve has happened. The provisional set is a superset of the exact one, so a round
+  // pays the fetch a second time below ONLY for the tokens the split narrows out — the ids of
+  // inline-posted findings.
+  const broadCurrentIds = [
+    ...findings.findings.map((f) => f.id).filter((id) => id !== ""),
+    ...(findings.systemic_problems ?? [])
+      .map((s) => s.id)
+      .filter((id): id is string => id !== undefined && id !== ""),
+  ];
   const roundHasNit = findings.findings.some((f) => f.severity === "nit");
-  const priorDocForNits =
-    roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body)
+  const nitWantsPrior =
+    roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body);
+  const broadWantsPrior =
+    existingSticky !== null && !priorIsMechanic && mentionsOutsideKnown(reachable, broadCurrentIds);
+  // Whether the resolve was already attempted above — a failed attempt is not retried below (a
+  // second download of an unresolvable artifact buys no new information, and each attempt can take
+  // the full timeout on the critical path).
+  const priorResolveAttempted = nitWantsPrior || broadWantsPrior;
+  const resolvedPrior =
+    existingSticky !== null && priorResolveAttempted
       ? await resolvePriorFindings(existingSticky.body, readArtifact)
       : null;
+  const priorDocForNits = nitWantsPrior ? resolvedPrior : null;
   const priorSuppressedKeys = new Set(
     priorBelowFloorNits(priorDocForNits, input.nitVisibilityFloor).map((n) =>
       answeredNoteKey({ id: n.id ?? "", title: n.title }),
@@ -967,6 +1319,60 @@ export const post = async (
     (verbatimReRaised.length > 0 && findings.findings.length === 0
       ? "\n> _The stop signal reflects the kept findings — this round carries none._"
       : "");
+
+  // The EXACT known set — the ids this sticky's discussion surfaces actually render: the visible
+  // strays (an inline-posted finding is not on the sticky, so its replies feed the orphan gate
+  // instead of a dead grouping entry), the below-floor nits (the suppressed aside has a discussion
+  // slot), and the systemics.
+  const straysForDiscussion =
+    input.inline === true && envelope !== null
+      ? partitionFindings(visibleFindings, indexDiff(diff)).strays
+      : visibleFindings;
+  const currentIds = [
+    ...straysForDiscussion.map((f) => f.id).filter((id) => id !== ""),
+    ...suppressedNits.map((f) => f.id).filter((id) => id !== ""),
+    ...(findings.systemic_problems ?? [])
+      .map((s) => s.id)
+      .filter((id): id is string => id !== undefined && id !== ""),
+  ];
+  // The exact set differs from the provisional one only when findings can post inline — otherwise
+  // the two are set-equal and the second scan would re-run the identical predicate.
+  const exactSetDiffers = input.inline === true && envelope !== null;
+  const discussionWantsPrior =
+    !priorResolveAttempted &&
+    exactSetDiffers &&
+    existingSticky !== null &&
+    !priorIsMechanic &&
+    mentionsOutsideKnown(reachable, currentIds);
+  const resolvedPriorFinal = discussionWantsPrior
+    ? await resolvePriorFindings(existingSticky.body, readArtifact)
+    : resolvedPrior;
+  // When a reply named an unknown token but the prior document could not be resolved (an expired
+  // artifact, a transport failure), the trail loss is named on the surface, never silent.
+  const orphanResolveFailed =
+    existingSticky !== null &&
+    (broadWantsPrior || discussionWantsPrior) &&
+    resolvedPriorFinal === null;
+  // The departed set is the prior document's ids MINUS every id still live this round — an
+  // inline-posted finding's id persists in the prior doc while the finding is still current, so it
+  // must never be published under the "no longer reports" header.
+  const broadLive = new Set(broadCurrentIds);
+  const departedIds = priorIdsFrom(resolvedPriorFinal).filter((id) => !broadLive.has(id));
+
+  // The discussion aside's reply chain (issue #246): built from the rows ALREADY fetched for the
+  // sticky lookup — pure, so a round pays one history fetch total. Built whenever a sticky exists,
+  // including zero-stray rounds: the orphaned bucket is exactly the case where the last stray left
+  // the report, and the overwrite (issue #205) would otherwise drop the pointer trail. Hoisted above
+  // the lost-envelope branch so that surface carries the same trail as the main path.
+  const stickyDiscussion =
+    existingSticky !== null
+      ? buildStickyDiscussion(reachable, currentIds, departedIds)
+      : { byFinding: {}, orphaned: {}, orphanedTotal: 0, truncated: {}, orphanedTruncated: {} };
+  const discussionByFinding = stickyDiscussion.byFinding;
+  const orphanedDiscussion = stickyDiscussion.orphaned;
+  const orphanedTotal = stickyDiscussion.orphanedTotal;
+  const discussionTruncated = stickyDiscussion.truncated;
+  const orphanedTruncated = stickyDiscussion.orphanedTruncated;
 
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
   const clocDiff = input.clocDiffPath ? loadClocDiff(input.clocDiffPath) : undefined;
@@ -1039,6 +1445,12 @@ export const post = async (
         jsonUrl: input.jsonUrl,
         findingsPointer: findingsBlob(stampedFindings),
         postedAt: input.postedAt,
+        discussionByFinding,
+        orphanedDiscussion,
+        orphanedTotal,
+        discussionTruncated,
+        orphanedTruncated,
+        orphanedUnresolvable: orphanResolveFailed,
       }),
     );
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
@@ -1153,9 +1565,6 @@ export const post = async (
   const stampedFindings = stampConvergence(findings, convergence);
   const currentRoundCount = isRound ? roundNumber : priorRoundCount;
 
-  // Encode the whole-document marker once — the agent's COMPLETE document with the pipeline-stamped
-  // convergence inside it (issues #156 + #174), reused across the sticky + review body; each inline
-  // comment embeds only its own finding instead.
   const findingsMarker = findingsBlob(stampedFindings);
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
@@ -1175,6 +1584,12 @@ export const post = async (
     sameRootNotes,
     answeredNotes: reRaisedNotes,
     answeredReRaiseNote: answeredDropNote,
+    discussionByFinding,
+    orphanedDiscussion,
+    orphanedTotal,
+    discussionTruncated,
+    orphanedTruncated,
+    orphanedUnresolvable: orphanResolveFailed,
     roundCount: currentRoundCount,
     convergenceThreshold: input.convergenceThreshold,
     nitVisibilityFloor: input.nitVisibilityFloor,
@@ -1199,6 +1614,14 @@ export const post = async (
     straysOverride?: readonly Finding[],
     unanchoredCount?: number,
     unanchoredStrays?: readonly Finding[],
+    discussionOverride?: Pick<
+      RenderInput,
+      | "discussionByFinding"
+      | "orphanedDiscussion"
+      | "orphanedTotal"
+      | "discussionTruncated"
+      | "orphanedTruncated"
+    >,
   ): string =>
     formatMarkdown(
       render({
@@ -1208,6 +1631,7 @@ export const post = async (
         ...(unanchoredStrays !== undefined && unanchoredStrays.length > 0
           ? { unanchoredStrays }
           : {}),
+        ...(discussionOverride ?? {}),
         inlineDisposition,
         reviewUrl,
       }) + longFilesNote,
@@ -1300,6 +1724,17 @@ export const post = async (
   // never a false "posted". Best-effort — the sticky and review are already posted.
   const unanchoredCount = unposted.length;
   const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
+  // GitHub-rejected in-diff findings render on the final sticky as strays — the discussion grouping
+  // was built before their rejection was knowable, so it is rebuilt with their ids in the known set:
+  // their asides render, and their replies never land in the "no longer reports" bucket.
+  const finalDiscussion =
+    unanchoredCount > 0
+      ? buildStickyDiscussion(
+          reachable,
+          [...currentIds, ...unposted.map((f) => f.id).filter((id) => id !== "")],
+          departedIds,
+        )
+      : null;
   if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
     const finalDisposition: InlineDisposition =
       inlinePosted > 0
@@ -1309,7 +1744,22 @@ export const post = async (
       await patchComment(
         input.repo,
         stickyRef.id,
-        renderBody(finalDisposition, reviewUrl, finalStrays, unanchoredCount, unposted),
+        renderBody(
+          finalDisposition,
+          reviewUrl,
+          finalStrays,
+          unanchoredCount,
+          unposted,
+          finalDiscussion !== null
+            ? {
+                discussionByFinding: finalDiscussion.byFinding,
+                orphanedDiscussion: finalDiscussion.orphaned,
+                orphanedTotal: finalDiscussion.orphanedTotal,
+                discussionTruncated: finalDiscussion.truncated,
+                orphanedTruncated: finalDiscussion.orphanedTruncated,
+              }
+            : undefined,
+        ),
         ghApi,
       );
       process.stderr.write(

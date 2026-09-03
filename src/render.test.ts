@@ -293,7 +293,7 @@ describe("render", () => {
       });
       expect(result).toContain("**Reviewed** `abc123d` at 2026-07-07 18:42 UTC");
       const lines = result.split("\n");
-      const headingIndex = lines.findIndex((l) => l.startsWith("### "));
+      const headingIndex = lines.findIndex((l) => l.startsWith("## "));
       expect(lines[headingIndex + 1]).toBe("");
       const subLine = lines[headingIndex + 2] ?? "";
       expect(subLine).toMatch(/^<sub>\*\*Reviewed\*\* `abc123d` at 2026-07-07 18:42 UTC · /);
@@ -623,7 +623,7 @@ describe("render", () => {
       });
       expect(result).toContain("Findings outside the diff");
       // issue #56: each stray is an h4 with the severity label, not a bare list item.
-      expect(result).toContain("#### 🟠 (major) `src/bar.ts:100`");
+      expect(result).toContain("### 🟠 (major) `src/bar.ts:100`");
       expect(result).toContain("Stray one");
       // issue #56 defect #1: the description was previously never rendered in the sticky.
       expect(result).toContain("The stray's summary text.");
@@ -665,7 +665,7 @@ describe("render", () => {
       // comments). The anchor carries the agent-reported qualifier — the coordinates come from the
       // findings document, never a diff verification (issue #231 r1).
       expect(result).toMatch(
-        /`src\/bar\.ts:100–104` — linked stray[^\n]*\n\nhttps:\/\/github\.com\/JPHutchins\/code-review\/blob\/c4c60941b084053e19f85659c2642749ad0f4343\/src\/bar\.ts#L100-L104 · _agent-reported location_\n\nTest description content\./,
+        /`src\/bar\.ts:100–104` — linked stray[^\n]*\n<sub>[^\n]*<\/sub>\n\nhttps:\/\/github\.com\/JPHutchins\/code-review\/blob\/c4c60941b084053e19f85659c2642749ad0f4343\/src\/bar\.ts#L100-L104 · _agent-reported location_\n\nTest description content\./,
       );
     });
 
@@ -856,10 +856,11 @@ describe("render", () => {
       });
       const result = render({ findings, envelope: baseEnvelope, prices, template });
 
-      expect(result).toContain("### 🔗 Systemic problems");
+      expect(result).toContain("## 🔗 Systemic problems");
       // Systemic likelihood is scored as a constant 1 (this PR's calibration), so it carries no
       // per-item information and is NOT surfaced on the systemic header; findings keep both.
-      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent · confidence 0.80");
+      expect(result).toContain("### 🟠 (major) Retry plumbing is inconsistent");
+      expect(result).toContain("confidence 0.80");
       expect(result).not.toContain("Retry plumbing is inconsistent · confidence 0.80 · likelihood");
       expect(result).toContain("Three spots, three retry policies — the pattern is the problem.");
       expect(result).toContain("_Affects: `src/upload/config.ts`, `src/upload/client.ts`");
@@ -871,7 +872,7 @@ describe("render", () => {
         systemic_problems: [mkSystemic({ reasoning: "First paragraph.\n\nSecond paragraph." })],
       });
       const result = render({ findings, envelope: baseEnvelope, prices, template });
-      expect(result).toContain("> [!TIP]");
+      expect(result).not.toContain("[!TIP]");
       expect(result).toContain("<details><summary>Reasoning</summary>");
       expect(result).toContain("> First paragraph.");
       expect(result).toContain("> Second paragraph.");
@@ -880,7 +881,7 @@ describe("render", () => {
     it("omits the meta line when the item carries neither paths nor finding_ids", () => {
       const findings = systemicFindings({ systemic_problems: [mkSystemic()] });
       const result = render({ findings, envelope: baseEnvelope, prices, template });
-      expect(result).toContain("#### 🟠 (major) Retry plumbing is inconsistent");
+      expect(result).toContain("### 🟠 (major) Retry plumbing is inconsistent");
       expect(result).not.toContain("_Affects:");
       expect(result).not.toContain("Ties together:");
     });
@@ -941,7 +942,7 @@ describe("render", () => {
         ],
       });
       const result = render({ findings, envelope: baseEnvelope, prices, template });
-      expect(result).toContain("### 🔗 Systemic problems");
+      expect(result).toContain("## 🔗 Systemic problems");
       expect(result).not.toContain("clean review");
     });
 
@@ -1021,24 +1022,28 @@ describe("render", () => {
   });
 
   describe("stray confidence and reasoning fold (issue #16; both required in 0.4)", () => {
-    it("shows confidence AND likelihood on the bullet line, outside the fold (issue #164)", () => {
+    it("shows confidence AND likelihood on the sub line under the header, outside the fold (issue #164 / #246)", () => {
       const findings = mkFindings([]);
       const strays = [mkFinding({ title: "Stray conf", confidence: 0.82, likelihood: 0.3 })];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      const bulletLine = result.split("\n").find((line) => line.includes("Stray conf"));
-      expect(bulletLine).toContain("confidence 0.82");
-      expect(bulletLine).toContain("likelihood 0.30");
+      const lines = result.split("\n");
+      const headerIndex = lines.findIndex((line) => line.includes("Stray conf"));
+      const subLine = lines[headerIndex + 1] ?? "";
+      expect(subLine).toContain("confidence 0.82");
+      expect(subLine).toContain("likelihood 0.30");
     });
 
-    it("shows a zero confidence (falsy but valid) on the bullet line, at 2 decimal places (issue #26)", () => {
+    it("shows a zero confidence (falsy but valid) on the sub line, at 2 decimal places (issue #26 / #246)", () => {
       const findings = mkFindings([]);
       const strays = [mkFinding({ title: "Stray zero conf", confidence: 0 })];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      const bulletLine = result.split("\n").find((line) => line.includes("Stray zero conf"));
-      expect(bulletLine).toContain("confidence 0.00");
+      const lines = result.split("\n");
+      const headerIndex = lines.findIndex((line) => line.includes("Stray zero conf"));
+      const subLine = lines[headerIndex + 1] ?? "";
+      expect(subLine).toContain("confidence 0.00");
     });
 
-    it("renders a collapsible reasoning fold in a [!TIP] aside with the confidence + likelihood (reasoning is always present)", () => {
+    it("renders a collapsible reasoning fold with NO [!TIP] marker — the fold is plain prose (issue #246)", () => {
       const findings = mkFindings([]);
       const strays = [
         mkFinding({
@@ -1049,23 +1054,23 @@ describe("render", () => {
         }),
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      expect(result).toContain("> [!TIP]");
-      expect(result).toContain(
-        "<details><summary>Reasoning (0.90 confidence · 1.00 likelihood)</summary>",
-      );
+      expect(result).not.toContain("[!TIP]");
+      expect(result).toContain("<details><summary>Reasoning</summary>");
       expect(result).toContain("Because X causes Y.");
       expect(result).toContain("</details>");
     });
 
-    it("keeps confidence out of the fold and reasoning out of the bullet line", () => {
+    it("keeps confidence on the sub line and reasoning out of the header line", () => {
       const findings = mkFindings([]);
       const strays = [
         mkFinding({ title: "Stray both", confidence: 0.4, reasoning: "Some justification." }),
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
-      const bulletLine = result.split("\n").find((line) => line.includes("Stray both"));
-      expect(bulletLine).toContain("confidence 0.40");
-      expect(bulletLine).not.toContain("Some justification");
+      const lines = result.split("\n");
+      const headerIndex = lines.findIndex((line) => line.includes("Stray both"));
+      const subLine = lines[headerIndex + 1] ?? "";
+      expect(subLine).toContain("confidence 0.40");
+      expect(lines[headerIndex]).not.toContain("Some justification");
       expect(result).toContain("Some justification.");
     });
 
@@ -1080,7 +1085,7 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const rec = result.indexOf("**Recommended fix:**");
-      const reasoning = result.indexOf("<details><summary>Reasoning (");
+      const reasoning = result.indexOf("<details><summary>Reasoning</summary>");
       // Guard against a vacuous pass: both must actually render before comparing positions.
       expect(rec).toBeGreaterThanOrEqual(0);
       expect(reasoning).toBeGreaterThanOrEqual(0);
@@ -1100,7 +1105,7 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const rec = result.indexOf("**Recommended fix:**");
       const fence = result.indexOf("```patch");
-      const reasoning = result.indexOf("<details><summary>Reasoning (");
+      const reasoning = result.indexOf("<details><summary>Reasoning</summary>");
       expect(rec).toBeGreaterThanOrEqual(0);
       expect(fence).toBeGreaterThanOrEqual(0);
       expect(reasoning).toBeGreaterThanOrEqual(0);
@@ -1156,7 +1161,7 @@ describe("render", () => {
       ];
       const result = render({ findings, envelope: baseEnvelope, prices, template, strays });
       const lines = result.split("\n");
-      const openIndex = lines.findIndex((l) => l.includes("<details><summary>Reasoning ("));
+      const openIndex = lines.findIndex((l) => l.includes("<details><summary>Reasoning</summary>"));
       const closeIndex = lines.findIndex((l, i) => i > openIndex && l.includes("</details>"));
       expect(openIndex).toBeGreaterThanOrEqual(0);
       expect(closeIndex).toBeGreaterThan(openIndex);
@@ -2127,11 +2132,11 @@ describe("strays list structural integrity", () => {
 
     // Every stray renders exactly one h4 header and one reasoning fold — none collapsed or duplicated.
     // Anchor the header match on the backtick-wrapped path so a dash in prose can't inflate the count.
-    expect(section.match(/^#### .+ `[^`]+`/gm) ?? []).toHaveLength(3);
-    expect(section.match(/<details><summary>Reasoning \(/g) ?? []).toHaveLength(3);
+    expect(section.match(/^### .+ `[^`]+`/gm) ?? []).toHaveLength(3);
+    expect(section.match(/<details><summary>Reasoning<\/summary>/g) ?? []).toHaveLength(3);
     // Within the list itself (first header → last fold), the Eta forEach must not leak a RUN of
     // blank lines (the per-row bug signature); inter-section spacing after the list is not in scope.
-    const listStart = section.indexOf("\n#### ");
+    const listStart = section.indexOf("\n### ");
     const listEnd = section.lastIndexOf("</details>");
     expect(listStart).toBeGreaterThanOrEqual(0);
     expect(listEnd).toBeGreaterThan(listStart);
@@ -2438,5 +2443,220 @@ describe("time-slot pricing via envelope.generated_at (issue #170)", () => {
       route: "full review",
     });
     expect(offPeak).toContain("$1.00");
+  });
+});
+
+describe("discussion aside — the per-finding linked list (issue #246)", () => {
+  const renderWith = (over: Partial<Parameters<typeof render>[0]> = {}): string =>
+    render({
+      findings: mkFindings([mkFinding({})]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [mkFinding({})],
+      ...over,
+    });
+
+  const link = (author: string, when: string, url: string) => ({ author, when, url });
+
+  it("renders the collapsed pointer list for a finding whose id has replies, never the reply prose", () => {
+    const out = renderWith({
+      discussionByFinding: {
+        "test-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-1"),
+        ],
+      },
+    });
+    expect(out).toContain("<details><summary>💬 Discussion</summary>");
+    expect(out).toContain(
+      "- [alice · 2026-09-01](https://github.com/owner/repo/pull/1#issuecomment-1)",
+    );
+    // Pointers only — the reply's own prose never renders.
+    expect(out).not.toContain("the reply prose");
+  });
+
+  it("renders no aside when the finding has no replies", () => {
+    const out = renderWith({ discussionByFinding: {} });
+    expect(out).not.toContain("💬 Discussion");
+  });
+
+  it("renders the orphaned-discussions section for ids this round no longer reports", () => {
+    const out = renderWith({
+      orphanedDiscussion: {
+        "old-id": [
+          link("bob", "2026-08-30", "https://github.com/owner/repo/pull/1#issuecomment-7"),
+        ],
+      },
+    });
+    expect(out).toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(out).toContain("**`old-id`**");
+    expect(out).toContain(
+      "[bob · 2026-08-30](https://github.com/owner/repo/pull/1#issuecomment-7)",
+    );
+  });
+
+  it("drops whole asides past the discussion budget and names the cut", () => {
+    // A finding whose aside alone exceeds the budget is dropped, and the marker says so.
+    const huge = Array.from({ length: 200 }, (_, i) =>
+      link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),
+    );
+    const out = renderWith({
+      discussionByFinding: { "test-id": huge },
+    });
+    expect(out).not.toContain("<details><summary>💬 Discussion</summary>");
+    expect(out).toContain("discussion thread not listed");
+  });
+
+  it("renders the discussion aside under a systemic problem whose id has replies", () => {
+    const out = renderWith({
+      findings: mkFindings([], {
+        systemic_problems: [
+          {
+            title: "Retry plumbing is inconsistent",
+            description: "Three spots, three retry policies.",
+            severity: "major",
+            reasoning: "Each file implements its own policy.",
+            confidence: 0.8,
+            likelihood: 1,
+            id: "sys-id",
+          },
+        ],
+      }),
+      discussionByFinding: {
+        "sys-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-2"),
+        ],
+      },
+    });
+    expect(out).toContain("### 🟠 (major) Retry plumbing is inconsistent");
+    expect(out).toContain(
+      "- [alice · 2026-09-01](https://github.com/owner/repo/pull/1#issuecomment-2)",
+    );
+  });
+
+  it("names the 6-newest cap cut when a finding's reply list was trimmed", () => {
+    const out = renderWith({
+      discussionByFinding: {
+        "test-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-1"),
+        ],
+      },
+      discussionTruncated: { "test-id": 9 },
+    });
+    expect(out).toContain("showing the 6 newest of 9 replies");
+  });
+
+  it("draws the orphaned section from the SAME budget as the asides — orphans keep their share", () => {
+    // One orphan entry sized to leave under an aside's worth of budget: the orphaned section
+    // renders, the per-finding aside is dropped and named.
+    const url = `https://github.com/owner/repo/pull/1#issuecomment-${"x".repeat(7_856)}`;
+    const out = renderWith({
+      discussionByFinding: {
+        "test-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-1"),
+        ],
+      },
+      orphanedDiscussion: { "old-id": [link("bob", "2026-08-30", url)] },
+    });
+    expect(out).toContain("**`old-id`**");
+    expect(out).not.toContain("- [alice");
+    expect(out).toContain("discussion thread not listed");
+  });
+
+  it("never counts a finding with no replies as a dropped thread", () => {
+    const huge = Array.from({ length: 200 }, (_, i) =>
+      link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),
+    );
+    const out = renderWith({
+      strays: [mkFinding({}), mkFinding({ id: "second-id" })],
+      discussionByFinding: { "test-id": huge },
+    });
+    expect(out).toContain("1 discussion thread not listed");
+    expect(out).toContain("finding `test-id`");
+    expect(out).not.toContain("2 discussion threads");
+  });
+
+  it("renders the discussion slot inside the suppressed-nit aside", () => {
+    const out = renderWith({
+      suppressedNits: [
+        mkFinding({ severity: "nit", confidence: 0.5, likelihood: 0.4, id: "nit-id" }),
+      ],
+      discussionByFinding: {
+        "nit-id": [
+          link("alice", "2026-09-01", "https://github.com/owner/repo/pull/1#issuecomment-1"),
+        ],
+      },
+    });
+    expect(out).toContain(
+      "- [alice · 2026-09-01](https://github.com/owner/repo/pull/1#issuecomment-1)",
+    );
+  });
+
+  it("names the orphaned entry's per-token 6-newest cut", () => {
+    const out = renderWith({
+      orphanedDiscussion: {
+        "old-id": [
+          link("bob", "2026-08-30", "https://github.com/owner/repo/pull/1#issuecomment-7"),
+        ],
+      },
+      orphanedTruncated: { "old-id": 9 },
+    });
+    expect(out).toContain("showing the 6 newest of 9");
+  });
+
+  it("names an unresolved prior document instead of silently dropping the orphaned section", () => {
+    const out = renderWith({ orphanedUnresolvable: true });
+    expect(out).toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(out).toContain("the prior findings artifact could not be resolved");
+  });
+
+  it("budgets a systemic aside out of the same pool and names a systemic cut", () => {
+    const huge = Array.from({ length: 200 }, (_, i) =>
+      link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),
+    );
+    const out = renderWith({
+      findings: mkFindings([], {
+        systemic_problems: [
+          {
+            title: "Retry plumbing is inconsistent",
+            description: "Three spots, three retry policies.",
+            severity: "major",
+            reasoning: "Each file implements its own policy.",
+            confidence: 0.8,
+            likelihood: 1,
+            id: "sys-id",
+          },
+        ],
+      }),
+      discussionByFinding: { "sys-id": huge },
+    });
+    expect(out).not.toContain("- [alice");
+    expect(out).toContain("1 discussion thread not listed");
+    expect(out).toContain("systemic `sys-id`");
+  });
+
+  it("names a dropped systemic aside on a zero-stray round", () => {
+    const huge = Array.from({ length: 200 }, (_, i) =>
+      link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),
+    );
+    const out = renderWith({
+      strays: [],
+      findings: mkFindings([], {
+        systemic_problems: [
+          {
+            title: "Retry plumbing is inconsistent",
+            description: "Three spots, three retry policies.",
+            severity: "major",
+            reasoning: "Each file implements its own policy.",
+            confidence: 0.8,
+            likelihood: 1,
+            id: "sys-id",
+          },
+        ],
+      }),
+      discussionByFinding: { "sys-id": huge },
+    });
+    expect(out).toContain("1 discussion thread not listed");
+    expect(out).toContain("systemic `sys-id`");
   });
 });

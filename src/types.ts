@@ -20,6 +20,15 @@ export interface InlineComment {
   readonly body: string;
 }
 
+// One reply to the sticky comment, listed under the finding whose id the reply mentions — a POINTER
+// (author, date, link), never the reply's prose: the discussion aside is the conversation's linked
+// list, and the implementer reads the replies at the links (issue #246).
+export interface DiscussionLink {
+  readonly author: string;
+  readonly when: string;
+  readonly url: string;
+}
+
 export interface InlineResult {
   readonly comments: readonly InlineComment[];
   readonly strays: readonly Finding[];
@@ -128,6 +137,32 @@ export interface RenderInput {
   // answered prior inline thread but whose evidence changed (issue #151) — the reviewer re-raised
   // with new evidence, so it stays, annotated with the prior answer's link. Omitted/empty ⇒ none.
   readonly answeredNotes?: Readonly<Record<string, string>>;
+  // Finding id → replies to the sticky comment that mention that id (issue #246's discussion aside):
+  // rendered as a collapsed linked list under each finding. Omitted/empty ⇒ no aside.
+  readonly discussionByFinding?: Readonly<Record<string, readonly DiscussionLink[]>>;
+  // Replies mentioning an id-shaped token that is NOT one of this round's findings: rendered as one
+  // collapsed "earlier rounds" section so a fixed/re-id'd finding's conversation stays discoverable.
+  // Omitted/empty ⇒ no section.
+  readonly orphanedDiscussion?: Readonly<Record<string, readonly DiscussionLink[]>>;
+  // How many per-finding discussion asides the budget dropped, and WHICH findings lost them
+  // (render-side; the cut is named, never silent). Omitted/0 ⇒ no marker line.
+  readonly discussionDropped?: number;
+  readonly discussionDroppedIds?: readonly string[];
+  // Finding id → the pre-cap reply count for asides the 6-newest cap trimmed: the aside names its
+  // cut ("showing the 6 newest of N") instead of rendering indistinguishably from a short thread.
+  // Omitted/empty ⇒ every shown list is complete.
+  readonly discussionTruncated?: Readonly<Record<string, number>>;
+  // How many distinct departed ids the orphaned section holds in total — the section renders
+  // "(showing N of M)" when the 8-token cap trimmed some, so the cut is named, never silent.
+  readonly orphanedTotal?: number;
+  // Departed token → the pre-cap reply count for orphaned entries the 6-newest cap trimmed — the
+  // entry names its cut exactly like a per-finding aside's. Omitted/empty ⇒ every shown list is
+  // complete.
+  readonly orphanedTruncated?: Readonly<Record<string, number>>;
+  // A reply named a departed-candidate token but the prior findings artifact could not be resolved
+  // (expired, transport failure), so the departed set is unknown and the orphaned section is empty
+  // WITHOUT evidence of none — the sticky names the unresolved trail instead of silence.
+  readonly orphanedUnresolvable?: boolean;
   // The sticky note naming findings dropped as verbatim re-raises of answered findings (issue #151):
   // the suppression is never silent. Built by post from the dropped entries; omitted ⇒ no note.
   readonly answeredReRaiseNote?: string;

@@ -171,7 +171,7 @@ export const parseReviewedRoute = (body: string): string | null => ROUTE_RE.exec
 export const isFullReviewSticky = (body: string): boolean => {
   const route = parseReviewedRoute(body);
   if (route === "full review") return true;
-  if (route === "mechanic") return false;
+  if (route === "mechanic" || parseMechanicAncestor(body)) return false;
   // Round history means a completed full review — whether it rides the new convergence field/marker or a
   // legacy rounds marker (issue #185 review). A post-#174 notice carries its trajectory in the
   // document's convergence or the compact marker, and this predicate gates the empty-mechanic guard

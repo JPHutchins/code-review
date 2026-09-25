@@ -7,7 +7,7 @@ import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { ghArtifactReader, resolvePriorFindings, type ArtifactReader } from "./artifact.js";
-import { parseReviewedRoute } from "./surface.js";
+import { parseCompletedAncestor, parseMechanicAncestor, parseReviewedRoute } from "./surface.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { parseJsonl } from "./transcript.js";
 import {
@@ -479,7 +479,8 @@ export const gather = async (
     input.conclusion === "success" &&
     prior !== null &&
     prior.body !== null &&
-    parseReviewedRoute(prior.body) === "full review";
+    (parseReviewedRoute(prior.body) === "full review" ||
+      (parseCompletedAncestor(prior.body) && !parseMechanicAncestor(prior.body)));
   const resolvedPrior = seedsFromPrior
     ? await resolvePriorFindings(prior.body, readArtifact)
     : null;

@@ -91,11 +91,19 @@ const SUPPRESSED_NIT_BLOCK_OVERHEAD = 280;
 const DISCUSSION_TOTAL_CHARS = 8_000;
 const DISCUSSION_BLOCK_OVERHEAD = 120;
 // The orphaned entry renders as ONE inline line — `- **`token`**: [a · d](url) [a · d](url) …` —
-// so its budget charges that exact shape: 10 fixed chars around the token, 7 per link.
-const orphanedEntryCost = (token: string, links: readonly DiscussionLink[]): number =>
+// so its budget charges that exact shape: 10 fixed chars around the token, 8 per link, plus the
+// per-entry truncation note when it renders.
+const orphanedEntryCost = (
+  token: string,
+  links: readonly DiscussionLink[],
+  truncated?: number,
+): number =>
   token.length +
   10 +
-  links.reduce((sum, d) => sum + d.author.length + d.when.length + d.url.length + 8, 0);
+  links.reduce((sum, d) => sum + d.author.length + d.when.length + d.url.length + 8, 0) +
+  (truncated !== undefined
+    ? `_(showing the ${String(PER_FINDING_LINKS)} newest of ${String(truncated)})_`.length
+    : 0);
 // The newest-first cap every discussion list keeps (per-finding, per-orphan-token, and the
 // suppressed aside's slots). LIVES HERE so the template's "showing the N newest of M" notes
 // interpolate it — a cap change cannot leave a rendered note lying.
@@ -539,7 +547,7 @@ export const render = (input: RenderInput): string => {
   const orphanedBudget = budgetBySize(
     [...orphanedPreBudget.entries()],
     DISCUSSION_TOTAL_CHARS,
-    ([token, entry]) => orphanedEntryCost(token, entry.links),
+    ([token, entry]) => orphanedEntryCost(token, entry.links, entry.truncated),
     () => null,
   );
   const discussionBudget = budgetBySize(

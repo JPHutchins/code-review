@@ -49,6 +49,8 @@ import {
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
   isBelowVisibilityFloor,
+  parseCompletedAncestor,
+  parseMechanicAncestor,
   parseReviewedRoute,
   parseReviewedSha,
   priorTrajectory,
@@ -1243,12 +1245,19 @@ const seedDraftCmd = defineCommand({
               // Skip a prior that never completed (verdict "error" + no findings — the notice
               // signature, isIncompleteFindings) and a prior that is not unmistakably a completed
               // FULL review (route-aware seed chain): a CI-fix mechanic pass must not sit in the
-              // seed chain as if it were the previous review. The route marker is the ONLY
-              // reliable signal — round history can't identify the last review (a mechanic carries
-              // a full review's rounds forward), so a no-route prior is unknown and skipped: one
-              // cold review is cheaper than a false prior (issue #127 round-2).
+              // seed chain as if it were the previous review. The route marker wins; a route-less
+              // body counts as full-review ancestry ONLY through the carried completed-ancestor
+              // marker (and never mechanic ancestry) — round history can't identify the last
+              // review (a mechanic carries a full review's rounds forward), so any other no-route
+              // prior is unknown and skipped: one cold review is cheaper than a false prior.
               if (isIncompleteFindings(seedDoc)) return false;
-              if (parseReviewedRoute(priorBody ?? "") !== "full review") return false;
+              if (
+                parseReviewedRoute(priorBody ?? "") !== "full review" &&
+                !(
+                  parseCompletedAncestor(priorBody ?? "") && !parseMechanicAncestor(priorBody ?? "")
+                )
+              )
+                return false;
               writeFileSync(outPath, SEED_SENTINEL);
               writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
               process.stderr.write(

@@ -2687,7 +2687,9 @@ describe("discussion aside — the per-finding linked list (issue #246)", () => 
     // listed in the section under the same spelling.
     expect(out).toContain("earlier-round");
     expect((out.match(/`a-b`/g) ?? []).length).toBe(1);
-    expect(out).toContain("`pad-17`");
+    // The section itself lists the pads that fit — the boundary is asserted on the SECTION, not
+    // the marker (the marker names dropped ids plainly, never in bold).
+    expect(out).toContain("**`pad-0`**");
   });
 
   it("names an orphaned entry the budget dropped — the permanent cut is never silent", () => {

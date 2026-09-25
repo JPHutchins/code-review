@@ -32,6 +32,7 @@ import {
   parseCompletedAncestor,
   parseFindingsMarker,
   parseReviewComplete,
+  parseMechanicAncestor,
   parseReviewedRoute,
   parseReviewedSha,
   priorTrajectory,
@@ -48,7 +49,7 @@ import {
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
 } from "./schema.js";
-import { resolveFindingId } from "./schema.js";
+import { resolveFindingId, resolveRuleId } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -624,10 +625,22 @@ export const buildStickyDiscussion = (
       const rawDeparted = departed.has(token);
       if (rawKnown) {
         byFinding[token]?.push(link);
-      } else if (aliasIsKnown && !rawDeparted) {
-        byFinding[alias]?.push(link);
-      } else if (rawDeparted && !aliasIsKnown) {
+      } else if (aliasIsKnown) {
+        // A token that is BOTH a current id's display alias and a departed raw id is ambiguous —
+        // it stays unmatched rather than silently winning for either side.
+        if (!rawDeparted) byFinding[alias]?.push(link);
+      } else if (rawDeparted) {
         const key = token;
+        const links = orphaned.get(key);
+        if (links === undefined) orphaned.set(key, [link]);
+        else links.push(link);
+        const latest = latestAt.get(key);
+        if (latest === undefined || c.created.localeCompare(latest) > 0)
+          latestAt.set(key, c.created);
+      } else if (alias !== undefined && departed.has(alias)) {
+        // The token is a DEPARTED id's display spelling — filed under the departed raw id, the
+        // same attribution the orphan bucket's contract promises.
+        const key = alias;
         const links = orphaned.get(key);
         if (links === undefined) orphaned.set(key, [link]);
         else links.push(link);
@@ -684,11 +697,13 @@ export const priorIdsFrom = (doc: unknown): readonly string[] => {
     (Array.isArray(rec[field]) ? rec[field] : []).flatMap((raw) => {
       const item = typeof raw === "object" && raw !== null ? asRecord(raw) : null;
       if (item === null) return [];
-      for (const key of ["id", "code"]) {
-        const value = item[key];
-        if (typeof value === "string" && value !== "") return [value];
-      }
-      return [];
+      const resolved = resolveRuleId({
+        ...(typeof item["id"] === "string" ? { id: item["id"] } : {}),
+        ...(typeof item["code"] === "string" ? { code: item["code"] } : {}),
+        ...(typeof item["path"] === "string" ? { path: item["path"] } : {}),
+        title: typeof item["title"] === "string" ? item["title"] : "",
+      });
+      return resolved !== undefined ? [resolved] : [];
     });
   return [...idsOf("findings"), ...idsOf("systemic_problems")];
 };
@@ -953,7 +968,8 @@ export const post = async (
   const priorIsFullReview = (body: string): boolean =>
     isFullReviewSticky(body) ||
     (parseReviewedRoute(body) === null &&
-      (parseReviewComplete(body) || parseCompletedAncestor(body)));
+      (parseReviewComplete(body) ||
+        (parseCompletedAncestor(body) && !parseMechanicAncestor(body))));
 
   // An EMPTY CI-fix mechanic pass must not bury a completed FULL review either: it completes with
   // genuinely empty findings ({verdict: "comment", findings: []}), so it is not "incomplete" and
@@ -1102,7 +1118,9 @@ export const post = async (
   // sticky (no route marker, but its embedded blob still resolves), and a placeholder (whose
   // carried link resolves the last full review's document).
   const priorIsMechanic =
-    existingSticky !== null && parseReviewedRoute(existingSticky.body) === "mechanic";
+    existingSticky !== null &&
+    (parseReviewedRoute(existingSticky.body) === "mechanic" ||
+      parseMechanicAncestor(existingSticky.body));
 
   // The notice overwrites the sticky with no findings of its own — the pointer trail a replied-to
   // prior sticky carries must survive the overwrite. Resolved and grouped ONLY when a notice

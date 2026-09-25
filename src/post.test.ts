@@ -26,6 +26,7 @@ import type {
   TestSummary,
 } from "./schema.js";
 import type { ArtifactReader } from "./artifact.js";
+import { synthesizedFindingId } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -4837,10 +4838,21 @@ describe("priorIdsFrom — the orphan bucket's departed set", () => {
 
   it("reads a pre-0.10 document's LEGACY code spelling — the departed set survives code-era priors", () => {
     const doc = {
-      findings: [{ code: "c-1" }, { id: "f-1" }, { id: "", code: "c-2" }],
+      findings: [
+        { code: "c-1" },
+        { id: "f-1" },
+        { id: "", code: "c-2" },
+        { path: "src/a.ts", title: "T" },
+      ],
       systemic_problems: [{ code: "s-1" }],
     };
-    expect(priorIdsFrom(doc)).toEqual(["c-1", "f-1", "c-2", "s-1"]);
+    expect(priorIdsFrom(doc)).toEqual([
+      "c-1",
+      "f-1",
+      "c-2",
+      synthesizedFindingId("src/a.ts", "T"),
+      "s-1",
+    ]);
   });
 });
 
@@ -4952,6 +4964,15 @@ describe("buildStickyDiscussion — the r5 disciplines", () => {
     expect(d.byFinding[longId]).toHaveLength(1);
   });
 
+  it("files a reply quoting a DEPARTED id's display spelling under the departed raw id", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "see `departed-id` — the sticky showed `departed-id`" }),
+    ];
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), [], ["departed`id"]);
+    expect(d.orphaned["departed`id"]).toHaveLength(1);
+  });
+
   it("leaves a token unmatched when it is both a departed raw id and a current id's display alias", () => {
     const rows = [
       row({ id: 900, body: "<!-- code-review -->" }),
@@ -5052,7 +5073,7 @@ describe("post — notice overwrites carry the discussion trail", () => {
     expect(body).toContain("**`old-id`**");
   });
 
-  it("a mechanic-origin prior keeps its route through the notice, and its ids never feed the bucket", async () => {
+  it("a mechanic prior's ancestry rides the dedicated marker, never the route — and the next round's gate reads it", async () => {
     const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
     const reply = JSON.stringify({
       id: 1000,
@@ -5091,6 +5112,58 @@ describe("post — notice overwrites carry the discussion trail", () => {
     expect(body).toContain("<!-- review-mechanic-ancestor -->");
     expect(body).not.toContain("<!-- reviewed-route: mechanic -->");
     expect(readUrls).toEqual([]);
+    expect(body).not.toContain("earlier rounds");
+  });
+
+  it("the round AFTER a mechanic-descent notice never feeds the mechanic doc's ids into the bucket", async () => {
+    // Round 1: an empty-diff notice over a mechanic-origin prior — the notice body carries the
+    // mechanic-ancestor marker and the prior's findings link.
+    const mechanicSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    const firstMocks = mkMocks(mechanicSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: commentRow(999, mechanicSticky) }
+        : m,
+    );
+    const { api: firstApi, calls: firstCalls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...firstMocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), firstApi)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const noticeBody = JSON.parse(
+      firstCalls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+    ) as CommentBody;
+
+    // Round 2: a normal full review whose prior sticky is THAT notice body, with a reply naming
+    // the mechanic doc's id. The gate must read the mechanic-ancestor marker and never resolve.
+    const readUrls: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      readUrls.push(url);
+      return Promise.resolve(JSON.stringify(mkFindings([mkFinding({ id: "mech-id" })])));
+    };
+    const reply = JSON.stringify({
+      id: 1000,
+      in_reply_to_id: 999,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "still seeing `mech-id`",
+    });
+    const secondMocks = mkMocks(noticeBody.body).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, noticeBody.body)}${reply}\n` }
+        : m,
+    );
+    const { api: secondApi, calls } = mkMockGhApi(secondMocks);
+    await post(mkInput({ route: "full review" }), secondApi, readArtifact);
+    expect(readUrls).toEqual([]);
+    const body = patchedBody(calls());
     expect(body).not.toContain("earlier rounds");
   });
 

@@ -8,6 +8,7 @@
 // annotated with the prior answer's link.
 
 import * as t from "io-ts";
+import { ancestors } from "./comment-chain.js";
 import { escapeCodeBackticks, parseFindingsMarker } from "./surface.js";
 import { parseJsonl } from "./transcript.js";
 import type { GhApi } from "./gh.js";
@@ -176,15 +177,13 @@ export const answeredRegistryFrom = (
   // The root of a comment's chain (walk in_reply_to_id up, cycle-safe); null when the chain never
   // reaches a top-level comment within the fetched set.
   const rootOf = (c: ThreadComment): ThreadComment | null => {
-    let current = c;
-    const seen = new Set<number>();
-    while (current.in_reply_to_id !== null && !seen.has(current.id)) {
-      seen.add(current.id);
-      const parent = byId.get(current.in_reply_to_id);
-      if (parent === undefined) return null;
-      current = parent;
-    }
-    return current.in_reply_to_id === null ? current : null;
+    const chain = [
+      ...ancestors(c, (n) =>
+        n.in_reply_to_id === null ? null : (byId.get(n.in_reply_to_id) ?? null),
+      ),
+    ];
+    const root = chain[chain.length - 1];
+    return root !== undefined && root.in_reply_to_id === null ? root : null;
   };
 
   // The answered finding of a bot-rooted thread, from the root comment's embedded per-finding marker.
@@ -449,9 +448,9 @@ export const fetchThreadComments = async (
   try {
     const rows = parseJsonl(
       await ghApi([
-        `repos/${repo}/pulls/${String(prNumber)}/comments`,
-        "-f",
-        "per_page=100",
+        // per_page rides the QUERY string — a `-f` field would flip `gh api` from GET to POST
+        // and 422 every answered-thread fetch.
+        `repos/${repo}/pulls/${String(prNumber)}/comments?per_page=100`,
         "--paginate",
         "--jq",
         THREAD_COMMENT_JQ,

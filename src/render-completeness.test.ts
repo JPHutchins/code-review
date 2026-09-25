@@ -83,17 +83,17 @@ const sentinel = (leaf: string): string => `S_${leaf.replace(/\./g, "_")}_E`;
 const VISIBLE_LEAVES: readonly (readonly [leaf: string, value: string, anchor: string])[] = [
   // The verdict anchor is the markdown header prefix, NOT a fragment of the value itself: a value
   // containing its own anchor reduces the position check to the presence check it replaces — a
-  // badge moved off the header would still pass (issue #232 r1). The first "### " line IS the
+  // badge moved off the header would still pass (issue #232 r1). The first "## " line IS the
   // verdict badge (the systemic and findings headers render later in the template).
-  ["verdict", "💬 comment", "### "],
+  ["verdict", "💬 comment", "## "],
   ["findings.start_line", ":10", "S_findings_title_E"],
   ["findings.end_line", "–12", "S_findings_title_E"],
   ["findings.side", "RIGHT", "S_findings_title_E"],
   ["findings.severity", "(major)", "S_findings_title_E"],
-  ["findings.confidence", "0.91", "S_findings_title_E"],
-  ["findings.likelihood", "0.92", "S_findings_title_E"],
+  ["findings.confidence", "0.91", "S_findings_id_E"],
+  ["findings.likelihood", "0.92", "S_findings_id_E"],
   ["systemic_problems.severity", "(critical)", "S_systemic_problems_title_E"],
-  ["systemic_problems.confidence", "0.81", "S_systemic_problems_title_E"],
+  ["systemic_problems.confidence", "0.81", "S_systemic_problems_id_E"],
   ["change_size.code.added", "111", "**Changes:**"],
   ["change_size.code.removed", "222", "**Changes:**"],
   ["change_size.tests.added", "333", "**Changes:**"],

@@ -5,7 +5,17 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GhApi, PostInput, AnnounceInput } from "./post.js";
-import { post, announce, reportIncomplete } from "./post.js";
+import {
+  post,
+  announce,
+  reportIncomplete,
+  buildStickyDiscussion,
+  findBotComment,
+  mentionsOutsideKnown,
+  priorIdsFrom,
+  discussionRows,
+} from "./post.js";
+import { fetchThreadComments } from "./answered.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
 import type {
   Convergence,
@@ -16,6 +26,8 @@ import type {
   ModelUsageEntry,
   TestSummary,
 } from "./schema.js";
+import type { ArtifactReader } from "./artifact.js";
+import { synthesizedFindingId, synthesizedSystemicId } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -144,6 +156,17 @@ const roundsMarkerFor = (n: number): string =>
     "utf-8",
   ).toString("base64")} -->`;
 
+// The shared issue-comment projection row (ISSUE_COMMENTS_JQ): the sticky lookup and the
+// discussion aside both read these fields, so the mock emits what the one paginated fetch returns.
+const commentRow = (id: number, body: string): string =>
+  `${JSON.stringify({
+    id,
+    user: "github-actions[bot]",
+    created_at: "2026-09-01T00:00:00Z",
+    html_url: `https://github.com/owner/repo/pull/42#issuecomment-${String(id)}`,
+    body,
+  })}\n`;
+
 // Shared by the sticky-precedence describes: the bot's own prior sticky + the post call surface.
 const mkMocks = (stickyBody: string) => [
   {
@@ -156,8 +179,17 @@ const mkMocks = (stickyBody: string) => [
   },
   {
     match: (a: readonly string[]) =>
-      a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-    response: `${JSON.stringify({ id: 999, body: stickyBody })}\n`,
+      (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+      a.includes("--paginate"),
+    // The shared issue-comment projection (ISSUE_COMMENTS_JQ): the sticky lookup and the discussion
+    // aside read the same rows.
+    response: `${JSON.stringify({
+      id: 999,
+      user: "github-actions[bot]",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-999",
+      body: stickyBody,
+    })}\n`,
   },
   {
     match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -167,7 +199,7 @@ const mkMocks = (stickyBody: string) => [
   // the no-answers path.
   {
     match: (a: readonly string[]) =>
-      a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+      (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) && a.includes("--paginate"),
     response: "",
   },
   { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
@@ -236,7 +268,7 @@ describe("post — run summary (issue #205)", () => {
   ): Promise<{ summary: string; inline: string; stickyBody: string }> => {
     writeFileSync(summaryPath(), seed);
     setSummaryEnv(summaryPath());
-    const { api, calls } = mkMockGhApi(mkMocks(""));
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
     await post(input, api);
     const review = calls().find(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -324,13 +356,13 @@ describe("post — run summary (issue #205)", () => {
   it("writes a summary on the branch that posts and exits", async () => {
     writeFileSync(summaryPath(), "");
     setSummaryEnv(summaryPath());
-    const { api } = mkMockGhApi(mkMocks(""));
+    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
 
     await expect(
       post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
     ).rejects.toThrow("process.exit");
 
-    expect(readFileSync(summaryPath(), "utf-8")).toContain("### Findings");
+    expect(readFileSync(summaryPath(), "utf-8")).toContain("## Findings");
   });
 
   // A round with no verdict is still a record of the run, but it is not a review — and the sticky
@@ -340,7 +372,7 @@ describe("post — run summary (issue #205)", () => {
     writeFileSync(envelopePath, JSON.stringify({ ...baseEnvelope, models: [], incomplete: true }));
     writeFileSync(summaryPath(), "");
     setSummaryEnv(summaryPath());
-    const { api } = mkMockGhApi(mkMocks(""));
+    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
 
     await post(mkInput({ envelopePath }), api);
     const summary = readFileSync(summaryPath(), "utf-8");
@@ -375,7 +407,7 @@ describe("post — run summary (issue #205)", () => {
     // nothing warned — an unset variable must return early, not attempt the write and report failing.
     writeFileSync(summaryPath(), "untouched");
     setSummaryEnv(undefined);
-    const { api } = mkMockGhApi(mkMocks(""));
+    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
@@ -395,7 +427,7 @@ describe("post — run summary (issue #205)", () => {
   it("heads the list 'Findings', never 'outside the diff'", async () => {
     const { summary } = await runWithSummary("");
 
-    expect(summary).toContain("### Findings");
+    expect(summary).toContain("## Findings");
     expect(summary).not.toContain("Findings outside the diff");
   });
 
@@ -413,18 +445,24 @@ describe("post — run summary (issue #205)", () => {
 
     // Only the two rejection behaviours are bespoke; everything else delegates to the shared mock,
     // so a new route added there is not silently missing from this test.
-    const { api: shared } = mkMockGhApi(mkMocks(""));
+    const { api: shared } = mkMockGhApi(mkMocks("<!-- code-review -->"));
     const api: GhApi = (args, stdin, env) => {
       const a = [...args];
       if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--input"))
         return (JSON.parse(stdin ?? "{}") as ReviewBody).comments.length > 0
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
           : Promise.resolve('{"html_url": "https://gh/review"}\n');
-      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--input")
+      )
         return (JSON.parse(stdin ?? "{}") as { line: number }).line === 11
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
           : Promise.resolve('{"id": 1, "html_url": "https://gh/comment"}\n');
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--input")
+      )
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
       if (a[0] === "graphql") return Promise.resolve("");
       return shared(args, stdin, env);
@@ -499,7 +537,7 @@ describe("post — inline off by default (issue #179)", () => {
     const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
     // The finding anchors to a diff line, so with inline ON it would have gone to the review and been
     // absent here; the heading also drops the "outside the diff" qualifier, which no longer applies.
-    expect(body).toContain("### Findings");
+    expect(body).toContain("## Findings");
     expect(body).not.toContain("Findings outside the diff");
   });
 
@@ -524,7 +562,7 @@ describe("post — inline off by default (issue #179)", () => {
 
     const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
     const body = (JSON.parse(patch!.stdin!) as CommentBody).body;
-    expect(body).toContain("### Findings");
+    expect(body).toContain("## Findings");
     expect(body).not.toContain("result envelope lost");
     expect(body).not.toContain("no inline review");
   });
@@ -581,8 +619,10 @@ describe("post — upsert sticky comment", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: '{"id": 999, "body": "<!-- code-review -->\\nold content"}\n',
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
+        response: commentRow(999, "<!-- code-review -->\nold content"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -603,7 +643,7 @@ describe("post — upsert sticky comment", () => {
     expect(body.body).toContain("full review");
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(postCall).toBeUndefined();
   });
@@ -619,11 +659,15 @@ describe("post — upsert sticky comment", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -635,7 +679,7 @@ describe("post — upsert sticky comment", () => {
     await post(mkInput({}), api);
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(postCall).toBeDefined();
     const body = JSON.parse(postCall!.stdin!) as CommentBody;
@@ -653,11 +697,15 @@ describe("post — upsert sticky comment", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -674,7 +722,7 @@ describe("post — upsert sticky comment", () => {
     expect(patchCall).toBeUndefined();
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(postCall).toBeDefined();
   });
@@ -710,11 +758,13 @@ describe("post — systemic problems (issue #134)", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+        match: (a) => a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false,
         response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
       },
       {
@@ -726,11 +776,11 @@ describe("post — systemic problems (issue #134)", () => {
     await post(mkInput({}), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
-    expect(body.body).toContain("### 🔗 Systemic problems");
+    expect(body.body).toContain("## 🔗 Systemic problems");
     expect(body.body).toContain("Retry plumbing is inconsistent");
     // The systemic array itself now lives in the artifact rather than the comment (issue #217), so what
     // the sticky owes is the prose above and the convergence marker below. The mechanism map is the
@@ -770,11 +820,13 @@ describe("post — systemic problems (issue #134)", () => {
           response: inlineDiff,
         },
         {
-          match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+          match: (a) =>
+            (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+            a.includes("--paginate"),
           response: "",
         },
         {
-          match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+          match: (a) => a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false,
           response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
         },
         {
@@ -786,7 +838,8 @@ describe("post — systemic problems (issue #134)", () => {
       await post(mkInput({ jsonUrl: undefined }), api);
 
       const stickyCall = calls().find(
-        (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+        (c) =>
+          c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
       );
       expect(stickyCall).toBeDefined();
       const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
@@ -814,11 +867,15 @@ describe("post — inline review", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -862,11 +919,15 @@ describe("post — inline review", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1092,11 +1153,15 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1140,11 +1205,15 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1188,11 +1257,15 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1215,7 +1288,7 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
     expect(commentBody).not.toContain("line 0");
 
     const summaryCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(summaryCall).toBeDefined();
     const summaryBody = JSON.parse(summaryCall!.stdin!) as CommentBody;
@@ -1260,11 +1333,15 @@ describe("post — PR resolution", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/99/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/99/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/99/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/99/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1328,11 +1405,15 @@ describe("post — injection discipline", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1350,7 +1431,7 @@ describe("post — injection discipline", () => {
     }
   });
 
-  it("passes bot login and marker to jq via env, never interpolated into the filter text (jq hardening)", async () => {
+  it("selects the bot's marker-prefixed sticky client-side — no login or marker text reaches the API call (jq hardening)", async () => {
     const { api, calls } = mkMockGhApi([
       {
         match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
@@ -1361,11 +1442,19 @@ describe("post — injection discipline", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
+        response: commentRow(999, "<!-- code-review -->\nold content"),
+      },
+      {
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
         response: "",
       },
       {
@@ -1377,17 +1466,16 @@ describe("post — injection discipline", () => {
     await post(mkInput({}), api);
 
     const findCommentsCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--paginate"),
+      (c) =>
+        c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") &&
+        c.args.includes("--paginate"),
     );
     expect(findCommentsCall).toBeDefined();
     expect(findCommentsCall?.args.some((a) => a.includes("github-actions[bot]"))).toBe(false);
-    expect(
-      findCommentsCall?.args.some(
-        (a) => a.includes("env.CODE_REVIEW_BOT_LOGIN") && a.includes("env.CODE_REVIEW_MARKER"),
-      ),
-    ).toBe(true);
-    expect(findCommentsCall?.env?.["CODE_REVIEW_BOT_LOGIN"]).toBe("github-actions[bot]");
-    expect(findCommentsCall?.env?.["CODE_REVIEW_MARKER"]).toBe("<!-- code-review -->");
+    expect(findCommentsCall?.args.some((a) => a.includes("CODE_REVIEW"))).toBe(false);
+    // The filter ran client-side: the marker-prefixed row was selected, so post PATCHED it rather
+    // than creating a new sticky.
+    expect(calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")).toBeDefined();
   });
 });
 
@@ -1403,12 +1491,13 @@ describe("post — §5.5 error semantics", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
   ];
@@ -1424,7 +1513,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
@@ -1454,7 +1543,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not complete");
@@ -1480,7 +1569,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not complete");
@@ -1500,7 +1589,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
@@ -1529,7 +1618,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
@@ -1557,7 +1646,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
@@ -1586,7 +1675,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain('schema_version "1.0.0"');
@@ -1613,7 +1702,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     // Real findings summary is preserved — this is not a synthetic notice.
@@ -1653,7 +1742,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("no review verdict");
@@ -1695,9 +1784,14 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         // A placeholder sticky already carrying THIS head SHA in its marker (the #5 trigger).
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nplaceholder"}\n`,
+        response: commentRow(
+          999,
+          "<!-- code-review -->\n<!-- reviewed-sha: abc123def456 -->\nplaceholder",
+        ),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -1747,8 +1841,10 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nold"}\n`,
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
+        response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: abc123def456 -->\nold"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -1814,8 +1910,10 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
+        response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -1877,8 +1975,10 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
+        response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
         match: (a) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -1932,12 +2032,13 @@ describe("post — CO-R3: never-partially-post ordering", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -1952,7 +2053,7 @@ describe("post — CO-R3: never-partially-post ordering", () => {
     await post(mkInput({}), api);
 
     const stickyIndex = calls().findIndex(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const inlineIndex = calls().findIndex(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -1972,7 +2073,9 @@ describe("post — CO-R3: never-partially-post ordering", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
@@ -2007,11 +2110,15 @@ describe("post — REQ-CO-9 test-report threading", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -2023,7 +2130,7 @@ describe("post — REQ-CO-9 test-report threading", () => {
     await post(mkInput({ testReportPath: join(tmpDir, "test-report.json") }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("Test results");
@@ -2043,11 +2150,15 @@ describe("post — REQ-CO-9 test-report threading", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -2062,7 +2173,7 @@ describe("post — REQ-CO-9 test-report threading", () => {
 
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("test report"));
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
@@ -2084,12 +2195,13 @@ describe("post — --inline-template", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2150,11 +2262,15 @@ describe("post — --effort threading", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -2166,7 +2282,7 @@ describe("post — --effort threading", () => {
     await post(mkInput({ effort: "low", route: "mechanic" }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("**effort:** low");
@@ -2197,8 +2313,9 @@ describe("post — --effort threading", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `${JSON.stringify({ id: 999, body: convergedPrior })}\n`,
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
+        response: commentRow(999, convergedPrior),
       },
       {
         match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -2206,7 +2323,8 @@ describe("post — --effort threading", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+          (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
@@ -2243,11 +2361,15 @@ describe("post — --effort threading", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -2259,7 +2381,7 @@ describe("post — --effort threading", () => {
     await post(mkInput({ route: undefined }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("**route:** mechanic");
@@ -2279,12 +2401,13 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: JSON.stringify({
         id: 999,
         html_url: "https://github.com/owner/repo/issues/42#issuecomment-999",
@@ -2307,7 +2430,7 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     const stickyCalls = calls.filter(
       (c) =>
         c.stdin !== undefined &&
-        (c.args[0] === "repos/owner/repo/issues/42/comments" ||
+        (c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") ||
           c.args[0] === "repos/owner/repo/issues/comments/999"),
     );
     return (JSON.parse(stickyCalls.at(-1)!.stdin!) as CommentBody).body;
@@ -2418,11 +2541,15 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "", // no existing sticky — a new comment is posted
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: JSON.stringify({ id: 999, html_url: stickyHtmlUrl }),
       },
       {
@@ -2468,8 +2595,10 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: deadbeef00 -->\\nold"}\n`,
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
+        response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
         // A real PATCH to an issue comment returns the full updated comment object (id included).
@@ -2518,11 +2647,15 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "", // malformed — no id/html_url to parse
       },
       {
@@ -2543,7 +2676,7 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
     // No sticky id was ever recovered, so there is nothing to re-patch — no extra call is made
     // beyond the single initial POST.
     const stickyWrites = calls().filter(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(stickyWrites).toHaveLength(1);
   });
@@ -2559,9 +2692,12 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
       if (args[0] === "repos/owner/repo/pulls/42" && args.includes("-H")) {
         return Promise.resolve(inlineDiff);
       }
-      if (args[0] === "repos/owner/repo/issues/42/comments" && args.includes("--paginate")) {
+      if (
+        args[0]?.startsWith("repos/owner/repo/issues/42/comments") &&
+        args.includes("--paginate")
+      ) {
         return Promise.resolve(
-          `{"id": 999, "body": "<!-- code-review -->\\n<!-- reviewed-sha: abc123def456 -->\\nold"}\n`,
+          commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: abc123def456 -->\nold"),
         );
       }
       if (args[0] === "repos/owner/repo/issues/comments/999") {
@@ -2608,12 +2744,13 @@ describe("post — issue #14: markdown formatting pass before posting", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2633,7 +2770,7 @@ describe("post — issue #14: markdown formatting pass before posting", () => {
     await post(mkInlineInput({}), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toMatch(/\n\n\n/);
@@ -2671,12 +2808,13 @@ describe("post — --run-url / --json-url threading", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2691,7 +2829,7 @@ describe("post — --run-url / --json-url threading", () => {
     await post(mkInput({ runUrl: "https://ci.example.com/runs/123" }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).toContain("[view the run & traces](https://ci.example.com/runs/123)");
@@ -2719,7 +2857,7 @@ describe("post — --run-url / --json-url threading", () => {
 
     // Every surface names the same artifact, at every review size — the embed is gone (issue #217).
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const stickyBody = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(stickyBody).toContain(
@@ -2745,7 +2883,7 @@ describe("post — --run-url / --json-url threading", () => {
     await post(mkInput({ jsonUrl: undefined }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toContain("view the run & traces");
@@ -2804,12 +2942,13 @@ describe("post — postedAt threading (issue #28)", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2824,7 +2963,7 @@ describe("post — postedAt threading (issue #28)", () => {
     await post(mkInput({ postedAt: "2026-07-07 18:42 UTC" }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).toContain("**Reviewed** `abc123d` at 2026-07-07 18:42 UTC");
@@ -2836,7 +2975,7 @@ describe("post — postedAt threading (issue #28)", () => {
     await post(mkInput({}), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toContain("**Reviewed**");
@@ -2855,12 +2994,13 @@ describe("post — absent price map renders cost as N/A with a footnote (SPEC §
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2871,7 +3011,7 @@ describe("post — absent price map renders cost as N/A with a footnote (SPEC §
 
   const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
     const stickyCall = calls.find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     return (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
   };
@@ -2942,12 +3082,13 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -3006,9 +3147,15 @@ describe("post — inline review 422 salvage (issue #57)", () => {
         return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
       if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
         return Promise.resolve(inlineDiff);
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate")
+      )
         return Promise.resolve("");
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--input")
+      )
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
       if (a[0] === "repos/owner/repo/issues/comments/999")
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
@@ -3021,7 +3168,10 @@ describe("post — inline review 422 salvage (issue #57)", () => {
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
           : Promise.resolve('{"html_url": "https://gh/review"}\n');
       }
-      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input")) {
+      if (
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--input")
+      ) {
         const c = JSON.parse(stdin ?? "{}") as { line: number };
         return c.line === 11
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
@@ -3055,7 +3205,8 @@ describe("post — inline review 422 salvage (issue #57)", () => {
     expect(reviewPosts).toHaveLength(2);
     expect((JSON.parse(reviewPosts[1]!.stdin!) as ReviewBody).comments).toEqual([]);
     const individualComments = calls.filter(
-      (c) => c.args[0] === "repos/owner/repo/pulls/42/comments" && c.args.includes("--input"),
+      (c) =>
+        c.args[0]?.startsWith("repos/owner/repo/pulls/42/comments") && c.args.includes("--input"),
     );
     expect(individualComments).toHaveLength(2);
 
@@ -3089,14 +3240,16 @@ describe("announce — in-progress sticky", () => {
     response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
   };
   const commentsMatch = (a: readonly string[]): boolean =>
-    a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate");
+    (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--paginate");
 
   it("POSTs a fresh placeholder linking the run when no sticky exists", async () => {
     const { api, calls } = mkMockGhApi([
       openPr,
       { match: commentsMatch, response: "" },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: '{"id": 555, "html_url": "https://example.com/c/555"}',
       },
     ]);
@@ -3104,7 +3257,8 @@ describe("announce — in-progress sticky", () => {
     await announce(mkAnnounceInput(), api);
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+      (c) =>
+        c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.args.includes("--input"),
     );
     expect(postCall).toBeDefined();
     const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
@@ -3131,7 +3285,7 @@ describe("announce — in-progress sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3150,7 +3304,9 @@ describe("announce — in-progress sticky", () => {
     // No NEW comment posted.
     expect(
       calls().some(
-        (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+        (c) =>
+          c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") &&
+          c.args.includes("--input"),
       ),
     ).toBe(false);
   });
@@ -3172,7 +3328,7 @@ describe("announce — in-progress sticky", () => {
     const existing = `<!-- code-review -->\n${legacyEmbeddedMarker(priorDoc)}`;
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3202,7 +3358,7 @@ describe("announce — in-progress sticky", () => {
     )}`;
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3245,7 +3401,7 @@ describe("announce — in-progress sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3270,7 +3426,7 @@ describe("announce — in-progress sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3290,14 +3446,16 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
   };
   const commentsMatch = (a: readonly string[]): boolean =>
-    a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate");
+    (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--paginate");
 
   it("POSTs an attributed 'did not complete' notice when no sticky exists", async () => {
     const { api, calls } = mkMockGhApi([
       openPr,
       { match: commentsMatch, response: "" },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: '{"id": 555, "html_url": "https://example.com/c/555"}',
       },
     ]);
@@ -3305,7 +3463,8 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     await reportIncomplete(mkAnnounceInput(), api);
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+      (c) =>
+        c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.args.includes("--input"),
     );
     const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
     expect(body).toContain("<!-- code-review -->");
@@ -3327,7 +3486,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3350,7 +3509,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3373,7 +3532,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3393,7 +3552,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3440,7 +3599,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
       { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
     ]);
 
@@ -3463,7 +3622,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3490,7 +3649,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3516,7 +3675,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     ].join("\n");
     const { api, calls } = mkMockGhApi([
       openPr,
-      { match: commentsMatch, response: `${JSON.stringify({ id: 999, body: existing })}\n` },
+      { match: commentsMatch, response: commentRow(999, existing) },
     ]);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -3905,8 +4064,9 @@ describe("post — convergence rounds (issue #125)", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
-        response: `{"id": 999, "body": "<!-- code-review -->\\n${markers}\\nold"}\n`,
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
+        response: commentRow(999, `<!-- code-review -->\n${markers}\nold`),
       },
       {
         match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
@@ -3914,7 +4074,8 @@ describe("post — convergence rounds (issue #125)", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+          (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
@@ -4184,7 +4345,7 @@ describe("post — convergence rounds (issue #125)", () => {
     const sticky = calls.find(
       (c) =>
         (c.args[0] === "repos/owner/repo/issues/comments/999" ||
-          c.args[0] === "repos/owner/repo/issues/42/comments") &&
+          c.args[0]?.startsWith("repos/owner/repo/issues/42/comments")) &&
         c.stdin !== undefined,
     );
     const body = (JSON.parse(sticky?.stdin ?? "{}") as CommentBody).body;
@@ -4294,12 +4455,14 @@ describe("post — convergence rounds (issue #125)", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -4311,7 +4474,7 @@ describe("post — convergence rounds (issue #125)", () => {
     // No prior round, so there is no convergence to carry — and decodedBlob throws on an absent marker,
     // which is the point: the sticky must not claim a stop signal it does not have.
     const posted = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const stickyBody = (JSON.parse(posted!.stdin!) as CommentBody).body;
     expect(parseConvergenceMarker(stickyBody)).toBeNull();
@@ -4408,7 +4571,8 @@ describe("post — answered findings (issue #151)", () => {
   const withThreads = (threads: string): ReturnType<typeof mkMocks> => [
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: threads,
     },
     ...mkMocks("<!-- code-review -->\nold"),
@@ -4613,5 +4777,932 @@ describe("post — answered findings (issue #151)", () => {
     expect(review).toBeDefined();
     const payload = JSON.parse(review!.stdin!) as ReviewBody;
     expect(payload.comments.some((c) => c.body.includes("Test finding"))).toBe(true);
+  });
+});
+
+describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)", () => {
+  const row = (
+    overrides: Record<string, unknown>,
+  ): Parameters<typeof buildStickyDiscussion>[0][number] => ({
+    id: 1,
+    author: "alice",
+    created: "2026-09-01T12:00:00Z",
+    url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+    body: "plain",
+    ...overrides,
+  });
+
+  const stickyRow = row({ id: 900, body: "<!-- code-review -->" });
+
+  it("groups EVERY comment on the PR by the backtick-quoted finding ids they mention", () => {
+    const rows = [
+      stickyRow,
+      row({ id: 1, body: "what about `f-a`?" }),
+      row({ id: 2, body: "also `f-b`", author: "bob" }),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      ["f-a", "f-b"],
+      [],
+    );
+    expect(d.byFinding["f-a"]).toHaveLength(1);
+    expect(d.byFinding["f-a"]![0]!.author).toBe("alice");
+    expect(d.byFinding["f-b"]![0]!.author).toBe("bob");
+    expect(d.orphaned).toEqual({});
+  });
+
+  it("excludes only the sticky's own comment — every other comment, top-level or not, groups", () => {
+    const rows = [
+      stickyRow,
+      row({ id: 1, body: "top-level, mentions `f-a`" }),
+      row({ id: 2, body: "another comment, mentions `f-a`" }),
+    ];
+    const d = buildStickyDiscussion(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"], []);
+    expect(d.byFinding["f-a"]).toHaveLength(2);
+  });
+
+  it("caps each finding's links at the 6 NEWEST and buckets unknown id-shaped tokens as orphaned", () => {
+    const reply = (
+      day: number,
+      token: string,
+    ): Parameters<typeof buildStickyDiscussion>[0][number] =>
+      row({
+        id: day,
+        body: `mention \`${token}\``,
+        created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+      });
+    const rows = [
+      stickyRow,
+      ...Array.from({ length: 8 }, (_, i) => reply(i + 1, "f-a")),
+      reply(9, "old-id"),
+      reply(10, "old-id"),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      ["f-a"],
+      ["old-id"],
+    );
+    const faLinks = d.byFinding["f-a"] ?? [];
+    expect(faLinks).toHaveLength(6);
+    // Newest first: only the six most recent dates survive.
+    expect(faLinks.map((l) => l.when)).toEqual([
+      "2026-09-08",
+      "2026-09-07",
+      "2026-09-06",
+      "2026-09-05",
+      "2026-09-04",
+      "2026-09-03",
+    ]);
+    expect(d.orphaned["old-id"]).toHaveLength(2);
+  });
+
+  it("reports the pre-cap total when the 6-newest cap trims a finding's links", () => {
+    const reply = (day: number) =>
+      row({
+        id: day,
+        body: "mention `f-a`",
+        created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+      });
+    const rows = [stickyRow, ...Array.from({ length: 8 }, (_, i) => reply(i + 1))];
+    const d = buildStickyDiscussion(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"], []);
+    expect(d.byFinding["f-a"]).toHaveLength(6);
+    expect(d.truncated["f-a"]).toBe(8);
+  });
+
+  it("leaves the truncated map absent for a finding under the cap", () => {
+    const rows = [stickyRow, row({ id: 1, body: "mention `f-a`" })];
+    const d = buildStickyDiscussion(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"], []);
+    expect(d.truncated).toEqual({});
+  });
+});
+
+describe("fetchIssueCommentRows — the sticky lookup never mistakes corruption for absence", () => {
+  it("pins the transport contract: per_page rides the QUERY string, never a -f field (a field flips gh api to POST and 422s)", async () => {
+    let captured: readonly string[] = [];
+    const api: GhApi = (args) => {
+      captured = args;
+      return Promise.resolve("");
+    };
+    await findBotComment("owner/repo", 1, "github-actions[bot]", "<!-- code-review -->", api);
+    expect(
+      captured.some(
+        (a) =>
+          a === "-f" ||
+          a === "--raw-field" ||
+          a === "-F" ||
+          a === "--field" ||
+          a.startsWith("per_page="),
+      ),
+    ).toBe(false);
+    expect(captured[0]).toContain("?per_page=100");
+    expect(captured).toContain("--paginate");
+  });
+
+  it("pins the answered-thread fetch to the same transport contract (query per_page, never a field)", async () => {
+    let captured: readonly string[] = [];
+    const api: GhApi = (args) => {
+      captured = args;
+      return Promise.resolve("");
+    };
+    await fetchThreadComments(api, "owner/repo", 42);
+    expect(
+      captured.some(
+        (a) =>
+          a === "-f" ||
+          a === "--raw-field" ||
+          a === "-F" ||
+          a === "--field" ||
+          a.startsWith("per_page="),
+      ),
+    ).toBe(false);
+    expect(captured[0]).toContain("?per_page=100");
+    expect(captured).toContain("--paginate");
+  });
+
+  it("throws when a row fails to decode, so a corrupted history cannot mint a duplicate sticky", async () => {
+    const api: GhApi = () =>
+      Promise.resolve('{"id": 999, "body": "<!-- code-review -->"}\nnot-json\n');
+    await expect(
+      findBotComment("owner/repo", 1, "github-actions[bot]", "<!-- code-review -->", api),
+    ).rejects.toThrow("refusing to treat a corrupted history as an absent sticky");
+  });
+
+  it('keeps a ghost row (the projection coalesces a deleted user to "(deleted)") and never mistakes it for the sticky', async () => {
+    const ghost = JSON.stringify({
+      id: 998,
+      user: "(deleted)",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/1#issuecomment-998",
+      body: "a deleted account's reply",
+    });
+    const sticky = JSON.stringify({
+      id: 999,
+      user: "github-actions[bot]",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/1#issuecomment-999",
+      body: "<!-- code-review -->",
+    });
+    const api: GhApi = () => Promise.resolve(`${ghost}\n${sticky}\n`);
+    const found = await findBotComment(
+      "owner/repo",
+      1,
+      "github-actions[bot]",
+      "<!-- code-review -->",
+      api,
+    );
+    expect(found?.id).toBe(999);
+  });
+});
+
+describe("mentionsOutsideKnown — the orphan-resolve gate", () => {
+  const row = (
+    overrides: Record<string, unknown>,
+  ): Parameters<typeof buildStickyDiscussion>[0][number] => ({
+    id: 1,
+    author: "alice",
+    created: "2026-09-01T12:00:00Z",
+    url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+    body: "plain",
+    ...overrides,
+  });
+
+  it("is true when any comment names a token outside the known set", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "see `departed-id`" }),
+    ];
+    expect(mentionsOutsideKnown(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"])).toBe(
+      true,
+    );
+  });
+
+  it("is false when every mentioned token is known", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "see `f-a` and `sys-a`" }),
+    ];
+    expect(
+      mentionsOutsideKnown(discussionRows(rows, 900, "github-actions[bot]"), ["f-a", "sys-a"]),
+    ).toBe(false);
+  });
+
+  it("a bot-authored comment never scrapes into the discussion (a stale sticky quotes every id)", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 901, author: "github-actions[bot]", body: "<!-- code-review --> mentions `f-a`" }),
+    ];
+    const d = buildStickyDiscussion(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"], []);
+    expect(d.byFinding["f-a"]).toHaveLength(0);
+  });
+
+  it("a junk span in backticks never fires the gate — a shell command or path is not id-shaped", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "run `npm test` and see `src/foo.ts`" }),
+    ];
+    expect(mentionsOutsideKnown(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"])).toBe(
+      false,
+    );
+  });
+
+  it("an id-shaped unknown token fires the gate", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "see `departed-id`" }),
+    ];
+    expect(mentionsOutsideKnown(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"])).toBe(
+      true,
+    );
+  });
+
+  it("never counts the sticky's OWN body — a token only the sticky mentions does not fire the gate", () => {
+    const rows = [row({ id: 900, body: "<!-- code-review --> mentions `departed-id`" })];
+    expect(mentionsOutsideKnown(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"])).toBe(
+      false,
+    );
+  });
+});
+
+describe("priorIdsFrom — the orphan bucket's departed set", () => {
+  it("reads the findings and systemic ids a resolved prior document carries", () => {
+    const doc = {
+      findings: [{ id: "f-1" }, { id: "" }, { title: "no id" }],
+      systemic_problems: [{ id: "sys-1" }],
+    };
+    expect(priorIdsFrom(doc)).toEqual(["f-1", "sys-1"]);
+  });
+
+  it("yields nothing for a non-document", () => {
+    expect(priorIdsFrom(null)).toEqual([]);
+    expect(priorIdsFrom("junk")).toEqual([]);
+    expect(priorIdsFrom([1, 2])).toEqual([]);
+  });
+
+  it("reads a pre-0.10 document's LEGACY code spelling — the departed set survives code-era priors", () => {
+    const doc = {
+      findings: [
+        { code: "c-1" },
+        { id: "f-1" },
+        { id: "", code: "c-2" },
+        { path: "src/a.ts", title: "T" },
+      ],
+      systemic_problems: [{ code: "s-1" }, { title: "A systemic" }],
+    };
+    expect(priorIdsFrom(doc)).toEqual([
+      "c-1",
+      "f-1",
+      "c-2",
+      synthesizedFindingId("src/a.ts", "T"),
+      "s-1",
+      synthesizedSystemicId("A systemic"),
+    ]);
+  });
+});
+
+describe("buildStickyDiscussion — the r5 disciplines", () => {
+  const row = (
+    overrides: Record<string, unknown>,
+  ): Parameters<typeof buildStickyDiscussion>[0][number] => ({
+    id: 1,
+    author: "alice",
+    created: "2026-09-01T12:00:00Z",
+    url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+    body: "plain",
+    ...overrides,
+  });
+
+  it("groups a ghost-authored comment like any other", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, author: "(deleted)", body: "mention `departed-id`" }),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      [],
+      ["departed-id"],
+    );
+    expect(d.orphaned["departed-id"]).toHaveLength(1);
+    expect(d.orphaned["departed-id"]![0]!.author).toBe("(deleted)");
+  });
+
+  it("reports the pre-cap total when the 6-newest cap trims an orphaned entry's links", () => {
+    const reply = (day: number) =>
+      row({
+        id: day,
+        body: "mention `departed-id`",
+        created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+      });
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      ...Array.from({ length: 8 }, (_, i) => reply(i + 1)),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      [],
+      ["departed-id"],
+    );
+    expect(d.orphaned["departed-id"]).toHaveLength(6);
+    expect(d.orphanedTruncated["departed-id"]).toBe(8);
+  });
+
+  it("breaks same-day ties in the 8-newest orphan cap by the full timestamp", () => {
+    const reply = (id: number, token: string, hour: number) =>
+      row({
+        id,
+        body: `mention \`${token}\``,
+        created: `2026-09-01T${String(hour).padStart(2, "0")}:00:00Z`,
+      });
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      reply(1, "early", 1),
+      reply(2, "later", 2),
+      ...Array.from({ length: 7 }, (_, i) => reply(i + 10, `pad-${String(i)}`, 3)),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      [],
+      ["early", "later", ...Array.from({ length: 7 }, (_, i) => `pad-${String(i)}`)],
+    );
+    // 9 departed ids, all on the same calendar day: the 8-token cap cuts exactly one, and the
+    // date-only display string would tie all nine — the full timestamp must keep the seven hour-3
+    // pads plus "later" (hour 2), cutting "early" (hour 1).
+    expect(Object.keys(d.orphaned)).toHaveLength(8);
+    expect(d.orphaned["later"]).toBeDefined();
+    expect(d.orphaned["early"]).toBeUndefined();
+  });
+
+  it("dedupes rows by id — a comment edited mid-pagination pushes one link, not two", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({
+        id: 1,
+        body: "mention `f-a`",
+        url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+      }),
+      row({
+        id: 1,
+        body: "mention `f-a` edited",
+        url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+      }),
+    ];
+    const d = buildStickyDiscussion(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"], []);
+    expect(d.byFinding["f-a"]).toHaveLength(1);
+    expect(d.truncated).toEqual({});
+  });
+
+  it("groups a reply quoting the ESCAPED display spelling of an id into the raw id's bucket", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "see `weird-id` — the sticky shows it as `weird-id`" }),
+      row({ id: 2, body: "the displayed form is `weird-id`" }),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      ["weird`id"],
+      [],
+    );
+    expect(d.byFinding["weird`id"]).toHaveLength(2);
+  });
+
+  it("groups a reply naming an id longer than 64 characters — the token regex has no length cap", () => {
+    const longId = "x".repeat(100);
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: `mention \`${longId}\`` }),
+    ];
+    const d = buildStickyDiscussion(discussionRows(rows, 900, "github-actions[bot]"), [longId], []);
+    expect(d.byFinding[longId]).toHaveLength(1);
+  });
+
+  it("files a reply quoting a DEPARTED id's display spelling under the departed raw id", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "see `departed-id` — the sticky showed `departed-id`" }),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      [],
+      ["departed`id"],
+    );
+    expect(d.orphaned["departed`id"]).toHaveLength(1);
+  });
+
+  it("leaves a token unmatched when it is both a departed raw id and a current id's display alias", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "see `a-b`" }),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      ["a`b"],
+      ["a-b"],
+    );
+    expect(d.byFinding["a`b"]).toHaveLength(0);
+    expect(d.orphaned["a-b"]).toBeUndefined();
+  });
+
+  it("never assigns an ambiguous escaped spelling a winner — escape-twin ids stay raw-keyed only", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "see `a-b`" }),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      ["a-b", "a`b"],
+      [],
+    );
+    // The reply quotes the RAW `a-b`; the twin `a`b` (whose escaped form collides with it) must
+    // not silently inherit the display-spelling replies.
+    expect(d.byFinding["a-b"]).toHaveLength(1);
+    expect(d.byFinding["a`b"]).toHaveLength(0);
+  });
+});
+
+describe("post — notice overwrites carry the discussion trail", () => {
+  const patchedBody = (calls: readonly RecordedCall[]): string =>
+    (
+      JSON.parse(
+        calls.find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+      ) as CommentBody
+    ).body;
+
+  it("an empty-diff notice carries the orphaned pointer trail of the replied-to prior", async () => {
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    const priorDoc = mkFindings([mkFinding({ id: "old-id", severity: "minor" })]);
+    const readArtifact: ArtifactReader = () => Promise.resolve(JSON.stringify(priorDoc));
+    const reply = JSON.stringify({
+      id: 1000,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "what about `old-id`?",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    // An EMPTY diff (first-match wins over mkMocks' non-empty one) — the notice path.
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api, readArtifact)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const body = patchedBody(calls());
+    expect(body).toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(body).toContain("**`old-id`**");
+  });
+
+  it("re-emits a pre-#217 embedded base64 prior verbatim, trail intact", async () => {
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${legacyEmbeddedMarker(
+      mkFindings([mkFinding({ id: "old-id", severity: "minor" })]),
+    )}\nold`;
+    const reply = JSON.stringify({
+      id: 1000,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "what about `old-id`?",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const body = patchedBody(calls());
+    expect(body).toContain("code-review:findings-json;base64");
+    expect(body).toContain("**`old-id`**");
+  });
+
+  it("a mechanic prior's ancestry rides the dedicated marker, never the route — and the next round's gate reads it", async () => {
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    const reply = JSON.stringify({
+      id: 1000,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "still seeing `mech-id`",
+    });
+    const readUrls: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      readUrls.push(url);
+      return Promise.resolve(JSON.stringify(mkFindings([mkFinding({ id: "mech-id" })])));
+    };
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api, readArtifact)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const body = patchedBody(calls());
+    // The mechanic provenance rides its DEDICATED ancestor marker — the reviewed-route marker's
+    // contract (the COMPLETED review's route) must survive the notice, or the next round would
+    // read the notice as a completed full review.
+    expect(body).toContain("<!-- review-mechanic-ancestor -->");
+    expect(body).not.toContain("<!-- reviewed-route: mechanic -->");
+    expect(readUrls).toEqual([]);
+    expect(body).not.toContain("earlier rounds");
+  });
+
+  it("the round AFTER a mechanic-descent notice never feeds the mechanic doc's ids into the bucket", async () => {
+    // Round 1: an empty-diff notice over a mechanic-origin prior — the notice body carries the
+    // mechanic-ancestor marker and the prior's findings link.
+    const mechanicSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    const firstMocks = mkMocks(mechanicSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: commentRow(999, mechanicSticky) }
+        : m,
+    );
+    const { api: firstApi, calls: firstCalls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...firstMocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), firstApi)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const noticeBody = JSON.parse(
+      firstCalls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+    ) as CommentBody;
+
+    // Round 2: a normal full review whose prior sticky is THAT notice body, with a reply naming
+    // the mechanic doc's id. The gate must read the mechanic-ancestor marker and never resolve.
+    const readUrls: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      readUrls.push(url);
+      return Promise.resolve(JSON.stringify(mkFindings([mkFinding({ id: "mech-id" })])));
+    };
+    const reply = JSON.stringify({
+      id: 1000,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "still seeing `mech-id`",
+    });
+    const secondMocks = mkMocks(noticeBody.body).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, noticeBody.body)}${reply}\n` }
+        : m,
+    );
+    const { api: secondApi, calls } = mkMockGhApi(secondMocks);
+    await post(mkInput({ route: "full review" }), secondApi, readArtifact);
+    expect(readUrls).toEqual([]);
+    const body = patchedBody(calls());
+    expect(body).not.toContain("earlier rounds");
+  });
+
+  it("a marker-less prior never claims an artifact failed to resolve", async () => {
+    const priorSticky = `<!-- code-review -->\nold`;
+    const reply = JSON.stringify({
+      id: 1000,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "please fix `src/foo.ts`",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const body = patchedBody(calls());
+    expect(body).not.toContain("could not be matched against the prior findings");
+  });
+});
+
+describe("post — a GitHub-rejected inline anchor renders its discussion aside", () => {
+  it("the final sticky patch lists the rejected finding with its reply trail", async () => {
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    // A resolved prior document — the orphan gate's resolve must NOT run the real gh reader, and
+    // the resolved trail must render beside the rejected finding's aside.
+    const priorDoc = mkFindings([mkFinding({ id: "old-id", severity: "minor" })]);
+    const readArtifact: ArtifactReader = () => Promise.resolve(JSON.stringify(priorDoc));
+    const reply = JSON.stringify({
+      id: 1000,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "still seeing `b-id`",
+    });
+    const departedReply = JSON.stringify({
+      id: 1001,
+      user: "bob",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1001",
+      body: "what about `old-id`?",
+    });
+    const findings = mkFindings([
+      mkFinding({
+        path: "src/foo.ts",
+        start_line: 11,
+        end_line: 11,
+        title: "Finding B",
+        id: "b-id",
+      }),
+    ]);
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(findings));
+    const calls: RecordedCall[] = [];
+    const api: GhApi = (args, stdin) => {
+      calls.push({ args: [...args], stdin });
+      const a = args;
+      if (a[0]?.startsWith("repos/owner/repo/commits/"))
+        return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
+      if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
+        return Promise.resolve(inlineDiff);
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate")
+      )
+        return Promise.resolve(`${commentRow(999, priorSticky)}${reply}\n${departedReply}\n`);
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--input")
+      )
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
+      if (a[0] === "repos/owner/repo/issues/comments/999")
+        return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
+      if (
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--paginate")
+      )
+        return Promise.resolve("");
+      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"))
+        return Promise.resolve("[]");
+      if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--input")) {
+        const body = JSON.parse(stdin ?? "{}") as ReviewBody;
+        return body.comments.length > 0
+          ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
+          : Promise.resolve('{"html_url": "https://gh/review"}\n');
+      }
+      if (
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--input")
+      ) {
+        const c = JSON.parse(stdin ?? "{}") as { line: number };
+        return c.line === 11
+          ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
+          : Promise.resolve('{"id": 1, "html_url": "https://gh/comment"}\n');
+      }
+      if (a[0] === "graphql") return Promise.resolve("");
+      return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
+    };
+    await expect(post(mkInlineInput({}), api, readArtifact)).resolves.toBeUndefined();
+    const stickyPatches = calls.filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const finalBody = (JSON.parse(stickyPatches[stickyPatches.length - 1]!.stdin!) as CommentBody)
+      .body;
+    expect(finalBody).toContain("couldn't be posted as inline");
+    expect(finalBody).toContain("Finding B");
+    // The rejected finding joined the known set on the final patch: its discussion aside renders
+    // the reply that names its id.
+    expect(finalBody).toContain(
+      "- [alice · 2026-09-01](https://github.com/owner/repo/pull/42#issuecomment-1000)",
+    );
+    // The orphan gate resolved the prior document THROUGH the injected reader: the departed
+    // finding's trail renders, and no unresolvable-artifact note claims a loss that never happened.
+    expect(finalBody).toContain("**`old-id`**");
+    expect(finalBody).toContain(
+      "[bob · 2026-09-01](https://github.com/owner/repo/pull/42#issuecomment-1001)",
+    );
+    expect(finalBody).not.toContain("could not be matched against the prior findings");
+  });
+});
+
+describe("post — the orphan gate resolves the prior findings through the ARTIFACT LINK", () => {
+  const patchedBody = (calls: readonly RecordedCall[]): string =>
+    (
+      JSON.parse(
+        calls.find((c) => c.args[0] === "repos/owner/repo/issues/comments/999")!.stdin!,
+      ) as CommentBody
+    ).body;
+
+  it("orphans a reply naming a departed finding or systemic id read from the prior document", async () => {
+    const priorConv: Convergence = {
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { "old-id": 1 } }],
+    };
+    // The prior sticky names its findings by LINK — the form every post writes. The retired
+    // base64 embed decoder is not what feeds the orphan bucket.
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
+      priorConv,
+    )}\nold`;
+    const priorDoc = {
+      ...mkFindings([mkFinding({ id: "old-id", severity: "minor" })]),
+      systemic_problems: [
+        {
+          title: "A systemic",
+          description: "desc",
+          severity: "major",
+          reasoning: "reasoning",
+          confidence: 0.8,
+          likelihood: 1,
+          id: "sys-old",
+        },
+      ],
+    };
+    const readUrls: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      readUrls.push(url);
+      return Promise.resolve(JSON.stringify(priorDoc));
+    };
+    const reply = JSON.stringify({
+      id: 1000,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "what about `old-id` and `sys-old`?",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
+    expect(readUrls).toEqual(["https://artifacts.example.com/prior.zip"]);
+    const body = patchedBody(calls());
+    expect(body).toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(body).toContain("**`old-id`**");
+    expect(body).toContain("**`sys-old`**");
+    expect(body).toContain(
+      "[alice · 2026-09-01](https://github.com/owner/repo/pull/42#issuecomment-1000)",
+    );
+  });
+
+  it("names the unresolved trail when the gate fired but the artifact could not be read", async () => {
+    const priorConv: Convergence = {
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: {} }],
+    };
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
+      priorConv,
+    )}\nold`;
+    const readArtifact: ArtifactReader = () => Promise.resolve(null);
+    const reply = JSON.stringify({
+      id: 1000,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "what about `old-id`?",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
+    const body = patchedBody(calls());
+    expect(body).toContain("could not be matched against the prior findings");
+  });
+
+  it("pays no prior-artifact fetch when no reply names a departed id", async () => {
+    const priorConv: Convergence = {
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: {} }],
+    };
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
+      priorConv,
+    )}\nold`;
+    const readUrls: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      readUrls.push(url);
+      return Promise.resolve("null");
+    };
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${commentRow(1000, "looks good")}` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
+    expect(readUrls).toEqual([]);
+    expect(patchedBody(calls())).not.toContain("earlier rounds");
+  });
+});
+
+describe("buildStickyDiscussion — the orphan bucket is prior-id-only", () => {
+  const row = (
+    overrides: Record<string, unknown>,
+  ): Parameters<typeof buildStickyDiscussion>[0][number] => ({
+    id: 1,
+    author: "alice",
+    created: "2026-09-01T12:00:00Z",
+    url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+    body: "plain",
+    ...overrides,
+  });
+
+  it("never publishes shape-guessed prose as a departed finding — only a token the prior sticky carried", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "mention `main-merge` and `well-known`" }),
+      row({ id: 2, body: "mention `departed-id`" }),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      [],
+      ["departed-id"],
+    );
+    expect(d.orphaned["departed-id"]).toHaveLength(1);
+    expect(d.orphaned["main-merge"]).toBeUndefined();
+    expect(d.orphaned["well-known"]).toBeUndefined();
+  });
+
+  it("does not mislabel ids this round still reports (a systemic id counts as known)", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "mention `sys-a` and `f-a`" }),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      ["f-a", "sys-a"],
+      ["sys-a"],
+    );
+    expect(d.byFinding["f-a"]).toHaveLength(1);
+    expect(d.byFinding["sys-a"]).toHaveLength(1);
+    expect(d.orphaned).toEqual({});
+  });
+
+  it("dedupes a reply that quotes the same id twice — one link per comment per token", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, body: "still seeing `f-a` … re-run with `f-a`" }),
+    ];
+    const d = buildStickyDiscussion(discussionRows(rows, 900, "github-actions[bot]"), ["f-a"], []);
+    expect(d.byFinding["f-a"]).toHaveLength(1);
+  });
+
+  it("caps the orphan bucket at the 8 NEWEST departed ids and reports the true total", () => {
+    const reply = (day: number, token: string) =>
+      row({
+        id: day,
+        body: `mention \`${token}\``,
+        created: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+      });
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      ...Array.from({ length: 10 }, (_, i) => reply(i + 1, `departed-${String(i + 1)}`)),
+    ];
+    const d = buildStickyDiscussion(
+      discussionRows(rows, 900, "github-actions[bot]"),
+      [],
+      Array.from({ length: 10 }, (_, i) => `departed-${String(i + 1)}`),
+    );
+    expect(d.orphanedTotal).toBe(10);
+    expect(Object.keys(d.orphaned)).toHaveLength(8);
+    // Newest first: the highest-day tokens survive.
+    expect(Object.keys(d.orphaned)[0]).toBe("departed-10");
   });
 });

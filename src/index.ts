@@ -49,7 +49,7 @@ import {
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
   isBelowVisibilityFloor,
-  parseReviewedRoute,
+  isFullReviewAncestry,
   parseReviewedSha,
   priorTrajectory,
   priorBelowFloorNits,
@@ -1174,12 +1174,12 @@ const seedDraftCmd = defineCommand({
     // floor is read from the same workflow input the commenter uses, so seed and post agree within a
     // run. Correctness does not depend on this note — the blob keeps every nit and post re-suppresses a
     // re-raised still-nit by stickiness — it only spares the agent the wasted re-mining.
-    // Route-gated exactly like the prior-context seed below (parseReviewedRoute === "full review"):
-    // a mechanic (CI-fix) pass writes its OWN findings blob, so deriving "prior round's below-floor
-    // nits" from it would deliver a CI-fix pass's nits as adjudicated prior-round context. Only a
-    // completed FULL review is a prior round. The floor is parsed LENIENTLY — seed-draft must exit 0,
-    // so it cannot call the process-exiting parseNitVisibilityFloor (post enforces the floor loudly).
-    if (parsedPrior !== null && parseReviewedRoute(priorBody ?? "") === "full review") {
+    // Gated exactly like the prior-context seed below (isFullReviewAncestry): a mechanic (CI-fix)
+    // pass writes its OWN findings blob, so deriving "prior round's below-floor nits" from it would
+    // deliver a CI-fix pass's nits as adjudicated prior-round context. Only a completed FULL review
+    // is a prior round. The floor is parsed LENIENTLY — seed-draft must exit 0, so it cannot call
+    // the process-exiting parseNitVisibilityFloor (post enforces the floor loudly).
+    if (parsedPrior !== null && isFullReviewAncestry(priorBody ?? "")) {
       try {
         const belowFloor = priorBelowFloorNits(
           parsedPrior,
@@ -1243,12 +1243,13 @@ const seedDraftCmd = defineCommand({
               // Skip a prior that never completed (verdict "error" + no findings — the notice
               // signature, isIncompleteFindings) and a prior that is not unmistakably a completed
               // FULL review (route-aware seed chain): a CI-fix mechanic pass must not sit in the
-              // seed chain as if it were the previous review. The route marker is the ONLY
-              // reliable signal — round history can't identify the last review (a mechanic carries
-              // a full review's rounds forward), so a no-route prior is unknown and skipped: one
-              // cold review is cheaper than a false prior (issue #127 round-2).
+              // seed chain as if it were the previous review. The route marker wins; a route-less
+              // body counts as full-review ancestry ONLY through the carried completed-ancestor
+              // marker (and never mechanic ancestry) — round history can't identify the last
+              // review (a mechanic carries a full review's rounds forward), so any other no-route
+              // prior is unknown and skipped: one cold review is cheaper than a false prior.
               if (isIncompleteFindings(seedDoc)) return false;
-              if (parseReviewedRoute(priorBody ?? "") !== "full review") return false;
+              if (!isFullReviewAncestry(priorBody ?? "")) return false;
               writeFileSync(outPath, SEED_SENTINEL);
               writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
               process.stderr.write(

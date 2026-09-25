@@ -2,7 +2,6 @@
 // the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
 import { readFileSync, appendFileSync } from "node:fs";
-import { ancestors } from "./comment-chain.js";
 import type { DiscussionLink, InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff, indexDiff, partitionFindings } from "./diff.js";
@@ -21,6 +20,7 @@ import {
   carriedFindingsMarker,
   carriedMarkerPointer,
   carryForwardMarkers,
+  isFullReviewAncestry,
   computeIdCounts,
   computeSameRootNotes,
   findingsMarkerPair,
@@ -358,12 +358,14 @@ const postInlineReview = async (
 // the rows to both; announce routes through findBotComment, which fetches on its own. Transport
 // errors PROPAGATE — the callers that must not mistake a failed fetch for an absent sticky let the
 // rejection through.
+// The issue-comments endpoint returns NO in_reply_to_id — the field exists only on pull-request
+// REVIEW comments (the answered registry's endpoint), and GitHub's API exposes no issue-comment
+// reply chain at all. The projection therefore carries only the fields the endpoint actually has.
 const ISSUE_COMMENTS_JQ =
-  '.[] | {id, in_reply_to_id, user: (.user.login // "(deleted)"), created_at, html_url, body}';
+  '.[] | {id, user: (.user.login // "(deleted)"), created_at, html_url, body}';
 
 interface IssueCommentRow {
   readonly id: number;
-  readonly parent: number | null;
   readonly author: string;
   readonly created: string;
   readonly url: string;
@@ -378,34 +380,32 @@ const parseIssueCommentRows = (
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (trimmed === "") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch {
+    const parsed = tryParseJson(trimmed);
+    if (!parsed.ok) {
       malformed += 1;
       continue;
     }
-    const rec = asRecord(parsed);
+    const rec = asRecord(parsed.value);
     const id = rec?.["id"];
-    const parent = rec?.["in_reply_to_id"];
     const author = rec?.["user"];
     const created = rec?.["created_at"];
     const url = rec?.["html_url"];
     const body = rec?.["body"];
     if (
       typeof id === "number" &&
-      (parent === null || typeof parent === "number") &&
       typeof author === "string" &&
       typeof created === "string" &&
       typeof url === "string" &&
       typeof body === "string"
     ) {
-      rows.push({ id, parent, author, created, url, body });
+      rows.push({ id, author, created, url, body });
+    } else {
+      // A shape failure IS corruption: the ghost-account case this branch once served is now
+      // coalesced to "(deleted)" in the projection, so every remaining drop is a field the
+      // endpoint guarantees — and a dropped sticky row would read as "no sticky" and mint a
+      // duplicate, the exact failure the fail-loud invariant exists to prevent.
+      malformed += 1;
     }
-    // A well-formed row that fails the shape guard is dropped, not malformed: a deleted "ghost"
-    // account projects `user: null` (a legitimate GitHub state) and can never be the bot's sticky
-    // (its own comments always carry a login), so skipping it cannot mint a duplicate. Only a line
-    // that will not parse is corruption.
   }
   // The REST order is not a contract — the caps and the walk derive recency from it, so the rows
   // sort explicitly by (created, id), the sibling registry's discipline.
@@ -543,36 +543,27 @@ const escapedIdIndex = (ids: readonly string[]): ReadonlyMap<string, string> => 
   );
 };
 
-// The rows whose reply chain reaches the sticky (the walk memoized per row). The sticky's own row
-// may or may not be in the set: a reply's direct parent being the sticky counts either way.
-// Rows are deduped by id, first occurrence wins — gh --paginate fetches pages sequentially, and a
-// comment edited mid-pagination can legitimately appear on two pages; two rows for one comment
-// must not push two links into one aside. Computed ONCE per round and shared by the gate and the
-// grouping.
-export const reachableReplies = (
+// The discussion rows: EVERY comment on the PR, the sticky's own excluded. GitHub's API exposes
+// no reply-chain for issue comments (in_reply_to_id exists only on pull-request REVIEW comments —
+// the answered registry's endpoint), so "replies to the sticky" cannot be derived from any
+// channel; the aside groups the whole comment conversation instead, which serves the same
+// discoverability. Rows are deduped by id, first occurrence wins — gh --paginate fetches pages
+// sequentially, and a comment edited mid-pagination can legitimately appear on two pages; two
+// rows for one comment must not push two links into one aside. Computed ONCE per round and shared
+// by the gate and the grouping.
+export const discussionRows = (
   rows: readonly IssueCommentRow[],
   stickyId: number,
 ): readonly IssueCommentRow[] => {
-  const byId = new Map(rows.map((c) => [c.id, c]));
-  const reachMemo = new Map<number, boolean>();
-  const reachesSticky = (c: IssueCommentRow): boolean => {
-    const memoized = reachMemo.get(c.id);
-    if (memoized !== undefined) return memoized;
-    const reached = [
-      ...ancestors(c, (n) => (n.parent === null ? null : (byId.get(n.parent) ?? null))),
-    ].some((a) => a.id === stickyId || a.parent === stickyId);
-    reachMemo.set(c.id, reached);
-    return reached;
-  };
   const seen = new Set<number>();
   return rows.filter((c) => {
     if (seen.has(c.id)) return false;
     seen.add(c.id);
-    return c.id !== stickyId && reachesSticky(c);
+    return c.id !== stickyId;
   });
 };
 
-// Whether any reply that reaches the sticky names a backtick token this round does NOT report —
+// Whether any non-sticky comment names a backtick token this round does NOT report —
 // the only case the orphan bucket can be non-empty, and therefore the only case the prior sticky's
 // findings document is worth resolving for it. A necessary-not-sufficient condition: a reply
 // quoting a code snippet or path in backticks fires it too, and the round pays the artifact
@@ -598,11 +589,11 @@ export const mentionsOutsideKnown = (
   return false;
 };
 
-// The pure thread→discussion grouping: replies whose in_reply_to chain reaches the sticky, grouped
-// by the backtick-quoted ids they mention — capped 6 newest-first per id. The orphan bucket holds
-// ONLY tokens the PRIOR sticky's findings actually carried (priorIds), never shape-guessed prose:
-// a backtick token that was never a finding id is not published as one. Extracted pure so the
-// chain-walk, the cycle guard, and the caps are unit-testable without an API mock.
+// The pure comment→discussion grouping: every non-sticky comment on the PR, grouped by the
+// backtick-quoted ids it mentions — capped 6 newest-first per id. The orphan bucket holds ONLY
+// tokens the PRIOR sticky's findings actually carried (priorIds), never shape-guessed prose: a
+// backtick token that was never a finding id is not published as one. Extracted pure so the caps
+// and the dedupe are unit-testable without an API mock.
 export const buildStickyDiscussion = (
   reachable: readonly IssueCommentRow[],
   currentIds: readonly string[],
@@ -1120,7 +1111,7 @@ export const post = async (
   // path (issue #224's mechanic pin must hold on EVERY write path).
   const envelope = loadEnvelope(input.envelopePath);
 
-  const reachable = existingSticky !== null ? reachableReplies(commentRows, existingSticky.id) : [];
+  const reachable = existingSticky !== null ? discussionRows(commentRows, existingSticky.id) : [];
   // The discussion orphan gate excludes ONLY a mechanic prior: its own findings are not this
   // review's departed findings. Every other prior feeds the bucket — a full review, a pre-rounds
   // sticky (no route marker, but its embedded blob still resolves), and a placeholder (whose
@@ -1338,7 +1329,9 @@ export const post = async (
   ];
   const roundHasNit = findings.findings.some((f) => f.severity === "nit");
   const nitWantsPrior =
-    roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body);
+    roundHasNit &&
+    existingSticky !== null &&
+    (isFullReviewSticky(existingSticky.body) || isFullReviewAncestry(existingSticky.body));
   const broadWantsPrior =
     existingSticky !== null && !priorIsMechanic && mentionsOutsideKnown(reachable, broadCurrentIds);
   const resolvedPrior =
@@ -1376,10 +1369,12 @@ export const post = async (
   // strays, the below-floor nits (the suppressed aside has a discussion slot), and the systemics.
   // An inline-posted finding's id is deliberately absent: the sticky renders no surface for it,
   // and its conversation lives on the inline thread itself.
-  // One index parse per round: the inline split below and buildInlineComments share it.
-  const diffIndex = input.inline === true && envelope !== null ? indexDiff(diff) : null;
-  const straysForDiscussion =
-    diffIndex !== null ? partitionFindings(visibleFindings, diffIndex).strays : visibleFindings;
+  // One partition per round: the inline split below and buildInlineComments share it.
+  const inlinePartition =
+    input.inline === true && envelope !== null
+      ? partitionFindings(visibleFindings, indexDiff(diff))
+      : null;
+  const straysForDiscussion = inlinePartition?.strays ?? visibleFindings;
   const currentIds = [
     ...straysForDiscussion.map((f) => f.id).filter((id) => id !== ""),
     ...suppressedNits.map((f) => f.id).filter((id) => id !== ""),
@@ -1553,7 +1548,7 @@ export const post = async (
     inDiff,
   } = inlineRequested
     ? buildInlineComments(visibleFindings, diff, {
-        ...(diffIndex !== null ? { diffIndex } : {}),
+        ...(inlinePartition !== null ? { partition: inlinePartition } : {}),
         inlineTemplate,
         models: envelope.models.map((m) => m.model),
         findings,

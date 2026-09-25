@@ -195,8 +195,10 @@ export const parseMechanicAncestor = (body: string): boolean =>
 // protect a pre-route/pre-rounds full review that would otherwise lose every signal (issue #127
 // round-2). Only ever carried — never emitted by a completed render, which has review-complete.
 export const COMPLETED_ANCESTOR_MARKER = "<!-- review-complete-ancestor -->";
+// Anchored to a standalone comment LINE like its mechanic sibling: the sticky embeds reviewer
+// prose, and a finding quoting this literal must not gate as full-review ancestry.
 export const parseCompletedAncestor = (body: string): boolean =>
-  body.includes(COMPLETED_ANCESTOR_MARKER);
+  new RegExp(`(^|\n)${COMPLETED_ANCESTOR_MARKER}(\n|$)`).test(body);
 
 // A POSITIVE marker: present only in a sticky the commenter wrote for a COMPLETED review. It is
 // absent from an incomplete notice AND from an in-progress placeholder (which carries forward a prior
@@ -1055,15 +1057,16 @@ export const carriedMarkerPointer = (
 
 // The provenance markers a replacing sticky must preserve. The reviewed-sha is deliberately NOT
 // here — a new write stamps its own head.
+const completedAncestryMarker = (body: string): string | undefined =>
+  parseReviewComplete(body) || parseCompletedAncestor(body) ? COMPLETED_ANCESTOR_MARKER : undefined;
+
 export const carriedProvenanceMarkers = (body: string): string =>
   [
     // The placeholder keeps the REAL route marker: the seed chain requires it outright to stay
     // route-aware across the prose swap.
     ROUTE_RE.exec(body)?.[0],
     parseMechanicAncestor(body) ? MECHANIC_ANCESTOR_MARKER : undefined,
-    parseReviewComplete(body) || parseCompletedAncestor(body)
-      ? COMPLETED_ANCESTOR_MARKER
-      : undefined,
+    completedAncestryMarker(body),
   ]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
@@ -1090,9 +1093,7 @@ export const carriedAncestryMarkers = (body: string): string =>
     parseReviewedRoute(body) === "mechanic" || parseMechanicAncestor(body)
       ? MECHANIC_ANCESTOR_MARKER
       : undefined,
-    parseReviewComplete(body) || parseCompletedAncestor(body)
-      ? COMPLETED_ANCESTOR_MARKER
-      : undefined,
+    completedAncestryMarker(body),
   ]
     .filter((m): m is string => m !== undefined)
     .join("\n\n");

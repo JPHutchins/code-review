@@ -1,5 +1,5 @@
 import { Eta } from "eta";
-import { partitionFindings, indexDiff, defaultSide, type DiffLineIndex } from "./diff.js";
+import { partitionFindings, indexDiff, defaultSide } from "./diff.js";
 import {
   severityEmoji,
   findingPointer,
@@ -56,9 +56,12 @@ export interface InlineContext {
   // Code → "Re-raised; prior answer at <link>" note for a kept finding whose code an answered prior
   // thread named (issue #151); omitted/empty ⇒ no per-comment annotation.
   readonly answeredNotes?: Readonly<Record<string, string>>;
-  // A precomputed diff index — the caller that needs the in-diff partition for other reasons
-  // (the discussion known set) computes it once and shares it; omitted ⇒ built here.
-  readonly diffIndex?: DiffLineIndex;
+  // A precomputed in-diff partition — the caller that needs the split for other reasons (the
+  // discussion known set) computes it once and shares it; omitted ⇒ built here.
+  readonly partition?: {
+    readonly inDiff: readonly Finding[];
+    readonly strays: readonly Finding[];
+  };
 }
 
 export const buildInlineComments = (
@@ -67,8 +70,7 @@ export const buildInlineComments = (
   context: InlineContext,
 ): InlineResult => {
   const { inlineTemplate, models = [], jsonUrl, findings: fullFindings } = context;
-  const index = context.diffIndex ?? indexDiff(diff);
-  const { inDiff, strays } = partitionFindings(findings, index);
+  const { inDiff, strays } = context.partition ?? partitionFindings(findings, indexDiff(diff));
   const eta = new Eta({ autoTrim: false });
   const modelsText = formatModels(models);
 

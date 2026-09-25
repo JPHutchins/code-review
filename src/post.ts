@@ -18,6 +18,8 @@ import {
   buildConvergence,
   carriedConvergence,
   carriedFindingsMarker,
+  carriedMarkerPointer,
+  carriedProvenanceMarkers,
   carryForwardMarkers,
   computeIdCounts,
   computeSameRootNotes,
@@ -36,8 +38,6 @@ import {
   reviewBodyPointer,
   mechanicConvergence,
   escapeCodeBackticks,
-  AGENTS_STOP_DIRECTIVE,
-  convergenceMarker,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
 import {
@@ -54,7 +54,6 @@ import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import {
-  findingsArtifactUrl,
   ghArtifactReader,
   hasFindingsMarker,
   resolvePriorFindings,
@@ -511,7 +510,7 @@ export interface StickyDiscussion {
   readonly orphanedTruncated: Readonly<Record<string, number>>;
 }
 
-const ID_TOKEN_RE = /`([^`\n]{1,64})`/g;
+const ID_TOKEN_RE = /`([^`\n]+)`/g;
 const ORPHAN_TOKEN_CAP = 8;
 
 // The raw id → escaped DISPLAY spelling index: the sticky renders ids through escapeCodeBackticks
@@ -608,7 +607,7 @@ export const buildStickyDiscussion = (
   const orphaned = new Map<string, DiscussionLink[]>();
   const latestAt = new Map<string, string>();
   for (const c of reachable) {
-    const link = { author: c.author, when: c.created.slice(0, 10), url: c.url };
+    const link = { author: c.author, when: c.created.slice(0, 10), url: c.url, at: c.created };
     // One link per (comment, token): a reply quoting the same id twice must not crowd the cap.
     const pushed = new Set<string>();
     for (const m of c.body.matchAll(ID_TOKEN_RE)) {
@@ -997,15 +996,15 @@ export const post = async (
   // (leaveInPlace); every OTHER marker-carrying sticky — placeholder, mechanic, pre-route — gets
   // the carry instead of a markerless overwrite (issue #235 + #236 r1-r3). The embedded form is
   // not carried — its size is unbounded and a 422 would fail the round.
-  const carriedFindingsLink =
-    !input.jsonUrl && existingSticky !== null ? findingsArtifactUrl(existingSticky.body) : null;
   let warnedNoJsonUrl = false;
   const findingsBlob = (doc: Findings): string => {
     if (input.jsonUrl) return findingsMarkerPair(input.jsonUrl, doc.convergence);
-    if (carriedFindingsLink !== null) {
-      // The prior link is carried: the machine channel survives, though this run names no NEW
+    const carried = existingSticky !== null ? carriedFindingsMarker(existingSticky.body) : null;
+    if (carried !== null) {
+      // The prior marker is carried — link OR embedded base64 form, the shared assembly the
+      // notice paths use too. The machine channel survives, though this run names no NEW
       // artifact — the sticky's findings remain the prior round's.
-      return findingsMarkerPair(carriedFindingsLink, doc.convergence);
+      return carriedMarkerPointer(carried, doc.convergence);
     }
     if (!warnedNoJsonUrl) {
       warnedNoJsonUrl = true;
@@ -1112,11 +1111,14 @@ export const post = async (
       ? await resolvePriorFindings(existingSticky.body, readArtifact)
       : null;
     const built = buildStickyDiscussion(reachable, [], priorIdsFrom(resolved));
+    // "Unresolvable" claims an artifact failed — it must never fire for a marker-less prior
+    // (a first-run placeholder), where there is no artifact to fail.
+    const hadMarker = carriedFindingsMarker(existingSticky.body) !== null;
     return {
       orphanedDiscussion: built.orphaned,
       orphanedTotal: built.orphanedTotal,
       orphanedTruncated: built.orphanedTruncated,
-      orphanedUnresolvable: wantsPrior && resolved === null,
+      orphanedUnresolvable: wantsPrior && hadMarker && resolved === null,
     };
   };
 
@@ -1144,10 +1146,14 @@ export const post = async (
     const noticeFindingsPointer = (doc: Findings): string => {
       const carried = existingSticky !== null ? carriedFindingsMarker(existingSticky.body) : null;
       if (carried === null) return findingsBlob(doc);
-      return [
-        `${AGENTS_STOP_DIRECTIVE}\n${carried}`,
-        ...(doc.convergence !== undefined ? [convergenceMarker(doc.convergence)] : []),
-      ].join("\n");
+      // The prior's provenance rides beside its findings marker: a mechanic-origin prior must stay
+      // mechanic through the notice, or the next round's orphan gate reads its findings as a
+      // departed full review's.
+      const provenance =
+        existingSticky !== null ? carriedProvenanceMarkers(existingSticky.body) : "";
+      return [carriedMarkerPointer(carried, doc.convergence), provenance]
+        .filter((p) => p !== "")
+        .join("\n\n");
     };
     return formatMarkdown(
       render({
@@ -1293,12 +1299,8 @@ export const post = async (
     roundHasNit && existingSticky !== null && isFullReviewSticky(existingSticky.body);
   const broadWantsPrior =
     existingSticky !== null && !priorIsMechanic && mentionsOutsideKnown(reachable, broadCurrentIds);
-  // Whether the resolve was already attempted above — a failed attempt is not retried below (a
-  // second download of an unresolvable artifact buys no new information, and each attempt can take
-  // the full timeout on the critical path).
-  const priorResolveAttempted = nitWantsPrior || broadWantsPrior;
   const resolvedPrior =
-    existingSticky !== null && priorResolveAttempted
+    existingSticky !== null && (nitWantsPrior || broadWantsPrior)
       ? await resolvePriorFindings(existingSticky.body, readArtifact)
       : null;
   const priorDocForNits = nitWantsPrior ? resolvedPrior : null;
@@ -1329,9 +1331,9 @@ export const post = async (
       : "");
 
   // The EXACT known set — the ids this sticky's discussion surfaces actually render: the visible
-  // strays (an inline-posted finding is not on the sticky, so its replies feed the orphan gate
-  // instead of a dead grouping entry), the below-floor nits (the suppressed aside has a discussion
-  // slot), and the systemics.
+  // strays, the below-floor nits (the suppressed aside has a discussion slot), and the systemics.
+  // An inline-posted finding's id is deliberately absent: the sticky renders no surface for it,
+  // and its conversation lives on the inline thread itself.
   const straysForDiscussion =
     input.inline === true && envelope !== null
       ? partitionFindings(visibleFindings, indexDiff(diff)).strays
@@ -1343,29 +1345,20 @@ export const post = async (
       .map((s) => s.id)
       .filter((id): id is string => id !== undefined && id !== ""),
   ];
-  // The exact set differs from the provisional one only when findings can post inline — otherwise
-  // the two are set-equal and the second scan would re-run the identical predicate.
-  const exactSetDiffers = input.inline === true && envelope !== null;
-  const discussionWantsPrior =
-    !priorResolveAttempted &&
-    exactSetDiffers &&
-    existingSticky !== null &&
-    !priorIsMechanic &&
-    mentionsOutsideKnown(reachable, currentIds);
-  const resolvedPriorFinal = discussionWantsPrior
-    ? await resolvePriorFindings(existingSticky.body, readArtifact)
-    : resolvedPrior;
   // When a reply named an unknown token but the prior document could not be resolved (an expired
-  // artifact, a transport failure), the trail loss is named on the surface, never silent.
+  // artifact, a transport failure), the trail loss is named on the surface, never silent. Only
+  // ever claimed when the prior actually carries a findings marker — a marker-less prior has no
+  // artifact to fail.
   const orphanResolveFailed =
     existingSticky !== null &&
-    (broadWantsPrior || discussionWantsPrior) &&
-    resolvedPriorFinal === null;
+    broadWantsPrior &&
+    carriedFindingsMarker(existingSticky.body) !== null &&
+    resolvedPrior === null;
   // The departed set is the prior document's ids MINUS every id still live this round — an
   // inline-posted finding's id persists in the prior doc while the finding is still current, so it
   // must never be published under the "no longer reports" header.
   const broadLive = new Set(broadCurrentIds);
-  const departedIds = priorIdsFrom(resolvedPriorFinal).filter((id) => !broadLive.has(id));
+  const departedIds = priorIdsFrom(resolvedPrior).filter((id) => !broadLive.has(id));
 
   // The discussion aside's reply chain (issue #246): built from the rows ALREADY fetched for the
   // sticky lookup — pure, so a round pays one history fetch total. Built whenever a sticky exists,

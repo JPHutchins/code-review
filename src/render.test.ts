@@ -2635,6 +2635,50 @@ describe("discussion aside — the per-finding linked list (issue #246)", () => 
     expect(out).toContain("systemic `sys-id`");
   });
 
+  it("merges escape-twin orphaned entries under ONE display key, re-capped at 6", () => {
+    const linksFor = (author: string, n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        link(
+          author,
+          "2026-09-01",
+          `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`,
+        ),
+      );
+    const out = renderWith({
+      orphanedDiscussion: {
+        "a-b": linksFor("alice", 6),
+        "a`b": linksFor("bob", 6),
+      },
+      orphanedTruncated: { "a-b": 8, "a`b": 8 },
+      orphanedTotal: 2,
+    });
+    // One merged entry, six links at most, and the note names the merged pre-cap total (16).
+    expect(out).toContain("showing the 6 newest of 16");
+    const linkCount = (out.match(/issuecomment-/g) ?? []).length;
+    expect(linkCount).toBe(6);
+    // The twin display keys collapse to one — the "(showing N of M)" note names no phantom cut.
+    expect(out).not.toContain("of 2)");
+  });
+
+  it("names an orphaned entry the budget dropped — the permanent cut is never silent", () => {
+    const out = renderWith({
+      orphanedDiscussion: {
+        "big-id": [
+          link(
+            "bob",
+            "2026-08-30",
+            `https://github.com/owner/repo/pull/1#issuecomment-${"x".repeat(8_500)}`,
+          ),
+        ],
+      },
+      orphanedTotal: 1,
+    });
+    expect(out).not.toContain("## 💬 Discussions on findings from earlier rounds");
+    expect(out).toContain("1 discussion thread not listed");
+    expect(out).toContain("earlier-round");
+    expect(out).toContain("`big-id`");
+  });
+
   it("names a dropped systemic aside on a zero-stray round", () => {
     const huge = Array.from({ length: 200 }, (_, i) =>
       link("alice", "2026-09-01", `https://github.com/owner/repo/pull/1#issuecomment-${String(i)}`),

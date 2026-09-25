@@ -4934,6 +4934,16 @@ describe("buildStickyDiscussion — the r5 disciplines", () => {
     expect(d.byFinding["weird`id"]).toHaveLength(2);
   });
 
+  it("groups a reply naming an id longer than 64 characters — the token regex has no length cap", () => {
+    const longId = "x".repeat(100);
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: `mention \`${longId}\`` }),
+    ];
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), [longId], []);
+    expect(d.byFinding[longId]).toHaveLength(1);
+  });
+
   it("never assigns an ambiguous escaped spelling a winner — escape-twin ids stay raw-keyed only", () => {
     const rows = [
       row({ id: 900, body: "<!-- code-review -->" }),
@@ -4988,6 +4998,109 @@ describe("post — notice overwrites carry the discussion trail", () => {
     const body = patchedBody(calls());
     expect(body).toContain("## 💬 Discussions on findings from earlier rounds");
     expect(body).toContain("**`old-id`**");
+  });
+
+  it("re-emits a pre-#217 embedded base64 prior verbatim, trail intact", async () => {
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n${legacyEmbeddedMarker(
+      mkFindings([mkFinding({ id: "old-id", severity: "minor" })]),
+    )}\nold`;
+    const reply = JSON.stringify({
+      id: 1000,
+      in_reply_to_id: 999,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "what about `old-id`?",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const body = patchedBody(calls());
+    expect(body).toContain("code-review:findings-json;base64");
+    expect(body).toContain("**`old-id`**");
+  });
+
+  it("a mechanic-origin prior keeps its route through the notice, and its ids never feed the bucket", async () => {
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: mechanic -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    const reply = JSON.stringify({
+      id: 1000,
+      in_reply_to_id: 999,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "still seeing `mech-id`",
+    });
+    const readUrls: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      readUrls.push(url);
+      return Promise.resolve(JSON.stringify(mkFindings([mkFinding({ id: "mech-id" })])));
+    };
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api, readArtifact)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const body = patchedBody(calls());
+    expect(body).toContain("<!-- reviewed-route: mechanic -->");
+    expect(readUrls).toEqual([]);
+    expect(body).not.toContain("earlier rounds");
+  });
+
+  it("a marker-less prior never claims an artifact failed to resolve", async () => {
+    const priorSticky = `<!-- code-review -->\nold`;
+    const reply = JSON.stringify({
+      id: 1000,
+      in_reply_to_id: 999,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "please fix `src/foo.ts`",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi([
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+        response: "",
+      },
+      ...mocks,
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+    exitSpy.mockRestore();
+    const body = patchedBody(calls());
+    expect(body).not.toContain("could not be matched against the prior findings");
   });
 });
 
@@ -5140,6 +5253,36 @@ describe("post — the orphan gate resolves the prior findings through the ARTIF
     expect(body).toContain(
       "[alice · 2026-09-01](https://github.com/owner/repo/pull/42#issuecomment-1000)",
     );
+  });
+
+  it("names the unresolved trail when the gate fired but the artifact could not be read", async () => {
+    const priorConv: Convergence = {
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: {} }],
+    };
+    const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\n${convergenceMarker(
+      priorConv,
+    )}\nold`;
+    const readArtifact: ArtifactReader = () => Promise.resolve(null);
+    const reply = JSON.stringify({
+      id: 1000,
+      in_reply_to_id: 999,
+      user: "alice",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
+      body: "what about `old-id`?",
+    });
+    const mocks = mkMocks(priorSticky).map((m) =>
+      m.match(["repos/owner/repo/issues/42/comments", "--paginate"])
+        ? { ...m, response: `${commentRow(999, priorSticky)}${reply}\n` }
+        : m,
+    );
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
+    const body = patchedBody(calls());
+    expect(body).toContain("could not be matched against the prior findings");
   });
 
   it("pays no prior-artifact fetch when no reply names a departed id", async () => {

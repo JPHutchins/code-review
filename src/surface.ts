@@ -1028,24 +1028,44 @@ export const stripSurfaceFields = (doc: unknown): unknown => {
 export const carriedFindingsMarker = (body: string): string | null =>
   /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0] ?? null;
 
+// The pointer a body emits when it carries a PRIOR sticky's findings marker forward instead of
+// naming its own: the carried marker verbatim (link OR embedded base64 form) with this body's own
+// convergence stamp beside it. Shared by the notice paths and the no-json-url main path, so the
+// two carries can never diverge on form or layout.
+export const carriedMarkerPointer = (
+  carried: string,
+  convergence: Convergence | undefined,
+): string =>
+  [
+    `${AGENTS_STOP_DIRECTIVE}\n${carried}`,
+    ...(convergence !== undefined ? [convergenceMarker(convergence)] : []),
+  ].join("\n");
+
+// The provenance markers a replacing sticky must preserve: the reviewed-route (a mechanic pass
+// must stay mechanic through a notice, or the next round's orphan gate reads its findings as a
+// departed full review's) and the completed-ancestor marker (the empty-mechanic guard's pre-route
+// protection). The reviewed-sha is deliberately NOT here — a new write stamps its own head.
+export const carriedProvenanceMarkers = (body: string): string =>
+  [
+    ROUTE_RE.exec(body)?.[0],
+    parseReviewComplete(body) || parseCompletedAncestor(body)
+      ? COMPLETED_ANCESTOR_MARKER
+      : undefined,
+  ]
+    .filter((m): m is string => m !== undefined)
+    .join("\n\n");
+
 export const carryForwardMarkers = (body: string): string => {
   const findings = carriedFindingsMarker(body);
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
-  const reviewedRoute = ROUTE_RE.exec(body)?.[0];
   // The compact convergence marker (issue #185 review) rides beside the findings link, so the
   // in-progress placeholder must carry it forward too or the trajectory is lost across the swap.
   const convergence = CONVERGENCE_RE.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
   const signal = SIGNAL_RE.exec(body)?.[0];
-  // The replaced sticky was a completed review — the placeholder must record that ancestry even
-  // though review-complete itself is never carried (it would read as a finished review).
-  const completedAncestor =
-    parseReviewComplete(body) || parseCompletedAncestor(body)
-      ? COMPLETED_ANCESTOR_MARKER
-      : undefined;
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, reviewedRoute, completedAncestor, convergence, rounds, signal]
-    .filter((m): m is string => m !== undefined)
+  return [findingsBlock, reviewedSha, carriedProvenanceMarkers(body), convergence, rounds, signal]
+    .filter((m): m is string => m !== undefined && m !== "")
     .join("\n\n");
 };
 

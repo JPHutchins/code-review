@@ -27,6 +27,9 @@ export interface DiscussionLink {
   readonly author: string;
   readonly when: string;
   readonly url: string;
+  // The reply's raw created timestamp: never rendered, used only to re-sort merged escape-twin
+  // entries by true recency (the date-only `when` ties same-day replies).
+  readonly at?: string;
 }
 
 export interface InlineResult {
@@ -144,10 +147,7 @@ export interface RenderInput {
   // collapsed "earlier rounds" section so a fixed/re-id'd finding's conversation stays discoverable.
   // Omitted/empty ⇒ no section.
   readonly orphanedDiscussion?: Readonly<Record<string, readonly DiscussionLink[]>>;
-  // How many per-finding discussion asides the budget dropped, and WHICH findings lost them
-  // (render-side; the cut is named, never silent). Omitted/0 ⇒ no marker line.
-  readonly discussionDropped?: number;
-  readonly discussionDroppedIds?: readonly string[];
+
   // Finding id → the pre-cap reply count for asides the 6-newest cap trimmed: the aside names its
   // cut ("showing the 6 newest of N") instead of rendering indistinguishably from a short thread.
   // Omitted/empty ⇒ every shown list is complete.

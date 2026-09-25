@@ -160,7 +160,7 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% } %>
 
 <% if (it.discussionDropped > 0) { %>
-_<%= it.discussionDropped %> discussion thread<%= it.discussionDropped === 1 ? '' : 's' %> not listed<% if ((it.discussionDroppedIds && it.discussionDroppedIds.length > 0) || (it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0)) { %> (<% if (it.discussionDroppedIds && it.discussionDroppedIds.length > 0) { %>finding<%= it.discussionDroppedIds.length === 1 ? '' : 's' %> <% it.discussionDroppedIds.forEach(function(id) { %>`<%= id %>` <% }) %><% if (it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0) { %>· <% } %><% } %><% if (it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0) { %>systemic<%= it.discussionDroppedSystemicIds.length === 1 ? '' : 's' %> <% it.discussionDroppedSystemicIds.forEach(function(id) { %>`<%= id %>` <% }) %><% } %>)<% } %> — the links live on the comment thread._
+_<%= it.discussionDropped %> discussion thread<%= it.discussionDropped === 1 ? '' : 's' %> not listed<% if ((it.discussionDroppedIds && it.discussionDroppedIds.length > 0) || (it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0) || (it.discussionDroppedOrphanedIds && it.discussionDroppedOrphanedIds.length > 0)) { %> (<% if (it.discussionDroppedIds && it.discussionDroppedIds.length > 0) { %>finding<%= it.discussionDroppedIds.length === 1 ? '' : 's' %> <% it.discussionDroppedIds.forEach(function(id) { %>`<%= id %>` <% }) %><% if ((it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0) || (it.discussionDroppedOrphanedIds && it.discussionDroppedOrphanedIds.length > 0)) { %>· <% } %><% } %><% if (it.discussionDroppedSystemicIds && it.discussionDroppedSystemicIds.length > 0) { %>systemic<%= it.discussionDroppedSystemicIds.length === 1 ? '' : 's' %> <% it.discussionDroppedSystemicIds.forEach(function(id) { %>`<%= id %>` <% }) %><% if (it.discussionDroppedOrphanedIds && it.discussionDroppedOrphanedIds.length > 0) { %>· <% } %><% } %><% if (it.discussionDroppedOrphanedIds && it.discussionDroppedOrphanedIds.length > 0) { %>earlier-round<% if (it.discussionDroppedOrphanedIds.length > 1) { %> (×<%= it.discussionDroppedOrphanedIds.length %>)<% } %> <% it.discussionDroppedOrphanedIds.forEach(function(id) { %>`<%= id %>` <% }) %><% } %>)<% } %> — the links live on the comment thread._
 <% } %>
 
 <% if ((it.orphanedDiscussion && Object.keys(it.orphanedDiscussion).length > 0) || it.orphanedUnresolvable) { %>
@@ -185,11 +185,11 @@ _Replies naming tokens outside this round's report could not be matched against 
 >
 <% it.suppressedNits.forEach(function(n) { -%>
 > - `<%= n.path %>:<%= n.startLine %>` — <%= n.title %><% if (n.id) { %> (<% if (n.codeUrl) { %>[`<%= n.id %>`](<%~ n.codeUrl %>)<% } else { %>`<%= n.id %>`<% } %>)<% } %> _(m = <%= n.m %>)_
+<% if (n.discussionHtml) { %><%~ n.discussionHtml %><% } %>
 > <%~ '<!-- code-review:suppressed-nit' %>
 > <%~ 'severity: ' + n.severity %>
 > <%~ 'location: ' + n.path + ':' + n.startLine + '-' + n.endLine + (n.side ? ' (' + n.side + ')' : '') %>
 > <%~ 'confidence: ' + n.confidence + ' \u00b7 likelihood: ' + n.likelihood %>
-<% if (n.discussionHtml) { %><%~ n.discussionHtml %><% } %>
 <% n.carried.forEach(function(cl) { -%>
 > <%~ cl %>
 <% }) -%>

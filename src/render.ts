@@ -90,9 +90,12 @@ const SUPPRESSED_NIT_BLOCK_OVERHEAD = 280;
 // while an aside cut recovers next round when the finding is still current.
 const DISCUSSION_TOTAL_CHARS = 8_000;
 const DISCUSSION_BLOCK_OVERHEAD = 120;
-// The orphaned entry's fixed wrapper (bullet, `**` bold + backtick span, colon, newline) — the
-// links themselves are budgeted at their true rendered size like every other link list.
-const ORPHANED_ENTRY_OVERHEAD = 14;
+// The orphaned entry renders as ONE inline line — `- **`token`**: [a · d](url) [a · d](url) …` —
+// so its budget charges that exact shape: 10 fixed chars around the token, 7 per link.
+const orphanedEntryCost = (token: string, links: readonly DiscussionLink[]): number =>
+  token.length +
+  10 +
+  links.reduce((sum, d) => sum + d.author.length + d.when.length + d.url.length + 7, 0);
 // The newest-first cap every discussion list keeps (per-finding, per-orphan-token, and the
 // suppressed aside's slots). LIVES HERE so the template's "showing the N newest of M" notes
 // interpolate it — a cap change cannot leave a rendered note lying.
@@ -124,11 +127,6 @@ const budgetBySize = <T>(
   }
   return { kept, droppedItems, used };
 };
-
-// A discussion link list's rendered size: author + date + url plus each link's `- [ · ]()` wrapper.
-const discussionLinksCost = (links: readonly DiscussionLink[]): number =>
-  links.reduce((sum, d) => sum + d.author.length + d.when.length + d.url.length, 0) +
-  links.length * 12;
 
 const escapeHtml = (text: string): string =>
   text.replace(
@@ -462,13 +460,14 @@ export const render = (input: RenderInput): string => {
       n.title.length +
       n.path.length * 2 +
       // The id renders with its two wrapper backticks; the code_url adds the [](...) link form.
-      n.id.length * 2 +
-      2 +
-      (n.codeUrl !== undefined ? n.codeUrl.length + 4 : 0) +
+      // The id renders ONCE: a backtick span inside parens, or the []() link form.
+      n.id.length +
+      (n.codeUrl !== undefined ? n.codeUrl.length + 6 : 4) +
       String(n.startLine).length * 2 +
       String(n.endLine).length +
       (n.side !== undefined ? n.side.length + 2 : 0) +
-      discussionLinksCost(n.discussion),
+      // The composed slot's EXACT rendered size — its `>   ` blockquote prefixes included.
+      n.discussionHtml.length,
     () => null,
   );
 
@@ -508,16 +507,14 @@ export const render = (input: RenderInput): string => {
   const orphanedBudget = budgetBySize(
     Object.entries(input.orphanedDiscussion ?? {}),
     DISCUSSION_TOTAL_CHARS,
-    ([token, links]) => token.length + ORPHANED_ENTRY_OVERHEAD + discussionLinksCost(links),
+    ([token, links]) => orphanedEntryCost(token, links),
     () => null,
   );
   const discussionBudget = budgetBySize(
     strayViews,
     DISCUSSION_TOTAL_CHARS - orphanedBudget.used,
     (view) =>
-      view.discussion.length > 0
-        ? DISCUSSION_BLOCK_OVERHEAD + discussionLinksCost(view.discussion)
-        : 0,
+      view.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + view.discussionHtml.length : 0,
     (view) => ({ ...view, discussion: [], discussionHtml: "" }),
   );
   // The systemic asides draw from the SAME pool, third in line: orphaned (permanent cut) first,
@@ -558,13 +555,17 @@ export const render = (input: RenderInput): string => {
         ...(truncatedFor !== undefined ? { truncated: truncatedFor } : {}),
       });
     } else {
+      // Escape-twins merge into ONE entry: the concatenated links re-sort by the raw reply
+      // timestamp (not the date-only display string) and re-cap at the same 6, so the merged
+      // entry can never render past the cap its note names.
+      const mergedTotal =
+        (existing.truncated ?? existing.links.length) + (truncatedFor ?? links.length);
+      const merged = [...existing.links, ...links].sort((a, b) =>
+        (b.at ?? "").localeCompare(a.at ?? ""),
+      );
       orphanedMerged.set(key, {
-        links: [...existing.links, ...links],
-        ...(truncatedFor !== undefined
-          ? { truncated: Math.max(existing.truncated ?? 0, truncatedFor) }
-          : existing.truncated !== undefined
-            ? { truncated: existing.truncated }
-            : {}),
+        links: merged.slice(0, PER_FINDING_LINKS),
+        ...(mergedTotal > PER_FINDING_LINKS ? { truncated: mergedTotal } : {}),
       });
     }
   }
@@ -577,7 +578,15 @@ export const render = (input: RenderInput): string => {
         entry.truncated !== undefined ? ([[token, entry.truncated]] as const) : [],
       ),
     ),
-    total: (input.orphanedTotal ?? 0) - (orphanedBudget.kept.length - orphanedMerged.size),
+    // The "(showing N of M)" total counts DISTINCT DISPLAYED entries — the merge folds twins,
+    // and the budget's own drops are named in the dropped-threads marker, never this note.
+    total:
+      input.orphanedTotal !== undefined
+        ? Math.max(
+            orphanedMerged.size,
+            input.orphanedTotal - (orphanedBudget.kept.length - orphanedMerged.size),
+          )
+        : orphanedMerged.size,
   };
 
   return eta.renderString(input.template, {
@@ -608,10 +617,16 @@ export const render = (input: RenderInput): string => {
     orphanedDiscussion: orphanedRender.discussion,
     orphanedTruncated: orphanedRender.truncated,
     orphanedUnresolvable: input.orphanedUnresolvable === true,
-    discussionDropped: discussionBudget.droppedItems.length + systemicBudget.droppedItems.length,
+    discussionDropped:
+      discussionBudget.droppedItems.length +
+      systemicBudget.droppedItems.length +
+      orphanedBudget.droppedItems.length,
     discussionDroppedIds: discussionBudget.droppedItems.map((v) => escapeCodeBackticks(v.idKey)),
     discussionDroppedSystemicIds: systemicBudget.droppedItems.flatMap((s) =>
       s.id !== undefined ? [s.id] : [],
+    ),
+    discussionDroppedOrphanedIds: orphanedBudget.droppedItems.map(([token]) =>
+      escapeCodeBackticks(token),
     ),
     discussionCap: PER_FINDING_LINKS,
     orphanedTotal: orphanedRender.total,

@@ -17,6 +17,7 @@ import { formatMarkdown } from "./format.js";
 import {
   buildConvergence,
   carriedConvergence,
+  carriedFindingsMarker,
   carryForwardMarkers,
   computeIdCounts,
   computeSameRootNotes,
@@ -35,6 +36,8 @@ import {
   reviewBodyPointer,
   mechanicConvergence,
   escapeCodeBackticks,
+  AGENTS_STOP_DIRECTIVE,
+  convergenceMarker,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
 import {
@@ -626,19 +629,21 @@ export const buildStickyDiscussion = (
       }
     }
   }
-  const truncated: Record<string, number> = {};
+  // Map-built then Object.fromEntries: a `__proto__`-named id must record its cut like any other
+  // key, which a bare {}-literal assignment silently swallows.
+  const truncated = new Map<string, number>();
   for (const [id, links] of Object.entries(byFinding)) {
     links.reverse();
     if (links.length > PER_FINDING_LINKS) {
-      truncated[id] = links.length;
+      truncated.set(id, links.length);
       links.splice(PER_FINDING_LINKS);
     }
   }
-  const orphanedTruncated: Record<string, number> = {};
+  const orphanedTruncated = new Map<string, number>();
   for (const [token, links] of orphaned) {
     links.reverse();
     if (links.length > PER_FINDING_LINKS) {
-      orphanedTruncated[token] = links.length;
+      orphanedTruncated.set(token, links.length);
       links.splice(PER_FINDING_LINKS);
     }
   }
@@ -653,8 +658,8 @@ export const buildStickyDiscussion = (
     byFinding,
     orphaned: Object.fromEntries(byLatestReply.slice(0, ORPHAN_TOKEN_CAP)),
     orphanedTotal,
-    truncated,
-    orphanedTruncated,
+    truncated: Object.fromEntries(truncated),
+    orphanedTruncated: Object.fromEntries(orphanedTruncated),
   };
 };
 
@@ -1134,10 +1139,16 @@ export const post = async (
     const findings = stampConvergence(incompleteFindings(`### ⚠️ ${message}`), noticeConvergence);
     // The notice's own blob holds no findings — stamping its link would point the NEXT round's
     // resolve at an empty document and sever the departed set the trail needs. The prior sticky's
-    // findings link is carried instead (the same convention noticeBody keeps for the other notice
-    // paths).
-    const priorFindingsLink =
-      existingSticky !== null ? findingsArtifactUrl(existingSticky.body) : null;
+    // findings marker is carried verbatim instead — BOTH forms via the shared extractor, never a
+    // hand-rolled link-only carry — with the notice's own convergence stamp beside it.
+    const noticeFindingsPointer = (doc: Findings): string => {
+      const carried = existingSticky !== null ? carriedFindingsMarker(existingSticky.body) : null;
+      if (carried === null) return findingsBlob(doc);
+      return [
+        `${AGENTS_STOP_DIRECTIVE}\n${carried}`,
+        ...(doc.convergence !== undefined ? [convergenceMarker(doc.convergence)] : []),
+      ].join("\n");
+    };
     return formatMarkdown(
       render({
         findings,
@@ -1154,10 +1165,7 @@ export const post = async (
         convergenceRound: false,
         runUrl: input.runUrl,
         jsonUrl: input.jsonUrl,
-        findingsPointer:
-          priorFindingsLink !== null
-            ? findingsMarkerPair(priorFindingsLink, findings.convergence)
-            : findingsBlob(findings),
+        findingsPointer: noticeFindingsPointer(findings),
         postedAt: input.postedAt,
         orphanedDiscussion: discussion.orphanedDiscussion,
         orphanedTotal: discussion.orphanedTotal,

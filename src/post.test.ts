@@ -4994,6 +4994,10 @@ describe("post — notice overwrites carry the discussion trail", () => {
 describe("post — a GitHub-rejected inline anchor renders its discussion aside", () => {
   it("the final sticky patch lists the rejected finding with its reply trail", async () => {
     const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+    // A resolved prior document — the orphan gate's resolve must NOT run the real gh reader, and
+    // the resolved trail must render beside the rejected finding's aside.
+    const priorDoc = mkFindings([mkFinding({ id: "old-id", severity: "minor" })]);
+    const readArtifact: ArtifactReader = () => Promise.resolve(JSON.stringify(priorDoc));
     const reply = JSON.stringify({
       id: 1000,
       in_reply_to_id: 999,
@@ -5001,6 +5005,14 @@ describe("post — a GitHub-rejected inline anchor renders its discussion aside"
       created_at: "2026-09-01T00:00:00Z",
       html_url: "https://github.com/owner/repo/pull/42#issuecomment-1000",
       body: "still seeing `b-id`",
+    });
+    const departedReply = JSON.stringify({
+      id: 1001,
+      in_reply_to_id: 999,
+      user: "bob",
+      created_at: "2026-09-01T00:00:00Z",
+      html_url: "https://github.com/owner/repo/pull/42#issuecomment-1001",
+      body: "what about `old-id`?",
     });
     const findings = mkFindings([
       mkFinding({
@@ -5021,7 +5033,7 @@ describe("post — a GitHub-rejected inline anchor renders its discussion aside"
       if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
         return Promise.resolve(inlineDiff);
       if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))
-        return Promise.resolve(`${commentRow(999, priorSticky)}${reply}\n`);
+        return Promise.resolve(`${commentRow(999, priorSticky)}${reply}\n${departedReply}\n`);
       if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
       if (a[0] === "repos/owner/repo/issues/comments/999")
@@ -5045,7 +5057,7 @@ describe("post — a GitHub-rejected inline anchor renders its discussion aside"
       if (a[0] === "graphql") return Promise.resolve("");
       return Promise.reject(new Error(`Unexpected gh api call: ${a.join(" ")}`));
     };
-    await expect(post(mkInlineInput({}), api)).resolves.toBeUndefined();
+    await expect(post(mkInlineInput({}), api, readArtifact)).resolves.toBeUndefined();
     const stickyPatches = calls.filter((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
     const finalBody = (JSON.parse(stickyPatches[stickyPatches.length - 1]!.stdin!) as CommentBody)
       .body;
@@ -5056,6 +5068,13 @@ describe("post — a GitHub-rejected inline anchor renders its discussion aside"
     expect(finalBody).toContain(
       "- [alice · 2026-09-01](https://github.com/owner/repo/pull/42#issuecomment-1000)",
     );
+    // The orphan gate resolved the prior document THROUGH the injected reader: the departed
+    // finding's trail renders, and no unresolvable-artifact note claims a loss that never happened.
+    expect(finalBody).toContain("**`old-id`**");
+    expect(finalBody).toContain(
+      "[bob · 2026-09-01](https://github.com/owner/repo/pull/42#issuecomment-1001)",
+    );
+    expect(finalBody).not.toContain("could not be matched against the prior findings");
   });
 });
 

@@ -533,10 +533,52 @@ export const render = (input: RenderInput): string => {
       };
     }),
     DISCUSSION_TOTAL_CHARS - orphanedBudget.used - discussionBudget.used,
-    (s) =>
-      s.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + discussionLinksCost(s.discussion) : 0,
+    (s) => (s.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + s.discussionHtml.length : 0),
     (s) => ({ ...s, discussion: [], discussionHtml: "" }),
   );
+  // Escape-twin departed ids display identically — their entries MERGE (links concatenated, the
+  // largest pre-cap total kept) instead of one entry silently dropping the other, and the total
+  // the "(showing N of M)" note reads is the merged-entry count, so the note never names a
+  // phantom cut.
+  const orphanedMerged = new Map<
+    string,
+    { readonly links: readonly DiscussionLink[]; readonly truncated?: number }
+  >();
+  for (const [token, links] of orphanedBudget.kept) {
+    const key = escapeCodeBackticks(token);
+    const truncatedFor =
+      input.orphanedTruncated !== undefined &&
+      Object.prototype.hasOwnProperty.call(input.orphanedTruncated, token)
+        ? input.orphanedTruncated[token]
+        : undefined;
+    const existing = orphanedMerged.get(key);
+    if (existing === undefined) {
+      orphanedMerged.set(key, {
+        links,
+        ...(truncatedFor !== undefined ? { truncated: truncatedFor } : {}),
+      });
+    } else {
+      orphanedMerged.set(key, {
+        links: [...existing.links, ...links],
+        ...(truncatedFor !== undefined
+          ? { truncated: Math.max(existing.truncated ?? 0, truncatedFor) }
+          : existing.truncated !== undefined
+            ? { truncated: existing.truncated }
+            : {}),
+      });
+    }
+  }
+  const orphanedRender = {
+    discussion: Object.fromEntries(
+      [...orphanedMerged.entries()].map(([token, entry]) => [token, entry.links]),
+    ),
+    truncated: Object.fromEntries(
+      [...orphanedMerged.entries()].flatMap(([token, entry]) =>
+        entry.truncated !== undefined ? ([[token, entry.truncated]] as const) : [],
+      ),
+    ),
+    total: (input.orphanedTotal ?? 0) - (orphanedBudget.kept.length - orphanedMerged.size),
+  };
 
   return eta.renderString(input.template, {
     findings: input.findings,
@@ -563,18 +605,8 @@ export const render = (input: RenderInput): string => {
         ? convergenceBadge(convergence)
         : convergenceSummary(input.findings, input.convergenceThreshold),
     strays: discussionBudget.kept,
-    orphanedDiscussion: Object.fromEntries(
-      orphanedBudget.kept.map(([token, links]) => [escapeCodeBackticks(token), links]),
-    ),
-    orphanedTruncated:
-      input.orphanedTruncated !== undefined
-        ? Object.fromEntries(
-            Object.entries(input.orphanedTruncated).map(([token, n]) => [
-              escapeCodeBackticks(token),
-              n,
-            ]),
-          )
-        : undefined,
+    orphanedDiscussion: orphanedRender.discussion,
+    orphanedTruncated: orphanedRender.truncated,
     orphanedUnresolvable: input.orphanedUnresolvable === true,
     discussionDropped: discussionBudget.droppedItems.length + systemicBudget.droppedItems.length,
     discussionDroppedIds: discussionBudget.droppedItems.map((v) => escapeCodeBackticks(v.idKey)),
@@ -582,7 +614,7 @@ export const render = (input: RenderInput): string => {
       s.id !== undefined ? [s.id] : [],
     ),
     discussionCap: PER_FINDING_LINKS,
-    orphanedTotal: input.orphanedTotal ?? 0,
+    orphanedTotal: orphanedRender.total,
     suppressedNits: suppressedBudget.kept,
     carriedDroppedNits: suppressedBudget.droppedItems.length,
     nitVisibilityFloor: input.nitVisibilityFloor ?? DEFAULT_NIT_VISIBILITY_FLOOR,

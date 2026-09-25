@@ -1022,8 +1022,14 @@ export const stripSurfaceFields = (doc: unknown): unknown => {
 // that always precedes it is re-emitted from AGENTS_STOP_DIRECTIVE (its SSOT above) rather than
 // re-matched, so a future edit to that constant can't silently desync a parallel regex. Returns ""
 // when the body carries none of them.
+// The prior sticky's findings marker, whatever form it rides (the artifact link OR the pre-#217
+// embedded base64). Shared by carryForwardMarkers and the notice paths, so both preserves of the
+// prior pointer can never diverge on which form survives.
+export const carriedFindingsMarker = (body: string): string | null =>
+  /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0] ?? null;
+
 export const carryForwardMarkers = (body: string): string => {
-  const findings = /<!-- code-review:findings-json[^>]*-->/.exec(body)?.[0];
+  const findings = carriedFindingsMarker(body);
   const reviewedSha = /<!-- reviewed-sha: [0-9a-fA-F]{40} -->/.exec(body)?.[0];
   const reviewedRoute = ROUTE_RE.exec(body)?.[0];
   // The compact convergence marker (issue #185 review) rides beside the findings link, so the

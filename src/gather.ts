@@ -375,6 +375,17 @@ const downloadFailingJobLogs = async (
   for (const job of selected) {
     try {
       const log = await ghApi([`repos/${repo}/actions/jobs/${String(job.id)}/logs`]);
+      // GitHub serves a "no log available" placeholder body when a job produced none (a killed
+      // runner, no step output). A placeholder is NOT failure evidence: counting it as staged
+      // would fire the all-staged steer and skip the unverified stamp on exactly the rounds that
+      // must not present themselves as evidenced.
+      if (log.trim() === "no log available" || log.trim() === "") {
+        process.stderr.write(
+          `Warning: job ${String(job.id)} has no log available (placeholder body) — not staged
+`,
+        );
+        continue;
+      }
       writeFileSync(join(outDir, `job_${String(job.id)}.log`), log);
       staged += 1;
     } catch (err) {
@@ -404,8 +415,16 @@ const downloadFailingJobLogs = async (
     // so a line written there would not render as an annotation and would corrupt the outputs.
     // ::warning:: rather than a plain line because this says the fast-fix route is about to reason
     // without its primary evidence source — the failing logs — which is the thing it exists to read.
+    const reported =
+      failing.length > 0
+        ? `${String(failing.length)} failing job(s) reported`
+        : "no job concluded 'failure' (timeouts or cancellations)";
     process.stderr.write(
-      `::warning::${annotationSafe(`No failing-job logs could be staged for run ${runId} (${String(failing.length)} failing job(s) reported) — the review must reproduce the failures itself (the failing jobs are listed in failed_jobs.json)`)}\n`,
+      `::warning::${annotationSafe(
+        `No failing-job logs could be staged for run ${runId} (${reported}) — the review must reproduce the failures itself${
+          failing.length > 0 ? " (the failing jobs are listed in failed_jobs.json)" : ""
+        }`,
+      )}\n`,
     );
   }
   return { staged, failing: failing.length };

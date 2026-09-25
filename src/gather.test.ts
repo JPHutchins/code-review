@@ -1458,7 +1458,9 @@ describe("gather — failing-job identity", () => {
 
     const result = await gather(mkInput({ conclusion: "failure" }), api, mkMockGit([]).git);
 
-    expect(result).toMatchObject({ kind: "gathered", failingJobs: 1, stagedJobLogs: 1 });
+    // The placeholder body is NOT staged — it is not failure evidence, so the unverified stamp
+    // and the honest steer fire on exactly this round.
+    expect(result).toMatchObject({ kind: "gathered", failingJobs: 1, stagedJobLogs: 0 });
     expect(JSON.parse(outFile("failed_jobs.json"))).toEqual([
       { name: null, conclusion: "failure" },
     ]);

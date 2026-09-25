@@ -49,7 +49,7 @@ import {
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
 } from "./schema.js";
-import { resolveFindingId, resolveRuleId } from "./schema.js";
+import { resolveFindingId, resolveRuleId, synthesizedSystemicId } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -407,6 +407,11 @@ const parseIssueCommentRows = (
     // (its own comments always carry a login), so skipping it cannot mint a duplicate. Only a line
     // that will not parse is corruption.
   }
+  // The REST order is not a contract — the caps and the walk derive recency from it, so the rows
+  // sort explicitly by (created, id), the sibling registry's discipline.
+  rows.sort(
+    (a, b) => a.created.localeCompare(b.created) || (a.id > b.id ? 1 : a.id < b.id ? -1 : 0),
+  );
   return { rows, malformed };
 };
 
@@ -416,9 +421,9 @@ const fetchIssueCommentRows = async (
   ghApi: GhApi,
 ): Promise<readonly IssueCommentRow[]> => {
   const raw = await ghApi([
-    `repos/${repo}/issues/${String(prNumber)}/comments`,
-    "-f",
-    "per_page=100",
+    // per_page rides the QUERY string — a `-f` field would flip `gh api` from GET to POST
+    // (create-comment) and 422 every sticky lookup.
+    `repos/${repo}/issues/${String(prNumber)}/comments?per_page=100`,
     "--paginate",
     "--jq",
     ISSUE_COMMENTS_JQ,
@@ -693,19 +698,22 @@ export const priorIdsFrom = (doc: unknown): readonly string[] => {
   // The id spelling with the LEGACY code fallback — a pre-0.10 prior document (findings with a
   // code and no id) must still feed the departed set, or its replies pay the resolve and then
   // render nowhere.
-  const idsOf = (field: string): readonly string[] =>
+  const idsOf = (field: string, systemic: boolean): readonly string[] =>
     (Array.isArray(rec[field]) ? rec[field] : []).flatMap((raw) => {
       const item = typeof raw === "object" && raw !== null ? asRecord(raw) : null;
       if (item === null) return [];
+      const title = typeof item["title"] === "string" ? item["title"] : "";
       const resolved = resolveRuleId({
         ...(typeof item["id"] === "string" ? { id: item["id"] } : {}),
         ...(typeof item["code"] === "string" ? { code: item["code"] } : {}),
         ...(typeof item["path"] === "string" ? { path: item["path"] } : {}),
-        title: typeof item["title"] === "string" ? item["title"] : "",
+        title,
       });
-      return resolved !== undefined ? [resolved] : [];
+      // The upcast's own fallback for a code-less systemic (no path to synthesize from).
+      const id = resolved ?? (systemic && title !== "" ? synthesizedSystemicId(title) : undefined);
+      return id !== undefined ? [id] : [];
     });
-  return [...idsOf("findings"), ...idsOf("systemic_problems")];
+  return [...idsOf("findings", false), ...idsOf("systemic_problems", true)];
 };
 
 // The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
@@ -1771,6 +1779,16 @@ export const post = async (
           departedIds,
         )
       : null;
+  const finalDiscussionOverride =
+    finalDiscussion !== null
+      ? {
+          discussionByFinding: finalDiscussion.byFinding,
+          orphanedDiscussion: finalDiscussion.orphaned,
+          orphanedTotal: finalDiscussion.orphanedTotal,
+          discussionTruncated: finalDiscussion.truncated,
+          orphanedTruncated: finalDiscussion.orphanedTruncated,
+        }
+      : undefined;
   if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
     const finalDisposition: InlineDisposition =
       inlinePosted > 0
@@ -1786,15 +1804,7 @@ export const post = async (
           finalStrays,
           unanchoredCount,
           unposted,
-          finalDiscussion !== null
-            ? {
-                discussionByFinding: finalDiscussion.byFinding,
-                orphanedDiscussion: finalDiscussion.orphaned,
-                orphanedTotal: finalDiscussion.orphanedTotal,
-                discussionTruncated: finalDiscussion.truncated,
-                orphanedTruncated: finalDiscussion.orphanedTruncated,
-              }
-            : undefined,
+          finalDiscussionOverride,
         ),
         ghApi,
       );
@@ -1825,6 +1835,9 @@ export const post = async (
       // path-only links here too (issue #231 r2). Unconditional: renderBody's own gate treats an
       // empty array exactly like absence, so the ternary was a duplicated decision (issue #231 r3).
       unposted,
+      // The summary is the sticky's long-lived twin — a rejected finding's rebuilt discussion
+      // trail renders here exactly as on the final patch.
+      finalDiscussionOverride,
     ),
   );
 };

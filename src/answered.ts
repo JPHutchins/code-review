@@ -448,9 +448,9 @@ export const fetchThreadComments = async (
   try {
     const rows = parseJsonl(
       await ghApi([
-        `repos/${repo}/pulls/${String(prNumber)}/comments`,
-        "-f",
-        "per_page=100",
+        // per_page rides the QUERY string — a `-f` field would flip `gh api` from GET to POST
+        // and 422 every answered-thread fetch.
+        `repos/${repo}/pulls/${String(prNumber)}/comments?per_page=100`,
         "--paginate",
         "--jq",
         THREAD_COMMENT_JQ,

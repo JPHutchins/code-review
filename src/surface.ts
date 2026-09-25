@@ -1060,6 +1060,7 @@ export const carriedProvenanceMarkers = (body: string): string =>
     // The placeholder keeps the REAL route marker: the seed chain requires it outright to stay
     // route-aware across the prose swap.
     ROUTE_RE.exec(body)?.[0],
+    parseMechanicAncestor(body) ? MECHANIC_ANCESTOR_MARKER : undefined,
     parseReviewComplete(body) || parseCompletedAncestor(body)
       ? COMPLETED_ANCESTOR_MARKER
       : undefined,

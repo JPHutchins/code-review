@@ -26,7 +26,7 @@ import type {
   TestSummary,
 } from "./schema.js";
 import type { ArtifactReader } from "./artifact.js";
-import { synthesizedFindingId } from "./schema.js";
+import { synthesizedFindingId, synthesizedSystemicId } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -179,7 +179,8 @@ const mkMocks = (stickyBody: string) => [
   },
   {
     match: (a: readonly string[]) =>
-      a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+      (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+      a.includes("--paginate"),
     // The shared issue-comment projection (ISSUE_COMMENTS_JQ): the sticky lookup and the discussion
     // aside read the same rows.
     response: `${JSON.stringify({
@@ -199,7 +200,7 @@ const mkMocks = (stickyBody: string) => [
   // the no-answers path.
   {
     match: (a: readonly string[]) =>
-      a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+      (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) && a.includes("--paginate"),
     response: "",
   },
   { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
@@ -452,11 +453,17 @@ describe("post — run summary (issue #205)", () => {
         return (JSON.parse(stdin ?? "{}") as ReviewBody).comments.length > 0
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
           : Promise.resolve('{"html_url": "https://gh/review"}\n');
-      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--input")
+      )
         return (JSON.parse(stdin ?? "{}") as { line: number }).line === 11
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
           : Promise.resolve('{"id": 1, "html_url": "https://gh/comment"}\n');
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--input")
+      )
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
       if (a[0] === "graphql") return Promise.resolve("");
       return shared(args, stdin, env);
@@ -613,7 +620,9 @@ describe("post — upsert sticky comment", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: commentRow(999, "<!-- code-review -->\nold content"),
       },
       {
@@ -635,7 +644,7 @@ describe("post — upsert sticky comment", () => {
     expect(body.body).toContain("full review");
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(postCall).toBeUndefined();
   });
@@ -651,11 +660,15 @@ describe("post — upsert sticky comment", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -667,7 +680,7 @@ describe("post — upsert sticky comment", () => {
     await post(mkInput({}), api);
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(postCall).toBeDefined();
     const body = JSON.parse(postCall!.stdin!) as CommentBody;
@@ -685,11 +698,15 @@ describe("post — upsert sticky comment", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -706,7 +723,7 @@ describe("post — upsert sticky comment", () => {
     expect(patchCall).toBeUndefined();
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(postCall).toBeDefined();
   });
@@ -742,11 +759,13 @@ describe("post — systemic problems (issue #134)", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+        match: (a) => a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false,
         response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
       },
       {
@@ -758,7 +777,7 @@ describe("post — systemic problems (issue #134)", () => {
     await post(mkInput({}), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
@@ -802,11 +821,13 @@ describe("post — systemic problems (issue #134)", () => {
           response: inlineDiff,
         },
         {
-          match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+          match: (a) =>
+            (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+            a.includes("--paginate"),
           response: "",
         },
         {
-          match: (a) => a[0] === "repos/owner/repo/issues/42/comments",
+          match: (a) => a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false,
           response: '{"id": 1, "html_url": "https://github.com/o/r/pull/42#issuecomment-1"}\n',
         },
         {
@@ -818,7 +839,8 @@ describe("post — systemic problems (issue #134)", () => {
       await post(mkInput({ jsonUrl: undefined }), api);
 
       const stickyCall = calls().find(
-        (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+        (c) =>
+          c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
       );
       expect(stickyCall).toBeDefined();
       const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
@@ -846,11 +868,15 @@ describe("post — inline review", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -894,11 +920,15 @@ describe("post — inline review", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1124,11 +1154,15 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1172,11 +1206,15 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1220,11 +1258,15 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1247,7 +1289,7 @@ describe("post — suggestion handling (projected from a finding's patch)", () =
     expect(commentBody).not.toContain("line 0");
 
     const summaryCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(summaryCall).toBeDefined();
     const summaryBody = JSON.parse(summaryCall!.stdin!) as CommentBody;
@@ -1292,11 +1334,15 @@ describe("post — PR resolution", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/99/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/99/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/99/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/99/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1360,11 +1406,15 @@ describe("post — injection discipline", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1393,11 +1443,15 @@ describe("post — injection discipline", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: commentRow(999, "<!-- code-review -->\nold content"),
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -1413,7 +1467,9 @@ describe("post — injection discipline", () => {
     await post(mkInput({}), api);
 
     const findCommentsCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--paginate"),
+      (c) =>
+        c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") &&
+        c.args.includes("--paginate"),
     );
     expect(findCommentsCall).toBeDefined();
     expect(findCommentsCall?.args.some((a) => a.includes("github-actions[bot]"))).toBe(false);
@@ -1436,12 +1492,13 @@ describe("post — §5.5 error semantics", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
   ];
@@ -1457,7 +1514,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
@@ -1487,7 +1544,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not complete");
@@ -1513,7 +1570,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not complete");
@@ -1533,7 +1590,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
@@ -1562,7 +1619,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
@@ -1590,7 +1647,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("did not conform to the findings schema");
@@ -1619,7 +1676,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain('schema_version "1.0.0"');
@@ -1646,7 +1703,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     // Real findings summary is preserved — this is not a synthetic notice.
@@ -1686,7 +1743,7 @@ describe("post — §5.5 error semantics", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("no review verdict");
@@ -1728,7 +1785,9 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         // A placeholder sticky already carrying THIS head SHA in its marker (the #5 trigger).
         response: commentRow(
           999,
@@ -1783,7 +1842,9 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: abc123def456 -->\nold"),
       },
       {
@@ -1850,7 +1911,9 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
@@ -1913,7 +1976,9 @@ describe("post — re-run hygiene (REC-CO-2 / §5.2.6 — review identity, not t
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
@@ -1968,12 +2033,13 @@ describe("post — CO-R3: never-partially-post ordering", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -1988,7 +2054,7 @@ describe("post — CO-R3: never-partially-post ordering", () => {
     await post(mkInput({}), api);
 
     const stickyIndex = calls().findIndex(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const inlineIndex = calls().findIndex(
       (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
@@ -2008,7 +2074,9 @@ describe("post — CO-R3: never-partially-post ordering", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
@@ -2043,11 +2111,15 @@ describe("post — REQ-CO-9 test-report threading", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -2059,7 +2131,7 @@ describe("post — REQ-CO-9 test-report threading", () => {
     await post(mkInput({ testReportPath: join(tmpDir, "test-report.json") }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("Test results");
@@ -2079,11 +2151,15 @@ describe("post — REQ-CO-9 test-report threading", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -2098,7 +2174,7 @@ describe("post — REQ-CO-9 test-report threading", () => {
 
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("test report"));
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
@@ -2120,12 +2196,13 @@ describe("post — --inline-template", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2186,11 +2263,15 @@ describe("post — --effort threading", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -2202,7 +2283,7 @@ describe("post — --effort threading", () => {
     await post(mkInput({ effort: "low", route: "mechanic" }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("**effort:** low");
@@ -2233,7 +2314,8 @@ describe("post — --effort threading", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: commentRow(999, convergedPrior),
       },
       {
@@ -2242,7 +2324,8 @@ describe("post — --effort threading", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+          (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
@@ -2279,11 +2362,15 @@ describe("post — --effort threading", () => {
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -2295,7 +2382,7 @@ describe("post — --effort threading", () => {
     await post(mkInput({ route: undefined }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
     expect(body.body).toContain("**route:** mechanic");
@@ -2315,12 +2402,13 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: JSON.stringify({
         id: 999,
         html_url: "https://github.com/owner/repo/issues/42#issuecomment-999",
@@ -2343,7 +2431,7 @@ describe("post — summary-only sticky & disposition honesty (fix #2)", () => {
     const stickyCalls = calls.filter(
       (c) =>
         c.stdin !== undefined &&
-        (c.args[0] === "repos/owner/repo/issues/42/comments" ||
+        (c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") ||
           c.args[0] === "repos/owner/repo/issues/comments/999"),
     );
     return (JSON.parse(stickyCalls.at(-1)!.stdin!) as CommentBody).body;
@@ -2454,11 +2542,15 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "", // no existing sticky — a new comment is posted
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: JSON.stringify({ id: 999, html_url: stickyHtmlUrl }),
       },
       {
@@ -2504,7 +2596,9 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: deadbeef00 -->\nold"),
       },
       {
@@ -2554,11 +2648,15 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
         response: inlineDiff,
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "", // malformed — no id/html_url to parse
       },
       {
@@ -2579,7 +2677,7 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
     // No sticky id was ever recovered, so there is nothing to re-patch — no extra call is made
     // beyond the single initial POST.
     const stickyWrites = calls().filter(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     expect(stickyWrites).toHaveLength(1);
   });
@@ -2595,7 +2693,10 @@ describe("post — issue #11: bidirectional links between the sticky and the rev
       if (args[0] === "repos/owner/repo/pulls/42" && args.includes("-H")) {
         return Promise.resolve(inlineDiff);
       }
-      if (args[0] === "repos/owner/repo/issues/42/comments" && args.includes("--paginate")) {
+      if (
+        args[0]?.startsWith("repos/owner/repo/issues/42/comments") &&
+        args.includes("--paginate")
+      ) {
         return Promise.resolve(
           commentRow(999, "<!-- code-review -->\n<!-- reviewed-sha: abc123def456 -->\nold"),
         );
@@ -2644,12 +2745,13 @@ describe("post — issue #14: markdown formatting pass before posting", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2669,7 +2771,7 @@ describe("post — issue #14: markdown formatting pass before posting", () => {
     await post(mkInlineInput({}), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toMatch(/\n\n\n/);
@@ -2707,12 +2809,13 @@ describe("post — --run-url / --json-url threading", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2727,7 +2830,7 @@ describe("post — --run-url / --json-url threading", () => {
     await post(mkInput({ runUrl: "https://ci.example.com/runs/123" }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).toContain("[view the run & traces](https://ci.example.com/runs/123)");
@@ -2755,7 +2858,7 @@ describe("post — --run-url / --json-url threading", () => {
 
     // Every surface names the same artifact, at every review size — the embed is gone (issue #217).
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const stickyBody = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(stickyBody).toContain(
@@ -2781,7 +2884,7 @@ describe("post — --run-url / --json-url threading", () => {
     await post(mkInput({ jsonUrl: undefined }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toContain("view the run & traces");
@@ -2840,12 +2943,13 @@ describe("post — postedAt threading (issue #28)", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2860,7 +2964,7 @@ describe("post — postedAt threading (issue #28)", () => {
     await post(mkInput({ postedAt: "2026-07-07 18:42 UTC" }), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).toContain("**Reviewed** `abc123d` at 2026-07-07 18:42 UTC");
@@ -2872,7 +2976,7 @@ describe("post — postedAt threading (issue #28)", () => {
     await post(mkInput({}), api);
 
     const stickyCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
     expect(body).not.toContain("**Reviewed**");
@@ -2891,12 +2995,13 @@ describe("post — absent price map renders cost as N/A with a footnote (SPEC §
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -2907,7 +3012,7 @@ describe("post — absent price map renders cost as N/A with a footnote (SPEC §
 
   const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
     const stickyCall = calls.find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     return (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
   };
@@ -2978,12 +3083,13 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: "",
     },
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--input"),
       response: "",
     },
     {
@@ -3042,9 +3148,15 @@ describe("post — inline review 422 salvage (issue #57)", () => {
         return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
       if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
         return Promise.resolve(inlineDiff);
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate")
+      )
         return Promise.resolve("");
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--input")
+      )
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
       if (a[0] === "repos/owner/repo/issues/comments/999")
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
@@ -3057,7 +3169,10 @@ describe("post — inline review 422 salvage (issue #57)", () => {
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
           : Promise.resolve('{"html_url": "https://gh/review"}\n');
       }
-      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input")) {
+      if (
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--input")
+      ) {
         const c = JSON.parse(stdin ?? "{}") as { line: number };
         return c.line === 11
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
@@ -3091,7 +3206,8 @@ describe("post — inline review 422 salvage (issue #57)", () => {
     expect(reviewPosts).toHaveLength(2);
     expect((JSON.parse(reviewPosts[1]!.stdin!) as ReviewBody).comments).toEqual([]);
     const individualComments = calls.filter(
-      (c) => c.args[0] === "repos/owner/repo/pulls/42/comments" && c.args.includes("--input"),
+      (c) =>
+        c.args[0]?.startsWith("repos/owner/repo/pulls/42/comments") && c.args.includes("--input"),
     );
     expect(individualComments).toHaveLength(2);
 
@@ -3125,14 +3241,16 @@ describe("announce — in-progress sticky", () => {
     response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
   };
   const commentsMatch = (a: readonly string[]): boolean =>
-    a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate");
+    (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--paginate");
 
   it("POSTs a fresh placeholder linking the run when no sticky exists", async () => {
     const { api, calls } = mkMockGhApi([
       openPr,
       { match: commentsMatch, response: "" },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: '{"id": 555, "html_url": "https://example.com/c/555"}',
       },
     ]);
@@ -3140,7 +3258,8 @@ describe("announce — in-progress sticky", () => {
     await announce(mkAnnounceInput(), api);
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+      (c) =>
+        c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.args.includes("--input"),
     );
     expect(postCall).toBeDefined();
     const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
@@ -3186,7 +3305,9 @@ describe("announce — in-progress sticky", () => {
     // No NEW comment posted.
     expect(
       calls().some(
-        (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+        (c) =>
+          c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") &&
+          c.args.includes("--input"),
       ),
     ).toBe(false);
   });
@@ -3326,14 +3447,16 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
   };
   const commentsMatch = (a: readonly string[]): boolean =>
-    a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate");
+    (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) && a.includes("--paginate");
 
   it("POSTs an attributed 'did not complete' notice when no sticky exists", async () => {
     const { api, calls } = mkMockGhApi([
       openPr,
       { match: commentsMatch, response: "" },
       {
-        match: (a) => a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+        match: (a) =>
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: '{"id": 555, "html_url": "https://example.com/c/555"}',
       },
     ]);
@@ -3341,7 +3464,8 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     await reportIncomplete(mkAnnounceInput(), api);
 
     const postCall = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.args.includes("--input"),
+      (c) =>
+        c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.args.includes("--input"),
     );
     const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
     expect(body).toContain("<!-- code-review -->");
@@ -3941,7 +4065,8 @@ describe("post — convergence rounds (issue #125)", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: commentRow(999, `<!-- code-review -->\n${markers}\nold`),
       },
       {
@@ -3950,7 +4075,8 @@ describe("post — convergence rounds (issue #125)", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+          (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
@@ -4220,7 +4346,7 @@ describe("post — convergence rounds (issue #125)", () => {
     const sticky = calls.find(
       (c) =>
         (c.args[0] === "repos/owner/repo/issues/comments/999" ||
-          c.args[0] === "repos/owner/repo/issues/42/comments") &&
+          c.args[0]?.startsWith("repos/owner/repo/issues/42/comments")) &&
         c.stdin !== undefined,
     );
     const body = (JSON.parse(sticky?.stdin ?? "{}") as CommentBody).body;
@@ -4330,12 +4456,14 @@ describe("post — convergence rounds (issue #125)", () => {
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"),
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--paginate"),
         response: "",
       },
       {
         match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"),
+          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+          a.includes("--input"),
         response: "",
       },
       {
@@ -4347,7 +4475,7 @@ describe("post — convergence rounds (issue #125)", () => {
     // No prior round, so there is no convergence to carry — and decodedBlob throws on an absent marker,
     // which is the point: the sticky must not claim a stop signal it does not have.
     const posted = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/issues/42/comments" && c.stdin !== undefined,
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
     );
     const stickyBody = (JSON.parse(posted!.stdin!) as CommentBody).body;
     expect(parseConvergenceMarker(stickyBody)).toBeNull();
@@ -4444,7 +4572,8 @@ describe("post — answered findings (issue #151)", () => {
   const withThreads = (threads: string): ReturnType<typeof mkMocks> => [
     {
       match: (a: readonly string[]) =>
-        a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"),
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--paginate"),
       response: threads,
     },
     ...mkMocks("<!-- code-review -->\nold"),
@@ -4746,6 +4875,20 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
 });
 
 describe("fetchIssueCommentRows — the sticky lookup never mistakes corruption for absence", () => {
+  it("pins the transport contract: per_page rides the QUERY string, never a -f field (a field flips gh api to POST and 422s)", async () => {
+    let captured: readonly string[] = [];
+    const api: GhApi = (args) => {
+      captured = args;
+      return Promise.resolve("");
+    };
+    await findBotComment("owner/repo", 1, "github-actions[bot]", "<!-- code-review -->", api);
+    expect(
+      captured.some((a) => a === "-f" || a === "--raw-field" || a.startsWith("per_page=")),
+    ).toBe(false);
+    expect(captured[0]).toContain("?per_page=100");
+    expect(captured).toContain("--paginate");
+  });
+
   it("throws when a row fails to decode, so a corrupted history cannot mint a duplicate sticky", async () => {
     const api: GhApi = () =>
       Promise.resolve('{"id": 999, "body": "<!-- code-review -->"}\nnot-json\n');
@@ -4844,7 +4987,7 @@ describe("priorIdsFrom — the orphan bucket's departed set", () => {
         { id: "", code: "c-2" },
         { path: "src/a.ts", title: "T" },
       ],
-      systemic_problems: [{ code: "s-1" }],
+      systemic_problems: [{ code: "s-1" }, { title: "A systemic" }],
     };
     expect(priorIdsFrom(doc)).toEqual([
       "c-1",
@@ -4852,6 +4995,7 @@ describe("priorIdsFrom — the orphan bucket's departed set", () => {
       "c-2",
       synthesizedFindingId("src/a.ts", "T"),
       "s-1",
+      synthesizedSystemicId("A systemic"),
     ]);
   });
 });
@@ -5240,13 +5384,22 @@ describe("post — a GitHub-rejected inline anchor renders its discussion aside"
         return Promise.resolve('{"number":42,"state":"open","headRef":"feature-branch"}\n');
       if (a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"))
         return Promise.resolve(inlineDiff);
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--paginate"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--paginate")
+      )
         return Promise.resolve(`${commentRow(999, priorSticky)}${reply}\n${departedReply}\n`);
-      if (a[0] === "repos/owner/repo/issues/42/comments" && a.includes("--input"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
+        a.includes("--input")
+      )
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
       if (a[0] === "repos/owner/repo/issues/comments/999")
         return Promise.resolve('{"id": 999, "html_url": "https://gh/sticky"}\n');
-      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--paginate"))
+      if (
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--paginate")
+      )
         return Promise.resolve("");
       if (a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"))
         return Promise.resolve("[]");
@@ -5256,7 +5409,10 @@ describe("post — a GitHub-rejected inline anchor renders its discussion aside"
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))
           : Promise.resolve('{"html_url": "https://gh/review"}\n');
       }
-      if (a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input")) {
+      if (
+        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
+        a.includes("--input")
+      ) {
         const c = JSON.parse(stdin ?? "{}") as { line: number };
         return c.line === 11
           ? Promise.reject(new Error("gh: Unprocessable Entity (HTTP 422)"))

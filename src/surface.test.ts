@@ -534,6 +534,20 @@ describe("rounds trajectory — issue #125", () => {
       expect(isFullReviewAncestry(body)).toBe(false);
       expect(parseMechanicAncestor(body)).toBe(false);
     });
+
+    it("a completed-ancestor body whose PROSE quotes the mechanic marker stays full-review ancestry", () => {
+      const body =
+        "x\n<!-- review-complete-ancestor -->\na finding quotes `<!-- review-mechanic-ancestor -->` inline";
+      expect(isFullReviewAncestry(body)).toBe(true);
+      expect(parseMechanicAncestor(body)).toBe(false);
+    });
+
+    it("an announce placeholder over a mechanic-descent notice re-carries the mechanic marker", () => {
+      const notice = `<!-- code-review -->\n<!-- review-mechanic-ancestor -->\n<!-- review-complete-ancestor -->\nold`;
+      const placeholder = carryForwardMarkers(notice);
+      expect(placeholder).toContain("<!-- review-mechanic-ancestor -->");
+      expect(isFullReviewAncestry(placeholder)).toBe(false);
+    });
   });
 
   it("carriedAncestryMarkers re-carries mechanic ancestry through a SECOND notice (a notice body has no route marker)", () => {

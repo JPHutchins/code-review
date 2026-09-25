@@ -95,7 +95,7 @@ const DISCUSSION_BLOCK_OVERHEAD = 120;
 const orphanedEntryCost = (token: string, links: readonly DiscussionLink[]): number =>
   token.length +
   10 +
-  links.reduce((sum, d) => sum + d.author.length + d.when.length + d.url.length + 7, 0);
+  links.reduce((sum, d) => sum + d.author.length + d.when.length + d.url.length + 8, 0);
 // The newest-first cap every discussion list keeps (per-finding, per-orphan-token, and the
 // suppressed aside's slots). LIVES HERE so the template's "showing the N newest of M" notes
 // interpolate it — a cap change cannot leave a rendered note lying.
@@ -144,7 +144,7 @@ const discussionAsideHtml = (
   prefix: string,
 ): string =>
   [
-    ...links.map((d) => `${prefix}- [${escapeHtml(d.author)} · ${d.when}](${d.url})`),
+    ...links.map((d) => `${prefix}- [${escapeHtml(d.author)} · ${d.when}](${linkSafeUrl(d.url)})`),
     ...(truncated !== undefined
       ? [
           `${prefix}_(showing the ${String(PER_FINDING_LINKS)} newest of ${String(
@@ -504,10 +504,42 @@ export const render = (input: RenderInput): string => {
   // section and the per-finding asides draw from ONE budget, whole asides dropped past it, the cut
   // named in the template, never silent. An aside whose finding has no replies costs nothing and
   // is never counted as dropped — only a thread that existed can be "not listed".
+  // Escape-twin raw entries fold into ONE display-keyed item BEFORE the budget walk, so the
+  // budget decides whole display entries: a dropped name is a spelling the render truly lacks,
+  // never a twin whose sibling is still listed under the same spelling.
+  const orphanedPreBudget = new Map<
+    string,
+    { readonly links: readonly DiscussionLink[]; readonly truncated?: number }
+  >();
+  for (const [token, links] of Object.entries(input.orphanedDiscussion ?? {})) {
+    const key = escapeCodeBackticks(token);
+    const truncatedFor =
+      input.orphanedTruncated !== undefined &&
+      Object.prototype.hasOwnProperty.call(input.orphanedTruncated, token)
+        ? input.orphanedTruncated[token]
+        : undefined;
+    const existing = orphanedPreBudget.get(key);
+    if (existing === undefined) {
+      orphanedPreBudget.set(key, {
+        links,
+        ...(truncatedFor !== undefined ? { truncated: truncatedFor } : {}),
+      });
+    } else {
+      const mergedTotal =
+        (existing.truncated ?? existing.links.length) + (truncatedFor ?? links.length);
+      const merged = [...existing.links, ...links].sort((a, b) =>
+        (b.at ?? b.when).localeCompare(a.at ?? a.when),
+      );
+      orphanedPreBudget.set(key, {
+        links: merged.slice(0, PER_FINDING_LINKS),
+        ...(mergedTotal > PER_FINDING_LINKS ? { truncated: mergedTotal } : {}),
+      });
+    }
+  }
   const orphanedBudget = budgetBySize(
-    Object.entries(input.orphanedDiscussion ?? {}),
+    [...orphanedPreBudget.entries()],
     DISCUSSION_TOTAL_CHARS,
-    ([token, links]) => orphanedEntryCost(token, links),
+    ([token, entry]) => orphanedEntryCost(token, entry.links),
     () => null,
   );
   const discussionBudget = budgetBySize(
@@ -533,60 +565,25 @@ export const render = (input: RenderInput): string => {
     (s) => (s.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + s.discussionHtml.length : 0),
     (s) => ({ ...s, discussion: [], discussionHtml: "" }),
   );
-  // Escape-twin departed ids display identically — their entries MERGE (links concatenated, the
-  // largest pre-cap total kept) instead of one entry silently dropping the other, and the total
-  // the "(showing N of M)" note reads is the merged-entry count, so the note never names a
-  // phantom cut.
-  const orphanedMerged = new Map<
-    string,
-    { readonly links: readonly DiscussionLink[]; readonly truncated?: number }
-  >();
-  for (const [token, links] of orphanedBudget.kept) {
-    const key = escapeCodeBackticks(token);
-    const truncatedFor =
-      input.orphanedTruncated !== undefined &&
-      Object.prototype.hasOwnProperty.call(input.orphanedTruncated, token)
-        ? input.orphanedTruncated[token]
-        : undefined;
-    const existing = orphanedMerged.get(key);
-    if (existing === undefined) {
-      orphanedMerged.set(key, {
-        links,
-        ...(truncatedFor !== undefined ? { truncated: truncatedFor } : {}),
-      });
-    } else {
-      // Escape-twins merge into ONE entry: the concatenated links re-sort by the raw reply
-      // timestamp (not the date-only display string) and re-cap at the same 6, so the merged
-      // entry can never render past the cap its note names.
-      const mergedTotal =
-        (existing.truncated ?? existing.links.length) + (truncatedFor ?? links.length);
-      const merged = [...existing.links, ...links].sort((a, b) =>
-        (b.at ?? "").localeCompare(a.at ?? ""),
-      );
-      orphanedMerged.set(key, {
-        links: merged.slice(0, PER_FINDING_LINKS),
-        ...(mergedTotal > PER_FINDING_LINKS ? { truncated: mergedTotal } : {}),
-      });
-    }
-  }
+  // The "(showing N of M)" total counts DISTINCT DISPLAYED entries — the pre-budget fold above
+  // already merged twins, and the budget's own drops are named in the dropped-threads marker.
   const orphanedRender = {
     discussion: Object.fromEntries(
-      [...orphanedMerged.entries()].map(([token, entry]) => [token, entry.links]),
+      orphanedBudget.kept.map(([token, entry]) => [token, entry.links]),
     ),
     truncated: Object.fromEntries(
-      [...orphanedMerged.entries()].flatMap(([token, entry]) =>
+      orphanedBudget.kept.flatMap(([token, entry]) =>
         entry.truncated !== undefined ? ([[token, entry.truncated]] as const) : [],
       ),
     ),
-    // The "(showing N of M)" total counts DISTINCT DISPLAYED entries — the merge folds twins,
-    // and the budget's own drops are named in the dropped-threads marker, never this note.
     total:
       input.orphanedTotal !== undefined
         ? Math.max(
-            orphanedMerged.size,
-            input.orphanedTotal - (orphanedBudget.kept.length - orphanedMerged.size),
+            orphanedPreBudget.size - orphanedBudget.droppedItems.length,
+            input.orphanedTotal -
+              (Object.keys(input.orphanedDiscussion ?? {}).length - orphanedPreBudget.size),
           )
-        : orphanedMerged.size,
+        : orphanedPreBudget.size - orphanedBudget.droppedItems.length,
   };
 
   return eta.renderString(input.template, {
@@ -621,13 +618,13 @@ export const render = (input: RenderInput): string => {
       discussionBudget.droppedItems.length +
       systemicBudget.droppedItems.length +
       orphanedBudget.droppedItems.length,
-    discussionDroppedIds: discussionBudget.droppedItems.map((v) => escapeCodeBackticks(v.idKey)),
+    discussionDroppedIds: discussionBudget.droppedItems.map((v) =>
+      clipText(escapeCodeBackticks(v.idKey), 64),
+    ),
     discussionDroppedSystemicIds: systemicBudget.droppedItems.flatMap((s) =>
-      s.id !== undefined ? [s.id] : [],
+      s.id !== undefined ? [clipText(s.id, 64)] : [],
     ),
-    discussionDroppedOrphanedIds: orphanedBudget.droppedItems.map(([token]) =>
-      escapeCodeBackticks(token),
-    ),
+    discussionDroppedOrphanedIds: orphanedBudget.droppedItems.map(([token]) => clipText(token, 64)),
     discussionCap: PER_FINDING_LINKS,
     orphanedTotal: orphanedRender.total,
     suppressedNits: suppressedBudget.kept,

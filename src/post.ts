@@ -16,10 +16,10 @@ import {
 import { formatMarkdown } from "./format.js";
 import {
   buildConvergence,
+  carriedAncestryMarkers,
   carriedConvergence,
   carriedFindingsMarker,
   carriedMarkerPointer,
-  carriedProvenanceMarkers,
   carryForwardMarkers,
   computeIdCounts,
   computeSameRootNotes,
@@ -54,6 +54,7 @@ import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import {
+  findingsArtifactUrl,
   ghArtifactReader,
   hasFindingsMarker,
   resolvePriorFindings,
@@ -571,6 +572,9 @@ export const reachableReplies = (
 // quoting a code snippet or path in backticks fires it too, and the round pays the artifact
 // download for a token that was never a finding id — the local alternative (the sticky's carried
 // rounds marker) records ids top-N-capped, so pre-filtering on it would skip real departed ids.
+// On the notice path (an empty known set) the same false positive can escalate into the rendered
+// unresolvable note when the resolve then fails — an accepted noise cost, since the note names
+// the artifact failure itself, never the token as a departed id.
 export const mentionsOutsideKnown = (
   reachable: readonly IssueCommentRow[],
   currentIds: readonly string[],
@@ -614,11 +618,16 @@ export const buildStickyDiscussion = (
       const token = m[1];
       if (token === undefined || pushed.has(token)) continue;
       pushed.add(token);
-      const raw = known.has(token) ? token : escapedToRaw.get(token);
-      if (raw !== undefined && known.has(raw)) {
-        byFinding[raw]?.push(link);
-      } else if (raw !== undefined ? departed.has(raw) : departed.has(token)) {
-        const key = raw ?? token;
+      const rawKnown = known.has(token);
+      const alias = rawKnown ? undefined : escapedToRaw.get(token);
+      const aliasIsKnown = alias !== undefined && known.has(alias);
+      const rawDeparted = departed.has(token);
+      if (rawKnown) {
+        byFinding[token]?.push(link);
+      } else if (aliasIsKnown && !rawDeparted) {
+        byFinding[alias]?.push(link);
+      } else if (rawDeparted && !aliasIsKnown) {
+        const key = token;
         const links = orphaned.get(key);
         if (links === undefined) orphaned.set(key, [link]);
         else links.push(link);
@@ -668,12 +677,18 @@ export const buildStickyDiscussion = (
 export const priorIdsFrom = (doc: unknown): readonly string[] => {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return [];
   const rec = doc as Record<string, unknown>;
+  // The id spelling with the LEGACY code fallback — a pre-0.10 prior document (findings with a
+  // code and no id) must still feed the departed set, or its replies pay the resolve and then
+  // render nowhere.
   const idsOf = (field: string): readonly string[] =>
     (Array.isArray(rec[field]) ? rec[field] : []).flatMap((raw) => {
       const item = typeof raw === "object" && raw !== null ? asRecord(raw) : null;
-      return item !== null && typeof item["id"] === "string" && item["id"] !== ""
-        ? [item["id"]]
-        : [];
+      if (item === null) return [];
+      for (const key of ["id", "code"]) {
+        const value = item[key];
+        if (typeof value === "string" && value !== "") return [value];
+      }
+      return [];
     });
   return [...idsOf("findings"), ...idsOf("systemic_problems")];
 };
@@ -931,8 +946,8 @@ export const post = async (
   // "The sticky reflects a completed FULL review": the isFullReviewSticky predicate (route marker
   // wins, round history as the pre-marker fallback), plus, for a sticky with no route or round
   // signal at all, the two completed-review signals of the pre-marker era — review-complete on the
-  // sticky itself, or the announce placeholder's carried completed-ancestor marker (a notice can
-  // never carry either). This deliberately does NOT require review-complete: the announce
+  // sticky itself, or the carried completed-ancestor marker (a notice carries that ANCESTRY marker,
+  // never review-complete itself). This deliberately does NOT require review-complete: the announce
   // placeholder strips it while preserving the route and round markers, and an empty mechanic must
   // not bury the full review the placeholder still records.
   const priorIsFullReview = (body: string): boolean =>
@@ -994,17 +1009,19 @@ export const post = async (
   // the template places it after the sticky's leading markers so findBotComment still identifies
   // the comment. The freeze guard above still wins for a completed full-review sticky
   // (leaveInPlace); every OTHER marker-carrying sticky — placeholder, mechanic, pre-route — gets
-  // the carry instead of a markerless overwrite (issue #235 + #236 r1-r3). The embedded form is
-  // not carried — its size is unbounded and a 422 would fail the round.
+  // the carry instead of a markerless overwrite (issue #235 + #236 r1-r3). Only the LINK form is
+  // carried here — re-embedding the base64 form would put an unbounded blob back into the body
+  // that is posted unshed against GitHub's 65536 limit, the 422 class the link form exists to
+  // prevent. (The notice paths DO re-emit a carried embedded marker verbatim: their bodies are
+  // short, and the pre-#217 blob was size-gated when written.)
   let warnedNoJsonUrl = false;
   const findingsBlob = (doc: Findings): string => {
     if (input.jsonUrl) return findingsMarkerPair(input.jsonUrl, doc.convergence);
-    const carried = existingSticky !== null ? carriedFindingsMarker(existingSticky.body) : null;
-    if (carried !== null) {
-      // The prior marker is carried — link OR embedded base64 form, the shared assembly the
-      // notice paths use too. The machine channel survives, though this run names no NEW
+    const carriedLink = existingSticky !== null ? findingsArtifactUrl(existingSticky.body) : null;
+    if (carriedLink !== null) {
+      // The prior link is carried: the machine channel survives, though this run names no NEW
       // artifact — the sticky's findings remain the prior round's.
-      return carriedMarkerPointer(carried, doc.convergence);
+      return findingsMarkerPair(carriedLink, doc.convergence);
     }
     if (!warnedNoJsonUrl) {
       warnedNoJsonUrl = true;
@@ -1149,8 +1166,7 @@ export const post = async (
       // The prior's provenance rides beside its findings marker: a mechanic-origin prior must stay
       // mechanic through the notice, or the next round's orphan gate reads its findings as a
       // departed full review's.
-      const provenance =
-        existingSticky !== null ? carriedProvenanceMarkers(existingSticky.body) : "";
+      const provenance = existingSticky !== null ? carriedAncestryMarkers(existingSticky.body) : "";
       return [carriedMarkerPointer(carried, doc.convergence), provenance]
         .filter((p) => p !== "")
         .join("\n\n");
@@ -1334,10 +1350,10 @@ export const post = async (
   // strays, the below-floor nits (the suppressed aside has a discussion slot), and the systemics.
   // An inline-posted finding's id is deliberately absent: the sticky renders no surface for it,
   // and its conversation lives on the inline thread itself.
+  // One index parse per round: the inline split below and buildInlineComments share it.
+  const diffIndex = input.inline === true && envelope !== null ? indexDiff(diff) : null;
   const straysForDiscussion =
-    input.inline === true && envelope !== null
-      ? partitionFindings(visibleFindings, indexDiff(diff)).strays
-      : visibleFindings;
+    diffIndex !== null ? partitionFindings(visibleFindings, diffIndex).strays : visibleFindings;
   const currentIds = [
     ...straysForDiscussion.map((f) => f.id).filter((id) => id !== ""),
     ...suppressedNits.map((f) => f.id).filter((id) => id !== ""),
@@ -1511,6 +1527,7 @@ export const post = async (
     inDiff,
   } = inlineRequested
     ? buildInlineComments(visibleFindings, diff, {
+        ...(diffIndex !== null ? { diffIndex } : {}),
         inlineTemplate,
         models: envelope.models.map((m) => m.model),
         findings,

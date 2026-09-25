@@ -2660,6 +2660,36 @@ describe("discussion aside — the per-finding linked list (issue #246)", () => 
     expect(out).not.toContain("of 2)");
   });
 
+  it("folds escape-twins BEFORE the budget — a dropped entry's name is a spelling the render truly lacks", () => {
+    const sixLinks = (tag: string) =>
+      Array.from({ length: 6 }, (_, i) =>
+        link(
+          "alice",
+          "2026-09-01",
+          `https://github.com/owner/repo/pull/1#issuecomment-${tag}-${String(i)}`,
+        ),
+      );
+    const pad = (n: number): [string, ReturnType<typeof sixLinks>] => [
+      `pad-${String(n)}`,
+      sixLinks(`p${String(n)}`),
+    ];
+    // 18 pad entries exhaust the pool; the escape-twin pair (merged into ONE display entry BEFORE
+    // the budget walks) lands past the boundary and drops whole.
+    const entries: Record<string, ReturnType<typeof sixLinks>> = Object.fromEntries(
+      Array.from({ length: 18 }, (_, i) => pad(i)),
+    );
+    entries["a`b"] = sixLinks("ab");
+    entries["a-b"] = [
+      link("bob", "2026-08-30", "https://github.com/owner/repo/pull/1#issuecomment-900"),
+    ];
+    const out = renderWith({ orphanedDiscussion: entries, orphanedTotal: 20 });
+    // The dropped twin's display spelling appears exactly once — in the cut marker, never also
+    // listed in the section under the same spelling.
+    expect(out).toContain("earlier-round");
+    expect((out.match(/`a-b`/g) ?? []).length).toBe(1);
+    expect(out).toContain("`pad-17`");
+  });
+
   it("names an orphaned entry the budget dropped — the permanent cut is never silent", () => {
     const out = renderWith({
       orphanedDiscussion: {

@@ -65,9 +65,10 @@ const FINDINGS_SCHEMA_URL =
 export const AGENTS_STOP_DIRECTIVE = `<!-- AGENTS: STOP — this comment names a code-review findings document in the marker, and usually renders that same review as prose. Read the prose when it is there: it is the cheaper read. Fetch the document when the prose is not the review (this comment may be a status notice), when the prose is only part of it (findings anchored to diff lines, and those threads carry their own finding rather than a link — the workflow run's summary renders the review whole), or when you need a field the prose does not render — decode the marker where the comment carries it instead (an inline thread's finding, or a pre-#217 sticky). Read the document's schema_version and fetch the schema for THAT version before acting — a schema's own $id is its canonical URL, and the URL below is the current version, not a pinned one: ${FINDINGS_SCHEMA_URL} — then parse the WHOLE findings document, not only the fields you recognize. -->`;
 
 // The marker names the findings artifact; it never carries the document. The embedded base64 form is
-// still READ (parseFindingsMarker) because every sticky written before this change holds one, but
-// nothing writes another: the blob was ~50% of a sticky's bytes and the size branch it needed was
-// what made an oversized review silently lose its re-review seed (issue #217).
+// still READ (parseFindingsMarker) because every sticky written before this change holds one; a
+// carried pre-#217 marker may also be re-emitted verbatim by a notice path, never freshly written:
+// the blob was ~50% of a sticky's bytes and the size branch it needed was what made an oversized
+// review silently lose its re-review seed (issue #217).
 const encodeMarker = (jsonUrl: string): string =>
   `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json ${jsonUrl} -->`;
 
@@ -178,6 +179,14 @@ export const isFullReviewSticky = (body: string): boolean => {
   return priorTrajectory(parseFindingsMarker(body), body).length > 0;
 };
 
+// Carried by a body that replaces a MECHANIC sticky: a notice over a mechanic-origin prior must
+// not stamp the reviewed-route marker (its contract is the COMPLETED review's route, and a
+// stamped route would make the next round read the notice as a completed full review) — the
+// mechanic provenance rides this dedicated ancestry marker instead.
+export const MECHANIC_ANCESTOR_MARKER = "<!-- review-mechanic-ancestor -->";
+export const parseMechanicAncestor = (body: string): boolean =>
+  body.includes(MECHANIC_ANCESTOR_MARKER);
+
 // Carried by the announce placeholder when the sticky it replaced was a COMPLETED review: the
 // placeholder strips review-complete (it must not read as a finished review of the new head), yet
 // the empty-mechanic guard needs to know the placeholder descends from a completed review to
@@ -195,10 +204,11 @@ export const parseCompletedAncestor = (body: string): boolean =>
 export const REVIEW_COMPLETE_MARKER = "<!-- review-complete -->";
 export const parseReviewComplete = (body: string): boolean => body.includes(REVIEW_COMPLETE_MARKER);
 
-// null when the body carries no base64 marker — the link form is what every post writes now, and the
-// embedded form is read-only legacy: nothing writes a base64 marker since #217, but every sticky
-// written before it holds one, and each PR only rewrites its own on its next round. Also null when the
-// payload isn't valid JSON. Callers validate the result — a prior run may predate the shape.
+// null when the body carries no base64 marker — the link form is what every post writes now; the
+// embedded form is read-only legacy that only a carried pre-#217 marker can re-emit verbatim.
+// Every sticky written before the link form holds one, and each PR only rewrites its own on its
+// next round. Also null when the payload isn't valid JSON. Callers validate the result — a prior
+// run may predate the shape.
 export const parseFindingsMarker = (body: string): unknown => {
   const b64 = /<!-- code-review:findings-json;base64 ([A-Za-z0-9+/=]+) -->/.exec(body)?.[1];
   if (b64 === undefined) return null;
@@ -1041,13 +1051,28 @@ export const carriedMarkerPointer = (
     ...(convergence !== undefined ? [convergenceMarker(convergence)] : []),
   ].join("\n");
 
-// The provenance markers a replacing sticky must preserve: the reviewed-route (a mechanic pass
-// must stay mechanic through a notice, or the next round's orphan gate reads its findings as a
-// departed full review's) and the completed-ancestor marker (the empty-mechanic guard's pre-route
-// protection). The reviewed-sha is deliberately NOT here — a new write stamps its own head.
+// The provenance markers a replacing sticky must preserve. The reviewed-sha is deliberately NOT
+// here — a new write stamps its own head.
 export const carriedProvenanceMarkers = (body: string): string =>
   [
+    // The placeholder keeps the REAL route marker: the seed chain requires it outright to stay
+    // route-aware across the prose swap.
     ROUTE_RE.exec(body)?.[0],
+    parseReviewComplete(body) || parseCompletedAncestor(body)
+      ? COMPLETED_ANCESTOR_MARKER
+      : undefined,
+  ]
+    .filter((m): m is string => m !== undefined)
+    .join("\n\n");
+
+// The ancestry markers a NOTICE carries: the route marker itself is NEVER re-emitted onto an
+// incomplete body — a notice carrying `reviewed-route: full review` would read as a completed full
+// review to every downstream route check — so a mechanic prior's provenance rides the dedicated
+// mechanic-ancestor marker, and the completed-ancestor marker keeps the empty-mechanic guard's
+// pre-route protection alive.
+export const carriedAncestryMarkers = (body: string): string =>
+  [
+    parseReviewedRoute(body) === "mechanic" ? MECHANIC_ANCESTOR_MARKER : undefined,
     parseReviewComplete(body) || parseCompletedAncestor(body)
       ? COMPLETED_ANCESTOR_MARKER
       : undefined,

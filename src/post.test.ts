@@ -4834,6 +4834,14 @@ describe("priorIdsFrom — the orphan bucket's departed set", () => {
     expect(priorIdsFrom("junk")).toEqual([]);
     expect(priorIdsFrom([1, 2])).toEqual([]);
   });
+
+  it("reads a pre-0.10 document's LEGACY code spelling — the departed set survives code-era priors", () => {
+    const doc = {
+      findings: [{ code: "c-1" }, { id: "f-1" }, { id: "", code: "c-2" }],
+      systemic_problems: [{ code: "s-1" }],
+    };
+    expect(priorIdsFrom(doc)).toEqual(["c-1", "f-1", "c-2", "s-1"]);
+  });
 });
 
 describe("buildStickyDiscussion — the r5 disciplines", () => {
@@ -4942,6 +4950,16 @@ describe("buildStickyDiscussion — the r5 disciplines", () => {
     ];
     const d = buildStickyDiscussion(reachableReplies(rows, 900), [longId], []);
     expect(d.byFinding[longId]).toHaveLength(1);
+  });
+
+  it("leaves a token unmatched when it is both a departed raw id and a current id's display alias", () => {
+    const rows = [
+      row({ id: 900, body: "<!-- code-review -->" }),
+      row({ id: 1, parent: 900, body: "see `a-b`" }),
+    ];
+    const d = buildStickyDiscussion(reachableReplies(rows, 900), ["a`b"], ["a-b"]);
+    expect(d.byFinding["a`b"]).toHaveLength(0);
+    expect(d.orphaned["a-b"]).toBeUndefined();
   });
 
   it("never assigns an ambiguous escaped spelling a winner — escape-twin ids stay raw-keyed only", () => {
@@ -5067,7 +5085,11 @@ describe("post — notice overwrites carry the discussion trail", () => {
     await expect(post(mkInput({}), api, readArtifact)).rejects.toThrow("exit");
     exitSpy.mockRestore();
     const body = patchedBody(calls());
-    expect(body).toContain("<!-- reviewed-route: mechanic -->");
+    // The mechanic provenance rides its DEDICATED ancestor marker — the reviewed-route marker's
+    // contract (the COMPLETED review's route) must survive the notice, or the next round would
+    // read the notice as a completed full review.
+    expect(body).toContain("<!-- review-mechanic-ancestor -->");
+    expect(body).not.toContain("<!-- reviewed-route: mechanic -->");
     expect(readUrls).toEqual([]);
     expect(body).not.toContain("earlier rounds");
   });

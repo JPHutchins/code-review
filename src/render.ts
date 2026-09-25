@@ -108,6 +108,8 @@ const orphanedEntryHtml = (
 // suppressed aside's slots). LIVES HERE so the template's "showing the N newest of M" notes
 // interpolate it — a cap change cannot leave a rendered note lying.
 export const PER_FINDING_LINKS = 6;
+// How many dropped-thread ids the disclosure names per class; the rest ride the "+N more" suffix.
+const DROPPED_IDS_SHOWN = 6;
 
 // The shared "budget by rendered size" walk both collateral asides use: items are added in order
 // while the ACCUMULATED size fits the cap; past it, onDrop decides each dropped item's fate
@@ -155,8 +157,10 @@ const discussionAsideHtml = (
     ...links.map((d) => `${prefix}- [${escapeHtml(d.author)} · ${d.when}](${linkSafeUrl(d.url)})`),
     ...(truncated !== undefined
       ? [
-          // Indented two spaces: a lazy continuation of the bullet, never a new block item.
-          `${prefix}  _(showing the ${String(PER_FINDING_LINKS)} newest of ${String(
+          // A blank line closes the list: the note stands apart as its own paragraph instead of
+          // reading as a continuation of the newest bullet.
+          prefix,
+          `${prefix}_(showing the ${String(PER_FINDING_LINKS)} newest of ${String(
             truncated,
           )} replies — the rest live on the comment thread.)_`,
         ]
@@ -518,7 +522,11 @@ export const render = (input: RenderInput): string => {
   // never a twin whose sibling is still listed under the same spelling.
   const orphanedPreBudget = new Map<
     string,
-    { readonly links: readonly DiscussionLink[]; readonly truncated?: number }
+    {
+      readonly links: readonly DiscussionLink[];
+      readonly truncated?: number;
+      readonly html: string;
+    }
   >();
   for (const [token, links] of Object.entries(input.orphanedDiscussion ?? {})) {
     const key = escapeCodeBackticks(token);
@@ -528,10 +536,13 @@ export const render = (input: RenderInput): string => {
         ? input.orphanedTruncated[token]
         : undefined;
     const existing = orphanedPreBudget.get(key);
+    const htmlFor = (entryLinks: readonly DiscussionLink[], entryTruncated?: number): string =>
+      orphanedEntryHtml(key, entryLinks, entryTruncated);
     if (existing === undefined) {
       orphanedPreBudget.set(key, {
         links,
         ...(truncatedFor !== undefined ? { truncated: truncatedFor } : {}),
+        html: htmlFor(links, truncatedFor),
       });
     } else {
       const mergedTotal =
@@ -539,16 +550,19 @@ export const render = (input: RenderInput): string => {
       const merged = [...existing.links, ...links].sort((a, b) =>
         (b.at ?? b.when).localeCompare(a.at ?? a.when),
       );
+      const mergedLinks = merged.slice(0, PER_FINDING_LINKS);
+      const mergedTruncated = mergedTotal > PER_FINDING_LINKS ? mergedTotal : undefined;
       orphanedPreBudget.set(key, {
-        links: merged.slice(0, PER_FINDING_LINKS),
-        ...(mergedTotal > PER_FINDING_LINKS ? { truncated: mergedTotal } : {}),
+        links: mergedLinks,
+        ...(mergedTruncated !== undefined ? { truncated: mergedTruncated } : {}),
+        html: htmlFor(mergedLinks, mergedTruncated),
       });
     }
   }
   const orphanedBudget = budgetBySize(
     [...orphanedPreBudget.entries()],
     DISCUSSION_TOTAL_CHARS,
-    ([token, entry]) => orphanedEntryHtml(token, entry.links, entry.truncated).length,
+    ([, entry]) => entry.html.length,
     () => null,
   );
   const discussionBudget = budgetBySize(
@@ -575,9 +589,7 @@ export const render = (input: RenderInput): string => {
   // The "(showing N of M)" total counts DISTINCT DISPLAYED entries — the pre-budget fold above
   // already merged twins, and the budget's own drops are named in the dropped-threads marker.
   const orphanedRender = {
-    lines: orphanedBudget.kept.map(([token, entry]) =>
-      orphanedEntryHtml(token, entry.links, entry.truncated),
-    ),
+    lines: orphanedBudget.kept.map(([, entry]) => entry.html),
     // The "(showing N of M)" total counts DISTINCT DISPLAYED entries — the pre-budget fold above
     // already merged twins, and the budget's own drops are named in the dropped-threads marker.
     total:
@@ -620,17 +632,17 @@ export const render = (input: RenderInput): string => {
       orphanedBudget.droppedItems.length,
     discussionDroppedIds: discussionBudget.droppedItems
       .map((v) => clipText(escapeCodeBackticks(v.idKey), 64))
-      .slice(0, 6),
+      .slice(0, DROPPED_IDS_SHOWN),
     discussionDroppedSystemicIds: systemicBudget.droppedItems
       .flatMap((s) => (s.id !== undefined ? [clipText(s.id, 64)] : []))
-      .slice(0, 6),
+      .slice(0, DROPPED_IDS_SHOWN),
     discussionDroppedOrphanedIds: orphanedBudget.droppedItems
       .map(([token]) => clipText(token, 64))
-      .slice(0, 6),
+      .slice(0, DROPPED_IDS_SHOWN),
     discussionDroppedExtra:
-      Math.max(0, discussionBudget.droppedItems.length - 6) +
-      Math.max(0, systemicBudget.droppedItems.length - 6) +
-      Math.max(0, orphanedBudget.droppedItems.length - 6),
+      Math.max(0, discussionBudget.droppedItems.length - DROPPED_IDS_SHOWN) +
+      Math.max(0, systemicBudget.droppedItems.length - DROPPED_IDS_SHOWN) +
+      Math.max(0, orphanedBudget.droppedItems.length - DROPPED_IDS_SHOWN),
     discussionCap: PER_FINDING_LINKS,
     orphanedTotal: orphanedRender.total,
     suppressedNits: suppressedBudget.kept,

@@ -20,9 +20,9 @@ export interface InlineComment {
   readonly body: string;
 }
 
-// One reply to the sticky comment, listed under the finding whose id the reply mentions — a POINTER
-// (author, date, link), never the reply's prose: the discussion aside is the conversation's linked
-// list, and the implementer reads the replies at the links (issue #246).
+// One comment on the PR, listed under the finding whose id the comment mentions — a POINTER
+// (author, date, link), never the comment's prose: the discussion aside is the conversation's
+// linked list, and the implementer reads the comments at the links (issue #246).
 export interface DiscussionLink {
   readonly author: string;
   readonly when: string;

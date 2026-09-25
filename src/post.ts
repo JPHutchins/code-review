@@ -362,7 +362,7 @@ const postInlineReview = async (
 // REVIEW comments (the answered registry's endpoint), and GitHub's API exposes no issue-comment
 // reply chain at all. The projection therefore carries only the fields the endpoint actually has.
 const ISSUE_COMMENTS_JQ =
-  '.[] | {id, user: (.user.login // "(deleted)"), created_at, html_url, body}';
+  '.[] | {id, user: (.user.login // "(deleted)"), created_at, html_url, body: (.body // "")}';
 
 interface IssueCommentRow {
   readonly id: number;
@@ -554,12 +554,15 @@ const escapedIdIndex = (ids: readonly string[]): ReadonlyMap<string, string> => 
 export const discussionRows = (
   rows: readonly IssueCommentRow[],
   stickyId: number,
+  botLogin: string,
 ): readonly IssueCommentRow[] => {
   const seen = new Set<number>();
   return rows.filter((c) => {
     if (seen.has(c.id)) return false;
     seen.add(c.id);
-    return c.id !== stickyId;
+    // Bot-authored comments are the pipeline's own surfaces — a stale or duplicate sticky
+    // quotes every finding id and must never scrape into the asides as human discussion.
+    return c.id !== stickyId && c.author !== botLogin;
   });
 };
 
@@ -572,6 +575,12 @@ export const discussionRows = (
 // On the notice path (an empty known set) the same false positive can escalate into the rendered
 // unresolvable note when the resolve then fails — an accepted noise cost, since the note names
 // the artifact failure itself, never the token as a departed id.
+// The id-shape pre-filter: the gate pays the artifact resolve only for an unknown token that
+// could plausibly BE a finding id (the pipeline's ids are kebab-case identifiers and the
+// synthesized f-/s- base64url forms). A backticked shell command, path, or URL never fires it.
+// An id-shaped junk word still fires — the documented necessary-not-sufficient trade-off.
+const ID_SHAPE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
 export const mentionsOutsideKnown = (
   reachable: readonly IssueCommentRow[],
   currentIds: readonly string[],
@@ -583,7 +592,7 @@ export const mentionsOutsideKnown = (
       const token = m[1];
       if (token === undefined) continue;
       const raw = known.has(token) ? token : escapedToRaw.get(token);
-      if (raw === undefined || !known.has(raw)) return true;
+      if ((raw === undefined || !known.has(raw)) && ID_SHAPE_RE.test(token)) return true;
     }
   }
   return false;
@@ -1111,7 +1120,8 @@ export const post = async (
   // path (issue #224's mechanic pin must hold on EVERY write path).
   const envelope = loadEnvelope(input.envelopePath);
 
-  const reachable = existingSticky !== null ? discussionRows(commentRows, existingSticky.id) : [];
+  const reachable =
+    existingSticky !== null ? discussionRows(commentRows, existingSticky.id, input.botLogin) : [];
   // The discussion orphan gate excludes ONLY a mechanic prior: its own findings are not this
   // review's departed findings. Every other prior feeds the bucket — a full review, a pre-rounds
   // sticky (no route marker, but its embedded blob still resolves), and a placeholder (whose

@@ -17,7 +17,10 @@ import {
   findingPointer,
   parseRounds,
   roundsSummary,
+  carriedAncestryMarkers,
   carryForwardMarkers,
+  isFullReviewAncestry,
+  parseMechanicAncestor,
   convergenceScore,
   convergenceSummary,
   convergenceSignal,
@@ -506,6 +509,37 @@ describe("rounds trajectory — issue #125", () => {
     const carried = carryForwardMarkers(body);
     expect(carried).toContain("<!-- reviewed-route: mechanic -->");
     expect(carried).toContain("code-review:findings-json");
+  });
+
+  describe("isFullReviewAncestry — the seed-side readers' ONE predicate", () => {
+    it("accepts the route marker outright", () => {
+      expect(isFullReviewAncestry("x\n<!-- reviewed-route: full review -->\ny")).toBe(true);
+    });
+
+    it("accepts a route-less body carrying the completed-ancestor marker (a notice over a full review)", () => {
+      expect(isFullReviewAncestry("x\n<!-- review-complete-ancestor -->\ny")).toBe(true);
+    });
+
+    it("rejects a mechanic-route body even when it carries the ancestor marker (a placeholder over a mechanic sticky)", () => {
+      const placeholder = `<!-- reviewed-route: mechanic -->\n<!-- review-complete-ancestor -->\nold`;
+      expect(isFullReviewAncestry(placeholder)).toBe(false);
+    });
+
+    it("rejects mechanic ancestry", () => {
+      expect(isFullReviewAncestry("x\n<!-- review-mechanic-ancestor -->\ny")).toBe(false);
+    });
+
+    it("never reads the marker literal out of prose", () => {
+      const body = "a finding quotes `<!-- review-mechanic-ancestor -->` inline";
+      expect(isFullReviewAncestry(body)).toBe(false);
+      expect(parseMechanicAncestor(body)).toBe(false);
+    });
+  });
+
+  it("carriedAncestryMarkers re-carries mechanic ancestry through a SECOND notice (a notice body has no route marker)", () => {
+    const firstNotice = `<!-- code-review -->\n<!-- review-mechanic-ancestor -->\n<!-- review-complete-ancestor -->\nold`;
+    const carried = carriedAncestryMarkers(firstNotice);
+    expect(carried).toContain("<!-- review-mechanic-ancestor -->");
   });
 
   it("rejects rounds with negative, fractional, or unsafe-integer counts", () => {

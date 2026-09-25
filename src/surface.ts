@@ -184,8 +184,10 @@ export const isFullReviewSticky = (body: string): boolean => {
 // stamped route would make the next round read the notice as a completed full review) — the
 // mechanic provenance rides this dedicated ancestry marker instead.
 export const MECHANIC_ANCESTOR_MARKER = "<!-- review-mechanic-ancestor -->";
+// Anchored to a standalone comment LINE: the sticky body embeds reviewer prose and patch fences,
+// and a finding quoting this literal must not gate the next round as mechanic ancestry.
 export const parseMechanicAncestor = (body: string): boolean =>
-  body.includes(MECHANIC_ANCESTOR_MARKER);
+  new RegExp(`(^|\n)${MECHANIC_ANCESTOR_MARKER}(\n|$)`).test(body);
 
 // Carried by the announce placeholder when the sticky it replaced was a COMPLETED review: the
 // placeholder strips review-complete (it must not read as a finished review of the new head), yet
@@ -1065,6 +1067,16 @@ export const carriedProvenanceMarkers = (body: string): string =>
     .filter((m): m is string => m !== undefined)
     .join("\n\n");
 
+// Full-review ancestry for the SEED-side readers (gather + seed-draft): the route marker wins;
+// a route-less body counts only through the carried completed-ancestor marker and never through
+// mechanic ancestry. A mechanic-route body (a mechanic sticky or a placeholder over one) fails
+// both clauses — its carried ancestor marker must not read as a full review's.
+export const isFullReviewAncestry = (body: string): boolean =>
+  parseReviewedRoute(body) === "full review" ||
+  (parseReviewedRoute(body) === null &&
+    parseCompletedAncestor(body) &&
+    !parseMechanicAncestor(body));
+
 // The ancestry markers a NOTICE carries: the route marker itself is NEVER re-emitted onto an
 // incomplete body — a notice carrying `reviewed-route: full review` would read as a completed full
 // review to every downstream route check — so a mechanic prior's provenance rides the dedicated
@@ -1072,7 +1084,11 @@ export const carriedProvenanceMarkers = (body: string): string =>
 // pre-route protection alive.
 export const carriedAncestryMarkers = (body: string): string =>
   [
-    parseReviewedRoute(body) === "mechanic" ? MECHANIC_ANCESTOR_MARKER : undefined,
+    // A notice body carries no route marker, so the second hop reads the ancestor marker itself:
+    // mechanic ancestry survives notice-over-notice, not just notice-over-sticky.
+    parseReviewedRoute(body) === "mechanic" || parseMechanicAncestor(body)
+      ? MECHANIC_ANCESTOR_MARKER
+      : undefined,
     parseReviewComplete(body) || parseCompletedAncestor(body)
       ? COMPLETED_ANCESTOR_MARKER
       : undefined,

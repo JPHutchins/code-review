@@ -49,9 +49,7 @@ import {
   computeScopeMetastasis,
   SURFACE_SCHEMA_VERSION,
   isBelowVisibilityFloor,
-  parseCompletedAncestor,
-  parseMechanicAncestor,
-  parseReviewedRoute,
+  isFullReviewAncestry,
   parseReviewedSha,
   priorTrajectory,
   priorBelowFloorNits,
@@ -1176,12 +1174,12 @@ const seedDraftCmd = defineCommand({
     // floor is read from the same workflow input the commenter uses, so seed and post agree within a
     // run. Correctness does not depend on this note — the blob keeps every nit and post re-suppresses a
     // re-raised still-nit by stickiness — it only spares the agent the wasted re-mining.
-    // Route-gated exactly like the prior-context seed below (parseReviewedRoute === "full review"):
-    // a mechanic (CI-fix) pass writes its OWN findings blob, so deriving "prior round's below-floor
-    // nits" from it would deliver a CI-fix pass's nits as adjudicated prior-round context. Only a
-    // completed FULL review is a prior round. The floor is parsed LENIENTLY — seed-draft must exit 0,
-    // so it cannot call the process-exiting parseNitVisibilityFloor (post enforces the floor loudly).
-    if (parsedPrior !== null && parseReviewedRoute(priorBody ?? "") === "full review") {
+    // Gated exactly like the prior-context seed below (isFullReviewAncestry): a mechanic (CI-fix)
+    // pass writes its OWN findings blob, so deriving "prior round's below-floor nits" from it would
+    // deliver a CI-fix pass's nits as adjudicated prior-round context. Only a completed FULL review
+    // is a prior round. The floor is parsed LENIENTLY — seed-draft must exit 0, so it cannot call
+    // the process-exiting parseNitVisibilityFloor (post enforces the floor loudly).
+    if (parsedPrior !== null && isFullReviewAncestry(priorBody ?? "")) {
       try {
         const belowFloor = priorBelowFloorNits(
           parsedPrior,
@@ -1251,13 +1249,7 @@ const seedDraftCmd = defineCommand({
               // review (a mechanic carries a full review's rounds forward), so any other no-route
               // prior is unknown and skipped: one cold review is cheaper than a false prior.
               if (isIncompleteFindings(seedDoc)) return false;
-              if (
-                parseReviewedRoute(priorBody ?? "") !== "full review" &&
-                !(
-                  parseCompletedAncestor(priorBody ?? "") && !parseMechanicAncestor(priorBody ?? "")
-                )
-              )
-                return false;
+              if (!isFullReviewAncestry(priorBody ?? "")) return false;
               writeFileSync(outPath, SEED_SENTINEL);
               writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
               process.stderr.write(

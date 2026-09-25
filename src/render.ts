@@ -470,7 +470,7 @@ export const render = (input: RenderInput): string => {
       // The id renders with its two wrapper backticks; the code_url adds the [](...) link form.
       // The id renders ONCE: a backtick span inside parens, or the []() link form.
       n.id.length +
-      (n.codeUrl !== undefined ? n.codeUrl.length + 6 : 4) +
+      (n.codeUrl !== undefined ? n.codeUrl.length + 8 : 4) +
       String(n.startLine).length * 2 +
       String(n.endLine).length +
       (n.side !== undefined ? n.side.length + 2 : 0) +

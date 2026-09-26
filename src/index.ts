@@ -856,21 +856,18 @@ const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefine
 /** A bundled schema rendered for a CLI/agent to read: pretty-printed with the top-level `$schema`
  *  draft declaration stripped. `claude -p --json-schema` silently disables enforcement when a schema
  *  carries `$schema`, and the field DESCRIPTIONS are the authoritative spec the agent must follow, so
- *  this is the form both `print-schema` and `validate --explain` emit. The LIVE findings schema's
- *  schema_version is additionally pinned to the in-force default as a `const` (gated on the file's
- *  `/main/` $id, the same identity the release guard uses), so the schema channel itself tells a
- *  model what version to stamp and `--json-schema` enforces it — the FROZEN legacy copies
- *  (`--schema-version` prints, legacy-stamped explains) keep their tolerant shape, and the schema
- *  FILES stay version-tolerant: the registry dispatches on the declared version, only the live
- *  enforcement copy pins. */
-const printableSchema = (schemaPath: string): string => {
+ *  this is the form both `print-schema` and `validate --explain` emit. When `pinVersion` is set (the
+ *  caller resolved the LIVE findings schema — no version override, no legacy-stamped explain), the
+ *  schema_version's pattern is narrowed to the in-force minor so `--json-schema` enforces exactly
+ *  the versions the registry dispatches to the live entry — the FROZEN legacy copies keep their
+ *  tolerant shape, and the schema FILES stay version-tolerant: the registry dispatches on the
+ *  declared version, only the live enforcement copy pins. */
+export const printableSchema = (schemaPath: string, pinVersion: boolean): string => {
   const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as Record<string, unknown>;
   const enforcementSchema = Object.fromEntries(
     Object.entries(schema).filter(([key]) => key !== "$schema"),
   );
-  const id = enforcementSchema["$id"];
-  if (typeof id !== "string" || !id.includes("/main/"))
-    return JSON.stringify(enforcementSchema, null, 2);
+  if (!pinVersion) return JSON.stringify(enforcementSchema, null, 2);
   const properties = enforcementSchema["properties"];
   const schemaVersion =
     typeof properties === "object" && properties !== null
@@ -879,7 +876,7 @@ const printableSchema = (schemaPath: string): string => {
   if (typeof schemaVersion === "object" && schemaVersion !== null) {
     (properties as Record<string, unknown>)["schema_version"] = {
       ...(schemaVersion as Record<string, unknown>),
-      const: DEFAULT_SCHEMA_VERSION,
+      pattern: `^${DEFAULT_SCHEMA_VERSION.split(".").slice(0, 2).join("\\.")}\\.[0-9]+$`,
     };
   }
   return JSON.stringify(enforcementSchema, null, 2);
@@ -931,7 +928,7 @@ const validateCmd = defineCommand({
       for (const e of errors) process.stderr.write(`  - ${e}\n`);
       if (args.explain) {
         process.stderr.write(
-          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath)}\n`,
+          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, schemaPath === schemaPathFor(kind))}\n`,
         );
       }
       process.exit(1);
@@ -1603,7 +1600,9 @@ const printSchemaCmd = defineCommand({
   run: async ({ args }) => {
     const schemaKind = requireSchemaKind(args.name);
     const schemaPath = requireSchemaPath(schemaKind, args["schema-version"]);
-    process.stdout.write(`${printableSchema(schemaPath)}\n`);
+    process.stdout.write(
+      `${printableSchema(schemaPath, schemaPath === schemaPathFor(schemaKind))}\n`,
+    );
   },
 });
 

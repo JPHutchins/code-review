@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { readRepoFile, allWorkflows } from "./test-util.js";
-import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -158,19 +157,35 @@ describe("full-review prompt — the vocabulary defers to the schema channel", (
     expect(arg).toContain(`into the schema's role buckets`);
   });
 
-  it("both files carry the same VERSION_NOTE probe, and the fallback names the pinned default", () => {
-    const notes = (workflowPath: string): readonly string[] =>
+  it("both files derive VERSION_NOTE from the installed gate's supported list — no version literal to drift", () => {
+    const noteLines = (workflowPath: string): readonly string[] =>
       runScripts(workflowPath)
         .flatMap(({ script }) => script.split("\n"))
         .map((line) => line.trim())
         .filter((line) => line.startsWith('VERSION_NOTE="'));
-    const reusable = notes(".github/workflows/review-reusable.yaml");
-    const example = notes("examples/workflows/review.yaml");
-    expect(reusable.length).toBeGreaterThan(0);
-    expect(example).toEqual(reusable);
-    // The no-const fallback (the pinned CLI's release-lag window) names the in-force version
-    // directly — it must equal the codec default, and it rides the same release commit as the pin.
-    expect(reusable.some((line) => line.includes(`\\\`${DEFAULT_SCHEMA_VERSION}\\\``))).toBe(true);
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      const notes = noteLines(workflowPath);
+      expect(notes, workflowPath).toHaveLength(1);
+      // The version is READ from the installed gate (a sentinel validate names the supported
+      // list), never written as a literal — a literal would drift against the pin exactly the way
+      // the prompt's old stamp did.
+      expect(notes[0]!, workflowPath).not.toMatch(/[0-9]\.[0-9]+\.[0-9]/);
+      const scripts = runScripts(workflowPath).map(({ script }) => script);
+      expect(
+        scripts.some((s) => s.includes('code-review validate "$RUNNER_TEMP/version-probe.json"')),
+        workflowPath,
+      ).toBe(true);
+      expect(
+        scripts.some((s) => s.includes("grep 'supported:'")),
+        workflowPath,
+      ).toBe(true);
+    }
+    expect(noteLines("examples/workflows/review.yaml")).toEqual(
+      noteLines(".github/workflows/review-reusable.yaml"),
+    );
   });
 
   it("the prompt teaches no vocabulary the schema could contradict — no inline field lists, no version literal", () => {

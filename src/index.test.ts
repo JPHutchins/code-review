@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { legacyEmbeddedMarker, runCli } from "./test-util.js";
-import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { snapshotIfValid } from "./index.js";
+import { snapshotIfValid, printableSchema } from "./index.js";
 import {
   lastValidPath,
   priorAnswersPath,
@@ -944,7 +944,10 @@ describe("cli — print-schema", () => {
         const version = props["schema_version"] as Record<string, unknown>;
         canonicalWithoutDraft["properties"] = {
           ...props,
-          schema_version: { ...version, const: DEFAULT_SCHEMA_VERSION },
+          schema_version: {
+            ...version,
+            pattern: `^${DEFAULT_SCHEMA_VERSION.split(".").slice(0, 2).join("\\.")}\\.[0-9]+$`,
+          },
         };
       }
       expect(printed).toEqual(canonicalWithoutDraft);
@@ -963,20 +966,49 @@ describe("cli — print-schema", () => {
     expect(withVersion.exitCode).toBeNull();
     const printed = JSON.parse(withVersion.stdout) as Record<string, unknown>;
     // The legacy file requires `code`-era fields optional and admits the tolerant `id` — not the
-    // live file's required id. It must also keep its tolerant schema_version: the const-pin applies
-    // ONLY to the live file (gated on its /main/ $id), never to a frozen copy.
+    // live file's required id. It must also keep its tolerant schema_version: the pattern narrowing
+    // applies ONLY to the live file (the caller pins only when the resolved path is the live one),
+    // never to a frozen copy.
     expect(printed["$id"]).toContain("schema-v0.9.0");
     expect(withVersion.stdout).not.toBe(withoutVersion.stdout);
     expect(withVersion.stdout).not.toContain('"const"');
+    expect(withVersion.stdout).toContain('"pattern": "^(0|[1-9]');
+    expect(withVersion.stdout).not.toContain('"pattern": "^0\\.');
   });
 
-  it("the default findings schema pins its in-force version as a const — the prompt defers the draft's stamp to it", async () => {
+  it("the default findings schema narrows schema_version's pattern to the in-force minor — matching the registry's patch-tolerant dispatch", async () => {
     const { stdout, exitCode } = await runCli(["print-schema", "findings"]);
     expect(exitCode).toBeNull();
     const printed = JSON.parse(stdout) as {
-      properties?: { schema_version?: { const?: string } };
+      properties?: { schema_version?: { pattern?: string; const?: string } };
     };
-    expect(printed.properties?.schema_version?.const).toBe(DEFAULT_SCHEMA_VERSION);
+    const anchored = `^${DEFAULT_SCHEMA_VERSION.split(".").slice(0, 2).join("\\.")}\\.[0-9]+$`;
+    expect(printed.properties?.schema_version?.pattern).toBe(anchored);
+    expect(printed.properties?.schema_version?.const).toBeUndefined();
+  });
+
+  it("printableSchema's pin keys on the caller's resolution, not the file's $id — a tag-identified copy pins too", () => {
+    // At a release the checklist re-identifies the $id by tag; the pin must survive that because it
+    // is the CALLER that knows whether the live file was resolved, not the file's identity.
+    const dir = mkdtempSync(join(tmpdir(), "tagged-schema-"));
+    const tagged = join(dir, "findings.schema.json");
+    writeFileSync(
+      tagged,
+      JSON.stringify({
+        $id: "https://raw.githubusercontent.com/JPHutchins/code-review/schema-v0.10.0/schema/findings.schema.json",
+        properties: { schema_version: { type: "string", pattern: "^(0|[1-9]\\d*)\\." } },
+      }),
+    );
+    const pinned = JSON.parse(printableSchema(tagged, true)) as {
+      properties?: { schema_version?: { pattern?: string } };
+    };
+    const unpinned = JSON.parse(printableSchema(tagged, false)) as {
+      properties?: { schema_version?: { pattern?: string } };
+    };
+    const anchored = `^${DEFAULT_SCHEMA_VERSION.split(".").slice(0, 2).join("\\.")}\\.[0-9]+$`;
+    expect(pinned.properties?.schema_version?.pattern).toBe(anchored);
+    expect(unpinned.properties?.schema_version?.pattern).toBe("^(0|[1-9]\\d*)\\.");
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("exits 1 for a now-dropped older --schema-version (0.2 is no longer supported)", async () => {

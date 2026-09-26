@@ -968,15 +968,14 @@ jobs:
           # authoritative field spec by path instead of reverse-engineering the field names.
           SCHEMA_FILE="$RUNNER_TEMP/findings-schema.json"
           code-review print-schema findings >"$SCHEMA_FILE"
-          # The deferral sentence in the prompt tells the reviewer to stamp the in-force version the
-          # schema pins. A pinned CLI predating the const-pin (this release's lag window) prints no
-          # const, so the note supplies the version directly — the fallback literal rides the SAME
-          # release commit as the pin, so it always names the version the installed gate validates.
-          if grep -q '"const"' "$SCHEMA_FILE"; then
-            VERSION_NOTE=" the schema at $SCHEMA_FILE pins as its \`const\`"
-          else
-            VERSION_NOTE=" \`0.10.0\`"
-          fi
+          # The in-force version the prompt names is read from the INSTALLED gate itself: validate a
+          # sentinel-stamped doc and take the last entry of the supported list the gate prints, so
+          # the note always names a version THIS round's validate gate accepts — in every pin and
+          # release window — with no version literal in the workflow text to drift.
+          printf '%s\n' '{"schema_version": "9.9.9", "summary": "", "verdict": "comment", "findings": []}' >"$RUNNER_TEMP/version-probe.json"
+          SUPPORTED_LINE="$(code-review validate "$RUNNER_TEMP/version-probe.json" findings 2>&1 | grep 'supported:' | head -1 || true)"
+          IN_FORCE_VERSION="$(printf '%s\n' "$SUPPORTED_LINE" | grep -o '[0-9][0-9.]*$' | head -1 | sed 's/$/.0/' || true)"
+          VERSION_NOTE=" \`${IN_FORCE_VERSION}\` — the version the installed validate gate accepts; ignore any example version the schema's description mentions"
 
           # Absolute run deadline, exported so EVERY budget hook — the main agent's and each fan-out
           # subagent's — measures the SAME true remaining wall. Without it each hook derives elapsed

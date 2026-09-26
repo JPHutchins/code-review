@@ -754,7 +754,7 @@ jobs:
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         run: |
           mkdir -p "$RUNNER_TEMP/transcripts/review"
-          cp -r "$HOME/.claude/projects/." transcripts/review/ 2>/dev/null || true
+          cp -r "$HOME/.claude/projects/." "$RUNNER_TEMP/transcripts/review/" 2>/dev/null || true
 
       # Deterministic change-size static analysis for the sticky's cloc collapsible. Runs in the review
       # job that holds the PR-head checkout (the comment job has none) and only when the head is present
@@ -791,7 +791,7 @@ jobs:
             rm -f "$FINDINGS_DIR/cloc-diff.txt"
           fi
 
-      # Assemble findings — every branch below writes BOTH findings/findings.json and a matching
+      # Assemble findings — every branch below writes BOTH $FINDINGS_DIR/findings.json and a matching
       # abstract envelope, so the comment job always has a valid pair to render, even when
       # the security gate or the agent itself produced nothing.
       # NOT on cancellation: a cancelled review (a superseding run on this branch, or a manual cancel)
@@ -873,7 +873,7 @@ jobs:
         if: ${{ !cancelled() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-findings
-          path: ${{ env.FINDINGS_DIR }}
+          path: ${{ env.FINDINGS_DIR || format('{0}/findings', runner.temp) }}
           retention-days: 90
 
       # Separate artifact so the transcripts (which can be large) don't bloat the findings download
@@ -1109,6 +1109,7 @@ jobs:
            github.event.workflow_run.conclusion == 'failure') &&
           (needs.review.result == 'cancelled' ||
            (needs.review.result == 'success' && needs.comment.result == 'cancelled') ||
+           (needs.review.result == 'success' && needs.comment.result == 'failure') ||
            ((needs.review.result == 'failure' || needs.review.result == 'success') &&
             needs.review.outputs.has_findings != 'true')) }}
     # Its OWN group — NOT the review group — so a superseding run cancels the stale review but never
@@ -1163,12 +1164,15 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           REVIEW_RESULT: ${{ needs.review.result }}
+          COMMENT_RESULT: ${{ needs.comment.result }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          if [ "$REVIEW_RESULT" = "failure" ]; then
+          # A review that completed but whose comment job FAILED mid-post (a findings artifact
+          # miss, an upload failure) is the same honest outcome as a dead review: re-request + failure.
+          if [ "$REVIEW_RESULT" = "failure" ] || [ "$COMMENT_RESULT" = "failure" ]; then
             code-review report-incomplete \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

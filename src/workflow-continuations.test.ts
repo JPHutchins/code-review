@@ -207,6 +207,29 @@ describe("full-review prompt — the vocabulary defers to the schema channel", (
   });
 });
 
+describe("path plumbing — the reusable and the example hand-mirror the staging directories byte-for-byte", () => {
+  // The two workflow copies hand-mirror every path-plumbing change (GATHER_DIR/FINDINGS_DIR
+  // assignments, the GITHUB_ENV writes, the transcripts and --add-dir lines, the upload paths).
+  // A half-applied edit diverges them silently — the #254 round-3 review found exactly that (the
+  // example's transcripts cp) — so the plumbing lines are pinned byte-identical here, the same
+  // discipline the mechanic steer lines already have.
+  const PLUMBING_RE =
+    /(GATHER_DIR|FINDINGS_DIR|GITHUB_ENV|transcripts\/|--add-dir|posted=true|needs\.comment\.outputs\.posted|env\.FINDINGS_DIR|runner\.temp\}\}\/(findings|transcripts))/;
+  const plumbingLines = (workflowPath: string): readonly string[] =>
+    readRepoFile(workflowPath)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => PLUMBING_RE.test(line))
+      .sort();
+
+  it("every path-plumbing line is byte-identical between review-reusable.yaml and the example", () => {
+    const reusable = plumbingLines(".github/workflows/review-reusable.yaml");
+    const example = plumbingLines("examples/workflows/review.yaml");
+    expect(reusable.length).toBeGreaterThan(10);
+    expect(example).toEqual(reusable);
+  });
+});
+
 describe("mechanic prompt assembly — the notes reach the prompt in the same order in both files", () => {
   it("the prompt splice delivers $ROUTE_NOTE then $LOG_SUBSET_NOTE in both workflows", () => {
     for (const workflowPath of [

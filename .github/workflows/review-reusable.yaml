@@ -515,6 +515,8 @@ jobs:
           echo "GATHER_DIR=$GATHER_DIR" >> "$GITHUB_ENV"
           echo "FINDINGS_DIR=$FINDINGS_DIR" >> "$GITHUB_ENV"
           mkdir -p "$GATHER_DIR" "$FINDINGS_DIR"
+          # Extra inputs the review should see (a lockfile manifest, a CLAUDE.md) go here — write
+          # them into $GATHER_DIR; files in the workspace can be clobbered or planted at checkout.
           code-review gather \
             --repo "$REPO" \
             --head-sha "$HEAD_SHA" \
@@ -1077,7 +1079,6 @@ jobs:
           # since the PR branched, a two-dot base-tip diff would show those commits as phantom removals.
           # Fall back to the base tip when the merge-base can't be computed.
           MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || echo "$BASE_SHA")"
-          FINDINGS_DIR="${FINDINGS_DIR:-$RUNNER_TEMP/findings}"
           mkdir -p "$FINDINGS_DIR"
           if ! "${CLOC[@]}" --git --diff "$MERGE_BASE" "$HEAD_SHA" >"$FINDINGS_DIR/cloc-diff.txt" 2>/dev/null; then
             echo "::warning::change-size static analysis skipped — cloc --git --diff failed (base=$MERGE_BASE head=$HEAD_SHA)"
@@ -1185,6 +1186,10 @@ jobs:
   comment:
     needs: review
     if: ${{ always() && needs.review.outputs.has_findings == 'true' }}
+    # posted signals that the sticky + inline posts LANDED, so finalize can tell a comment job that
+    # died BEFORE posting (re-request) from one that failed AFTER (settle the check only).
+    outputs:
+      posted: ${{ steps.post.outputs.posted }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Same group as the review job so a superseding run cancels this run's comment too — matching
@@ -1245,6 +1250,7 @@ jobs:
           echo "Egress canary could not connect — block policy verified"
 
       - name: Post the review
+        id: post
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -1381,6 +1387,7 @@ jobs:
             "${PRICES_ARGS[@]}" \
             "${INLINE_ARGS[@]}" \
             "${UNVERIFIED_ARGS[@]}"
+          echo "posted=true" >> "$GITHUB_OUTPUT"
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is
       # informational, it must not fail a required-checks branch protection). always() so a failed
@@ -1402,8 +1409,8 @@ jobs:
 
   # Reaches a terminal state for the check-run whenever `comment` won't (comment only runs on
   # has_findings == 'true'), so the announce-created in-progress check never lingers forever and a
-  # dead review is never silent. Three outcomes land here:
-  #   - result == 'failure' (the review DIED): #115's silent case — post a "did not complete,
+  # dead review is never silent. The outcomes that land here:
+  #   - review result == 'failure' (the review DIED): #115's silent case — post a "did not complete,
   #     re-request" sticky and finalize the check `failure`.
   #   - result == 'cancelled' (a review cancelled before completing, typically by a superseding run on
   #     this branch): post the informational "superseded — no action needed" sticky — NOT the failure
@@ -1413,6 +1420,10 @@ jobs:
   #     finalize the lingering check `neutral` — no sticky.
   #   - result == 'success' + the comment job was CANCELLED mid-post: the review completed but its
   #     check was never finalized, so settle it `neutral` here (issue #139 r6).
+  #   - the comment job FAILED: when its post step never emitted `posted` (the sticky never landed —
+  #     e.g. the findings artifact upload failed), post a "did not complete, re-request" sticky and
+  #     finalize the check `failure`; when `posted` IS set (a later comment-job step failed after the
+  #     review landed), settle the check only — a posted review must not be re-requested or failed.
   # The has_findings guard excludes a review that DID post (including an honest triage-error notice)
   # but failed a later step — comment already finalized that one. EXCEPT for a cancelled review: a
   # cancellation racing just past the assemble step leaves has_findings=true but the comment job is
@@ -1426,7 +1437,7 @@ jobs:
           (inputs.conclusion == 'success' || inputs.conclusion == 'failure') &&
           (needs.review.result == 'cancelled' ||
            (needs.review.result == 'success' && needs.comment.result == 'cancelled') ||
-           (needs.review.result == 'success' && needs.comment.result == 'failure') ||
+           needs.comment.result == 'failure' ||
            ((needs.review.result == 'failure' || needs.review.result == 'success') &&
             needs.review.outputs.has_findings != 'true')) }}
     runs-on: ubuntu-latest
@@ -1484,14 +1495,16 @@ jobs:
           HEAD_BRANCH: ${{ inputs.head_branch }}
           REVIEW_RESULT: ${{ needs.review.result }}
           COMMENT_RESULT: ${{ needs.comment.result }}
+          POSTED: ${{ needs.comment.outputs.posted }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          # A review that completed but whose comment job FAILED mid-post (a findings artifact
+          # A review that completed but whose comment job FAILED BEFORE posting (a findings artifact
           # miss, an upload failure) is the same honest outcome as a dead review: re-request + failure.
-          if [ "$REVIEW_RESULT" = "failure" ] || [ "$COMMENT_RESULT" = "failure" ]; then
+          # A comment job that failed AFTER posting (posted=true) settles neutral below instead.
+          if [ "$REVIEW_RESULT" = "failure" ] || { [ "$REVIEW_RESULT" = "success" ] && [ "$COMMENT_RESULT" = "failure" ] && [ "$POSTED" != "true" ]; }; then
             code-review report-incomplete \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

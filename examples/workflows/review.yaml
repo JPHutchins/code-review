@@ -268,8 +268,8 @@ jobs:
             --out-dir "$GATHER_DIR" \
             >> "$GITHUB_OUTPUT"
 
-          # Add extra inputs the review should see here (e.g. a test report or CI artifact); write
-          # them into $GATHER_DIR — files in the workspace can be clobbered or planted at checkout.
+          # Extra inputs the review should see (a lockfile manifest, a CLAUDE.md) go here — write
+          # them into $GATHER_DIR; files in the workspace can be clobbered or planted at checkout.
 
       # Data-only: never executes PR code.
       - name: Phase 1 — security triage
@@ -736,10 +736,10 @@ jobs:
           jq -c '.findings' "$FINDINGS_DIR/envelope.json" >"$FINDINGS_DIR/findings.json"
 
           # Discard the agent's edits and restore the clean PR-head snapshot — `--hard` doesn't
-          # touch untracked directories, so node_modules/ survives (the findings land in
-          # $FINDINGS_DIR, outside the worktree, so the reset can't reach them) —
-          # then validate each finding's `patch` (if any) against that exact PR-head content: align
-          # the finding's range to the patch and keep it, or drop the patch.
+          # touch untracked directories, so node_modules/ survives; the findings land in
+          # $FINDINGS_DIR (outside the worktree, so the reset can't reach them) — then validate each
+          # finding's `patch` (if any) against that exact PR-head content: align the finding's range
+          # to the patch and keep it, or drop the patch.
           # The commenter later projects a kept patch into a suggestion.
           git reset -q --hard HEAD
           code-review validate-patches "$FINDINGS_DIR/findings.json" --repo-root . >"$FINDINGS_DIR/findings.validated.json"
@@ -784,7 +784,6 @@ jobs:
           # since the PR branched, a two-dot base-tip diff would show those commits as phantom removals.
           # Fall back to the base tip when the merge-base can't be computed.
           MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || echo "$BASE_SHA")"
-          FINDINGS_DIR="${FINDINGS_DIR:-$RUNNER_TEMP/findings}"
           mkdir -p "$FINDINGS_DIR"
           if ! "${CLOC[@]}" --git --diff "$MERGE_BASE" "$HEAD_SHA" >"$FINDINGS_DIR/cloc-diff.txt" 2>/dev/null; then
             echo "::warning::change-size static analysis skipped — cloc --git --diff failed (base=$MERGE_BASE head=$HEAD_SHA)"
@@ -892,6 +891,10 @@ jobs:
   comment:
     needs: review
     if: ${{ always() && needs.review.outputs.has_findings == 'true' }}
+    # posted signals that the sticky + inline posts LANDED, so finalize can tell a comment job that
+    # died BEFORE posting (re-request) from one that failed AFTER (settle the check only).
+    outputs:
+      posted: ${{ steps.post.outputs.posted }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # SAME group as review — a superseding run cancels this run's comment with its review, as a unit.
@@ -947,6 +950,7 @@ jobs:
           echo "Egress canary could not connect — block policy verified"
 
       - name: Post the review
+        id: post
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -1070,6 +1074,7 @@ jobs:
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}" \
             "${UNVERIFIED_ARGS[@]}"
+          echo "posted=true" >> "$GITHUB_OUTPUT"
 
       # The review completed — finalize the check-run `neutral` (non-gating). always() so a failed
       # `post` step (comment infra, not the review) still resolves the check instead of hanging it.
@@ -1097,6 +1102,9 @@ jobs:
   # (ownership-matched by details_url, so a superseding run's live check is never touched); result ==
   # 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`; result == 'success'
   # + the comment job was CANCELLED mid-post → settle the check `neutral` here (issue #139 r6). The
+  # comment job FAILING: posted != 'true' (the sticky never landed — e.g. the findings upload failed)
+  # → the re-request + `failure` pair; posted == 'true' (a later step failed after the review landed)
+  # → settle the check only — a posted review must not be re-requested or failed. The
   # has_findings guard excludes a review that DID post but failed a later step (comment finalized it)
   # — EXCEPT for a cancelled review, which runs finalize regardless so a cancellation racing past
   # assemble still gets settled (issue #139).
@@ -1109,7 +1117,7 @@ jobs:
            github.event.workflow_run.conclusion == 'failure') &&
           (needs.review.result == 'cancelled' ||
            (needs.review.result == 'success' && needs.comment.result == 'cancelled') ||
-           (needs.review.result == 'success' && needs.comment.result == 'failure') ||
+           needs.comment.result == 'failure' ||
            ((needs.review.result == 'failure' || needs.review.result == 'success') &&
             needs.review.outputs.has_findings != 'true')) }}
     # Its OWN group — NOT the review group — so a superseding run cancels the stale review but never
@@ -1165,14 +1173,16 @@ jobs:
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           REVIEW_RESULT: ${{ needs.review.result }}
           COMMENT_RESULT: ${{ needs.comment.result }}
+          POSTED: ${{ needs.comment.outputs.posted }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          # A review that completed but whose comment job FAILED mid-post (a findings artifact
+          # A review that completed but whose comment job FAILED BEFORE posting (a findings artifact
           # miss, an upload failure) is the same honest outcome as a dead review: re-request + failure.
-          if [ "$REVIEW_RESULT" = "failure" ] || [ "$COMMENT_RESULT" = "failure" ]; then
+          # A comment job that failed AFTER posting (posted=true) settles neutral below instead.
+          if [ "$REVIEW_RESULT" = "failure" ] || { [ "$REVIEW_RESULT" = "success" ] && [ "$COMMENT_RESULT" = "failure" ] && [ "$POSTED" != "true" ]; }; then
             code-review report-incomplete \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

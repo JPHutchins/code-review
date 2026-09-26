@@ -40,8 +40,14 @@ const NonNegativePrice = t.refinement(t.number, (n): n is number => n >= 0, "Non
 
 // Mirrors findings.schema.json's schema_version.pattern exactly, so resolve() never accepts a value
 // the ajv gate would reject (e.g. a truncated "0.2" or an over-long "0.2.0.0").
-const SCHEMA_VERSION_RE =
-  /^(0|[1-9]\d*)\.(\d+)\.(\d+)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const SEMVER_SUFFIX =
+  "(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?";
+const SCHEMA_VERSION_RE = new RegExp(`^(0|[1-9]\\d*)\\.(\\d+)\\.(\\d+)${SEMVER_SUFFIX}$`);
+
+// The enforcement copy printableSchema injects: the general pattern narrowed to the in-force minor,
+// admitting exactly the stamps (patch, prerelease, build) the registry dispatches to the live entry.
+export const anchoredSchemaVersionPattern = (version: string): string =>
+  `^${version.split(".").slice(0, 2).join("\\.")}\\.[0-9]+${SEMVER_SUFFIX}$`;
 
 const SchemaVersion = t.refinement(
   t.string,

@@ -1059,6 +1059,32 @@ describe("mechanism frequency rounds — issue #145", () => {
     expect(Object.keys(parsed[0]?.ids ?? {})).toHaveLength(MAX_IDS_PER_ROUND);
   });
 
+  it("a dual-spelling round's cap prefers the current ids keys — stale legacy counts cannot evict them", () => {
+    const staleCodes = Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => [`legacy-${String(i)}`, 9]),
+    );
+    const marker =
+      "<!-- code-review:rounds;base64 " +
+      Buffer.from(
+        JSON.stringify([
+          {
+            critical: 0,
+            major: 0,
+            minor: 0,
+            nit: 0,
+            ids: { "current-mech": 1 },
+            codes: staleCodes,
+          },
+        ]),
+        "utf-8",
+      ).toString("base64") +
+      " -->";
+    const parsed = parseRounds(marker);
+    const keys = Object.keys(parsed[0]?.ids ?? {});
+    expect(keys).toContain("current-mech");
+    expect(keys).toHaveLength(MAX_IDS_PER_ROUND);
+  });
+
   it("parseRounds round-trips coded rounds and keeps count-only rounds beside them", () => {
     const rounds: RoundRecord[] = [
       counts(1, 0, 0, 0),

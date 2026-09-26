@@ -265,18 +265,27 @@ export const escapeCodeBackticks = (code: string): string =>
 
 // The codes field of a round record, validated and capped: string → positive safe-integer counts only
 // (a count-0 entry means "no findings this round" and is not recorded — every consumer agrees that 0
-// is absence), kept sorted by count descending with ties preferring codes that recurred in the
-// previous round (so the per-round top-N cap can't silently drop the exact mechanism the streak
-// detector is watching), then alphabetically for a stable order. Malformed (or absent) codes decode to
-// undefined so the round's severity counts still stand — a crafted marker can't smuggle a bad codes
-// shape into the streak/note renderers.
+// is absence), kept sorted by preferredKeys first (a dual-spelling round's current ids keys, so a
+// stale legacy count can never evict them from the cap), then count descending with ties preferring
+// codes that recurred in the previous round (so the per-round top-N cap can't silently drop the
+// exact mechanism the streak detector is watching), then alphabetically for a stable order.
+// Malformed (or absent) codes decode to undefined so the round's severity counts still stand — a
+// crafted marker can't smuggle a bad codes shape into the streak/note renderers.
 // The bounded form for the ROUNDS marker (the carrier with the top-N cap): the shared
 // usableCountsMap validation (schema.ts — the one definition every round reader shares), then the
 // cap + prior-preference.
-const normalizeIdCounts = (ids: unknown, priorCodes?: IdCounts): IdCounts | undefined => {
-  const entries = Object.entries(usableCountsMap(ids) ?? {});
+const normalizeIdCounts = (
+  ids: unknown,
+  priorCodes?: IdCounts,
+  preferredKeys?: ReadonlySet<string>,
+  preValidated = false,
+): IdCounts | undefined => {
+  const entries = Object.entries((preValidated ? (ids as IdCounts) : usableCountsMap(ids)) ?? {});
   if (entries.length === 0) return undefined;
   const sorted = entries.sort((a, b) => {
+    const aPreferred = preferredKeys?.has(a[0]) === true ? 1 : 0;
+    const bPreferred = preferredKeys?.has(b[0]) === true ? 1 : 0;
+    if (aPreferred !== bPreferred) return bPreferred - aPreferred;
     if (b[1] !== a[1]) return b[1] - a[1];
     const aPrior = hasId(priorCodes, a[0]) ? 1 : 0;
     const bPrior = hasId(priorCodes, b[0]) ? 1 : 0;
@@ -317,7 +326,14 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
     // the current `ids` spelling winning every shared key, and a malformed/empty `ids` must not
     // lose its mechanism map while a valid legacy `codes` sits beside it. normalizeIdCounts then
     // applies the top-N cap.
-    const codes = normalizeIdCounts(mergedCountsMaps(rec["ids"], rec["codes"]), priorCodes);
+    // The cap prefers the current ids keys (preferredKeys) so a high-count legacy codes-only key
+    // can never evict a current mechanism from the capped trajectory — the merge's stated rationale.
+    const codes = normalizeIdCounts(
+      mergedCountsMaps(rec["ids"], rec["codes"]),
+      priorCodes,
+      new Set(Object.keys(usableCountsMap(rec["ids"]) ?? {})),
+      true,
+    );
     priorCodes = codes;
     const sha = rec["sha"];
     const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;

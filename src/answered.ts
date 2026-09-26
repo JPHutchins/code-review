@@ -308,8 +308,11 @@ export const answeredRegistryFrom = (
 const isSynthesizedTitleMatch = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
   isSynthesizedFindingId(e.code) && e.title === f.title;
 
-const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
-  e.code === resolveFindingId(f) || isSynthesizedTitleMatch(f, e);
+const matches = (
+  resolvedId: string,
+  f: Finding,
+  e: Pick<AnsweredEntry, "code" | "title">,
+): boolean => e.code === resolvedId || isSynthesizedTitleMatch(f, e);
 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
@@ -336,12 +339,13 @@ export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
 // entry while a verbatim (6/6) synthesized same-title entry sits beside it — post keeps it (only
 // the chosen entry feeds the drop), the seed's existential scan drops it (see applyAnswered).
 export const isAnsweredDrop = (
+  resolvedId: string,
   f: Finding,
   e: Pick<
     AnsweredEntry,
     "code" | "title" | "description" | "reasoning" | "severity" | "path" | "patch"
   >,
-): boolean => matches(f, e) && isVerbatimReRaise(f, e) && f.severity !== "critical";
+): boolean => matches(resolvedId, f, e) && isVerbatimReRaise(f, e) && f.severity !== "critical";
 
 // How many of the verbatim claim fields a finding shares with an entry — the title-second-chance
 // scorer: among several synthesized same-title entries (same title, different paths — their
@@ -361,6 +365,8 @@ export const answeredNoteKey = (f: { id: string; title: string }): string =>
 // The title second chance, run ONLY on an id miss (the common case pays nothing): the synthesized
 // same-title entry sharing the most verbatim claim fields, ties keeping registry order. Scored in
 // one pass — each candidate once, strict > preserves the first on ties.
+const NO_TITLE_MATCH = { entry: undefined, score: -1 } as const;
+
 const bestTitleMatch = (
   f: Finding,
   registry: readonly AnsweredEntry[],
@@ -373,6 +379,7 @@ const bestTitleMatch = (
     if (score > bestScore) {
       best = e;
       bestScore = score;
+      if (score === VERBATIM_FIELDS.length) break;
     }
   }
   return { entry: best, score: bestScore };
@@ -436,7 +443,7 @@ export const applyAnswered = (
     const resolvedId = resolveFindingId(f);
     const idMatch = registry.find((e) => e.code === resolvedId);
     const { entry: titleMatch, score: titleScore } =
-      idMatch === undefined ? bestTitleMatch(f, registry) : { entry: undefined, score: -1 };
+      idMatch === undefined ? bestTitleMatch(f, registry) : NO_TITLE_MATCH;
     const entry = idMatch ?? titleMatch;
     if (entry === undefined) {
       kept.push(f);

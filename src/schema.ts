@@ -425,20 +425,19 @@ const SystemicProblemCodecV09 = strictExact("SystemicV09Strict", SystemicV09Shap
   SystemicV09Optional,
 ]);
 
+// The legacy recurring item stays tolerant-in on KEYS — like the legacy finding, no strict-key
+// gate — because the legacy route's contract is tolerant-in/strict-out (normalizeV09 rewrites the
+// items to the strict 0.10 shape, dropping a code/id-less item entirely).
 const RecurringV09Identity = t.partial({ code: t.string, id: t.string });
 const RecurringV09Counts = t.type({
   consecutive_rounds: ConsecutiveRounds,
   start_round: StartRound,
 });
 const RecurringV09Shape = t.intersection([RecurringV09Identity, RecurringV09Counts]);
-const RecurringCodecV09 = strictExact("RecurringV09Strict", RecurringV09Shape, [
-  RecurringV09Identity,
-  RecurringV09Counts,
-]);
 
 const ScopeMetastasisV09Shape = t.type({
   decision_prompt: t.string,
-  recurring: t.array(RecurringCodecV09),
+  recurring: t.array(RecurringV09Shape),
 });
 
 const ScopeMetastasisCodecV09 = strictExact("ScopeMetastasisV09Strict", ScopeMetastasisV09Shape, [
@@ -627,11 +626,11 @@ const FlatModelPricesShape = t.type({
   cache_write: NonNegativePrice,
 });
 
-// The prices codecs mirror the ajv gate exactly, the same two-gates-agree discipline as
-// SystemicProblemStrict et al. (issue #170 review): t.exact strips unknown keys on encode, and a
-// key-set refinement rejects them on DECODE (ajv's additionalProperties:false) — so a hybrid entry that
-// carries BOTH flat fields and `slots` is rejected by both variants and the union never ambiguates,
-// rather than decoding as flat while being priced as slotted.
+// The prices codecs mirror the ajv gate exactly, the same two-gates-agree discipline as the rest of
+// this file's strictExact codecs (issue #170 review): a key-set refinement rejects unknown keys on
+// DECODE (ajv's additionalProperties:false) — so a hybrid entry that carries BOTH flat fields and
+// `slots` is rejected by both variants and the union never ambiguates, rather than decoding as flat
+// while being priced as slotted.
 const FlatModelPricesCodec = strictExact("FlatModelPricesStrict", FlatModelPricesShape, [
   FlatModelPricesShape,
 ]);

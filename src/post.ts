@@ -716,21 +716,38 @@ export const priorIdsFrom = (doc: unknown): readonly string[] => {
   return [...idsOf("findings", false), ...idsOf("systemic_problems", true)];
 };
 
+// Best-effort append to a runner file: a write failure warns with the given label and never fails
+// the round. The path is a parameter, so the effect is the only thing here that is not pure.
+const appendBestEffort = (path: string | undefined, label: string, body: string): void => {
+  if (path === undefined || path === "") return;
+  try {
+    appendFileSync(path, body);
+  } catch (err) {
+    process.stderr.write(`Warning: could not write ${label}: ${errMsg(err)}\n`);
+  }
+};
+
+// The posted signal travels through the step's GITHUB_OUTPUT file — the runner publishes it as the
+// step's output when the step completes. Written INSIDE upsertSticky so every sticky landing (the
+// main path and the notice paths alike) signals itself, and written as posted=false on the
+// deliberate no-write exits so a never-landed run never reads as landed.
+const writePostedSignal = (value: boolean): void => {
+  appendBestEffort(
+    process.env["GITHUB_OUTPUT"],
+    "the posted signal to GITHUB_OUTPUT",
+    `posted=${value ? "true" : "false"}\n`,
+  );
+};
+
 // The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
-// while each run's summary keeps the review as it stood for that run (issue #205). Best-effort — the
-// record must never fail the round — and append, so it joins whatever else the job wrote. The path is
-// a parameter rather than an environment read, so the effect is the only thing here that is not pure.
+// while each run's summary keeps the review as it stood for that run (issue #205). The template
+// renders OUTSIDE the best-effort write: a failing template is a defect that should surface, and the
+// sticky rendered from the same input a moment earlier, so this throwing means something is
+// genuinely wrong. Only the write is best-effort.
 const appendRunSummary = (summaryPath: string | undefined, body: () => string): void => {
   if (summaryPath === undefined || summaryPath === "") return;
-  // Rendered OUTSIDE the catch: a failing template is a defect that should surface, and the sticky
-  // rendered from the same input a moment earlier, so this throwing means something is genuinely
-  // wrong. Only the write is best-effort — a record that cannot be written must not fail the round.
   const rendered = body();
-  try {
-    appendFileSync(summaryPath, `\n${rendered}\n`);
-  } catch (err) {
-    process.stderr.write(`Warning: could not write the run summary: ${errMsg(err)}\n`);
-  }
+  appendBestEffort(summaryPath, "the run summary", `\n${rendered}\n`);
 };
 
 // Trust by author identity (bot login), not the marker alone. Returns null only when a NEW comment's
@@ -741,16 +758,19 @@ const upsertSticky = async (
   existing: { readonly id: number; readonly body: string } | null,
   body: string,
   ghApi: GhApi,
+  signal = false,
 ): Promise<{ readonly id: number; readonly url: string | undefined } | null> => {
   if (existing !== null) {
     const patched = await patchComment(repo, existing.id, body, ghApi);
     process.stderr.write(
       `Updated sticky comment #${String(existing.id)} on PR #${String(prNumber)}\n`,
     );
+    if (signal) writePostedSignal(true);
     return { id: existing.id, url: patched?.html_url };
   }
   const posted = await postComment(repo, prNumber, body, ghApi);
   process.stderr.write(`Posted new sticky comment on PR #${String(prNumber)}\n`);
+  if (signal && posted !== null) writePostedSignal(true);
   return posted ? { id: posted.id, url: posted.html_url } : null;
 };
 
@@ -943,12 +963,14 @@ export const post = async (
   const resolution = resolvePr(candidates, input.headBranch);
   if (resolution.kind === "none") {
     process.stderr.write(`No open PR for ${input.headSha} — nothing to post\n`);
+    writePostedSignal(false);
     process.exit(0);
   }
   if (resolution.kind === "not-open") {
     process.stderr.write(
       `PR #${String(resolution.prNumber)} for ${input.headSha} is not open (state: ${resolution.state}) — nothing to post\n`,
     );
+    writePostedSignal(false);
     process.exit(0);
   }
   const prNumber = resolution.prNumber;
@@ -1064,6 +1086,9 @@ export const post = async (
       message ??
         "Review did not complete and the sticky already reflects a completed review — leaving it in place\n",
     );
+    // The preserved sticky IS the landed review — signal it, so a deliberate leave never reads as
+    // never-posted and never rides the exit-0 fallback.
+    writePostedSignal(true);
     process.exit(0);
   };
 
@@ -1105,7 +1130,7 @@ export const post = async (
         sticky.body,
       ),
     );
-    await upsertSticky(input.repo, prNumber, sticky, body, ghApi);
+    await upsertSticky(input.repo, prNumber, sticky, body, ghApi, true);
     process.exit(0);
   };
 
@@ -1233,6 +1258,7 @@ export const post = async (
       existingSticky,
       renderNotice("The diff for this PR is empty — nothing to review.", discussion),
       ghApi,
+      true,
     );
     process.exit(0);
   }
@@ -1247,6 +1273,7 @@ export const post = async (
       existingSticky,
       renderNotice(noticeMessageFor(findingsResult), discussion),
       ghApi,
+      true,
     );
     process.exit(0);
   }
@@ -1501,7 +1528,7 @@ export const post = async (
         orphanedUnresolvable: orphanResolveFailed,
       }),
     );
-    await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
+    await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi, true);
     // The body this branch posts, whatever shape it took, also goes to the run summary.
     appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => body);
     if (inlineRequested) {
@@ -1723,8 +1750,8 @@ export const post = async (
     existingSticky,
     renderBody(initialDisposition),
     ghApi,
+    true,
   );
-
   // Snapshot stale comments BEFORE posting the fresh ones; timing (not commit SHA) separates them.
   const priorInlineComments = await listPriorBotCommentIds(
     input.repo,

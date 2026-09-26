@@ -332,6 +332,24 @@ export const isAnsweredDrop = (
   >,
 ): boolean => matches(f, e) && isVerbatimReRaise(f, e) && f.severity !== "critical";
 
+// How many of the verbatim claim fields a finding shares with an entry — the title-second-chance
+// scorer: among several synthesized same-title entries (same title, different paths — their
+// synthesized ids differ), the entry sharing the MOST fields is the thread the claim came from, so
+// a kept re-raise's annotation link binds it rather than the first same-title entry in registry
+// order.
+const verbatimMatchCount = (
+  f: Finding,
+  e: Pick<AnsweredEntry, "title" | "description" | "reasoning" | "severity" | "path" | "patch">,
+): number =>
+  [
+    f.title === e.title,
+    f.description === e.description,
+    f.reasoning === e.reasoning,
+    f.severity === e.severity,
+    f.path === e.path,
+    (f.patch ?? null) === e.patch,
+  ].filter(Boolean).length;
+
 // The ONE note-key contract: a finding's annotation key is its id; an empty id (a pre-id staged row,
 // or a reviewer-supplied empty id) falls back to "title:<title>" so the note still keys to something
 // — written once here, consumed by the registry builder, applyAnswered, and both renderers, so the
@@ -386,10 +404,18 @@ export const applyAnswered = (
   for (const f of findings) {
     // ID match first across the WHOLE registry, title second chance only against synthesized
     // entries: a finding title-matching an unrelated entry ahead of its true id-matched entry must
-    // not mis-bind its annotation (the id match wins wherever it exists).
+    // not mis-bind its annotation (the id match wins wherever it exists). The second chance picks
+    // the synthesized same-title entry sharing the MOST verbatim claim fields, so two codeless
+    // same-title answers under different paths cannot mis-bind a kept re-raise's annotation link.
     const entry =
       registry.find((e) => e.code === resolveFindingId(f)) ??
-      registry.find((e) => isSynthesizedFindingId(e.code) && e.title === f.title);
+      registry
+        .filter((e) => isSynthesizedFindingId(e.code) && e.title === f.title)
+        .reduce<AnsweredEntry | undefined>(
+          (best, e) =>
+            best === undefined || verbatimMatchCount(f, e) > verbatimMatchCount(f, best) ? e : best,
+          undefined,
+        );
     if (entry === undefined) {
       kept.push(f);
       continue;

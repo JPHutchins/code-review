@@ -378,6 +378,48 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes).toEqual({});
   });
 
+  it("the title second chance binds the synthesized same-title entry sharing the MOST claim fields, not the first in registry order", () => {
+    // Two codeless same-title answers under different paths — their synthesized ids both match the
+    // title. The finding's path and description match only the SECOND entry; binding the first
+    // would link the wrong thread.
+    const first = entry({
+      code: synthesizedFindingId("src/elsewhere.ts", "The same claim"),
+      description: "A different description.",
+      replyId: 5,
+      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r5",
+    });
+    const second = entry({
+      code: synthesizedFindingId("src/foo.ts", "The same claim"),
+      replyId: 6,
+      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r6",
+    });
+    const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
+      [mkFinding({ id: "fresh-agent-id", reasoning: "NEW evidence." })],
+      [first, second],
+    );
+    expect(findings).toHaveLength(1);
+    expect(verbatimReRaised).toHaveLength(0);
+    expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r6");
+  });
+
+  it("equal-scored synthesized same-title entries keep the registry order", () => {
+    const first = entry({
+      code: synthesizedFindingId("src/foo.ts", "The same claim"),
+      replyId: 5,
+      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r5",
+    });
+    const second = entry({
+      code: synthesizedFindingId("src/foo.ts", "The same claim"),
+      replyId: 6,
+      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r6",
+    });
+    const { reRaisedNotes } = applyAnswered(
+      [mkFinding({ id: "fresh-agent-id", reasoning: "NEW evidence." })],
+      [first, second],
+    );
+    expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r5");
+  });
+
   it("the title second chance never fires for an entry whose code is REAL, only synthesized", () => {
     // A real-code entry with the same title must NOT match a fresh-id finding by title alone.
     const { findings } = applyAnswered(

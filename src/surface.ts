@@ -5,6 +5,7 @@
 import {
   ConvergenceCodec,
   DEFAULT_SCHEMA_VERSION,
+  preferredCountsMap,
   resolveFindingId,
   resolveRuleId,
   usableCountsMap,
@@ -883,7 +884,7 @@ const withLegacyConvergenceIds = (raw: unknown): unknown => {
   const mapped: unknown[] = rounds.map((r) => {
     if (typeof r !== "object" || r === null) return r as unknown;
     const round = r as Record<string, unknown>;
-    const ids = usableCountsMap(round["ids"]) ?? usableCountsMap(round["codes"]);
+    const ids = preferredCountsMap(round["ids"], round["codes"]);
     if (ids === undefined) {
       // Neither spelling usable: strip BOTH map fields (like parseRounds strips a bad map) rather
       // than leaving the legacy `codes` key for the strict round gate to reject — a corrupted map

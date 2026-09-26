@@ -745,6 +745,42 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({ "legacy-a": 2 });
   });
 
+  it("a round carrying a merely-usable ids AND a MORE complete legacy codes resolves through codes — the more-complete map wins", () => {
+    const marker =
+      "<!-- code-review:convergence;base64 " +
+      Buffer.from(
+        JSON.stringify({
+          score: 2,
+          threshold: 1,
+          converged: false,
+          rounds: [
+            {
+              round: 1,
+              score: 2,
+              ids: { "null-check-missing": 1 },
+              codes: { "null-check-missing": 1, "legacy-a": 2 },
+            },
+          ],
+        }),
+        "utf-8",
+      ).toString("base64") +
+      " -->";
+    expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({
+      "null-check-missing": 1,
+      "legacy-a": 2,
+    });
+  });
+
+  it("the round codec rejects a 0-count map entry — every round reader treats 0 as absence", () => {
+    const decoded = ConvergenceCodec.decode({
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { "zero-count": 0 } }],
+    });
+    expect(decoded._tag).toBe("Left");
+  });
+
   it("the round codec preserves a `__proto__` mechanism key — the decode mirrors the writer's fromEntries discipline", () => {
     const decoded = ConvergenceCodec.decode({
       score: 2,

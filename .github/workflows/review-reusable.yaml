@@ -1046,8 +1046,8 @@ jobs:
       - name: Capture session transcripts
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         run: |
-          mkdir -p transcripts/review
-          cp -r "$HOME/.claude/projects/." transcripts/review/ 2>/dev/null || true
+          mkdir -p "$RUNNER_TEMP/transcripts/review"
+          cp -r "$HOME/.claude/projects/." "$RUNNER_TEMP/transcripts/review/" 2>/dev/null || true
 
       # Deterministic change-size static analysis for the sticky's cloc collapsible. Runs in the review
       # job that holds the PR-head checkout (the comment job has none) and only when the head is present
@@ -1077,7 +1077,7 @@ jobs:
           # since the PR branched, a two-dot base-tip diff would show those commits as phantom removals.
           # Fall back to the base tip when the merge-base can't be computed.
           MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || echo "$BASE_SHA")"
-          mkdir -p findings
+          FINDINGS_DIR="${FINDINGS_DIR:-$RUNNER_TEMP/findings}"
           mkdir -p "$FINDINGS_DIR"
           if ! "${CLOC[@]}" --git --diff "$MERGE_BASE" "$HEAD_SHA" >"$FINDINGS_DIR/cloc-diff.txt" 2>/dev/null; then
             echo "::warning::change-size static analysis skipped — cloc --git --diff failed (base=$MERGE_BASE head=$HEAD_SHA)"
@@ -1099,10 +1099,13 @@ jobs:
           REASONS: ${{ steps.triage.outputs.reasons }}
         run: |
           set -euo pipefail
+          # Defaults here too: on a pre-gather failure the gather step never ran, so GITHUB_ENV has
+          # no FINDINGS_DIR — the setup-failed notice path must still reach a directory.
+          FINDINGS_DIR="${FINDINGS_DIR:-$RUNNER_TEMP/findings}"
           mkdir -p "$FINDINGS_DIR"
 
-          # `code-review adapt` (Phase 2, above) always writes BOTH findings/findings.json and
-          # findings/envelope.json when it runs at all — even a findings-recovery miss carries the
+          # `code-review adapt` (Phase 2, above) always writes BOTH $FINDINGS_DIR/findings.json and
+          # $FINDINGS_DIR/envelope.json when it runs at all — even a findings-recovery miss carries the
           # run's real telemetry. So a synthesized notice is only needed when adapt never ran (security
           # gate skip) or never got the chance to write (the agent invocation failed outright). Each
           # notice's message + its incomplete envelope shape live in `code-review notice` (one typed
@@ -1145,7 +1148,7 @@ jobs:
 
           # Preserve triage output in the artifact so a fail-closed gate is diagnosable offline
           # (the comment job ignores these; `code-review extract` also traces the miss to the log).
-          for f in triage.json triage.parsed.json; do
+          for f in "$RUNNER_TEMP/triage.json" "$RUNNER_TEMP/triage.parsed.json"; do
             if [ -f "$f" ]; then cp "$f" "$FINDINGS_DIR/"; fi
           done
 
@@ -1159,11 +1162,11 @@ jobs:
       # at this artifact's own download endpoint.
       - uses: actions/upload-artifact@v7
         id: upload-findings
-        # Not on cancellation: assemble is skipped there, so findings/ would not exist to upload.
+        # Not on cancellation: assemble is skipped there, so $FINDINGS_DIR would not exist to upload.
         if: ${{ !cancelled() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-findings
-          path: ${{ runner.temp }}/findings
+          path: ${{ env.FINDINGS_DIR }}
           retention-days: 90
 
       # Separate artifact so the transcripts (which can be large) don't bloat the findings download
@@ -1176,7 +1179,7 @@ jobs:
         if: ${{ always() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-transcript
-          path: transcripts/
+          path: ${{ runner.temp }}/transcripts
 
   # Write token, no agent/PR code; deterministic (no shell interpolation).
   comment:

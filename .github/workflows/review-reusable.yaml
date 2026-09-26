@@ -1389,9 +1389,13 @@ jobs:
             "${PRICES_ARGS[@]}" \
             "${INLINE_ARGS[@]}" \
             "${UNVERIFIED_ARGS[@]}"
-          # Fallback for pinned CLIs that predate the landmark write (post writes posted=true
-          # itself at the sticky write on current CLIs).
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+          # SINGLE writer for the key: post writes posted=true itself at the sticky landmark on
+          # current CLIs; this fallback fires only when the pinned CLI predates the landmark write
+          # (no posted key in the file yet) — with an honest warning for that window.
+          if ! grep -q "^posted=" "$GITHUB_OUTPUT" 2>/dev/null; then
+            echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates the sticky-landmark posted signal; the signal falls back to the post command's exit status for this window"
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is
       # informational, it must not fail a required-checks branch protection). Scoped to

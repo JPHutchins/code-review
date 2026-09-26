@@ -1728,8 +1728,16 @@ export const post = async (
   // a workflow reading `posted` can tell a landed review from one that never posted, even when the
   // inline delivery below later exits non-zero. Written directly to the step's GITHUB_OUTPUT file
   // (the runner registers it as the step's output at step end); absent outside Actions.
+  // The write is best-effort: a signal-write failure must never fail the post or read as
+  // 'never landed'.
   if (process.env["GITHUB_OUTPUT"] !== undefined && process.env["GITHUB_OUTPUT"] !== "") {
-    appendFileSync(process.env["GITHUB_OUTPUT"], "posted=true\n");
+    try {
+      appendFileSync(process.env["GITHUB_OUTPUT"], "posted=true\n");
+    } catch (err) {
+      process.stderr.write(
+        `Warning: could not write the posted signal to GITHUB_OUTPUT (${errMsg(err)}) — the workflow may read the review as never-posted\n`,
+      );
+    }
   }
 
   // Snapshot stale comments BEFORE posting the fresh ones; timing (not commit SHA) separates them.

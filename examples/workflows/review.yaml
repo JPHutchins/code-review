@@ -891,8 +891,10 @@ jobs:
   comment:
     needs: review
     if: ${{ always() && needs.review.outputs.has_findings == 'true' }}
-    # posted signals that the sticky + inline posts LANDED, so finalize can tell a comment job that
-    # died BEFORE posting (re-request) from one that failed AFTER (settle the check only).
+    # posted signals that the post CLI EXITED 0 (set by the step's last line), so finalize can tell
+    # a comment job that died before completing the post (re-request) from one that failed after
+    # (settle the check only). A partial post that landed the sticky but died late reads as
+    # unposted — bounded by report-incomplete's completed-sticky short-circuit.
     outputs:
       posted: ${{ steps.post.outputs.posted }}
     runs-on: ubuntu-latest
@@ -1000,14 +1002,14 @@ jobs:
           # flag is therefore probed before it is passed. One capture (the probe costs a node start,
           # and a run wanting no flag pays nothing) and one matcher, anchored on a terminator so a
           # bare flag name cannot match a longer option that merely starts with it.
-          # This variant has no inline knob — it calls `post` directly, so add --inline there and to
-          # this capture's condition if you want it — which is why there is no INLINE term below.
+          # The INLINE term above reads an unset variable as false here (this variant has no inline
+          # knob) and keeps the gate byte-identical to the reusable's for the parity pin.
           # Three-state: help captured with the flag / without it / NOT captured at all. A failed
           # capture must not read as "the CLI predates every flag" — one honest warning, and every
           # probe treats the flags as unknown (issue #236 r3).
           POST_HELP=""
           POST_HELP_OK=0
-          if [ -f findings/cloc-diff.txt ] || [ "$REVIEW_ROUTE" = "mechanic" ] || [ -n "$NIT_VISIBILITY_FLOOR" ]; then
+          if [ -f findings/cloc-diff.txt ] || [ "$REVIEW_ROUTE" = "mechanic" ] || [ "$INLINE" = "true" ] || [ -n "$NIT_VISIBILITY_FLOOR" ]; then
             POST_HELP="$(NO_COLOR=1 code-review post --help 2>/dev/null || true)"
             if [ -n "$POST_HELP" ]; then
               POST_HELP_OK=1
@@ -1076,10 +1078,13 @@ jobs:
             "${UNVERIFIED_ARGS[@]}"
           echo "posted=true" >> "$GITHUB_OUTPUT"
 
-      # The review completed — finalize the check-run `neutral` (non-gating). always() so a failed
-      # `post` step (comment infra, not the review) still resolves the check instead of hanging it.
+      # The review completed — finalize the check-run `neutral` (non-gating: the review is
+      # informational, it must not fail a required-checks branch protection). Scoped to
+      # steps.post.outcome == 'success': a FAILED post leaves the check in_progress for the finalize
+      # job to settle `failure` — settling it neutral here would make that attribution a forward-only
+      # no-op (a settled check cannot be re-settled).
       - name: Finalize the check-run
-        if: ${{ always() }}
+        if: ${{ always() && steps.post.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -1179,20 +1184,7 @@ jobs:
         run: |
           set -euo pipefail
           RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          # A review that completed but whose comment job FAILED BEFORE posting (a findings artifact
-          # miss, an upload failure) is the same honest outcome as a dead review: re-request + failure.
-          # A comment job that failed AFTER posting (posted=true) settles neutral below instead.
-          if [ "$REVIEW_RESULT" = "failure" ] || { [ "$REVIEW_RESULT" = "success" ] && [ "$COMMENT_RESULT" = "failure" ] && [ "$POSTED" != "true" ]; }; then
-            code-review report-incomplete \
-              --repo "$REPO" \
-              --head-sha "$HEAD_SHA" \
-              --head-branch "$HEAD_BRANCH" \
-              --run-url "$RUN_URL"
-            code-review check-run failure \
-              --repo "$REPO" \
-              --head-sha "$HEAD_SHA" \
-              --run-url "$RUN_URL"
-          elif [ "$REVIEW_RESULT" = "cancelled" ]; then
+          if [ "$REVIEW_RESULT" = "cancelled" ]; then
             # A cancelled review is informational, not a failure (issue #139): post the "superseded"
             # sticky and settle THIS run's check to `cancelled` (ownership-matched by details_url, so a
             # superseding run's live check on the same head is never touched). Release-gated:
@@ -1211,6 +1203,20 @@ jobs:
                 --head-sha "$HEAD_SHA" \
                 --run-url "$RUN_URL"
             fi
+          elif { [ "$POSTED" != "true" ]; } && { [ "$REVIEW_RESULT" = "failure" ] || { [ "$REVIEW_RESULT" = "success" ] && [ "$COMMENT_RESULT" = "failure" ]; }; }; then
+            # The review never LANDED (posted != true): either the review job died, or the comment
+            # job failed before posting — the honest outcome is the re-request + failure pair. Any
+            # posted=true run settles neutral below instead: a posted review is never re-requested
+            # or failed.
+            code-review report-incomplete \
+              --repo "$REPO" \
+              --head-sha "$HEAD_SHA" \
+              --head-branch "$HEAD_BRANCH" \
+              --run-url "$RUN_URL"
+            code-review check-run failure \
+              --repo "$REPO" \
+              --head-sha "$HEAD_SHA" \
+              --run-url "$RUN_URL"
           else
             # gather-skip (nothing to review), or a completed review whose comment job was cancelled
             # mid-post: settle the check neutral so it doesn't hang. Ownership-matched to this run.

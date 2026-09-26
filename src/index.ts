@@ -43,6 +43,7 @@ import {
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
   DEFAULT_SCHEMA_VERSION,
+  anchoredSchemaVersionPattern,
 } from "./schema.js";
 import type { Triage, Finding, Findings, PriceMap } from "./schema.js";
 import {
@@ -75,7 +76,12 @@ import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName, TranscriptTelemetry } from "./adapt.js";
 import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } from "./extract.js";
 import type { ExtractKind, LadderOutcome } from "./extract.js";
-import { schemaPathFor, declaredVersion, resolveTolerantFindings } from "./registry.js";
+import {
+  schemaPathFor,
+  declaredVersion,
+  resolveTolerantFindings,
+  defaultVersion,
+} from "./registry.js";
 import type { SchemaKind } from "./registry.js";
 import { validatePatch } from "./patch.js";
 import {
@@ -876,7 +882,7 @@ export const printableSchema = (schemaPath: string, pinVersion: boolean): string
   if (typeof schemaVersion === "object" && schemaVersion !== null) {
     (properties as Record<string, unknown>)["schema_version"] = {
       ...(schemaVersion as Record<string, unknown>),
-      pattern: `^${DEFAULT_SCHEMA_VERSION.split(".").slice(0, 2).join("\\.")}\\.[0-9]+$`,
+      pattern: anchoredSchemaVersionPattern(DEFAULT_SCHEMA_VERSION),
     };
   }
   return JSON.stringify(enforcementSchema, null, 2);
@@ -928,7 +934,7 @@ const validateCmd = defineCommand({
       for (const e of errors) process.stderr.write(`  - ${e}\n`);
       if (args.explain) {
         process.stderr.write(
-          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, schemaPath === schemaPathFor(kind))}\n`,
+          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, kind === "findings" && schemaPath === schemaPathFor(kind))}\n`,
         );
       }
       process.exit(1);
@@ -1601,8 +1607,26 @@ const printSchemaCmd = defineCommand({
     const schemaKind = requireSchemaKind(args.name);
     const schemaPath = requireSchemaPath(schemaKind, args["schema-version"]);
     process.stdout.write(
-      `${printableSchema(schemaPath, schemaPath === schemaPathFor(schemaKind))}\n`,
+      `${printableSchema(schemaPath, schemaKind === "findings" && schemaPath === schemaPathFor(schemaKind))}\n`,
     );
+  },
+});
+
+const defaultVersionCmd = defineCommand({
+  meta: {
+    name: "default-version",
+    description:
+      "Print the in-force schema version the installed registry resolves by default — the value a draft should stamp as schema_version",
+  },
+  args: {
+    kind: {
+      type: "string",
+      description: "Schema kind (findings | triage | prices); default: findings",
+    },
+  },
+  run: async ({ args }) => {
+    const kind = requireSchemaKind(args.kind || "findings");
+    process.stdout.write(`${defaultVersion(kind)}\n`);
   },
 });
 
@@ -2360,6 +2384,7 @@ export const main = defineCommand({
     extract: extractCmd,
     "validate-patches": validatePatchesCmd,
     "print-schema": printSchemaCmd,
+    "default-version": defaultVersionCmd,
     "stop-gate": stopGateCmd,
     "budget-hook": budgetHookCmd,
     "print-settings": printSettingsCmd,

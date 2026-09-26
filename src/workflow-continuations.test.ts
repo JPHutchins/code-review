@@ -110,12 +110,13 @@ describe("mechanic route prose — the reusable workflow and the example teach t
 describe("full-review prompt — the vocabulary defers to the schema channel", () => {
   // The full-review prompt once taught the draft's field names and schema_version inline; the
   // #251 retrain made it defer BOTH to the schema the pipeline writes to $SCHEMA_FILE — whose
-  // schema_version now carries a pinned `const` — so a future rename or version bump needs no
-  // prompt edit at all, and the prompt can never teach vocabulary the live gate rejects. These
-  // tests pin the deferral: the prompt must NOT embed the vocabulary, must point at the schema's
-  // pinned const, and both copies must stay byte-identical modulo the reusable's $INSTRUCTION_BLOCK
-  // splice. The argument is extracted as one unit (quote to closing quote — it spans three physical
-  // lines), so a reflow cannot silently escape the pins.
+  // schema_version pattern is narrowed to the in-force minor — and to the installed CLI's
+  // default-version command for the stamp, so a future rename or version bump needs no prompt edit
+  // at all, and the prompt can never teach vocabulary the live gate rejects. These tests pin the
+  // deferral: the prompt must NOT embed the vocabulary, must point at the schema's narrowed pattern
+  // and the default-version note, and both copies must stay byte-identical modulo the reusable's
+  // $INSTRUCTION_BLOCK splice. The argument is extracted as one unit (quote to closing quote — it
+  // spans three physical lines), so a reflow cannot silently escape the pins.
   const promptArg = (workflowPath: string): string => {
     const scripts = runScripts(workflowPath)
       .map(({ script }) => script)
@@ -157,29 +158,30 @@ describe("full-review prompt — the vocabulary defers to the schema channel", (
     expect(arg).toContain(`into the schema's role buckets`);
   });
 
-  it("both files derive VERSION_NOTE from the installed gate's supported list — no version literal to drift", () => {
+  it("both files read VERSION_NOTE from the installed CLI's default-version — the frozen fallback is the only literal", () => {
     const noteLines = (workflowPath: string): readonly string[] =>
       runScripts(workflowPath)
         .flatMap(({ script }) => script.split("\n"))
         .map((line) => line.trim())
         .filter((line) => line.startsWith('VERSION_NOTE="'));
+    const scripts = (workflowPath: string): readonly string[] =>
+      runScripts(workflowPath).map(({ script }) => script);
     for (const workflowPath of [
       ".github/workflows/review-reusable.yaml",
       "examples/workflows/review.yaml",
     ]) {
       const notes = noteLines(workflowPath);
-      expect(notes, workflowPath).toHaveLength(1);
-      // The version is READ from the installed gate (a sentinel validate names the supported
-      // list), never written as a literal — a literal would drift against the pin exactly the way
-      // the prompt's old stamp did.
-      expect(notes[0]!, workflowPath).not.toMatch(/[0-9]\.[0-9]+\.[0-9]/);
-      const scripts = runScripts(workflowPath).map(({ script }) => script);
+      expect(notes, workflowPath).toHaveLength(2);
+      // The version is READ from the installed CLI (default-version prints the registry's own
+      // default — the same value the gate resolves); the only literal anywhere is the FROZEN
+      // pre-command fallback, reachable only by CLIs whose registries stop at that version.
+      const [frozen, read] = notes[0]!.includes("0.10.0")
+        ? [notes[0]!, notes[1]!]
+        : [notes[1]!, notes[0]!];
+      expect(frozen, workflowPath).toContain(`\\\`0.10.0\\\``);
+      expect(read, workflowPath).not.toMatch(/[0-9]\.[0-9]+\.[0-9]/);
       expect(
-        scripts.some((s) => s.includes('code-review validate "$RUNNER_TEMP/version-probe.json"')),
-        workflowPath,
-      ).toBe(true);
-      expect(
-        scripts.some((s) => s.includes("grep 'supported:'")),
+        scripts(workflowPath).some((s) => s.includes("code-review default-version 2>/dev/null")),
         workflowPath,
       ).toBe(true);
     }

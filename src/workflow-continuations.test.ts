@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { readRepoFile, allWorkflows } from "./test-util.js";
+import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -104,6 +105,94 @@ describe("mechanic route prose — the reusable workflow and the example teach t
     const example = steerLines("examples/workflows/review.yaml");
     expect(reusable.length).toBeGreaterThan(0);
     expect(example).toEqual(reusable);
+  });
+});
+
+describe("full-review prompt — the retrained vocabulary matches the live schema", () => {
+  // The full-review prompt teaches the draft's field names inline. The schema is the SSOT for those
+  // names, so every expectation here derives from schema/findings.schema.json (the ajv gate's copy)
+  // and DEFAULT_SCHEMA_VERSION (the codec gate's stamp): a future rename or version bump fails these
+  // tests until BOTH prompt copies catch up, instead of drifting for a whole release the way the
+  // code→id rename did.
+  const promptLines = (workflowPath: string): readonly string[] =>
+    runScripts(workflowPath)
+      .flatMap(({ script }) => script.split("\n"))
+      .filter((line) => line.includes('--append-system-prompt "'));
+  const promptLine = (workflowPath: string): string => {
+    const [line, ...rest] = promptLines(workflowPath);
+    expect(rest, `${workflowPath} extra prompt lines`).toHaveLength(0);
+    expect(line, workflowPath).toBeDefined();
+    return (line ?? "").trim();
+  };
+
+  interface SchemaItem {
+    required: string[];
+    properties: Record<string, unknown>;
+  }
+  const schema = JSON.parse(readRepoFile("schema/findings.schema.json")) as {
+    properties: {
+      findings: { items: SchemaItem };
+      systemic_problems: { items: SchemaItem };
+    };
+  };
+  const optionalOf = (item: SchemaItem): string[] =>
+    Object.keys(item.properties).filter((k) => !item.required.includes(k));
+
+  it("both files carry the same prompt line", () => {
+    expect(promptLine("examples/workflows/review.yaml")).toBe(
+      promptLine(".github/workflows/review-reusable.yaml"),
+    );
+  });
+
+  it("the finding field list names the schema's required and optional fields in schema order", () => {
+    const finding = schema.properties.findings.items;
+    const list = `Each finding uses these exact field names — ${finding.required.join(", ")} (optional: ${optionalOf(finding).join(", ")})`;
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      expect(promptLine(workflowPath), workflowPath).toContain(list);
+    }
+  });
+
+  it("the systemic field list names the schema's required and optional fields in schema order", () => {
+    const systemic = schema.properties.systemic_problems.items;
+    const required = `each item using ${systemic.required.join(", ")}`;
+    const optional = `(optional: ${optionalOf(systemic).join(", ")})`;
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      const line = promptLine(workflowPath);
+      expect(line, workflowPath).toContain(required);
+      expect(line, workflowPath).toContain(optional);
+    }
+  });
+
+  it("the schema_version stamp and the id setter sentence track the schema", () => {
+    const finding = schema.properties.findings.items;
+    const stamp = `{\\"schema_version\\": \\"${DEFAULT_SCHEMA_VERSION}\\"`;
+    const idRole = finding.required.includes("id") ? "required" : "optional";
+    const setter = `Set the ${idRole} \\\`id\\\` to a STABLE, self-descriptive kebab-case rule identifier`;
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      const line = promptLine(workflowPath);
+      expect(line, workflowPath).toContain(stamp);
+      expect(line, workflowPath).toContain(setter);
+    }
+  });
+
+  it("the prompt warns against the retired code/finding_codes spellings", () => {
+    const warning =
+      "or the retired \\`code\\`/\\`finding_codes\\` field names (renamed to \\`id\\`/\\`finding_ids\\`";
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      expect(promptLine(workflowPath), workflowPath).toContain(warning);
+    }
   });
 });
 

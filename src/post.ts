@@ -1724,6 +1724,13 @@ export const post = async (
     renderBody(initialDisposition),
     ghApi,
   );
+  // The review LANDED: signal the runner at the true landmark, BEFORE any later write can fail — so
+  // a workflow reading `posted` can tell a landed review from one that never posted, even when the
+  // inline delivery below later exits non-zero. Written directly to the step's GITHUB_OUTPUT file
+  // (the runner registers it as the step's output at step end); absent outside Actions.
+  if (process.env["GITHUB_OUTPUT"] !== undefined && process.env["GITHUB_OUTPUT"] !== "") {
+    appendFileSync(process.env["GITHUB_OUTPUT"], "posted=true\n");
+  }
 
   // Snapshot stale comments BEFORE posting the fresh ones; timing (not commit SHA) separates them.
   const priorInlineComments = await listPriorBotCommentIds(

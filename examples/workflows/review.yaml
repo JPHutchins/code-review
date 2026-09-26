@@ -891,10 +891,10 @@ jobs:
   comment:
     needs: review
     if: ${{ always() && needs.review.outputs.has_findings == 'true' }}
-    # posted signals that the post CLI EXITED 0 (set by the step's last line), so finalize can tell
-    # a comment job that died before completing the post (re-request) from one that failed after
-    # (settle the check only). A partial post that landed the sticky but died late reads as
-    # unposted — bounded by report-incomplete's completed-sticky short-circuit.
+    # posted is written by `code-review post` ITSELF at the sticky landmark (directly into the
+    # step's GITHUB_OUTPUT the moment the sticky lands), so the signal means "the review LANDED"
+    # even when the inline delivery below later exits non-zero. The step's trailing echo covers
+    # pinned CLIs that predate the landmark write (exit-0 semantics for that window).
     outputs:
       posted: ${{ steps.post.outputs.posted }}
     runs-on: ubuntu-latest
@@ -964,6 +964,9 @@ jobs:
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
+          # This variant has no inline knob; the constant keeps the POST_HELP gate's INLINE term
+          # bound under set -u (it is byte-identical to the reusable's for the parity pin).
+          INLINE: "false"
           FINDINGS_ARTIFACT_ID: ${{ needs.review.outputs.findings_artifact_id }}
           CONVERGENCE_THRESHOLD: ${{ vars.CONVERGENCE_THRESHOLD }}
           NIT_VISIBILITY_FLOOR: ${{ vars.NIT_VISIBILITY_FLOOR }}
@@ -1002,7 +1005,7 @@ jobs:
           # flag is therefore probed before it is passed. One capture (the probe costs a node start,
           # and a run wanting no flag pays nothing) and one matcher, anchored on a terminator so a
           # bare flag name cannot match a longer option that merely starts with it.
-          # The INLINE term above reads an unset variable as false here (this variant has no inline
+          # The INLINE term reads the post step's constant "false" here (this variant has no inline
           # knob) and keeps the gate byte-identical to the reusable's for the parity pin.
           # Three-state: help captured with the flag / without it / NOT captured at all. A failed
           # capture must not read as "the CLI predates every flag" — one honest warning, and every
@@ -1076,6 +1079,8 @@ jobs:
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}" \
             "${UNVERIFIED_ARGS[@]}"
+          # Fallback for pinned CLIs that predate the landmark write (post writes posted=true
+          # itself at the sticky write on current CLIs).
           echo "posted=true" >> "$GITHUB_OUTPUT"
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is
@@ -1122,6 +1127,7 @@ jobs:
            github.event.workflow_run.conclusion == 'failure') &&
           (needs.review.result == 'cancelled' ||
            (needs.review.result == 'success' && needs.comment.result == 'cancelled') ||
+           (needs.review.result == 'failure' && needs.comment.result == 'cancelled') ||
            needs.comment.result == 'failure' ||
            ((needs.review.result == 'failure' || needs.review.result == 'success') &&
             needs.review.outputs.has_findings != 'true')) }}

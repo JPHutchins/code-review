@@ -248,6 +248,47 @@ const mkMockGhApi = (
 
 // Tests
 
+describe("post — the landed signal (issue #254)", () => {
+  const outputPath = (): string => join(tmpDir, "gh-output.txt");
+  afterEach(() => {
+    delete process.env["GITHUB_OUTPUT"];
+  });
+
+  it("writes posted=true to the step's GITHUB_OUTPUT the moment the sticky lands — even when the inline delivery later rejects", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    // The pre-upsert prior-review LIST keeps its match (--paginate); only the review POST (the
+    // batch and its body-only retry) rejects, so the command exits non-zero — but the sticky
+    // already landed, so the signal must stand.
+    const responses = [
+      ...mkMocks("<!-- code-review -->").filter(
+        (r) => !r.match(["repos/owner/repo/pulls/42/reviews"]),
+      ),
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: "",
+      },
+    ];
+    const { api } = mkMockGhApi(responses);
+    await expect(post(mkInlineInput(), api)).rejects.toThrow();
+    expect(readFileSync(outputPath(), "utf-8")).toContain("posted=true");
+  });
+
+  it("writes nothing when no sticky lands (the sticky upsert itself fails)", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    const responses = mkMocks("<!-- code-review -->").filter(
+      (r) =>
+        !r.match(["repos/owner/repo/issues/comments/999"]) &&
+        !r.match(["repos/owner/repo/issues/comments"]),
+    );
+    const { api } = mkMockGhApi(responses);
+    await expect(post(mkInlineInput(), api)).rejects.toThrow();
+    expect(readFileSync(outputPath(), "utf-8")).toBe("");
+  });
+});
+
 // The sticky is overwritten every round; the run summary is the per-run record. Same findings, same
 // options, same template — the divergence is that the summary has no diff, so it carries the findings
 // the inline comments took off the sticky (issue #205).

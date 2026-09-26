@@ -5,7 +5,7 @@
 import {
   ConvergenceCodec,
   DEFAULT_SCHEMA_VERSION,
-  preferredCountsMap,
+  mergedCountsMaps,
   resolveFindingId,
   resolveRuleId,
   usableCountsMap,
@@ -312,11 +312,11 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   let priorCodes: IdCounts | undefined;
   for (const u of (decoded as readonly unknown[]).filter(isSeverityCounts)) {
     const rec = u as Record<string, unknown>;
-    // ids first, with the legacy `codes` as a real fallback: `??` cannot express "valid-or-fallback",
-    // and a round carrying BOTH fields with a malformed/empty `ids` must not lose its mechanism map
-    // while a valid legacy `codes` sits beside it.
-    const codes =
-      normalizeIdCounts(rec["ids"], priorCodes) ?? normalizeIdCounts(rec["codes"], priorCodes);
+    // mergedCountsMaps first (the ONE dual-spelling resolution, shared with the convergence
+    // migration and the legacy upcast): a round carrying BOTH spellings merges their entries per key
+    // with the higher count winning, and a malformed/empty `ids` must not lose its mechanism map
+    // while a valid legacy `codes` sits beside it. normalizeIdCounts then applies the top-N cap.
+    const codes = normalizeIdCounts(mergedCountsMaps(rec["ids"], rec["codes"]), priorCodes);
     priorCodes = codes;
     const sha = rec["sha"];
     const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;
@@ -863,11 +863,11 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // crafted/reset value — treat it as absent so the marker/legacy fallbacks reconstruct the whole thing,
 // and an empty trajectory can never silently reset the round count to 0 (issue #185 review).
 // A pre-0.10 sticky's compact convergence marker carries rounds whose mechanism maps use the legacy
-// `codes` spelling (0.10 renamed it to `ids`). Map the legacy rounds before the strict codec gate,
-// with the SAME precedence parseRounds applies (usableCounts): an `ids` map wins only when it is a
-// usable counts map, else a usable `codes` map takes over — a round carrying both with a malformed
-// `ids` must not lose its mechanism map. The winner maps to `ids` verbatim minus the entries
-// usableCounts itself rejects (this carrier was never capped, unlike the rounds marker).
+// `codes` spelling (0.10 renamed it to `ids`). Map the legacy rounds before the strict codec gate
+// with the SAME resolution parseRounds applies (mergedCountsMaps: usable maps merge per key, the
+// higher count wins) — a round carrying both with a malformed `ids` must not lose its mechanism
+// map. The winner maps to `ids` verbatim minus the entries usableCounts itself rejects (this
+// carrier was never capped, unlike the rounds marker).
 const withLegacyConvergenceIds = (raw: unknown): unknown => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const rec = raw as Record<string, unknown>;
@@ -884,7 +884,7 @@ const withLegacyConvergenceIds = (raw: unknown): unknown => {
   const mapped: unknown[] = rounds.map((r) => {
     if (typeof r !== "object" || r === null) return r as unknown;
     const round = r as Record<string, unknown>;
-    const ids = preferredCountsMap(round["ids"], round["codes"]);
+    const ids = mergedCountsMaps(round["ids"], round["codes"]);
     if (ids === undefined) {
       // Neither spelling usable: strip BOTH map fields (like parseRounds strips a bad map) rather
       // than leaving the legacy `codes` key for the strict round gate to reject — a corrupted map

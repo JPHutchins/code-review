@@ -771,14 +771,25 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     });
   });
 
-  it("the round codec rejects a 0-count map entry — every round reader treats 0 as absence", () => {
-    const decoded = ConvergenceCodec.decode({
+  it("the round codec DROPS a 0-count map entry (absence, per every round reader) and REJECTS a negative one (ajv minimum: 0)", () => {
+    const zeroed = ConvergenceCodec.decode({
       score: 2,
       threshold: 1,
       converged: false,
-      rounds: [{ round: 1, score: 2, ids: { "zero-count": 0 } }],
+      rounds: [{ round: 1, score: 2, ids: { "zero-count": 0, kept: 2 } }],
     });
-    expect(decoded._tag).toBe("Left");
+    expect(zeroed._tag).toBe("Right");
+    if (zeroed._tag !== "Right") return;
+    const ids = zeroed.right.rounds?.[0]?.ids;
+    expect(Object.prototype.hasOwnProperty.call(ids, "zero-count")).toBe(false);
+    expect(ids?.["kept"]).toBe(2);
+    const negative = ConvergenceCodec.decode({
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { negative: -1 } }],
+    });
+    expect(negative._tag).toBe("Left");
   });
 
   it("the round codec preserves a `__proto__` mechanism key — the decode mirrors the writer's fromEntries discipline", () => {

@@ -68,8 +68,9 @@ const UriString = t.refinement(
 // The ONE strict+exact discipline shared by every strict-keyed codec in this file: the ajv gate
 // rejects unknown keys (additionalProperties: false) but t.exact only strips them on encode — on
 // decode it accepts them. The refinement closes the gap so the codec gate rejects exactly what the
-// ajv gate rejects, with the key set derived from the passed members (each shape's own component
-// codecs) so it cannot drift from the declared fields.
+// ajv gate rejects, with the key set derived from the passed members. `members` MUST be exactly the
+// shape's prop-bearing leaves (each shape's own component codecs): an omitted leaf would silently
+// reject that leaf's fields on every decode — the key set cannot drift only if the list cannot.
 const strictExact = <C extends t.HasProps>(
   name: string,
   shape: C,
@@ -112,11 +113,13 @@ const FindingOptional = t.partial({
 
 // ONE line-anchor refinement shared by BOTH finding shapes — they differ only in their identity
 // field, so the end>=start gate rides a minimal anchor shape each intersection includes.
-const EndGeStart = t.refinement(
-  t.type({ start_line: LineNumber, end_line: LineNumber }),
-  (f): f is { start_line: number; end_line: number } => f.end_line >= f.start_line,
-  "EndGeStart",
-);
+// ONE line-anchor gate shared by BOTH finding shapes — they differ only in their identity field.
+// Applied as a WRAPPER refinement around each shape (not an intersection member), so an inner shape
+// failure short-circuits with the outer context (`0.findings.0`) exactly as before the #253
+// dedup — an intersection member would fail under a bare numeric index and dump the whole finding
+// into the stop-gate message the next-round agent reads.
+const EndGeStart = <C extends t.HasProps>(shape: C): t.RefinementC<C> =>
+  t.refinement(shape, (f): f is t.TypeOf<C> => f.end_line >= f.start_line, "EndGeStart");
 
 // Strict-key refinement (see strictExact): the ajv gate rejects unknown keys but t.exact accepts
 // them on decode, so the codec gate must reject exactly what ajv rejects — the removed `code` key
@@ -126,10 +129,9 @@ const FindingShape = t.intersection([
   FindingIdRequired,
   RuleUrlCodec,
   FindingOptional,
-  EndGeStart,
 ]);
 
-export const FindingCodec = strictExact("FindingStrict", FindingShape, [
+export const FindingCodec = strictExact("FindingStrict", EndGeStart(FindingShape), [
   FindingCoreRequired,
   FindingIdRequired,
   RuleUrlCodec,
@@ -216,9 +218,9 @@ const RoundNumber = t.refinement(
 // hits the inherited accessor and silently no-ops — a reviewer-supplied `__proto__` id (which every
 // writer-side map preserves via Object.fromEntries) would vanish on the round-trip. The custom codec
 // rebuilds the map with Object.fromEntries, so the decode preserves exactly the keys the writer wrote.
-// Values are POSITIVE safe integers: a count-0 entry means "no findings this round" and every round
-// reader treats 0 as absence (a 0-valued entry is never recorded), so the codec rejects 0 — decode
-// and the readers must agree on what a valid entry is.
+// Values: negative counts are REJECTED (the ajv gates carry minimum: 0, and the codec gate mirrors
+// them), while a 0-valued entry is DROPPED — 0 means "no findings this round" and every round reader
+// treats it as absence, so the decode and the readers agree without rejecting the whole document.
 const idFrequencyCodec = (
   name: string,
 ): t.Type<Readonly<Record<string, number>>, Readonly<Record<string, number>>> =>
@@ -230,7 +232,8 @@ const idFrequencyCodec = (
       if (typeof u !== "object" || u === null || Array.isArray(u)) return t.failure(u, c);
       const entries: [string, number][] = [];
       for (const [k, v] of Object.entries(u as Record<string, unknown>)) {
-        if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1) return t.failure(v, c);
+        if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) return t.failure(v, c);
+        if (v === 0) continue;
         entries.push([k, v]);
       }
       return t.success(Object.fromEntries(entries));
@@ -374,11 +377,12 @@ export const usableCountsMap = (v: unknown): Readonly<Record<string, number>> | 
   return entries.length === 0 ? undefined : Object.fromEntries(entries);
 };
 
-// The ONE legacy-vs-current precedence for a round's mechanism map: when BOTH spellings carry
-// usable maps, the map with MORE entries wins — a merely-usable `ids` (even one valid entry) must
-// not discard a more complete legacy `codes` map — and `ids` wins ties. Shared by the legacy
-// upcast and the surface convergence migration so the two dual-spelling readers can never drift.
-export const preferredCountsMap = (
+// The ONE dual-spelling resolution for a round's mechanism map: when BOTH spellings carry usable
+// maps, their entries MERGE per key with the higher count winning — a merely-usable `ids` must not
+// discard a more complete legacy `codes` map, and a stale `codes` must not displace the current
+// `ids` counts (or names). Shared by the legacy upcast, the surface convergence migration, and
+// parseRounds so the dual-spelling readers can never drift.
+export const mergedCountsMaps = (
   ids: unknown,
   codes: unknown,
 ): Readonly<Record<string, number>> | undefined => {
@@ -386,7 +390,9 @@ export const preferredCountsMap = (
   const codesMap = usableCountsMap(codes);
   if (idsMap === undefined) return codesMap;
   if (codesMap === undefined) return idsMap;
-  return Object.keys(codesMap).length > Object.keys(idsMap).length ? codesMap : idsMap;
+  const merged = new Map<string, number>(Object.entries(codesMap));
+  for (const [k, v] of Object.entries(idsMap)) merged.set(k, Math.max(v, merged.get(k) ?? 0));
+  return Object.fromEntries(merged);
 };
 
 // The pre-0.10 shape (schema/v0.9/findings.schema.json): findings carried an OPTIONAL `code` and no
@@ -400,17 +406,12 @@ const LegacyRuleCodec = t.partial({
   code_url: UriString,
 });
 
-const FindingShapeV09 = t.intersection([
-  FindingCoreRequired,
-  LegacyRuleCodec,
-  FindingOptional,
-  EndGeStart,
-]);
+const FindingShapeV09 = t.intersection([FindingCoreRequired, LegacyRuleCodec, FindingOptional]);
 
 // The legacy finding stays tolerant-in on KEYS — no strict-key gate, unlike its 0.10 counterpart —
 // because the legacy route's contract is tolerant-in/strict-out (normalizeV09 rewrites to the strict
 // 0.10 shape); only the end>=start anchor and the exact-strip run here.
-const FindingCodecV09 = t.exact(FindingShapeV09);
+const FindingCodecV09 = t.exact(EndGeStart(FindingShapeV09));
 
 const SystemicV09Optional = t.partial({
   finding_codes: t.array(t.string),
@@ -543,10 +544,10 @@ export const normalizeV09 = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =
           ...(doc.convergence.rounds !== undefined
             ? {
                 rounds: doc.convergence.rounds.map((r) => {
-                  // preferredCountsMap: the upcast and the surface migration share ONE
-                  // dual-spelling precedence, so a merely-usable new spelling can never discard a
-                  // more complete legacy one (or diverge from the marker channel).
-                  const ids = preferredCountsMap(r.ids, r.codes);
+                  // mergedCountsMaps: the upcast, the surface migration, and parseRounds
+                  // share ONE dual-spelling resolution, so a merely-usable new spelling can never
+                  // discard a more complete legacy one (or diverge from the marker channel).
+                  const ids = mergedCountsMaps(r.ids, r.codes);
                   return {
                     round: r.round,
                     ...(r.score !== undefined ? { score: r.score } : {}),
@@ -630,14 +631,9 @@ const FlatModelPricesShape = t.type({
 // key-set refinement rejects them on DECODE (ajv's additionalProperties:false) — so a hybrid entry that
 // carries BOTH flat fields and `slots` is rejected by both variants and the union never ambiguates,
 // rather than decoding as flat while being priced as slotted.
-const FLAT_PRICE_KEYS = new Set(Object.keys(FlatModelPricesShape.props));
-const FlatModelPricesStrict = t.refinement(
+const FlatModelPricesCodec = strictExact("FlatModelPricesStrict", FlatModelPricesShape, [
   FlatModelPricesShape,
-  (p): p is t.TypeOf<typeof FlatModelPricesShape> =>
-    Object.keys(p).every((k) => FLAT_PRICE_KEYS.has(k)),
-  "FlatModelPricesStrict",
-);
-const FlatModelPricesCodec = t.exact(FlatModelPricesStrict);
+]);
 
 // HH:MM in UTC (00:00–23:59). The pattern string is byte-identical to prices.schema.json's slot-time
 // pattern so the codec + ajv gates cannot silently disagree (issue #170 review).
@@ -647,17 +643,12 @@ const UtcHHMM = t.refinement(t.string, (s): s is string => UTC_HHMM_RE.test(s), 
 // One UTC time-of-day slot (issue #170): a [utc_from, utc_to) half-open window — wrapping past midnight
 // when utc_to <= utc_from — carrying the same per-token fields as the flat shape. cost.ts selects the
 // slot covering the run's UTC instant; a model's slots must partition the 24h day with no gap or overlap.
-const PriceSlotShape = t.intersection([
-  t.type({ utc_from: UtcHHMM, utc_to: UtcHHMM }),
+const PriceSlotAnchor = t.type({ utc_from: UtcHHMM, utc_to: UtcHHMM });
+const PriceSlotShape = t.intersection([PriceSlotAnchor, FlatModelPricesShape]);
+const PriceSlotCodec = strictExact("PriceSlotStrict", PriceSlotShape, [
+  PriceSlotAnchor,
   FlatModelPricesShape,
 ]);
-const PRICE_SLOT_KEYS = new Set(["utc_from", "utc_to", ...Object.keys(FlatModelPricesShape.props)]);
-const PriceSlotStrict = t.refinement(
-  PriceSlotShape,
-  (s): s is t.TypeOf<typeof PriceSlotShape> => Object.keys(s).every((k) => PRICE_SLOT_KEYS.has(k)),
-  "PriceSlotStrict",
-);
-const PriceSlotCodec = t.exact(PriceSlotStrict);
 
 // `slots` must be non-empty (the ajv gate's minItems: 1) — an empty array is a misconfiguration, not a
 // zero-cost model.
@@ -676,16 +667,10 @@ const NonEmptyPriceSlots = t.refinement(
 const SlottedRequired = t.type({ slots: NonEmptyPriceSlots });
 const SlottedOptional = t.partial({ weekend_slots: NonEmptyPriceSlots });
 const SlottedShape = t.intersection([SlottedRequired, SlottedOptional]);
-const SLOTTED_KEYS = new Set([
-  ...Object.keys(SlottedRequired.props),
-  ...Object.keys(SlottedOptional.props),
+const SlottedModelPricesCodec = strictExact("SlottedModelPricesStrict", SlottedShape, [
+  SlottedRequired,
+  SlottedOptional,
 ]);
-const SlottedModelPricesStrict = t.refinement(
-  SlottedShape,
-  (s): s is t.TypeOf<typeof SlottedShape> => Object.keys(s).every((k) => SLOTTED_KEYS.has(k)),
-  "SlottedModelPricesStrict",
-);
-const SlottedModelPricesCodec = t.exact(SlottedModelPricesStrict);
 
 // A model's price is EITHER flat (one all-day rate — unchanged, fully backward-compatible) OR a set of
 // UTC time-of-day slots (issue #170), for a provider with peak/off-peak rates (DeepSeek). Both variants

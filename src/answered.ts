@@ -310,16 +310,25 @@ const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean 
 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
-export const isVerbatimReRaise = (
-  f: Finding,
-  e: Pick<AnsweredEntry, "title" | "description" | "reasoning" | "severity" | "path" | "patch">,
-): boolean =>
-  f.title === e.title &&
-  f.description === e.description &&
-  f.reasoning === e.reasoning &&
-  f.severity === e.severity &&
-  f.path === e.path &&
-  (f.patch ?? null) === e.patch;
+// The ONE verbatim claim-field list: the six per-field comparisons consumed by both the full-claim
+// predicate and the title-second-chance scorer, so a field added to the verbatim contract can never
+// diverge between the two (the same one-definition discipline as answeredNoteKey below).
+type VerbatimPick = Pick<
+  AnsweredEntry,
+  "title" | "description" | "reasoning" | "severity" | "path" | "patch"
+>;
+
+const verbatimFieldMatches = (f: Finding, e: VerbatimPick): readonly boolean[] => [
+  f.title === e.title,
+  f.description === e.description,
+  f.reasoning === e.reasoning,
+  f.severity === e.severity,
+  f.path === e.path,
+  (f.patch ?? null) === e.patch,
+];
+
+export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
+  verbatimFieldMatches(f, e).every(Boolean);
 
 // Would post's answered-filter DROP this finding? applyAnswered below and the seed's pre-filter
 // both ask this (issue #233 r2), so "answered" can never mean two things across the pipeline. e is
@@ -337,18 +346,8 @@ export const isAnsweredDrop = (
 // synthesized ids differ), the entry sharing the MOST fields is the thread the claim came from, so
 // a kept re-raise's annotation link binds it rather than the first same-title entry in registry
 // order.
-const verbatimMatchCount = (
-  f: Finding,
-  e: Pick<AnsweredEntry, "title" | "description" | "reasoning" | "severity" | "path" | "patch">,
-): number =>
-  [
-    f.title === e.title,
-    f.description === e.description,
-    f.reasoning === e.reasoning,
-    f.severity === e.severity,
-    f.path === e.path,
-    (f.patch ?? null) === e.patch,
-  ].filter(Boolean).length;
+const verbatimMatchCount = (f: Finding, e: VerbatimPick): number =>
+  verbatimFieldMatches(f, e).filter(Boolean).length;
 
 // The ONE note-key contract: a finding's annotation key is its id; an empty id (a pre-id staged row,
 // or a reviewer-supplied empty id) falls back to "title:<title>" so the note still keys to something
@@ -405,17 +404,22 @@ export const applyAnswered = (
     // ID match first across the WHOLE registry, title second chance only against synthesized
     // entries: a finding title-matching an unrelated entry ahead of its true id-matched entry must
     // not mis-bind its annotation (the id match wins wherever it exists). The second chance picks
-    // the synthesized same-title entry sharing the MOST verbatim claim fields, so two codeless
-    // same-title answers under different paths cannot mis-bind a kept re-raise's annotation link.
-    const entry =
-      registry.find((e) => e.code === resolveFindingId(f)) ??
-      registry
-        .filter((e) => isSynthesizedFindingId(e.code) && e.title === f.title)
-        .reduce<AnsweredEntry | undefined>(
-          (best, e) =>
-            best === undefined || verbatimMatchCount(f, e) > verbatimMatchCount(f, best) ? e : best,
-          undefined,
-        );
+    // the synthesized same-title entry sharing the MOST verbatim claim fields (ties keep registry
+    // order), so two codeless same-title answers under different paths cannot mis-bind a kept
+    // re-raise. Note the chosen entry feeds isAnsweredDrop too — a verbatim (6/6) match to ANY
+    // synthesized same-title entry drops the finding, matching the seed pre-filter's existential
+    // semantics; the scorer changes suppression, not just annotation.
+    let titleMatch: AnsweredEntry | undefined;
+    let titleMatchScore = -1;
+    for (const e of registry) {
+      if (!isSynthesizedFindingId(e.code) || e.title !== f.title) continue;
+      const score = verbatimMatchCount(f, e);
+      if (score > titleMatchScore) {
+        titleMatch = e;
+        titleMatchScore = score;
+      }
+    }
+    const entry = registry.find((e) => e.code === resolveFindingId(f)) ?? titleMatch;
     if (entry === undefined) {
       kept.push(f);
       continue;

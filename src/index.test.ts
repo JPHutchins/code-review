@@ -12,7 +12,7 @@ import {
   priorSuppressedPath,
   SEED_SENTINEL,
 } from "./budget.js";
-import { ResultEnvelopeCodec, synthesizedFindingId } from "./schema.js";
+import { DEFAULT_SCHEMA_VERSION, ResultEnvelopeCodec, synthesizedFindingId } from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -933,10 +933,20 @@ describe("cli — print-schema", () => {
       ) as Record<string, unknown>;
       expect(canonical["$schema"]).toBeDefined();
       expect(printed["$schema"]).toBeUndefined();
-      // Everything but $schema is preserved verbatim ($id, title, properties, …).
+      // Everything but $schema is preserved verbatim ($id, title, properties, …) — except the
+      // findings schema's schema_version, whose in-force value is pinned as a `const` so the
+      // schema channel itself tells a model what version to stamp.
       const canonicalWithoutDraft = Object.fromEntries(
         Object.entries(canonical).filter(([key]) => key !== "$schema"),
       );
+      if (name === "findings") {
+        const props = canonicalWithoutDraft["properties"] as Record<string, unknown>;
+        const version = props["schema_version"] as Record<string, unknown>;
+        canonicalWithoutDraft["properties"] = {
+          ...props,
+          schema_version: { ...version, const: DEFAULT_SCHEMA_VERSION },
+        };
+      }
       expect(printed).toEqual(canonicalWithoutDraft);
     },
   );
@@ -956,6 +966,15 @@ describe("cli — print-schema", () => {
     // live file's required id.
     expect(printed["$id"]).toContain("schema-v0.9.0");
     expect(withVersion.stdout).not.toBe(withoutVersion.stdout);
+  });
+
+  it("the default findings schema pins its in-force version as a const — the prompt defers the draft's stamp to it", async () => {
+    const { stdout, exitCode } = await runCli(["print-schema", "findings"]);
+    expect(exitCode).toBeNull();
+    const printed = JSON.parse(stdout) as {
+      properties?: { schema_version?: { const?: string } };
+    };
+    expect(printed.properties?.schema_version?.const).toBe(DEFAULT_SCHEMA_VERSION);
   });
 
   it("exits 1 for a now-dropped older --schema-version (0.2 is no longer supported)", async () => {

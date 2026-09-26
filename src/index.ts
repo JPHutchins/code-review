@@ -42,6 +42,7 @@ import {
   TestSummaryCodec,
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
+  DEFAULT_SCHEMA_VERSION,
 } from "./schema.js";
 import type { Triage, Finding, Findings, PriceMap } from "./schema.js";
 import {
@@ -855,12 +856,27 @@ const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefine
 /** A bundled schema rendered for a CLI/agent to read: pretty-printed with the top-level `$schema`
  *  draft declaration stripped. `claude -p --json-schema` silently disables enforcement when a schema
  *  carries `$schema`, and the field DESCRIPTIONS are the authoritative spec the agent must follow, so
- *  this is the form both `print-schema` and `validate --explain` emit. */
+ *  this is the form both `print-schema` and `validate --explain` emit. The findings schema's
+ *  schema_version is additionally pinned to the in-force default as a `const`, so the schema channel
+ *  itself tells a model what version to stamp and `--json-schema` enforces it — the schema FILE
+ *  stays version-tolerant (the registry dispatches on the declared version), only the enforcement
+ *  copy pins. */
 const printableSchema = (schemaPath: string): string => {
   const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as Record<string, unknown>;
   const enforcementSchema = Object.fromEntries(
     Object.entries(schema).filter(([key]) => key !== "$schema"),
   );
+  const properties = enforcementSchema["properties"];
+  const schemaVersion =
+    typeof properties === "object" && properties !== null
+      ? (properties as Record<string, unknown>)["schema_version"]
+      : undefined;
+  if (typeof schemaVersion === "object" && schemaVersion !== null) {
+    (properties as Record<string, unknown>)["schema_version"] = {
+      ...(schemaVersion as Record<string, unknown>),
+      const: DEFAULT_SCHEMA_VERSION,
+    };
+  }
   return JSON.stringify(enforcementSchema, null, 2);
 };
 

@@ -214,14 +214,17 @@ describe("path plumbing — the reusable and the example hand-mirror the staging
   // example's transcripts cp) — so the plumbing lines are pinned byte-identical here, the same
   // discipline the mechanic steer lines already have.
   const PLUMBING_RE =
-    /(GATHER_DIR|FINDINGS_DIR|GITHUB_ENV|transcripts\/|--add-dir|posted=true|steps\.post\.outputs\.posted|needs\.comment\.result|needs\.comment\.outputs\.posted|COMMENT_RESULT|REVIEW_RESULT|POSTED:|env\.FINDINGS_DIR|runner\.temp)/;
+    /(GATHER_DIR|FINDINGS_DIR|GITHUB_ENV|transcripts\/|--add-dir|posted=|POST_RC|GITHUB_OUTPUT|steps\.post\.outputs\.posted|steps\.post\.outcome|needs\.comment\.result|needs\.comment\.outputs\.posted|COMMENT_RESULT|REVIEW_RESULT|POSTED:|env\.FINDINGS_DIR|runner\.temp|id: post|INLINE:)/;
   const plumbingLines = (workflowPath: string): readonly string[] =>
     readRepoFile(workflowPath)
       .split("\n")
       .map((line) => line.trim())
       // Comment lines are excluded — prose may legitimately differ; only the commands, conditions,
-      // and expressions are pinned byte-identical.
-      .filter((line) => PLUMBING_RE.test(line) && !line.startsWith("#"))
+      // and expressions are pinned byte-identical. The INLINE env line is the ONE known-intentional
+      // divergence (the example has no inline input and carries a constant), pinned per-file below.
+      .filter(
+        (line) => PLUMBING_RE.test(line) && !line.startsWith("#") && !line.startsWith("INLINE:"),
+      )
       .sort();
 
   it("every path-plumbing line is byte-identical between review-reusable.yaml and the example", () => {
@@ -229,6 +232,18 @@ describe("path plumbing — the reusable and the example hand-mirror the staging
     const example = plumbingLines("examples/workflows/review.yaml");
     expect(reusable.length).toBeGreaterThan(10);
     expect(example).toEqual(reusable);
+  });
+
+  it("the INLINE env line is the one pinned divergence — the input in the reusable, the constant in the example", () => {
+    const inlineLine = (workflowPath: string): readonly string[] =>
+      readRepoFile(workflowPath)
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("INLINE:"));
+    expect(inlineLine(".github/workflows/review-reusable.yaml")).toEqual([
+      "INLINE: ${{ inputs.inline }}",
+    ]);
+    expect(inlineLine("examples/workflows/review.yaml")).toEqual(['INLINE: "false"']);
   });
 });
 

@@ -250,10 +250,12 @@ const mkMockGhApi = (
 
 describe("post — the landed signal (issue #254)", () => {
   const outputPath = (): string => join(tmpDir, "gh-output.txt");
-  const ambientOutput = process.env["GITHUB_OUTPUT"];
+  // Captured per test (test-setup already neutralized the variable), so the restore arm is live.
+  let ambientOutput: string | undefined;
+  beforeEach(() => {
+    ambientOutput = process.env["GITHUB_OUTPUT"];
+  });
   afterEach(() => {
-    // Restore the ambient value (test-setup neutralizes it, but a filtered run or a reordered suite
-    // must not leak the temp path into the runner's real output file either).
     if (ambientOutput === undefined) delete process.env["GITHUB_OUTPUT"];
     else process.env["GITHUB_OUTPUT"] = ambientOutput;
   });
@@ -283,12 +285,24 @@ describe("post — the landed signal (issue #254)", () => {
     // GITHUB_OUTPUT pointing at a DIRECTORY makes appendFileSync throw; the write is best-effort,
     // so the post completes with a stderr warning instead of failing the round.
     process.env["GITHUB_OUTPUT"] = tmpDir;
-    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
-    await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
-    // The mock's calls include the sticky patch and the review post — the flow completed.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+      await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
+      const endpoints = calls().map((c) => c.args[0] ?? "");
+      expect(endpoints.some((e) => e === "repos/owner/repo/issues/comments/999")).toBe(true);
+      expect(endpoints.some((e) => e === "repos/owner/repo/pulls/42/reviews")).toBe(true);
+      expect(
+        stderrSpy.mock.calls.some(([chunk]) =>
+          String(chunk).includes("could not write the posted signal"),
+        ),
+      ).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 
-  it("a failed signal write warns and completes — the sticky and the inline flow still land", async () => {
+  it("writes nothing when no sticky lands — the sticky upsert itself fails", async () => {
     writeFileSync(outputPath(), "");
     process.env["GITHUB_OUTPUT"] = outputPath();
     const responses = mkMocks("<!-- code-review -->").filter(

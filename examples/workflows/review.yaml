@@ -574,10 +574,10 @@ jobs:
             # into a still-red CI. Only the counts are interpolated; nothing untrusted reaches here.
             # Unlike the seed chain's release-gated probes (which must key on --help text — see the
             # prior-findings probe below), this one probes the staged file itself: failed_jobs.json is
-            # written UNCONDITIONALLY on the failure route by every gather that supports --out-dir
-            # (src/gather.ts stages it whenever conclusion=failure, the mechanic route's exact
-            # precondition), so the file's presence IS the capability — an older pin or an unstaged
-            # run simply lacks it and gets the count-only wording.
+            # written by every gather run whose conclusion is failure — the workflow's mechanic route
+            # is taken exactly then (a write that throws before staging anything is the same honest
+            # absence) — so the file's presence IS the capability; an older pin or an unstaged run
+            # simply lacks it and gets the count-only wording.
             if [ -f "$GATHER_DIR/failed_jobs.json" ]; then
               JOBS_FILE_NOTE=" — their names and conclusions are in $GATHER_DIR/failed_jobs.json"
               SUBSET_JOBS_NOTE="; the names and conclusions of all ${FAILING_JOBS} failing jobs are in $GATHER_DIR/failed_jobs.json"

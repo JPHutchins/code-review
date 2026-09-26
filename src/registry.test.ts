@@ -297,15 +297,17 @@ describe("resolveTolerantFindings — the seed chain's upcast", () => {
         rounds: [
           { round: 1, ids: { a: 1 }, codes: { a: 1, b: 2 } },
           { round: 2, ids: { a: 5 }, codes: { a: 1, b: 1 } },
-          { round: 3, ids: { a: 1, b: 2 }, codes: { a: 1, b: 2 } },
+          { round: 3, ids: { a: 1 }, codes: { a: 5, b: 2 } },
+          { round: 4, ids: { a: 1, b: 2 }, codes: { a: 1, b: 2 } },
         ],
       },
     };
     const value = resolveTolerantFindings(hybrid);
     expect(value?.convergence?.rounds?.[0]?.ids).toEqual({ a: 1, b: 2 });
-    // The current ids count (a: 5) survives a stale codes map — per-key max, not wholesale pick.
+    // ids wins every shared key — a stale legacy count can never displace the current one.
     expect(value?.convergence?.rounds?.[1]?.ids).toEqual({ a: 5, b: 1 });
     expect(value?.convergence?.rounds?.[2]?.ids).toEqual({ a: 1, b: 2 });
+    expect(value?.convergence?.rounds?.[3]?.ids).toEqual({ a: 1, b: 2 });
   });
 });
 

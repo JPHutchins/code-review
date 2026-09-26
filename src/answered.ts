@@ -305,8 +305,11 @@ export const answeredRegistryFrom = (
 // answer pre-dates ids can only recover its annotation when the re-raise is RELOCATED (the
 // synthesized key is path-derived) or carries a fresh agent id — while an unrelated same-title entry
 // with a real code can never mis-bind. The full-claim verbatim check still gates the drop.
+const isSynthesizedTitleMatch = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
+  isSynthesizedFindingId(e.code) && e.title === f.title;
+
 const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
-  e.code === resolveFindingId(f) || (isSynthesizedFindingId(e.code) && e.title === f.title);
+  e.code === resolveFindingId(f) || isSynthesizedTitleMatch(f, e);
 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
@@ -318,17 +321,16 @@ type VerbatimPick = Pick<
   "title" | "description" | "reasoning" | "severity" | "path" | "patch"
 >;
 
-const verbatimFieldMatches = (f: Finding, e: VerbatimPick): readonly boolean[] => [
-  f.title === e.title,
-  f.description === e.description,
-  f.reasoning === e.reasoning,
-  f.severity === e.severity,
-  f.path === e.path,
-  (f.patch ?? null) === e.patch,
-];
+const VERBATIM_FIELDS = ["title", "description", "reasoning", "severity", "path", "patch"] as const;
+
+const verbatimFieldEqual = (
+  f: Finding,
+  e: VerbatimPick,
+  field: (typeof VERBATIM_FIELDS)[number],
+): boolean => (field === "patch" ? (f.patch ?? null) === e.patch : f[field] === e[field]);
 
 export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
-  verbatimFieldMatches(f, e).every(Boolean);
+  VERBATIM_FIELDS.every((field) => verbatimFieldEqual(f, e, field));
 
 // Would post's answered-filter DROP this finding? applyAnswered below and the seed's pre-filter
 // both ask this (issue #233 r2), so "answered" can never mean two things across the pipeline. e is
@@ -347,7 +349,7 @@ export const isAnsweredDrop = (
 // a kept re-raise's annotation link binds it rather than the first same-title entry in registry
 // order.
 const verbatimMatchCount = (f: Finding, e: VerbatimPick): number =>
-  verbatimFieldMatches(f, e).filter(Boolean).length;
+  VERBATIM_FIELDS.reduce((count, field) => count + (verbatimFieldEqual(f, e, field) ? 1 : 0), 0);
 
 // The ONE note-key contract: a finding's annotation key is its id; an empty id (a pre-id staged row,
 // or a reviewer-supplied empty id) falls back to "title:<title>" so the note still keys to something
@@ -355,6 +357,26 @@ const verbatimMatchCount = (f: Finding, e: VerbatimPick): number =>
 // key can never drift between the writer and the lookups (issue #151 review r2).
 export const answeredNoteKey = (f: { id: string; title: string }): string =>
   f.id !== "" ? f.id : `title:${f.title}`;
+
+// The title second chance, run ONLY on an id miss (the common case pays nothing): the synthesized
+// same-title entry sharing the most verbatim claim fields, ties keeping registry order. Scored in
+// one pass — each candidate once, strict > preserves the first on ties.
+const bestTitleMatch = (
+  f: Finding,
+  registry: readonly AnsweredEntry[],
+): AnsweredEntry | undefined => {
+  let best: AnsweredEntry | undefined;
+  let bestScore = -1;
+  for (const e of registry) {
+    if (!isSynthesizedTitleMatch(f, e)) continue;
+    const score = verbatimMatchCount(f, e);
+    if (score > bestScore) {
+      best = e;
+      bestScore = score;
+    }
+  }
+  return best;
+};
 
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
 // re-raise; the pipeline cannot judge whether the reply dismissed or acknowledged the finding, so the
@@ -406,20 +428,13 @@ export const applyAnswered = (
     // not mis-bind its annotation (the id match wins wherever it exists). The second chance picks
     // the synthesized same-title entry sharing the MOST verbatim claim fields (ties keep registry
     // order), so two codeless same-title answers under different paths cannot mis-bind a kept
-    // re-raise. Note the chosen entry feeds isAnsweredDrop too — a verbatim (6/6) match to ANY
-    // synthesized same-title entry drops the finding, matching the seed pre-filter's existential
-    // semantics; the scorer changes suppression, not just annotation.
-    let titleMatch: AnsweredEntry | undefined;
-    let titleMatchScore = -1;
-    for (const e of registry) {
-      if (!isSynthesizedFindingId(e.code) || e.title !== f.title) continue;
-      const score = verbatimMatchCount(f, e);
-      if (score > titleMatchScore) {
-        titleMatch = e;
-        titleMatchScore = score;
-      }
-    }
-    const entry = registry.find((e) => e.code === resolveFindingId(f)) ?? titleMatch;
+    // re-raise. Note the chosen entry feeds isAnsweredDrop too — a verbatim (6/6) match to any
+    // synthesized same-title entry drops the finding; when an id-matched entry exists it alone
+    // feeds the drop, while the seed pre-filter is existential over the whole registry, so the
+    // two sides can still disagree for that corner (a non-verbatim id match beside a verbatim
+    // same-title entry) — the scorer changes suppression, not just annotation.
+    const entry =
+      registry.find((e) => e.code === resolveFindingId(f)) ?? bestTitleMatch(f, registry);
     if (entry === undefined) {
       kept.push(f);
       continue;

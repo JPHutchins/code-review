@@ -402,22 +402,25 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r6");
   });
 
-  it("equal-scored synthesized same-title entries keep the registry order", () => {
+  it("equal-scored synthesized same-title entries keep the registry order — newest-first, as the builder emits", () => {
+    // Two codeless same-title answers under DIFFERENT paths (the registry-reachable tie: the
+    // builder dedupes by code, so a real tie is two entries scoring 5/6 against the finding's
+    // third path). The newest answer (higher replyId) comes first, as answeredRegistryFrom emits.
     const first = entry({
-      code: synthesizedFindingId("src/foo.ts", "The same claim"),
-      replyId: 5,
-      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r5",
+      code: synthesizedFindingId("src/bar.ts", "The same claim"),
+      replyId: 7,
+      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r7",
     });
     const second = entry({
-      code: synthesizedFindingId("src/foo.ts", "The same claim"),
+      code: synthesizedFindingId("src/baz.ts", "The same claim"),
       replyId: 6,
       replyUrl: "https://github.com/owner/repo/pull/1#discussion_r6",
     });
     const { reRaisedNotes } = applyAnswered(
-      [mkFinding({ id: "fresh-agent-id", reasoning: "NEW evidence." })],
+      [mkFinding({ id: "fresh-agent-id", path: "src/other.ts", reasoning: "NEW evidence." })],
       [first, second],
     );
-    expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r5");
+    expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r7");
   });
 
   it("the title second chance never fires for an entry whose code is REAL, only synthesized", () => {

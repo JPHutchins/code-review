@@ -305,32 +305,55 @@ export const answeredRegistryFrom = (
 // answer pre-dates ids can only recover its annotation when the re-raise is RELOCATED (the
 // synthesized key is path-derived) or carries a fresh agent id — while an unrelated same-title entry
 // with a real code can never mis-bind. The full-claim verbatim check still gates the drop.
-const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
-  e.code === resolveFindingId(f) || (isSynthesizedFindingId(e.code) && e.title === f.title);
+const isSynthesizedTitleMatch = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean =>
+  isSynthesizedFindingId(e.code) && e.title === f.title;
+
+const matches = (
+  resolvedId: string,
+  f: Finding,
+  e: Pick<AnsweredEntry, "code" | "title">,
+): boolean => e.code === resolvedId || isSynthesizedTitleMatch(f, e);
 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
-export const isVerbatimReRaise = (
+// The ONE verbatim claim-field list: the six per-field comparisons consumed by both the full-claim
+// predicate and the title-second-chance scorer. The VerbatimPick type DERIVES from the array, so
+// adding a claim field is a single edit the compiler verifies — the type and the runtime list can
+// never diverge (the same one-definition discipline as answeredNoteKey below).
+const VERBATIM_FIELDS = ["title", "description", "reasoning", "severity", "path", "patch"] as const;
+type VerbatimPick = Pick<AnsweredEntry, (typeof VERBATIM_FIELDS)[number]>;
+
+const verbatimFieldEqual = (
   f: Finding,
-  e: Pick<AnsweredEntry, "title" | "description" | "reasoning" | "severity" | "path" | "patch">,
-): boolean =>
-  f.title === e.title &&
-  f.description === e.description &&
-  f.reasoning === e.reasoning &&
-  f.severity === e.severity &&
-  f.path === e.path &&
-  (f.patch ?? null) === e.patch;
+  e: VerbatimPick,
+  field: (typeof VERBATIM_FIELDS)[number],
+): boolean => (field === "patch" ? (f.patch ?? null) === e.patch : f[field] === e[field]);
+
+export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
+  VERBATIM_FIELDS.every((field) => verbatimFieldEqual(f, e, field));
 
 // Would post's answered-filter DROP this finding? applyAnswered below and the seed's pre-filter
 // both ask this (issue #233 r2), so "answered" can never mean two things across the pipeline. e is
 // the staged wire shape too: every field the predicate reads shares its name across both types.
+// The one known corner where the two consumers disagree: a finding that id-matches a NON-verbatim
+// entry while a verbatim (6/6) synthesized same-title entry sits beside it — post keeps it (only
+// the chosen entry feeds the drop), the seed's existential scan drops it (see applyAnswered).
 export const isAnsweredDrop = (
+  resolvedId: string,
   f: Finding,
   e: Pick<
     AnsweredEntry,
     "code" | "title" | "description" | "reasoning" | "severity" | "path" | "patch"
   >,
-): boolean => matches(f, e) && isVerbatimReRaise(f, e) && f.severity !== "critical";
+): boolean => matches(resolvedId, f, e) && isVerbatimReRaise(f, e) && f.severity !== "critical";
+
+// How many of the verbatim claim fields a finding shares with an entry — the title-second-chance
+// scorer: among several synthesized same-title entries (same title, different paths — their
+// synthesized ids differ), the entry sharing the MOST fields is the thread the claim came from, so
+// a kept re-raise's annotation link binds it rather than the first same-title entry in registry
+// order.
+const verbatimMatchCount = (f: Finding, e: VerbatimPick): number =>
+  VERBATIM_FIELDS.reduce((count, field) => count + (verbatimFieldEqual(f, e, field) ? 1 : 0), 0);
 
 // The ONE note-key contract: a finding's annotation key is its id; an empty id (a pre-id staged row,
 // or a reviewer-supplied empty id) falls back to "title:<title>" so the note still keys to something
@@ -338,6 +361,29 @@ export const isAnsweredDrop = (
 // key can never drift between the writer and the lookups (issue #151 review r2).
 export const answeredNoteKey = (f: { id: string; title: string }): string =>
   f.id !== "" ? f.id : `title:${f.title}`;
+
+// The title second chance, run ONLY on an id miss (the common case pays nothing): the synthesized
+// same-title entry sharing the most verbatim claim fields, ties keeping registry order. Scored in
+// one pass — each candidate once, strict > preserves the first on ties.
+const NO_TITLE_MATCH = { entry: undefined, score: -1 } as const;
+
+const bestTitleMatch = (
+  f: Finding,
+  registry: readonly AnsweredEntry[],
+): { entry: AnsweredEntry | undefined; score: number } => {
+  let best: AnsweredEntry | undefined;
+  let bestScore = -1;
+  for (const e of registry) {
+    if (!isSynthesizedTitleMatch(f, e)) continue;
+    const score = verbatimMatchCount(f, e);
+    if (score > bestScore) {
+      best = e;
+      bestScore = score;
+      if (score === VERBATIM_FIELDS.length) break;
+    }
+  }
+  return { entry: best, score: bestScore };
+};
 
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
 // re-raise; the pipeline cannot judge whether the reply dismissed or acknowledged the finding, so the
@@ -386,10 +432,19 @@ export const applyAnswered = (
   for (const f of findings) {
     // ID match first across the WHOLE registry, title second chance only against synthesized
     // entries: a finding title-matching an unrelated entry ahead of its true id-matched entry must
-    // not mis-bind its annotation (the id match wins wherever it exists).
-    const entry =
-      registry.find((e) => e.code === resolveFindingId(f)) ??
-      registry.find((e) => isSynthesizedFindingId(e.code) && e.title === f.title);
+    // not mis-bind its annotation (the id match wins wherever it exists). The second chance picks
+    // the synthesized same-title entry sharing the MOST verbatim claim fields (ties keep registry
+    // order), so two codeless same-title answers under different paths cannot mis-bind a kept
+    // re-raise. The chosen entry alone feeds the drop decision: a title-matched entry drops the
+    // finding exactly when its score is a full verbatim match (6/6), while the seed pre-filter is
+    // existential over the whole registry — so the two sides disagree in one corner (a non-verbatim
+    // id match beside a verbatim same-title entry; documented on isAnsweredDrop). The scorer
+    // changes suppression, not just annotation.
+    const resolvedId = resolveFindingId(f);
+    const idMatch = registry.find((e) => e.code === resolvedId);
+    const { entry: titleMatch, score: titleScore } =
+      idMatch === undefined ? bestTitleMatch(f, registry) : NO_TITLE_MATCH;
+    const entry = idMatch ?? titleMatch;
     if (entry === undefined) {
       kept.push(f);
       continue;
@@ -398,10 +453,17 @@ export const applyAnswered = (
     // (path, patch) — a re-raise relocated to another file or proposing a different fix carries
     // something new. The line is deliberately excluded: positional drift (a rebase moving the same
     // claim) is not evidence (issue #151 review r3). patch is normalized (undefined → null) so an
-    // absent patch on both sides compares equal.
-    if (isAnsweredDrop(f, entry)) {
+    // absent patch on both sides compares equal. isAnsweredDrop's conjunction holds by
+    // construction here (the entry was selected BY a match), so the drop reuses the scorer's
+    // already-computed verbatim count on the title path — score === VERBATIM_FIELDS.length is
+    // exactly isVerbatimReRaise, and the id path re-runs the predicate the seed shares.
+    const dropped =
+      (idMatch !== undefined
+        ? isVerbatimReRaise(f, entry)
+        : titleScore === VERBATIM_FIELDS.length) && f.severity !== "critical";
+    if (dropped) {
       droppedByEntry.set(entry.replyId, entry);
-      droppedFindingIds.push(resolveFindingId(f));
+      droppedFindingIds.push(resolvedId);
       droppedCount += 1;
     } else {
       kept.push(f);

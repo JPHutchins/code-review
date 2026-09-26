@@ -271,6 +271,44 @@ describe("resolveTolerantFindings — the seed chain's upcast", () => {
     expect(value?.systemic_problems?.[0]?.finding_ids).toEqual(["legacy-link"]);
     expect(value?.convergence?.rounds?.[0]?.ids).toEqual({ "legacy-m": 3 });
   });
+
+  it("a dual-spelling round MERGES the usable maps — the current ids spelling wins every shared key, codes supplies only absent keys", () => {
+    const hybrid = {
+      schema_version: "0.9.0",
+      summary: "s",
+      verdict: "comment",
+      findings: [
+        {
+          path: "p",
+          start_line: 1,
+          end_line: 1,
+          severity: "minor",
+          title: "t",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 1,
+        },
+      ],
+      convergence: {
+        score: 2,
+        threshold: 1,
+        converged: false,
+        rounds: [
+          { round: 1, ids: { a: 1 }, codes: { a: 1, b: 2 } },
+          { round: 2, ids: { a: 5 }, codes: { a: 1, b: 1 } },
+          { round: 3, ids: { a: 1 }, codes: { a: 5, b: 2 } },
+          { round: 4, ids: { a: 1, b: 2 }, codes: { a: 1, b: 2 } },
+        ],
+      },
+    };
+    const value = resolveTolerantFindings(hybrid);
+    expect(value?.convergence?.rounds?.[0]?.ids).toEqual({ a: 1, b: 2 });
+    // ids wins every shared key — a stale legacy count can never displace the current one.
+    expect(value?.convergence?.rounds?.[1]?.ids).toEqual({ a: 5, b: 1 });
+    expect(value?.convergence?.rounds?.[2]?.ids).toEqual({ a: 1, b: 2 });
+    expect(value?.convergence?.rounds?.[3]?.ids).toEqual({ a: 1, b: 2 });
+  });
 });
 
 describe('resolve("triage" | "prices", ...) — no in-data version signal', () => {

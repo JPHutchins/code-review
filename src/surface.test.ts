@@ -745,6 +745,54 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({ "legacy-a": 2 });
   });
 
+  it("a dual-spelling round resolves through the merged map — ids wins the shared key even at a lower count, codes supplies absent keys", () => {
+    const marker =
+      "<!-- code-review:convergence;base64 " +
+      Buffer.from(
+        JSON.stringify({
+          score: 2,
+          threshold: 1,
+          converged: false,
+          rounds: [
+            {
+              round: 1,
+              score: 2,
+              ids: { "null-check-missing": 1 },
+              codes: { "null-check-missing": 9, "legacy-a": 2 },
+            },
+          ],
+        }),
+        "utf-8",
+      ).toString("base64") +
+      " -->";
+    // ids wins the shared key despite the stale higher count (9); codes supplies only legacy-a.
+    expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({
+      "null-check-missing": 1,
+      "legacy-a": 2,
+    });
+  });
+
+  it("the round codec DROPS a 0-count map entry (absence, per every round reader) and REJECTS a negative one (ajv minimum: 0)", () => {
+    const zeroed = ConvergenceCodec.decode({
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { "zero-count": 0, kept: 2 } }],
+    });
+    expect(zeroed._tag).toBe("Right");
+    if (zeroed._tag !== "Right") return;
+    const ids = zeroed.right.rounds?.[0]?.ids;
+    expect(Object.prototype.hasOwnProperty.call(ids, "zero-count")).toBe(false);
+    expect(ids?.["kept"]).toBe(2);
+    const negative = ConvergenceCodec.decode({
+      score: 2,
+      threshold: 1,
+      converged: false,
+      rounds: [{ round: 1, score: 2, ids: { negative: -1 } }],
+    });
+    expect(negative._tag).toBe("Left");
+  });
+
   it("the round codec preserves a `__proto__` mechanism key — the decode mirrors the writer's fromEntries discipline", () => {
     const decoded = ConvergenceCodec.decode({
       score: 2,
@@ -1009,6 +1057,32 @@ describe("mechanism frequency rounds — issue #145", () => {
     );
     expect(parsed[0]?.ids).toBeDefined();
     expect(Object.keys(parsed[0]?.ids ?? {})).toHaveLength(MAX_IDS_PER_ROUND);
+  });
+
+  it("a dual-spelling round's cap prefers the current ids keys — stale legacy counts cannot evict them", () => {
+    const staleCodes = Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => [`legacy-${String(i)}`, 9]),
+    );
+    const marker =
+      "<!-- code-review:rounds;base64 " +
+      Buffer.from(
+        JSON.stringify([
+          {
+            critical: 0,
+            major: 0,
+            minor: 0,
+            nit: 0,
+            ids: { "current-mech": 1 },
+            codes: staleCodes,
+          },
+        ]),
+        "utf-8",
+      ).toString("base64") +
+      " -->";
+    const parsed = parseRounds(marker);
+    const keys = Object.keys(parsed[0]?.ids ?? {});
+    expect(keys).toContain("current-mech");
+    expect(keys).toHaveLength(MAX_IDS_PER_ROUND);
   });
 
   it("parseRounds round-trips coded rounds and keeps count-only rounds beside them", () => {

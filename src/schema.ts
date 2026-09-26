@@ -65,6 +65,24 @@ const UriString = t.refinement(
   "UriString",
 );
 
+// The ONE strict+exact discipline shared by every strict-keyed codec in this file: the ajv gate
+// rejects unknown keys (additionalProperties: false), while t.exact strips them SILENTLY on both
+// encode and decode — so without the refinement the codec gate would accept-and-drop exactly what
+// the ajv gate rejects. The refinement makes the codec gate reject instead, with the key set derived
+// from the passed members. `members` MUST be exactly the shape's prop-bearing leaves (each shape's
+// own component codecs): an omitted leaf would silently reject that leaf's fields on every decode —
+// the key set cannot drift only if the list cannot.
+const strictExact = <C extends t.HasProps>(
+  name: string,
+  shape: C,
+  members: readonly { props: t.Props }[],
+): t.ExactC<t.RefinementC<C>> => {
+  const keys = new Set(members.flatMap((m) => Object.keys(m.props)));
+  return t.exact(
+    t.refinement(shape, (x): x is t.TypeOf<C> => Object.keys(x).every((k) => keys.has(k)), name),
+  );
+};
+
 // The stable mechanism identifier pair, shared by findings and systemic problems so the two shapes
 // can never diverge on it. The `id` itself is REQUIRED on a finding (trackability across rounds and
 // discussions); the optional half of the pair is the URL documenting the rule it names.
@@ -72,8 +90,9 @@ const RuleUrlCodec = t.partial({
   code_url: UriString,
 });
 
-const FindingRequired = t.type({
-  id: t.string,
+// The finding's REQUIRED fields minus its identity, shared by BOTH suites: the 0.10 shape adds
+// `id` required (FindingIdRequired), the legacy shape adds the tolerant LegacyRuleCodec instead.
+const FindingCoreRequired = t.type({
   path: t.string,
   start_line: LineNumber,
   end_line: LineNumber,
@@ -85,36 +104,38 @@ const FindingRequired = t.type({
   likelihood: Likelihood,
 });
 
+const FindingIdRequired = t.type({ id: t.string });
+
 const FindingOptional = t.partial({
   side: SideCodec,
   recommendation: t.string,
   patch: t.string,
 });
 
-const FindingShape = t.intersection([FindingRequired, RuleUrlCodec, FindingOptional]);
+// ONE line-anchor gate shared by BOTH finding shapes — they differ only in their identity field.
+// Applied as a WRAPPER refinement around each shape (not an intersection member), so an inner shape
+// failure short-circuits with the outer context (`0.findings.0`) — an intersection member would fail
+// under a bare numeric index and dump the whole finding into the stop-gate message the next-round
+// agent reads.
+const EndGeStart = <C extends t.HasProps>(shape: C): t.RefinementC<C> =>
+  t.refinement(shape, (f): f is t.TypeOf<C> => f.end_line >= f.start_line, "EndGeStart");
 
-const EndGeStart = t.refinement(
-  FindingShape,
-  (f): f is t.TypeOf<typeof FindingShape> => f.end_line >= f.start_line,
-  "EndGeStart",
-);
-
-// Strict-key refinement (see SystemicProblemStrict): the ajv gate rejects unknown keys but t.exact
-// accepts them on decode, so the codec gate must reject exactly what ajv rejects — the removed
-// `code` key must not ride through a 0.10 decode into a re-serialized blob.
-const FINDING_KEYS = new Set([
-  ...Object.keys(FindingRequired.props),
-  ...Object.keys(RuleUrlCodec.props),
-  ...Object.keys(FindingOptional.props),
+// Strict-key refinement (see strictExact): t.exact would silently strip unknown keys, so the
+// codec gate must reject exactly what ajv rejects instead of accepting-and-dropping — a removed
+// `code` key must not pass one gate and fail the other.
+const FindingShape = t.intersection([
+  FindingCoreRequired,
+  FindingIdRequired,
+  RuleUrlCodec,
+  FindingOptional,
 ]);
 
-const FindingStrict = t.refinement(
-  EndGeStart,
-  (f): f is t.TypeOf<typeof EndGeStart> => Object.keys(f).every((k) => FINDING_KEYS.has(k)),
-  "FindingStrict",
-);
-
-export const FindingCodec = t.exact(FindingStrict);
+export const FindingCodec = strictExact("FindingStrict", EndGeStart(FindingShape), [
+  FindingCoreRequired,
+  FindingIdRequired,
+  RuleUrlCodec,
+  FindingOptional,
+]);
 
 // Cross-cutting observations that tie findings together, with no required line anchor — mirrors
 // findings.schema.json's systemic_problems items exactly, reusing the shared rule-identifier pair.
@@ -136,51 +157,37 @@ const SystemicOptional = t.partial({
 
 const SystemicProblemShape = t.intersection([SystemicRequired, RuleUrlCodec, SystemicOptional]);
 
-// The schema declares additionalProperties: false, but t.exact only strips unknown keys on encode —
-// on decode it accepts them. The refinement closes the gap so the codec gate rejects exactly what
-// the ajv gate rejects (the extraction ladder runs both gates). The key set is derived from the
-// shape's own members, so it cannot drift from the declared fields.
-const SYSTEMIC_KEYS = new Set([
-  ...Object.keys(SystemicRequired.props),
-  ...Object.keys(RuleUrlCodec.props),
-  ...Object.keys(SystemicOptional.props),
+// The schema declares additionalProperties: false; strictExact makes the codec gate reject exactly
+// what the ajv gate rejects instead of silently stripping (the extraction ladder runs both gates).
+export const SystemicProblemCodec = strictExact("SystemicProblemStrict", SystemicProblemShape, [
+  SystemicRequired,
+  RuleUrlCodec,
+  SystemicOptional,
 ]);
 
-const SystemicProblemStrict = t.refinement(
-  SystemicProblemShape,
-  (s): s is t.TypeOf<typeof SystemicProblemShape> =>
-    Object.keys(s).every((k) => SYSTEMIC_KEYS.has(k)),
-  "SystemicProblemStrict",
+// Shared by BOTH suites' recurring items (issue #150): the 0.10 shape requires `id`, the legacy
+// shape swaps it for the tolerant code/id pair.
+const ConsecutiveRounds = t.refinement(
+  t.number,
+  (n): n is number => Number.isSafeInteger(n) && n >= 1,
+  "ConsecutiveRounds",
 );
-
-export const SystemicProblemCodec = t.exact(SystemicProblemStrict);
+const StartRound = t.refinement(
+  t.number,
+  (n): n is number => Number.isSafeInteger(n) && n >= 1,
+  "StartRound",
+);
 
 const RecurringShape = t.type({
   id: t.string,
-  consecutive_rounds: t.refinement(
-    t.number,
-    (n): n is number => Number.isSafeInteger(n) && n >= 1,
-    "ConsecutiveRounds",
-  ),
-  start_round: t.refinement(
-    t.number,
-    (n): n is number => Number.isSafeInteger(n) && n >= 1,
-    "StartRound",
-  ),
+  consecutive_rounds: ConsecutiveRounds,
+  start_round: StartRound,
 });
 
-// The schema declares additionalProperties: false on recurring items, but t.exact only strips
-// unknown keys on encode — on decode it accepts them. The refinement closes the gap so the codec
-// gate rejects exactly what the ajv gate rejects (the same invariant SystemicProblemStrict
-// establishes — a seed-echoing draft smuggling an extra key into a recurring item must not pass one
-// gate and fail the other).
-const RECURRING_KEYS = new Set(Object.keys(RecurringShape.props));
-
-const RecurringCodec = t.refinement(
-  RecurringShape,
-  (r): r is t.TypeOf<typeof RecurringShape> => Object.keys(r).every((k) => RECURRING_KEYS.has(k)),
-  "RecurringStrict",
-);
+// The schema declares additionalProperties: false on recurring items; strictExact makes the codec
+// gate reject exactly what the ajv gate rejects instead of silently stripping (a seed-echoing draft
+// smuggling an extra key into a recurring item must not pass one gate and fail the other).
+const RecurringCodec = strictExact("RecurringStrict", RecurringShape, [RecurringShape]);
 
 // The scope-metastasis entry (issue #150): per-code consecutive-round recurrence counts plus the
 // decision prompt, computed from the rounds history. The agent never writes it — the re-review seed
@@ -191,16 +198,9 @@ const ScopeMetastasisShape = t.type({
   recurring: t.array(RecurringCodec),
 });
 
-const SCOPE_METASTASIS_KEYS = new Set(Object.keys(ScopeMetastasisShape.props));
-
-const ScopeMetastasisStrict = t.refinement(
+export const ScopeMetastasisCodec = strictExact("ScopeMetastasisStrict", ScopeMetastasisShape, [
   ScopeMetastasisShape,
-  (s): s is t.TypeOf<typeof ScopeMetastasisShape> =>
-    Object.keys(s).every((k) => SCOPE_METASTASIS_KEYS.has(k)),
-  "ScopeMetastasisStrict",
-);
-
-export const ScopeMetastasisCodec = t.exact(ScopeMetastasisStrict);
+]);
 
 // One round's trajectory entry (issue #174): the round number and its convergence score, plus the
 // mechanism-frequency map and reviewed head SHA the recurrence signals read. Prior rounds are carried
@@ -215,6 +215,9 @@ const RoundNumber = t.refinement(
 // hits the inherited accessor and silently no-ops — a reviewer-supplied `__proto__` id (which every
 // writer-side map preserves via Object.fromEntries) would vanish on the round-trip. The custom codec
 // rebuilds the map with Object.fromEntries, so the decode preserves exactly the keys the writer wrote.
+// Values: negative counts are REJECTED (the ajv gates carry minimum: 0, and the codec gate mirrors
+// them), while a 0-valued entry is DROPPED — 0 means "no findings this round" and every round reader
+// treats it as absence, so the decode and the readers agree without rejecting the whole document.
 const idFrequencyCodec = (
   name: string,
 ): t.Type<Readonly<Record<string, number>>, Readonly<Record<string, number>>> =>
@@ -227,6 +230,7 @@ const idFrequencyCodec = (
       const entries: [string, number][] = [];
       for (const [k, v] of Object.entries(u as Record<string, unknown>)) {
         if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) return t.failure(v, c);
+        if (v === 0) continue;
         entries.push([k, v]);
       }
       return t.success(Object.fromEntries(entries));
@@ -244,21 +248,10 @@ const ConvergenceRoundOptional = t.partial({
 });
 const ConvergenceRoundShape = t.intersection([ConvergenceRoundRequired, ConvergenceRoundOptional]);
 
-// Strict-key refinement (see SystemicProblemStrict): the ajv gate rejects unknown keys but t.exact
-// accepts them on decode, so the codec gate must reject exactly what ajv rejects.
-const CONVERGENCE_ROUND_KEYS = new Set([
-  ...Object.keys(ConvergenceRoundRequired.props),
-  ...Object.keys(ConvergenceRoundOptional.props),
+export const ConvergenceRoundCodec = strictExact("ConvergenceRoundStrict", ConvergenceRoundShape, [
+  ConvergenceRoundRequired,
+  ConvergenceRoundOptional,
 ]);
-
-const ConvergenceRoundStrict = t.refinement(
-  ConvergenceRoundShape,
-  (r): r is t.TypeOf<typeof ConvergenceRoundShape> =>
-    Object.keys(r).every((k) => CONVERGENCE_ROUND_KEYS.has(k)),
-  "ConvergenceRoundStrict",
-);
-
-export const ConvergenceRoundCodec = t.exact(ConvergenceRoundStrict);
 
 // The convergence signal (issue #174): the current round's score, the threshold it is judged against,
 // whether it converged, and the per-round trajectory. Pipeline-stamped like scope_metastasis — the
@@ -274,19 +267,10 @@ const ConvergenceCoreShape = t.type({
 const ConvergenceOptional = t.partial({ rounds: t.array(ConvergenceRoundCodec) });
 const ConvergenceShape = t.intersection([ConvergenceCoreShape, ConvergenceOptional]);
 
-const CONVERGENCE_KEYS = new Set([
-  ...Object.keys(ConvergenceCoreShape.props),
-  ...Object.keys(ConvergenceOptional.props),
+export const ConvergenceCodec = strictExact("ConvergenceStrict", ConvergenceShape, [
+  ConvergenceCoreShape,
+  ConvergenceOptional,
 ]);
-
-const ConvergenceStrict = t.refinement(
-  ConvergenceShape,
-  (c): c is t.TypeOf<typeof ConvergenceShape> =>
-    Object.keys(c).every((k) => CONVERGENCE_KEYS.has(k)),
-  "ConvergenceStrict",
-);
-
-export const ConvergenceCodec = t.exact(ConvergenceStrict);
 
 // The change-size breakdown (issue #182): per-role added/removed line counts. UNLIKE
 // convergence/scope_metastasis (pipeline-stamped), this IS the agent's own judgment — a LOW-effort
@@ -390,6 +374,25 @@ export const usableCountsMap = (v: unknown): Readonly<Record<string, number>> | 
   return entries.length === 0 ? undefined : Object.fromEntries(entries);
 };
 
+// The ONE dual-spelling resolution for a round's mechanism map: when BOTH spellings carry usable
+// maps, their entries MERGE — the current `ids` spelling wins every shared key (the writer stopped
+// emitting `codes`, so a stale legacy count must never displace the current one), and `codes`
+// supplies only the keys `ids` lacks, so a merely-usable `ids` cannot discard a more complete
+// legacy map's names. Shared by the legacy upcast, the surface convergence migration, and
+// parseRounds so the dual-spelling readers can never drift.
+export const mergedCountsMaps = (
+  ids: unknown,
+  codes: unknown,
+): Readonly<Record<string, number>> | undefined => {
+  const idsMap = usableCountsMap(ids);
+  const codesMap = usableCountsMap(codes);
+  if (idsMap === undefined) return codesMap;
+  if (codesMap === undefined) return idsMap;
+  // Object spread defines `__proto__` as an OWN data property (CreateDataProperty), the same
+  // prototype-pollution invariant the idFrequencyCodec's fromEntries rebuild holds.
+  return { ...codesMap, ...idsMap };
+};
+
 // The pre-0.10 shape (schema/v0.9/findings.schema.json): findings carried an OPTIONAL `code` and no
 // `id`. Decoded only as a migration input — the registry's pre-0.10 entries normalize it to the 0.10
 // shape (code → id, or the synthesized content-derived id when a finding carried none). `id` is
@@ -401,33 +404,12 @@ const LegacyRuleCodec = t.partial({
   code_url: UriString,
 });
 
-const FindingShapeV09 = t.intersection([
-  t.type({
-    path: t.string,
-    start_line: LineNumber,
-    end_line: LineNumber,
-    severity: SeverityCodec,
-    title: t.string,
-    description: t.string,
-    reasoning: t.string,
-    confidence: Confidence,
-    likelihood: Likelihood,
-  }),
-  LegacyRuleCodec,
-  t.partial({
-    side: SideCodec,
-    recommendation: t.string,
-    patch: t.string,
-  }),
-]);
+const FindingShapeV09 = t.intersection([FindingCoreRequired, LegacyRuleCodec, FindingOptional]);
 
-const EndGeStartV09 = t.refinement(
-  FindingShapeV09,
-  (f): f is t.TypeOf<typeof FindingShapeV09> => f.end_line >= f.start_line,
-  "EndGeStartV09",
-);
-
-const FindingCodecV09 = t.exact(EndGeStartV09);
+// The legacy finding stays tolerant-in on KEYS — no strict-key gate, unlike its 0.10 counterpart —
+// because the legacy route's contract is tolerant-in/strict-out (normalizeV09 rewrites to the strict
+// 0.10 shape); only the end>=start anchor and the exact-strip run here.
+const FindingCodecV09 = t.exact(EndGeStart(FindingShapeV09));
 
 const SystemicV09Optional = t.partial({
   finding_codes: t.array(t.string),
@@ -437,86 +419,58 @@ const SystemicV09Optional = t.partial({
 
 const SystemicV09Shape = t.intersection([SystemicRequired, LegacyRuleCodec, SystemicV09Optional]);
 
-const SYSTEMIC_V09_KEYS = new Set([
-  ...Object.keys(SystemicRequired.props),
-  ...Object.keys(LegacyRuleCodec.props),
-  ...Object.keys(SystemicV09Optional.props),
+const SystemicProblemCodecV09 = strictExact("SystemicV09Strict", SystemicV09Shape, [
+  SystemicRequired,
+  LegacyRuleCodec,
+  SystemicV09Optional,
 ]);
 
-const SystemicV09Strict = t.refinement(
-  SystemicV09Shape,
-  (s): s is t.TypeOf<typeof SystemicV09Shape> =>
-    Object.keys(s).every((k) => SYSTEMIC_V09_KEYS.has(k)),
-  "SystemicV09Strict",
-);
-
-const SystemicProblemCodecV09 = t.exact(SystemicV09Strict);
-
-const RecurringV09Shape = t.intersection([
-  t.partial({ code: t.string, id: t.string }),
-  t.type({
-    consecutive_rounds: t.refinement(
-      t.number,
-      (n): n is number => Number.isSafeInteger(n) && n >= 1,
-      "ConsecutiveRoundsV09",
-    ),
-    start_round: t.refinement(
-      t.number,
-      (n): n is number => Number.isSafeInteger(n) && n >= 1,
-      "StartRoundV09",
-    ),
-  }),
-]);
+// The legacy recurring item stays tolerant-in on KEYS — like the legacy finding, no strict-key
+// gate — because the legacy route's contract is tolerant-in/strict-out (normalizeV09 rewrites the
+// items to the strict 0.10 shape, dropping a code/id-less item entirely).
+const RecurringV09Identity = t.partial({ code: t.string, id: t.string });
+const RecurringV09Counts = t.type({
+  consecutive_rounds: ConsecutiveRounds,
+  start_round: StartRound,
+});
+const RecurringV09Shape = t.intersection([RecurringV09Identity, RecurringV09Counts]);
 
 const ScopeMetastasisV09Shape = t.type({
   decision_prompt: t.string,
   recurring: t.array(RecurringV09Shape),
 });
 
-const SCOPE_METASTASIS_V09_KEYS = new Set(Object.keys(ScopeMetastasisV09Shape.props));
-
-const ScopeMetastasisV09Strict = t.refinement(
+const ScopeMetastasisCodecV09 = strictExact("ScopeMetastasisV09Strict", ScopeMetastasisV09Shape, [
   ScopeMetastasisV09Shape,
-  (s): s is t.TypeOf<typeof ScopeMetastasisV09Shape> =>
-    Object.keys(s).every((k) => SCOPE_METASTASIS_V09_KEYS.has(k)),
-  "ScopeMetastasisV09Strict",
-);
-
-const ScopeMetastasisCodecV09 = t.exact(ScopeMetastasisV09Strict);
+]);
 
 const CodeFrequencyV09 = idFrequencyCodec("CodeFrequencyV09");
 
+const ConvergenceRoundV09Optional = t.partial({
+  score: FiniteNumber,
+  codes: CodeFrequencyV09,
+  ids: CodeFrequencyV09,
+  sha: t.string,
+});
+
 const ConvergenceRoundV09Shape = t.intersection([
-  t.type({ round: RoundNumber }),
-  t.partial({ score: FiniteNumber, codes: CodeFrequencyV09, ids: CodeFrequencyV09, sha: t.string }),
+  ConvergenceRoundRequired,
+  ConvergenceRoundV09Optional,
 ]);
 
-const CONVERGENCE_ROUND_V09_KEYS = new Set(["round", "score", "codes", "ids", "sha"]);
-
-const ConvergenceRoundV09Strict = t.refinement(
-  ConvergenceRoundV09Shape,
-  (r): r is t.TypeOf<typeof ConvergenceRoundV09Shape> =>
-    Object.keys(r).every((k) => CONVERGENCE_ROUND_V09_KEYS.has(k)),
+const ConvergenceRoundCodecV09 = strictExact(
   "ConvergenceRoundV09Strict",
+  ConvergenceRoundV09Shape,
+  [ConvergenceRoundRequired, ConvergenceRoundV09Optional],
 );
 
-const ConvergenceRoundCodecV09 = t.exact(ConvergenceRoundV09Strict);
+const ConvergenceV09Optional = t.partial({ rounds: t.array(ConvergenceRoundCodecV09) });
+const ConvergenceV09Shape = t.intersection([ConvergenceCoreShape, ConvergenceV09Optional]);
 
-const ConvergenceV09Shape = t.intersection([
+const ConvergenceCodecV09 = strictExact("ConvergenceV09Strict", ConvergenceV09Shape, [
   ConvergenceCoreShape,
-  t.partial({ rounds: t.array(ConvergenceRoundCodecV09) }),
+  ConvergenceV09Optional,
 ]);
-
-const CONVERGENCE_V09_KEYS = new Set([...Object.keys(ConvergenceCoreShape.props), "rounds"]);
-
-const ConvergenceV09Strict = t.refinement(
-  ConvergenceV09Shape,
-  (c): c is t.TypeOf<typeof ConvergenceV09Shape> =>
-    Object.keys(c).every((k) => CONVERGENCE_V09_KEYS.has(k)),
-  "ConvergenceV09Strict",
-);
-
-const ConvergenceCodecV09 = t.exact(ConvergenceV09Strict);
 
 const FindingsV09Shape = t.intersection([
   t.type({
@@ -590,10 +544,10 @@ export const normalizeV09 = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =
           ...(doc.convergence.rounds !== undefined
             ? {
                 rounds: doc.convergence.rounds.map((r) => {
-                  // usableCountsMap: the upcast and the round readers share ONE definition of a
-                  // usable map, so a present-but-empty/all-zero new spelling can never discard a
-                  // populated legacy one (or diverge from the marker channel).
-                  const ids = usableCountsMap(r.ids) ?? usableCountsMap(r.codes);
+                  // mergedCountsMaps: the upcast, the surface migration, and parseRounds
+                  // share ONE dual-spelling resolution, so a merely-usable new spelling can never
+                  // discard a more complete legacy one (or diverge from the marker channel).
+                  const ids = mergedCountsMaps(r.ids, r.codes);
                   return {
                     round: r.round,
                     ...(r.score !== undefined ? { score: r.score } : {}),
@@ -672,19 +626,14 @@ const FlatModelPricesShape = t.type({
   cache_write: NonNegativePrice,
 });
 
-// The prices codecs mirror the ajv gate exactly, the same two-gates-agree discipline as
-// SystemicProblemStrict et al. (issue #170 review): t.exact strips unknown keys on encode, and a
-// key-set refinement rejects them on DECODE (ajv's additionalProperties:false) — so a hybrid entry that
-// carries BOTH flat fields and `slots` is rejected by both variants and the union never ambiguates,
-// rather than decoding as flat while being priced as slotted.
-const FLAT_PRICE_KEYS = new Set(Object.keys(FlatModelPricesShape.props));
-const FlatModelPricesStrict = t.refinement(
+// The prices codecs mirror the ajv gate exactly, the same two-gates-agree discipline as the rest of
+// this file's strictExact codecs (issue #170 review): a key-set refinement rejects unknown keys on
+// DECODE (ajv's additionalProperties:false) — so a hybrid entry that carries BOTH flat fields and
+// `slots` is rejected by both variants and the union never ambiguates, rather than decoding as flat
+// while being priced as slotted.
+const FlatModelPricesCodec = strictExact("FlatModelPricesStrict", FlatModelPricesShape, [
   FlatModelPricesShape,
-  (p): p is t.TypeOf<typeof FlatModelPricesShape> =>
-    Object.keys(p).every((k) => FLAT_PRICE_KEYS.has(k)),
-  "FlatModelPricesStrict",
-);
-const FlatModelPricesCodec = t.exact(FlatModelPricesStrict);
+]);
 
 // HH:MM in UTC (00:00–23:59). The pattern string is byte-identical to prices.schema.json's slot-time
 // pattern so the codec + ajv gates cannot silently disagree (issue #170 review).
@@ -694,17 +643,12 @@ const UtcHHMM = t.refinement(t.string, (s): s is string => UTC_HHMM_RE.test(s), 
 // One UTC time-of-day slot (issue #170): a [utc_from, utc_to) half-open window — wrapping past midnight
 // when utc_to <= utc_from — carrying the same per-token fields as the flat shape. cost.ts selects the
 // slot covering the run's UTC instant; a model's slots must partition the 24h day with no gap or overlap.
-const PriceSlotShape = t.intersection([
-  t.type({ utc_from: UtcHHMM, utc_to: UtcHHMM }),
+const PriceSlotAnchor = t.type({ utc_from: UtcHHMM, utc_to: UtcHHMM });
+const PriceSlotShape = t.intersection([PriceSlotAnchor, FlatModelPricesShape]);
+const PriceSlotCodec = strictExact("PriceSlotStrict", PriceSlotShape, [
+  PriceSlotAnchor,
   FlatModelPricesShape,
 ]);
-const PRICE_SLOT_KEYS = new Set(["utc_from", "utc_to", ...Object.keys(FlatModelPricesShape.props)]);
-const PriceSlotStrict = t.refinement(
-  PriceSlotShape,
-  (s): s is t.TypeOf<typeof PriceSlotShape> => Object.keys(s).every((k) => PRICE_SLOT_KEYS.has(k)),
-  "PriceSlotStrict",
-);
-const PriceSlotCodec = t.exact(PriceSlotStrict);
 
 // `slots` must be non-empty (the ajv gate's minItems: 1) — an empty array is a misconfiguration, not a
 // zero-cost model.
@@ -723,16 +667,10 @@ const NonEmptyPriceSlots = t.refinement(
 const SlottedRequired = t.type({ slots: NonEmptyPriceSlots });
 const SlottedOptional = t.partial({ weekend_slots: NonEmptyPriceSlots });
 const SlottedShape = t.intersection([SlottedRequired, SlottedOptional]);
-const SLOTTED_KEYS = new Set([
-  ...Object.keys(SlottedRequired.props),
-  ...Object.keys(SlottedOptional.props),
+const SlottedModelPricesCodec = strictExact("SlottedModelPricesStrict", SlottedShape, [
+  SlottedRequired,
+  SlottedOptional,
 ]);
-const SlottedModelPricesStrict = t.refinement(
-  SlottedShape,
-  (s): s is t.TypeOf<typeof SlottedShape> => Object.keys(s).every((k) => SLOTTED_KEYS.has(k)),
-  "SlottedModelPricesStrict",
-);
-const SlottedModelPricesCodec = t.exact(SlottedModelPricesStrict);
 
 // A model's price is EITHER flat (one all-day rate — unchanged, fully backward-compatible) OR a set of
 // UTC time-of-day slots (issue #170), for a provider with peak/off-peak rates (DeepSeek). Both variants

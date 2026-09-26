@@ -5,6 +5,7 @@
 import {
   ConvergenceCodec,
   DEFAULT_SCHEMA_VERSION,
+  mergedCountsMaps,
   resolveFindingId,
   resolveRuleId,
   usableCountsMap,
@@ -264,18 +265,27 @@ export const escapeCodeBackticks = (code: string): string =>
 
 // The codes field of a round record, validated and capped: string → positive safe-integer counts only
 // (a count-0 entry means "no findings this round" and is not recorded — every consumer agrees that 0
-// is absence), kept sorted by count descending with ties preferring codes that recurred in the
-// previous round (so the per-round top-N cap can't silently drop the exact mechanism the streak
-// detector is watching), then alphabetically for a stable order. Malformed (or absent) codes decode to
-// undefined so the round's severity counts still stand — a crafted marker can't smuggle a bad codes
-// shape into the streak/note renderers.
+// is absence), kept sorted by preferredKeys first (a dual-spelling round's current ids keys, so a
+// stale legacy count can never evict them from the cap), then count descending with ties preferring
+// codes that recurred in the previous round (so the per-round top-N cap can't silently drop the
+// exact mechanism the streak detector is watching), then alphabetically for a stable order.
+// Malformed (or absent) codes decode to undefined so the round's severity counts still stand — a
+// crafted marker can't smuggle a bad codes shape into the streak/note renderers.
 // The bounded form for the ROUNDS marker (the carrier with the top-N cap): the shared
 // usableCountsMap validation (schema.ts — the one definition every round reader shares), then the
 // cap + prior-preference.
-const normalizeIdCounts = (ids: unknown, priorCodes?: IdCounts): IdCounts | undefined => {
-  const entries = Object.entries(usableCountsMap(ids) ?? {});
+const normalizeIdCounts = (
+  ids: unknown,
+  priorCodes?: IdCounts,
+  preferredKeys?: ReadonlySet<string>,
+  preValidated = false,
+): IdCounts | undefined => {
+  const entries = Object.entries((preValidated ? (ids as IdCounts) : usableCountsMap(ids)) ?? {});
   if (entries.length === 0) return undefined;
   const sorted = entries.sort((a, b) => {
+    const aPreferred = preferredKeys?.has(a[0]) === true ? 1 : 0;
+    const bPreferred = preferredKeys?.has(b[0]) === true ? 1 : 0;
+    if (aPreferred !== bPreferred) return bPreferred - aPreferred;
     if (b[1] !== a[1]) return b[1] - a[1];
     const aPrior = hasId(priorCodes, a[0]) ? 1 : 0;
     const bPrior = hasId(priorCodes, b[0]) ? 1 : 0;
@@ -311,11 +321,19 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   let priorCodes: IdCounts | undefined;
   for (const u of (decoded as readonly unknown[]).filter(isSeverityCounts)) {
     const rec = u as Record<string, unknown>;
-    // ids first, with the legacy `codes` as a real fallback: `??` cannot express "valid-or-fallback",
-    // and a round carrying BOTH fields with a malformed/empty `ids` must not lose its mechanism map
-    // while a valid legacy `codes` sits beside it.
-    const codes =
-      normalizeIdCounts(rec["ids"], priorCodes) ?? normalizeIdCounts(rec["codes"], priorCodes);
+    // mergedCountsMaps first (the ONE dual-spelling resolution, shared with the convergence
+    // migration and the legacy upcast): a round carrying BOTH spellings merges their entries with
+    // the current `ids` spelling winning every shared key, and a malformed/empty `ids` must not
+    // lose its mechanism map while a valid legacy `codes` sits beside it. normalizeIdCounts then
+    // applies the top-N cap.
+    // The cap prefers the current ids keys (preferredKeys) so a high-count legacy codes-only key
+    // can never evict a current mechanism from the capped trajectory — the merge's stated rationale.
+    const codes = normalizeIdCounts(
+      mergedCountsMaps(rec["ids"], rec["codes"]),
+      priorCodes,
+      new Set(Object.keys(usableCountsMap(rec["ids"]) ?? {})),
+      true,
+    );
     priorCodes = codes;
     const sha = rec["sha"];
     const shaStr = typeof sha === "string" && sha !== "" ? sha : undefined;
@@ -862,11 +880,11 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // crafted/reset value — treat it as absent so the marker/legacy fallbacks reconstruct the whole thing,
 // and an empty trajectory can never silently reset the round count to 0 (issue #185 review).
 // A pre-0.10 sticky's compact convergence marker carries rounds whose mechanism maps use the legacy
-// `codes` spelling (0.10 renamed it to `ids`). Map the legacy rounds before the strict codec gate,
-// with the SAME precedence parseRounds applies (usableCounts): an `ids` map wins only when it is a
-// usable counts map, else a usable `codes` map takes over — a round carrying both with a malformed
-// `ids` must not lose its mechanism map. The winner maps to `ids` verbatim minus the entries
-// usableCounts itself rejects (this carrier was never capped, unlike the rounds marker).
+// `codes` spelling (0.10 renamed it to `ids`). Map the legacy rounds before the strict codec gate
+// with the SAME resolution parseRounds applies (mergedCountsMaps: usable maps merge, the current
+// `ids` spelling winning shared keys) — a round carrying both with a malformed `ids` must not
+// lose its mechanism map. The winner maps to `ids` verbatim minus the entries usableCounts itself
+// rejects (this carrier was never capped, unlike the rounds marker).
 const withLegacyConvergenceIds = (raw: unknown): unknown => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const rec = raw as Record<string, unknown>;
@@ -883,7 +901,7 @@ const withLegacyConvergenceIds = (raw: unknown): unknown => {
   const mapped: unknown[] = rounds.map((r) => {
     if (typeof r !== "object" || r === null) return r as unknown;
     const round = r as Record<string, unknown>;
-    const ids = usableCountsMap(round["ids"]) ?? usableCountsMap(round["codes"]);
+    const ids = mergedCountsMaps(round["ids"], round["codes"]);
     if (ids === undefined) {
       // Neither spelling usable: strip BOTH map fields (like parseRounds strips a bad map) rather
       // than leaving the legacy `codes` key for the strict round gate to reject — a corrupted map

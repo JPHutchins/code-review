@@ -44,6 +44,7 @@ import {
   RECOVERABLE_OPTIONAL_FIELDS,
   DEFAULT_SCHEMA_VERSION,
   anchoredSchemaVersionPattern,
+  resolveFindingId,
 } from "./schema.js";
 import type { Triage, Finding, Findings, PriceMap } from "./schema.js";
 import {
@@ -1155,9 +1156,10 @@ const seedDraftCmd = defineCommand({
               ...resolved,
               findings:
                 answeredRegistry !== null && answeredRegistry.length > 0
-                  ? resolved.findings.filter(
-                      (f) => !answeredRegistry.some((e) => isAnsweredDrop(f, e)),
-                    )
+                  ? resolved.findings.filter((f) => {
+                      const resolvedId = resolveFindingId(f);
+                      return !answeredRegistry.some((e) => isAnsweredDrop(resolvedId, f, e));
+                    })
                   : resolved.findings,
             };
       // A carried entry only counts when it VALIDATES as the entry shape — for a draft blob it is

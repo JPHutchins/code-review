@@ -1066,6 +1066,7 @@ jobs:
             fi
           fi
 
+          POST_RC=0
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
             --repo "$REPO" \
@@ -1078,14 +1079,22 @@ jobs:
             "${CLOC_ARGS[@]}" \
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}" \
-            "${UNVERIFIED_ARGS[@]}"
-          # SINGLE writer for the key: post writes posted=true itself at the sticky landmark on
-          # current CLIs; this fallback fires only when the pinned CLI predates the landmark write
-          # (no posted key in the file yet) — with an honest warning for that window.
-          if ! grep -q "^posted=" "$GITHUB_OUTPUT" 2>/dev/null; then
-            echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates the sticky-landmark posted signal; the signal falls back to the post command's exit status for this window"
-            echo "posted=true" >> "$GITHUB_OUTPUT"
+            "${UNVERIFIED_ARGS[@]}" || POST_RC=$?
+          # SINGLE writer for the posted key, and the guard runs on BOTH exit cells: the CLI writes
+          # posted=true at the sticky landmark on current CLIs; a missing key after exit 0 falls back
+          # to the exit status (a pre-landmark CLI, an early-exit path, or a failed signal write);
+          # a missing key after a FAILED post reads honestly as unposted — the one window (a
+          # sticky-landed post whose inline delivery failed, under a pre-landmark CLI) closes when
+          # the landmark write ships and the pin advances.
+          if grep -q "^posted=" "${GITHUB_OUTPUT:-}" 2>/dev/null; then
+            :
+          elif [ "$POST_RC" = "0" ]; then
+            echo "::warning::no posted signal after a successful post — falling back to the exit status (a pre-landmark CLI, an early-exit path, or a failed signal write)"
+            echo "posted=true" >> "$GITHUB_OUTPUT" || true
+          else
+            echo "::warning::the post failed without a posted signal — the review reads as unposted for this window"
           fi
+          exit "$POST_RC"
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is
       # informational, it must not fail a required-checks branch protection). Scoped to

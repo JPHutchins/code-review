@@ -250,8 +250,12 @@ const mkMockGhApi = (
 
 describe("post — the landed signal (issue #254)", () => {
   const outputPath = (): string => join(tmpDir, "gh-output.txt");
+  const ambientOutput = process.env["GITHUB_OUTPUT"];
   afterEach(() => {
-    delete process.env["GITHUB_OUTPUT"];
+    // Restore the ambient value (test-setup neutralizes it, but a filtered run or a reordered suite
+    // must not leak the temp path into the runner's real output file either).
+    if (ambientOutput === undefined) delete process.env["GITHUB_OUTPUT"];
+    else process.env["GITHUB_OUTPUT"] = ambientOutput;
   });
 
   it("writes posted=true to the step's GITHUB_OUTPUT the moment the sticky lands — even when the inline delivery later rejects", async () => {
@@ -275,7 +279,16 @@ describe("post — the landed signal (issue #254)", () => {
     expect(readFileSync(outputPath(), "utf-8")).toContain("posted=true");
   });
 
-  it("writes nothing when no sticky lands (the sticky upsert itself fails)", async () => {
+  it("a failed signal write warns and completes — the sticky and the inline flow still land", async () => {
+    // GITHUB_OUTPUT pointing at a DIRECTORY makes appendFileSync throw; the write is best-effort,
+    // so the post completes with a stderr warning instead of failing the round.
+    process.env["GITHUB_OUTPUT"] = tmpDir;
+    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+    await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
+    // The mock's calls include the sticky patch and the review post — the flow completed.
+  });
+
+  it("a failed signal write warns and completes — the sticky and the inline flow still land", async () => {
     writeFileSync(outputPath(), "");
     process.env["GITHUB_OUTPUT"] = outputPath();
     const responses = mkMocks("<!-- code-review -->").filter(

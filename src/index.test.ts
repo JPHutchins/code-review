@@ -963,9 +963,11 @@ describe("cli — print-schema", () => {
     expect(withVersion.exitCode).toBeNull();
     const printed = JSON.parse(withVersion.stdout) as Record<string, unknown>;
     // The legacy file requires `code`-era fields optional and admits the tolerant `id` — not the
-    // live file's required id.
+    // live file's required id. It must also keep its tolerant schema_version: the const-pin applies
+    // ONLY to the live file (gated on its /main/ $id), never to a frozen copy.
     expect(printed["$id"]).toContain("schema-v0.9.0");
     expect(withVersion.stdout).not.toBe(withoutVersion.stdout);
+    expect(withVersion.stdout).not.toContain('"const"');
   });
 
   it("the default findings schema pins its in-force version as a const — the prompt defers the draft's stamp to it", async () => {

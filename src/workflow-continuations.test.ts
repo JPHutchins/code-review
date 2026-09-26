@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { readRepoFile, allWorkflows } from "./test-util.js";
+import { DEFAULT_SCHEMA_VERSION } from "./schema.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -123,9 +124,12 @@ describe("full-review prompt — the vocabulary defers to the schema channel", (
     expect(scripts, `${workflowPath} prompt script`).toHaveLength(1);
     const script = scripts[0]!;
     const start = script.indexOf('--append-system-prompt "') + '--append-system-prompt "'.length;
-    const end = script.indexOf('" \\', start);
-    expect(end, `${workflowPath} prompt closing quote`).toBeGreaterThan(start);
-    return script.slice(start, end);
+    // The closing quote is the ONLY bare quote followed by the line continuation — anchored to the
+    // shell-word boundary (quote + space + backslash at end of line) so a mid-argument occurrence
+    // fails the test instead of silently truncating the argument the negative pins then read.
+    const match = /" \\\n/.exec(script.slice(start));
+    expect(match, `${workflowPath} prompt closing quote`).not.toBeNull();
+    return script.slice(start, start + match!.index);
   };
 
   it("both files carry the same prompt argument, modulo the reusable's $INSTRUCTION_BLOCK splice", () => {
@@ -136,16 +140,37 @@ describe("full-review prompt — the vocabulary defers to the schema channel", (
     const example = promptArg("examples/workflows/review.yaml");
     expect(reusable.length).toBeGreaterThan(1000);
     expect(example).toBe(reusable);
+    // The argument must run to its known terminators — a truncating extraction fails here instead
+    // of letting the negative pins below pass vacuously.
+    expect(promptArg("examples/workflows/review.yaml").endsWith("$LOG_SUBSET_NOTE")).toBe(true);
+    expect(promptArg(".github/workflows/review-reusable.yaml").endsWith("$INSTRUCTION_BLOCK")).toBe(
+      true,
+    );
   });
 
   it("the prompt defers the schema_version stamp and the field names to the schema channel", () => {
     const arg = promptArg(".github/workflows/review-reusable.yaml");
     expect(arg).toContain(
-      `stamp \\\`schema_version\\\` with the exact value the schema at $SCHEMA_FILE pins as its \\\`const\\\``,
+      `stamp \\\`schema_version\\\` with the exact in-force version$VERSION_NOTE`,
     );
     expect(arg).toContain(`use that schema's exact field names`);
     expect(arg).toContain(`each item using the schema's systemic_problems fields`);
     expect(arg).toContain(`into the schema's role buckets`);
+  });
+
+  it("both files carry the same VERSION_NOTE probe, and the fallback names the pinned default", () => {
+    const notes = (workflowPath: string): readonly string[] =>
+      runScripts(workflowPath)
+        .flatMap(({ script }) => script.split("\n"))
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('VERSION_NOTE="'));
+    const reusable = notes(".github/workflows/review-reusable.yaml");
+    const example = notes("examples/workflows/review.yaml");
+    expect(reusable.length).toBeGreaterThan(0);
+    expect(example).toEqual(reusable);
+    // The no-const fallback (the pinned CLI's release-lag window) names the in-force version
+    // directly — it must equal the codec default, and it rides the same release commit as the pin.
+    expect(reusable.some((line) => line.includes(`\\\`${DEFAULT_SCHEMA_VERSION}\\\``))).toBe(true);
   });
 
   it("the prompt teaches no vocabulary the schema could contradict — no inline field lists, no version literal", () => {

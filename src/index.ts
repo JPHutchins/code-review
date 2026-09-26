@@ -856,16 +856,21 @@ const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefine
 /** A bundled schema rendered for a CLI/agent to read: pretty-printed with the top-level `$schema`
  *  draft declaration stripped. `claude -p --json-schema` silently disables enforcement when a schema
  *  carries `$schema`, and the field DESCRIPTIONS are the authoritative spec the agent must follow, so
- *  this is the form both `print-schema` and `validate --explain` emit. The findings schema's
- *  schema_version is additionally pinned to the in-force default as a `const`, so the schema channel
- *  itself tells a model what version to stamp and `--json-schema` enforces it — the schema FILE
- *  stays version-tolerant (the registry dispatches on the declared version), only the enforcement
- *  copy pins. */
+ *  this is the form both `print-schema` and `validate --explain` emit. The LIVE findings schema's
+ *  schema_version is additionally pinned to the in-force default as a `const` (gated on the file's
+ *  `/main/` $id, the same identity the release guard uses), so the schema channel itself tells a
+ *  model what version to stamp and `--json-schema` enforces it — the FROZEN legacy copies
+ *  (`--schema-version` prints, legacy-stamped explains) keep their tolerant shape, and the schema
+ *  FILES stay version-tolerant: the registry dispatches on the declared version, only the live
+ *  enforcement copy pins. */
 const printableSchema = (schemaPath: string): string => {
   const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as Record<string, unknown>;
   const enforcementSchema = Object.fromEntries(
     Object.entries(schema).filter(([key]) => key !== "$schema"),
   );
+  const id = enforcementSchema["$id"];
+  if (typeof id !== "string" || !id.includes("/main/"))
+    return JSON.stringify(enforcementSchema, null, 2);
   const properties = enforcementSchema["properties"];
   const schemaVersion =
     typeof properties === "object" && properties !== null

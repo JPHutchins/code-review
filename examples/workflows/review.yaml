@@ -251,8 +251,9 @@ jobs:
           set -euo pipefail
           # Gather stages every review input OUTSIDE the PR-writable worktree (the $DRAFT/$SCHEMA_FILE
           # pattern) — the checkout can never clobber a gathered file, and a PR can never plant one.
-          # The ONE definition point for the dirs every later step reads: GITHUB_ENV carries them
-          # across steps, so a per-step redefinition (and the misplacement class it invites) is gone.
+          # The definition point for the dirs: GITHUB_ENV carries them across steps. Two defensive
+          # defaults survive on the pre-gather-failure path (assemble's shell default and the upload
+          # expression) — they must stay in lockstep with this literal.
           GATHER_DIR="$RUNNER_TEMP/gather"
           FINDINGS_DIR="$RUNNER_TEMP/findings"
           echo "GATHER_DIR=$GATHER_DIR" >> "$GITHUB_ENV"
@@ -586,9 +587,9 @@ jobs:
               SUBSET_JOBS_NOTE=""
             fi
             if [ "${FAILING_JOBS:-0}" -gt 0 ] 2>/dev/null; then
-              if [ "${STAGED_JOB_LOGS:-0}" -eq 0 ] 2>/dev/null; then
+              if [ "${STAGED_JOB_LOGS:-0}" -eq 0 ]; then
                 LOG_SUBSET_NOTE=" No $GATHER_DIR/job_*.log artifacts were staged for this run's ${FAILING_JOBS} failing job(s)${JOBS_FILE_NOTE}. Reproduce each failure yourself: run the project's checks against the checked-out head, and for every finding state what broke and the minimal fix. Claim a fix only after you have verified it with a passing run — and do not state that CI will pass once your fixes are applied: the absent logs may reflect failures a local run cannot reproduce. When the checks cannot run against the head, say exactly what you could not execute rather than claiming a fix you could not verify."
-              elif [ "${STAGED_JOB_LOGS:-0}" -lt "${FAILING_JOBS:-0}" ] 2>/dev/null; then
+              elif [ "${STAGED_JOB_LOGS:-0}" -lt "${FAILING_JOBS:-0}" ]; then
                 LOG_SUBSET_NOTE=" Only ${STAGED_JOB_LOGS} of ${FAILING_JOBS} failing jobs' logs are staged — you are reading a SUBSET${SUBSET_JOBS_NOTE}. Say so in your findings, and do not state that CI will pass once your fixes are applied; the jobs whose logs are absent may have failed for other reasons."
               else
                 LOG_SUBSET_NOTE=" All ${FAILING_JOBS} failing jobs' logs are staged at $GATHER_DIR/job_*.log — read them and verify each failure against the failing command as it stands; they are the failure evidence for this run."
@@ -1081,11 +1082,12 @@ jobs:
             "${PRICES_ARGS[@]}" \
             "${UNVERIFIED_ARGS[@]}" || POST_RC=$?
           # SINGLE writer for the posted key, and the guard runs on BOTH exit cells: the CLI writes
-          # posted=true on EVERY sticky landing (the main path and the notice paths) and posted=false
-          # on the deliberate no-write exits; a missing key after exit 0 falls back to the exit status
-          # (a pre-landmark CLI or a failed signal write); a missing key after a FAILED post reads
-          # honestly as unposted — the one window (a sticky-landed post whose inline delivery failed,
-          # under a pre-landmark CLI) closes when the landmark write ships and the pin advances.
+          # posted=true on EVERY sticky landing (the main path, the notice paths, and the
+          # leave-in-place exits) and posted=false on the no-open-PR exits; a missing key after exit 0
+          # falls back to the exit status (a pre-landmark CLI, an early-exit path, or a failed signal
+          # write); a missing key after a FAILED post reads honestly as unposted — the one window (a
+          # sticky-landed post whose inline delivery failed, under a pre-landmark CLI) closes when
+          # the landmark write ships and the pin advances.
           if grep -q "^posted=" "${GITHUB_OUTPUT:-}" 2>/dev/null; then
             :
           elif [ "$POST_RC" = "0" ]; then
@@ -1227,9 +1229,9 @@ jobs:
                 --run-url "$RUN_URL"
             fi
           elif { [ "$REVIEW_RESULT" = "failure" ] && [ "$POSTED" != "true" ]; } || { [ "$REVIEW_RESULT" = "success" ] && [ "$COMMENT_RESULT" = "failure" ] && [ "$POSTED" = "" ]; }; then
-            # A review that never LANDED: the review job died, or the comment job failed with NO
-            # signal at all. posted=false is the DELIBERATE no-write signal (nothing needed to
-            # land) — it settles neutral below, never the re-request + failure pair.
+            # A review that never LANDED: the review job died (anything-but-true, including a
+            # deliberate false), or a SUCCEEDED review whose comment job failed with NO signal at
+            # all (POSTED = ''). A succeeded review with posted=false settles neutral below.
             code-review report-incomplete \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

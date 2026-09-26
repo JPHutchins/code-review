@@ -746,7 +746,8 @@ const writePostedSignal = (value: boolean): void => {
 // genuinely wrong. Only the write is best-effort.
 const appendRunSummary = (summaryPath: string | undefined, body: () => string): void => {
   if (summaryPath === undefined || summaryPath === "") return;
-  appendBestEffort(summaryPath, "the run summary", `\n${body()}\n`);
+  const rendered = body();
+  appendBestEffort(summaryPath, "the run summary", `\n${rendered}\n`);
 };
 
 // Trust by author identity (bot login), not the marker alone. Returns null only when a NEW comment's
@@ -1085,6 +1086,9 @@ export const post = async (
       message ??
         "Review did not complete and the sticky already reflects a completed review — leaving it in place\n",
     );
+    // The preserved sticky IS the landed review — signal it, so a deliberate leave never reads as
+    // never-posted and never rides the exit-0 fallback.
+    writePostedSignal(true);
     process.exit(0);
   };
 

@@ -272,7 +272,7 @@ describe("resolveTolerantFindings — the seed chain's upcast", () => {
     expect(value?.convergence?.rounds?.[0]?.ids).toEqual({ "legacy-m": 3 });
   });
 
-  it("a dual-spelling round MERGES the usable maps per key with the higher count winning — no spelling can displace the other's counts or names", () => {
+  it("a dual-spelling round MERGES the usable maps — the current ids spelling wins every shared key, codes supplies only absent keys", () => {
     const hybrid = {
       schema_version: "0.9.0",
       summary: "s",

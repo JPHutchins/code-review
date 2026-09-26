@@ -745,7 +745,7 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
     expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({ "legacy-a": 2 });
   });
 
-  it("a round carrying a merely-usable ids AND a MORE complete legacy codes resolves through codes — the more-complete map wins", () => {
+  it("a dual-spelling round resolves through the merged map — ids wins the shared key even at a lower count, codes supplies absent keys", () => {
     const marker =
       "<!-- code-review:convergence;base64 " +
       Buffer.from(
@@ -758,13 +758,14 @@ describe("convergence score — per-finding weighting (issue #133 / #162)", () =
               round: 1,
               score: 2,
               ids: { "null-check-missing": 1 },
-              codes: { "null-check-missing": 1, "legacy-a": 2 },
+              codes: { "null-check-missing": 9, "legacy-a": 2 },
             },
           ],
         }),
         "utf-8",
       ).toString("base64") +
       " -->";
+    // ids wins the shared key despite the stale higher count (9); codes supplies only legacy-a.
     expect(parseConvergenceMarker(marker)?.rounds?.[0]?.ids).toEqual({
       "null-check-missing": 1,
       "legacy-a": 2,

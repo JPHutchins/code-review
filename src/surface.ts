@@ -313,9 +313,10 @@ export const parseRounds = (body: string): readonly RoundRecord[] => {
   for (const u of (decoded as readonly unknown[]).filter(isSeverityCounts)) {
     const rec = u as Record<string, unknown>;
     // mergedCountsMaps first (the ONE dual-spelling resolution, shared with the convergence
-    // migration and the legacy upcast): a round carrying BOTH spellings merges their entries per key
-    // with the higher count winning, and a malformed/empty `ids` must not lose its mechanism map
-    // while a valid legacy `codes` sits beside it. normalizeIdCounts then applies the top-N cap.
+    // migration and the legacy upcast): a round carrying BOTH spellings merges their entries with
+    // the current `ids` spelling winning every shared key, and a malformed/empty `ids` must not
+    // lose its mechanism map while a valid legacy `codes` sits beside it. normalizeIdCounts then
+    // applies the top-N cap.
     const codes = normalizeIdCounts(mergedCountsMaps(rec["ids"], rec["codes"]), priorCodes);
     priorCodes = codes;
     const sha = rec["sha"];
@@ -864,10 +865,10 @@ export const parseSurfaceSignal = (doc: unknown): SurfaceSignal | null => {
 // and an empty trajectory can never silently reset the round count to 0 (issue #185 review).
 // A pre-0.10 sticky's compact convergence marker carries rounds whose mechanism maps use the legacy
 // `codes` spelling (0.10 renamed it to `ids`). Map the legacy rounds before the strict codec gate
-// with the SAME resolution parseRounds applies (mergedCountsMaps: usable maps merge per key, the
-// higher count wins) — a round carrying both with a malformed `ids` must not lose its mechanism
-// map. The winner maps to `ids` verbatim minus the entries usableCounts itself rejects (this
-// carrier was never capped, unlike the rounds marker).
+// with the SAME resolution parseRounds applies (mergedCountsMaps: usable maps merge, the current
+// `ids` spelling winning shared keys) — a round carrying both with a malformed `ids` must not
+// lose its mechanism map. The winner maps to `ids` verbatim minus the entries usableCounts itself
+// rejects (this carrier was never capped, unlike the rounds marker).
 const withLegacyConvergenceIds = (raw: unknown): unknown => {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const rec = raw as Record<string, unknown>;

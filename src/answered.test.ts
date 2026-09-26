@@ -402,10 +402,11 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r6");
   });
 
-  it("equal-scored synthesized same-title entries keep the registry order — newest-first, as the builder emits", () => {
+  it("equal-scored synthesized same-title entries keep the registry order — any replyId-based tie-break fails it", () => {
     // Two codeless same-title answers under DIFFERENT paths (the registry-reachable tie: the
     // builder dedupes by code, so a real tie is two entries scoring 5/6 against the finding's
-    // third path). The newest answer (higher replyId) comes first, as answeredRegistryFrom emits.
+    // third path). Equal replyIds, so ONLY the strict-> first-wins registry order breaks the tie —
+    // a replyId-keyed tie-break would pick the second entry and fail the assertion.
     const first = entry({
       code: synthesizedFindingId("src/bar.ts", "The same claim"),
       replyId: 7,
@@ -413,8 +414,8 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     });
     const second = entry({
       code: synthesizedFindingId("src/baz.ts", "The same claim"),
-      replyId: 6,
-      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r6",
+      replyId: 7,
+      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r8",
     });
     const { reRaisedNotes } = applyAnswered(
       [mkFinding({ id: "fresh-agent-id", path: "src/other.ts", reasoning: "NEW evidence." })],

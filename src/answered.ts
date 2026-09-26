@@ -314,14 +314,11 @@ const matches = (f: Finding, e: Pick<AnsweredEntry, "code" | "title">): boolean 
 // The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
 // (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
 // The ONE verbatim claim-field list: the six per-field comparisons consumed by both the full-claim
-// predicate and the title-second-chance scorer, so a field added to the verbatim contract can never
-// diverge between the two (the same one-definition discipline as answeredNoteKey below).
-type VerbatimPick = Pick<
-  AnsweredEntry,
-  "title" | "description" | "reasoning" | "severity" | "path" | "patch"
->;
-
+// predicate and the title-second-chance scorer. The VerbatimPick type DERIVES from the array, so
+// adding a claim field is a single edit the compiler verifies — the type and the runtime list can
+// never diverge (the same one-definition discipline as answeredNoteKey below).
 const VERBATIM_FIELDS = ["title", "description", "reasoning", "severity", "path", "patch"] as const;
+type VerbatimPick = Pick<AnsweredEntry, (typeof VERBATIM_FIELDS)[number]>;
 
 const verbatimFieldEqual = (
   f: Finding,
@@ -335,6 +332,9 @@ export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
 // Would post's answered-filter DROP this finding? applyAnswered below and the seed's pre-filter
 // both ask this (issue #233 r2), so "answered" can never mean two things across the pipeline. e is
 // the staged wire shape too: every field the predicate reads shares its name across both types.
+// The one known corner where the two consumers disagree: a finding that id-matches a NON-verbatim
+// entry while a verbatim (6/6) synthesized same-title entry sits beside it — post keeps it (only
+// the chosen entry feeds the drop), the seed's existential scan drops it (see applyAnswered).
 export const isAnsweredDrop = (
   f: Finding,
   e: Pick<
@@ -364,7 +364,7 @@ export const answeredNoteKey = (f: { id: string; title: string }): string =>
 const bestTitleMatch = (
   f: Finding,
   registry: readonly AnsweredEntry[],
-): AnsweredEntry | undefined => {
+): { entry: AnsweredEntry | undefined; score: number } => {
   let best: AnsweredEntry | undefined;
   let bestScore = -1;
   for (const e of registry) {
@@ -375,7 +375,7 @@ const bestTitleMatch = (
       bestScore = score;
     }
   }
-  return best;
+  return { entry: best, score: bestScore };
 };
 
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
@@ -428,13 +428,16 @@ export const applyAnswered = (
     // not mis-bind its annotation (the id match wins wherever it exists). The second chance picks
     // the synthesized same-title entry sharing the MOST verbatim claim fields (ties keep registry
     // order), so two codeless same-title answers under different paths cannot mis-bind a kept
-    // re-raise. Note the chosen entry feeds isAnsweredDrop too — a verbatim (6/6) match to any
-    // synthesized same-title entry drops the finding; when an id-matched entry exists it alone
-    // feeds the drop, while the seed pre-filter is existential over the whole registry, so the
-    // two sides can still disagree for that corner (a non-verbatim id match beside a verbatim
-    // same-title entry) — the scorer changes suppression, not just annotation.
-    const entry =
-      registry.find((e) => e.code === resolveFindingId(f)) ?? bestTitleMatch(f, registry);
+    // re-raise. The chosen entry alone feeds the drop decision: a title-matched entry drops the
+    // finding exactly when its score is a full verbatim match (6/6), while the seed pre-filter is
+    // existential over the whole registry — so the two sides disagree in one corner (a non-verbatim
+    // id match beside a verbatim same-title entry; documented on isAnsweredDrop). The scorer
+    // changes suppression, not just annotation.
+    const resolvedId = resolveFindingId(f);
+    const idMatch = registry.find((e) => e.code === resolvedId);
+    const { entry: titleMatch, score: titleScore } =
+      idMatch === undefined ? bestTitleMatch(f, registry) : { entry: undefined, score: -1 };
+    const entry = idMatch ?? titleMatch;
     if (entry === undefined) {
       kept.push(f);
       continue;
@@ -443,10 +446,17 @@ export const applyAnswered = (
     // (path, patch) — a re-raise relocated to another file or proposing a different fix carries
     // something new. The line is deliberately excluded: positional drift (a rebase moving the same
     // claim) is not evidence (issue #151 review r3). patch is normalized (undefined → null) so an
-    // absent patch on both sides compares equal.
-    if (isAnsweredDrop(f, entry)) {
+    // absent patch on both sides compares equal. isAnsweredDrop's conjunction holds by
+    // construction here (the entry was selected BY a match), so the drop reuses the scorer's
+    // already-computed verbatim count on the title path — score === VERBATIM_FIELDS.length is
+    // exactly isVerbatimReRaise, and the id path re-runs the predicate the seed shares.
+    const dropped =
+      (idMatch !== undefined
+        ? isVerbatimReRaise(f, entry)
+        : titleScore === VERBATIM_FIELDS.length) && f.severity !== "critical";
+    if (dropped) {
       droppedByEntry.set(entry.replyId, entry);
-      droppedFindingIds.push(resolveFindingId(f));
+      droppedFindingIds.push(resolvedId);
       droppedCount += 1;
     } else {
       kept.push(f);

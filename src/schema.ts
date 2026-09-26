@@ -112,8 +112,6 @@ const FindingOptional = t.partial({
   patch: t.string,
 });
 
-// ONE line-anchor refinement shared by BOTH finding shapes — they differ only in their identity
-// field, so the end>=start gate rides a minimal anchor shape each intersection includes.
 // ONE line-anchor gate shared by BOTH finding shapes — they differ only in their identity field.
 // Applied as a WRAPPER refinement around each shape (not an intersection member), so an inner shape
 // failure short-circuits with the outer context (`0.findings.0`) — an intersection member would fail
@@ -390,9 +388,9 @@ export const mergedCountsMaps = (
   const codesMap = usableCountsMap(codes);
   if (idsMap === undefined) return codesMap;
   if (codesMap === undefined) return idsMap;
-  const merged = new Map<string, number>(Object.entries(codesMap));
-  for (const [k, v] of Object.entries(idsMap)) merged.set(k, v);
-  return Object.fromEntries(merged);
+  // Object spread defines `__proto__` as an OWN data property (CreateDataProperty), the same
+  // prototype-pollution invariant the idFrequencyCodec's fromEntries rebuild holds.
+  return { ...codesMap, ...idsMap };
 };
 
 // The pre-0.10 shape (schema/v0.9/findings.schema.json): findings carried an OPTIONAL `code` and no

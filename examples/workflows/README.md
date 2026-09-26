@@ -94,8 +94,9 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   object itself is posted either way: it is the link from the PR to the sticky and to the run.
 
   The self-contained [`review.yaml`](review.yaml) in this directory has no `inline` input: it calls
-  `code-review post` directly, so add `--inline` to that invocation to opt in. Check first that the
-  CLI version it pins accepts the flag (`code-review post --help`) — an unknown option is ignored
+  `code-review post` directly, so add `--inline` to that invocation and set `INLINE` to `"true"` in
+  the post step's env (the constant that gates the help capture) to opt in. Check first that the CLI
+  version it pins accepts the flag (`code-review post --help`) — an unknown option is ignored
   silently, so a hand-added flag against an older pin does nothing and says nothing. The reusable
   workflow probes for exactly that and warns; the copy-paste variant cannot.
 

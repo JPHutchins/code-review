@@ -214,7 +214,7 @@ describe("path plumbing — the reusable and the example hand-mirror the staging
   // example's transcripts cp) — so the plumbing lines are pinned byte-identical here, the same
   // discipline the mechanic steer lines already have.
   const PLUMBING_RE =
-    /(GATHER_DIR|FINDINGS_DIR|GITHUB_ENV|transcripts\/|--add-dir|posted=|POST_RC|GITHUB_OUTPUT|steps\.post\.outputs\.posted|steps\.post\.outcome|needs\.comment\.result|needs\.comment\.outputs\.posted|COMMENT_RESULT|REVIEW_RESULT|POSTED:|env\.FINDINGS_DIR|runner\.temp|id: post|INLINE:)/;
+    /(GATHER_DIR|FINDINGS_DIR|GITHUB_ENV|transcripts\/|--add-dir|posted=|POST_RC|GITHUB_OUTPUT|steps\.post\.outputs\.posted|steps\.post\.outcome|needs\.comment\.result|needs\.comment\.outputs\.posted|COMMENT_RESULT|REVIEW_RESULT|POSTED:|env\.FINDINGS_DIR|runner\.temp|id: post|INLINE:|::warning::no posted signal|::warning::the post failed|REVIEW_ROUTE)/;
   const plumbingLines = (workflowPath: string): readonly string[] =>
     readRepoFile(workflowPath)
       .split("\n")

@@ -716,10 +716,8 @@ export const priorIdsFrom = (doc: unknown): readonly string[] => {
   return [...idsOf("findings", false), ...idsOf("systemic_problems", true)];
 };
 
-// The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
-// while each run's summary keeps the review as it stood for that run (issue #205). Best-effort — the
-// record must never fail the round — and append, so it joins whatever else the job wrote. The path is
-// a parameter rather than an environment read, so the effect is the only thing here that is not pure.
+// Best-effort append to a runner file: a write failure warns with the given label and never fails
+// the round. The path is a parameter, so the effect is the only thing here that is not pure.
 const appendBestEffort = (path: string | undefined, label: string, body: string): void => {
   if (path === undefined || path === "") return;
   try {
@@ -741,11 +739,13 @@ const writePostedSignal = (value: boolean): void => {
   );
 };
 
+// The job's run summary is the review's long-lived twin: a sticky is overwritten as rounds iterate,
+// while each run's summary keeps the review as it stood for that run (issue #205). The template
+// renders OUTSIDE the best-effort write: a failing template is a defect that should surface, and the
+// sticky rendered from the same input a moment earlier, so this throwing means something is
+// genuinely wrong. Only the write is best-effort.
 const appendRunSummary = (summaryPath: string | undefined, body: () => string): void => {
   if (summaryPath === undefined || summaryPath === "") return;
-  // Rendered OUTSIDE the catch: a failing template is a defect that should surface, and the sticky
-  // rendered from the same input a moment earlier, so this throwing means something is genuinely
-  // wrong. Only the write is best-effort — a record that cannot be written must not fail the round.
   appendBestEffort(summaryPath, "the run summary", `\n${body()}\n`);
 };
 
@@ -757,18 +757,19 @@ const upsertSticky = async (
   existing: { readonly id: number; readonly body: string } | null,
   body: string,
   ghApi: GhApi,
+  signal = false,
 ): Promise<{ readonly id: number; readonly url: string | undefined } | null> => {
   if (existing !== null) {
     const patched = await patchComment(repo, existing.id, body, ghApi);
     process.stderr.write(
       `Updated sticky comment #${String(existing.id)} on PR #${String(prNumber)}\n`,
     );
-    writePostedSignal(true);
+    if (signal) writePostedSignal(true);
     return { id: existing.id, url: patched?.html_url };
   }
   const posted = await postComment(repo, prNumber, body, ghApi);
   process.stderr.write(`Posted new sticky comment on PR #${String(prNumber)}\n`);
-  if (posted !== null) writePostedSignal(true);
+  if (signal && posted !== null) writePostedSignal(true);
   return posted ? { id: posted.id, url: posted.html_url } : null;
 };
 
@@ -1125,7 +1126,7 @@ export const post = async (
         sticky.body,
       ),
     );
-    await upsertSticky(input.repo, prNumber, sticky, body, ghApi);
+    await upsertSticky(input.repo, prNumber, sticky, body, ghApi, true);
     process.exit(0);
   };
 
@@ -1253,6 +1254,7 @@ export const post = async (
       existingSticky,
       renderNotice("The diff for this PR is empty — nothing to review.", discussion),
       ghApi,
+      true,
     );
     process.exit(0);
   }
@@ -1267,6 +1269,7 @@ export const post = async (
       existingSticky,
       renderNotice(noticeMessageFor(findingsResult), discussion),
       ghApi,
+      true,
     );
     process.exit(0);
   }
@@ -1521,7 +1524,7 @@ export const post = async (
         orphanedUnresolvable: orphanResolveFailed,
       }),
     );
-    await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi);
+    await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi, true);
     // The body this branch posts, whatever shape it took, also goes to the run summary.
     appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => body);
     if (inlineRequested) {
@@ -1743,6 +1746,7 @@ export const post = async (
     existingSticky,
     renderBody(initialDisposition),
     ghApi,
+    true,
   );
   // Snapshot stale comments BEFORE posting the fresh ones; timing (not commit SHA) separates them.
   const priorInlineComments = await listPriorBotCommentIds(

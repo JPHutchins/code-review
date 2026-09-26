@@ -250,14 +250,10 @@ const mkMockGhApi = (
 
 describe("post — the landed signal (issue #254)", () => {
   const outputPath = (): string => join(tmpDir, "gh-output.txt");
-  // Captured per test (test-setup already neutralized the variable), so the restore arm is live.
-  let ambientOutput: string | undefined;
-  beforeEach(() => {
-    ambientOutput = process.env["GITHUB_OUTPUT"];
-  });
+  // test-setup neutralizes GITHUB_OUTPUT for the whole suite, so an unconditional delete restores
+  // it (the sibling summary block's form).
   afterEach(() => {
-    if (ambientOutput === undefined) delete process.env["GITHUB_OUTPUT"];
-    else process.env["GITHUB_OUTPUT"] = ambientOutput;
+    delete process.env["GITHUB_OUTPUT"];
   });
 
   it("writes posted=true to the step's GITHUB_OUTPUT the moment the sticky lands — even when the inline delivery later rejects", async () => {

@@ -1521,9 +1521,11 @@ jobs:
         run: |
           set -euo pipefail
           RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          # A comment job CANCELLED by a superseding run is informational regardless of the review
-          # result (issue #139): the newer run owns the branch, so no failure attribution here.
-          if [ "$REVIEW_RESULT" = "cancelled" ] || [ "$COMMENT_RESULT" = "cancelled" ]; then
+          # A review CANCELLED, or a review that FAILED whose comment job was then cancelled by a
+          # superseding run, is informational (issue #139): the newer run owns the branch, so no
+          # failure attribution here. A SUCCEEDED review whose comment tail was cancelled settles
+          # neutral below — its post landed.
+          if [ "$REVIEW_RESULT" = "cancelled" ] || { [ "$REVIEW_RESULT" = "failure" ] && [ "$COMMENT_RESULT" = "cancelled" ]; }; then
             # A cancelled review is informational, not a failure (issue #139): post the "superseded"
             # sticky and settle THIS run's check to `cancelled` (ownership-matched by details_url, so a
             # superseding run's live check on the same head is never touched). Release-gated:
@@ -1542,11 +1544,10 @@ jobs:
                 --head-sha "$HEAD_SHA" \
                 --run-url "$RUN_URL"
             fi
-          elif { [ "$POSTED" != "true" ]; } && { [ "$REVIEW_RESULT" = "failure" ] || { [ "$REVIEW_RESULT" = "success" ] && [ "$COMMENT_RESULT" = "failure" ]; }; }; then
-            # The review never LANDED (posted != true): either the review job died, or the comment
-            # job failed before posting — the honest outcome is the re-request + failure pair. Any
-            # posted=true run settles neutral below instead: a posted review is never re-requested
-            # or failed.
+          elif { [ "$REVIEW_RESULT" = "failure" ] && [ "$POSTED" != "true" ]; } || { [ "$REVIEW_RESULT" = "success" ] && [ "$COMMENT_RESULT" = "failure" ] && [ "$POSTED" = "" ]; }; then
+            # A review that never LANDED: the review job died, or the comment job failed with NO
+            # signal at all. posted=false is the DELIBERATE no-write signal (nothing needed to
+            # land) — it settles neutral below, never the re-request + failure pair.
             code-review report-incomplete \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

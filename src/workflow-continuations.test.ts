@@ -107,6 +107,106 @@ describe("mechanic route prose — the reusable workflow and the example teach t
   });
 });
 
+describe("full-review prompt — the vocabulary defers to the schema channel", () => {
+  // The full-review prompt once taught the draft's field names and schema_version inline; the
+  // #251 retrain made it defer BOTH to the schema the pipeline writes to $SCHEMA_FILE — whose
+  // schema_version pattern is narrowed to the in-force minor — and to the installed CLI's
+  // default-version command for the stamp, so a future rename or version bump needs no prompt edit
+  // at all, and the prompt can never teach vocabulary the live gate rejects. These tests pin the
+  // deferral: the prompt must NOT embed the vocabulary, must point at the schema's narrowed pattern
+  // and the default-version note, and both copies must stay byte-identical modulo the reusable's
+  // $INSTRUCTION_BLOCK splice. The argument is extracted as one unit (quote to closing quote — it
+  // spans three physical lines), so a reflow cannot silently escape the pins.
+  const promptArg = (workflowPath: string): string => {
+    const scripts = runScripts(workflowPath)
+      .map(({ script }) => script)
+      .filter((script) => script.includes('--append-system-prompt "'));
+    expect(scripts, `${workflowPath} prompt script`).toHaveLength(1);
+    const script = scripts[0]!;
+    const start = script.indexOf('--append-system-prompt "') + '--append-system-prompt "'.length;
+    // The closing quote is the ONLY bare quote followed by the line continuation — anchored to the
+    // shell-word boundary (quote + space + backslash at end of line) so a mid-argument occurrence
+    // fails the test instead of silently truncating the argument the negative pins then read.
+    const match = /" \\\n/.exec(script.slice(start));
+    expect(match, `${workflowPath} prompt closing quote`).not.toBeNull();
+    return script.slice(start, start + match!.index);
+  };
+
+  it("both files carry the same prompt argument, modulo the reusable's $INSTRUCTION_BLOCK splice", () => {
+    const reusable = promptArg(".github/workflows/review-reusable.yaml").replace(
+      "$INSTRUCTION_BLOCK",
+      "",
+    );
+    const example = promptArg("examples/workflows/review.yaml");
+    expect(reusable.length).toBeGreaterThan(1000);
+    expect(example).toBe(reusable);
+    // The argument must run to its known terminators — a truncating extraction fails here instead
+    // of letting the negative pins below pass vacuously.
+    expect(promptArg("examples/workflows/review.yaml").endsWith("$LOG_SUBSET_NOTE")).toBe(true);
+    expect(promptArg(".github/workflows/review-reusable.yaml").endsWith("$INSTRUCTION_BLOCK")).toBe(
+      true,
+    );
+  });
+
+  it("the prompt defers the schema_version stamp and the field names to the schema channel", () => {
+    const arg = promptArg(".github/workflows/review-reusable.yaml");
+    expect(arg).toContain(
+      `stamp \\\`schema_version\\\` with the exact in-force version$VERSION_NOTE`,
+    );
+    expect(arg).toContain(`use that schema's exact field names`);
+    expect(arg).toContain(`each item using the schema's systemic_problems fields`);
+    expect(arg).toContain(`into the schema's role buckets`);
+  });
+
+  it("both files read VERSION_NOTE from the installed CLI's default-version — the frozen fallback is the only literal", () => {
+    const noteLines = (workflowPath: string): readonly string[] =>
+      runScripts(workflowPath)
+        .flatMap(({ script }) => script.split("\n"))
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('VERSION_NOTE="'));
+    const scripts = (workflowPath: string): readonly string[] =>
+      runScripts(workflowPath).map(({ script }) => script);
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      const notes = noteLines(workflowPath);
+      expect(notes, workflowPath).toHaveLength(2);
+      // The version is READ from the installed CLI (default-version prints the registry's own
+      // default — the same value the gate resolves); the only literal anywhere is the FROZEN
+      // pre-command fallback, reachable only by CLIs whose registries stop at that version.
+      const [frozen, read] = notes[0]!.includes("0.10.0")
+        ? [notes[0]!, notes[1]!]
+        : [notes[1]!, notes[0]!];
+      expect(frozen, workflowPath).toContain(`\\\`0.10.0\\\``);
+      expect(read, workflowPath).not.toMatch(/[0-9]\.[0-9]+\.[0-9]/);
+      expect(
+        scripts(workflowPath).some((s) => s.includes("code-review default-version 2>/dev/null")),
+        workflowPath,
+      ).toBe(true);
+    }
+    expect(noteLines("examples/workflows/review.yaml")).toEqual(
+      noteLines(".github/workflows/review-reusable.yaml"),
+    );
+  });
+
+  it("the prompt teaches no vocabulary the schema could contradict — no inline field lists, no version literal", () => {
+    const arg = promptArg(".github/workflows/review-reusable.yaml");
+    expect(arg).not.toContain("(optional: ");
+    expect(arg).not.toContain("each item using title,");
+    expect(arg).not.toContain("Set the required");
+    expect(arg).not.toContain("Each finding uses these exact field names");
+    expect(arg).not.toMatch(/\\"schema_version\\": \\"[0-9]/);
+  });
+
+  it("the prompt still warns against the retired code/finding_codes spellings and names the one surviving code", () => {
+    const arg = promptArg(".github/workflows/review-reusable.yaml");
+    expect(arg).toContain(`the retired \\\`code\\\`/\\\`finding_codes\\\` field names`);
+    expect(arg).toContain(`renamed to \\\`id\\\`/\\\`finding_ids\\\``);
+    expect(arg).toContain(`\\\`change_size.code\\\` is the one surviving \\\`code\\\``);
+  });
+});
+
 describe("mechanic prompt assembly — the notes reach the prompt in the same order in both files", () => {
   it("the prompt splice delivers $ROUTE_NOTE then $LOG_SUBSET_NOTE in both workflows", () => {
     for (const workflowPath of [

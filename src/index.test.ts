@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { legacyEmbeddedMarker, runCli } from "./test-util.js";
-import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { snapshotIfValid } from "./index.js";
+import { snapshotIfValid, printableSchema } from "./index.js";
 import {
   lastValidPath,
   priorAnswersPath,
@@ -12,7 +12,12 @@ import {
   priorSuppressedPath,
   SEED_SENTINEL,
 } from "./budget.js";
-import { ResultEnvelopeCodec, synthesizedFindingId } from "./schema.js";
+import {
+  DEFAULT_SCHEMA_VERSION,
+  ResultEnvelopeCodec,
+  synthesizedFindingId,
+  anchoredSchemaVersionPattern,
+} from "./schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -933,10 +938,23 @@ describe("cli — print-schema", () => {
       ) as Record<string, unknown>;
       expect(canonical["$schema"]).toBeDefined();
       expect(printed["$schema"]).toBeUndefined();
-      // Everything but $schema is preserved verbatim ($id, title, properties, …).
+      // Everything but $schema is preserved verbatim ($id, title, properties, …) — except the
+      // findings schema's schema_version, whose pattern is narrowed to the in-force minor so the
+      // schema channel itself tells a model what version to stamp.
       const canonicalWithoutDraft = Object.fromEntries(
         Object.entries(canonical).filter(([key]) => key !== "$schema"),
       );
+      if (name === "findings") {
+        const props = canonicalWithoutDraft["properties"] as Record<string, unknown>;
+        const version = props["schema_version"] as Record<string, unknown>;
+        canonicalWithoutDraft["properties"] = {
+          ...props,
+          schema_version: {
+            ...version,
+            pattern: anchoredSchemaVersionPattern(DEFAULT_SCHEMA_VERSION),
+          },
+        };
+      }
       expect(printed).toEqual(canonicalWithoutDraft);
     },
   );
@@ -953,9 +971,68 @@ describe("cli — print-schema", () => {
     expect(withVersion.exitCode).toBeNull();
     const printed = JSON.parse(withVersion.stdout) as Record<string, unknown>;
     // The legacy file requires `code`-era fields optional and admits the tolerant `id` — not the
-    // live file's required id.
+    // live file's required id. It must also keep its tolerant schema_version: the pattern narrowing
+    // applies ONLY to the live file (the caller pins only when the kind is findings and the
+    // resolved path is the live one), never to a frozen copy.
     expect(printed["$id"]).toContain("schema-v0.9.0");
     expect(withVersion.stdout).not.toBe(withoutVersion.stdout);
+    expect(withVersion.stdout).toContain('"pattern": "^(0|[1-9]');
+    expect(withVersion.stdout).not.toContain('"pattern": "^0\\.');
+  });
+
+  it("the default findings schema narrows schema_version's pattern to the in-force minor — admitting exactly the stamps the registry dispatches to the live entry", async () => {
+    const { stdout, exitCode } = await runCli(["print-schema", "findings"]);
+    expect(exitCode).toBeNull();
+    const printed = JSON.parse(stdout) as {
+      properties?: { schema_version?: { pattern?: string } };
+    };
+    expect(printed.properties?.schema_version?.pattern).toBe(
+      anchoredSchemaVersionPattern(DEFAULT_SCHEMA_VERSION),
+    );
+    // The exact literal for the CURRENT default — pinned, not just mirrored, so a suffix change in
+    // the helper is a visible diff at every bump.
+    expect(printed.properties?.schema_version?.pattern).toBe(
+      "^0\\.10\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+    );
+  });
+
+  it("default-version prints the in-force version the installed registry resolves by default", async () => {
+    const findings = await runCli(["default-version", "findings"]);
+    expect(findings.exitCode).toBeNull();
+    expect(findings.stdout.trim()).toBe(DEFAULT_SCHEMA_VERSION);
+    const triage = await runCli(["default-version", "--kind", "triage"]);
+    expect(triage.exitCode).toBeNull();
+    expect(triage.stdout.trim()).toBe("0.1.0");
+    const bogus = await runCli(["default-version", "--kind", "bogus"]);
+    expect(bogus.exitCode).toBe(1);
+  });
+
+  it("printableSchema's pin keys on the caller's resolution, not the file's $id — a tag-identified copy pins too", () => {
+    // At a release the checklist re-identifies the $id by tag; the pin must survive that because it
+    // is the CALLER that knows whether the live file was resolved, not the file's identity.
+    const dir = mkdtempSync(join(tmpdir(), "tagged-schema-"));
+    try {
+      const tagged = join(dir, "findings.schema.json");
+      writeFileSync(
+        tagged,
+        JSON.stringify({
+          $id: "https://raw.githubusercontent.com/JPHutchins/code-review/schema-v0.10.0/schema/findings.schema.json",
+          properties: { schema_version: { type: "string", pattern: "^(0|[1-9]\\d*)\\." } },
+        }),
+      );
+      const pinned = JSON.parse(printableSchema(tagged, true)) as {
+        properties?: { schema_version?: { pattern?: string } };
+      };
+      const unpinned = JSON.parse(printableSchema(tagged, false)) as {
+        properties?: { schema_version?: { pattern?: string } };
+      };
+      expect(pinned.properties?.schema_version?.pattern).toBe(
+        anchoredSchemaVersionPattern(DEFAULT_SCHEMA_VERSION),
+      );
+      expect(unpinned.properties?.schema_version?.pattern).toBe("^(0|[1-9]\\d*)\\.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("exits 1 for a now-dropped older --schema-version (0.2 is no longer supported)", async () => {

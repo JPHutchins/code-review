@@ -10,7 +10,7 @@
     "schema_version": {
       "type": "string",
       "pattern": "^(0|[1-9]\\d*)\\.(\\d+)\\.(\\d+)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
-      "description": "Semver version of this findings schema the object conforms to (e.g. \"0.1.0\")."
+      "description": "Semver version of this findings schema the object conforms to."
     },
     "summary": {
       "type": "string",

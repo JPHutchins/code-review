@@ -302,6 +302,28 @@ describe("post — the landed signal (issue #254)", () => {
     }
   });
 
+  it("a deliberate no-write exit emits posted=false — a never-landed run never reads as landed", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    const { api } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"closed","headRef":"feature-branch"}\n',
+      },
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+      expect(readFileSync(outputPath(), "utf-8")).toContain("posted=false");
+    } finally {
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
   it("writes nothing when no sticky lands — the sticky upsert itself fails", async () => {
     writeFileSync(outputPath(), "");
     process.env["GITHUB_OUTPUT"] = outputPath();

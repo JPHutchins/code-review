@@ -868,7 +868,7 @@ jobs:
       # at this artifact's own download endpoint.
       - uses: actions/upload-artifact@v7
         id: upload-findings
-        # Not on cancellation: assemble is skipped there, so $FINDINGS_DIR would not exist to upload.
+        # Not on cancellation: assemble is skipped there, so $FINDINGS_DIR holds nothing worth uploading.
         if: ${{ !cancelled() && steps.gather.outputs.skip != 'true' }}
         with:
           name: code-review-findings
@@ -1081,11 +1081,11 @@ jobs:
             "${PRICES_ARGS[@]}" \
             "${UNVERIFIED_ARGS[@]}" || POST_RC=$?
           # SINGLE writer for the posted key, and the guard runs on BOTH exit cells: the CLI writes
-          # posted=true at the sticky landmark on current CLIs; a missing key after exit 0 falls back
-          # to the exit status (a pre-landmark CLI, an early-exit path, or a failed signal write);
-          # a missing key after a FAILED post reads honestly as unposted — the one window (a
-          # sticky-landed post whose inline delivery failed, under a pre-landmark CLI) closes when
-          # the landmark write ships and the pin advances.
+          # posted=true on EVERY sticky landing (the main path and the notice paths) and posted=false
+          # on the deliberate no-write exits; a missing key after exit 0 falls back to the exit status
+          # (a pre-landmark CLI or a failed signal write); a missing key after a FAILED post reads
+          # honestly as unposted — the one window (a sticky-landed post whose inline delivery failed,
+          # under a pre-landmark CLI) closes when the landmark write ships and the pin advances.
           if grep -q "^posted=" "${GITHUB_OUTPUT:-}" 2>/dev/null; then
             :
           elif [ "$POST_RC" = "0" ]; then
@@ -1203,7 +1203,9 @@ jobs:
         run: |
           set -euo pipefail
           RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-          if [ "$REVIEW_RESULT" = "cancelled" ]; then
+          # A comment job CANCELLED by a superseding run is informational regardless of the review
+          # result (issue #139): the newer run owns the branch, so no failure attribution here.
+          if [ "$REVIEW_RESULT" = "cancelled" ] || [ "$COMMENT_RESULT" = "cancelled" ]; then
             # A cancelled review is informational, not a failure (issue #139): post the "superseded"
             # sticky and settle THIS run's check to `cancelled` (ownership-matched by details_url, so a
             # superseding run's live check on the same head is never touched). Release-gated:

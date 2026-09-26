@@ -720,17 +720,33 @@ export const priorIdsFrom = (doc: unknown): readonly string[] => {
 // while each run's summary keeps the review as it stood for that run (issue #205). Best-effort — the
 // record must never fail the round — and append, so it joins whatever else the job wrote. The path is
 // a parameter rather than an environment read, so the effect is the only thing here that is not pure.
+const appendBestEffort = (path: string | undefined, label: string, body: string): void => {
+  if (path === undefined || path === "") return;
+  try {
+    appendFileSync(path, body);
+  } catch (err) {
+    process.stderr.write(`Warning: could not write ${label}: ${errMsg(err)}\n`);
+  }
+};
+
+// The posted signal travels through the step's GITHUB_OUTPUT file — the runner publishes it as the
+// step's output when the step completes. Written INSIDE upsertSticky so every sticky landing (the
+// main path and the notice paths alike) signals itself, and written as posted=false on the
+// deliberate no-write exits so a never-landed run never reads as landed.
+const writePostedSignal = (value: boolean): void => {
+  appendBestEffort(
+    process.env["GITHUB_OUTPUT"],
+    "the posted signal to GITHUB_OUTPUT",
+    `posted=${value ? "true" : "false"}\n`,
+  );
+};
+
 const appendRunSummary = (summaryPath: string | undefined, body: () => string): void => {
   if (summaryPath === undefined || summaryPath === "") return;
   // Rendered OUTSIDE the catch: a failing template is a defect that should surface, and the sticky
   // rendered from the same input a moment earlier, so this throwing means something is genuinely
   // wrong. Only the write is best-effort — a record that cannot be written must not fail the round.
-  const rendered = body();
-  try {
-    appendFileSync(summaryPath, `\n${rendered}\n`);
-  } catch (err) {
-    process.stderr.write(`Warning: could not write the run summary: ${errMsg(err)}\n`);
-  }
+  appendBestEffort(summaryPath, "the run summary", `\n${body()}\n`);
 };
 
 // Trust by author identity (bot login), not the marker alone. Returns null only when a NEW comment's
@@ -747,10 +763,12 @@ const upsertSticky = async (
     process.stderr.write(
       `Updated sticky comment #${String(existing.id)} on PR #${String(prNumber)}\n`,
     );
+    writePostedSignal(true);
     return { id: existing.id, url: patched?.html_url };
   }
   const posted = await postComment(repo, prNumber, body, ghApi);
   process.stderr.write(`Posted new sticky comment on PR #${String(prNumber)}\n`);
+  if (posted !== null) writePostedSignal(true);
   return posted ? { id: posted.id, url: posted.html_url } : null;
 };
 
@@ -943,12 +961,14 @@ export const post = async (
   const resolution = resolvePr(candidates, input.headBranch);
   if (resolution.kind === "none") {
     process.stderr.write(`No open PR for ${input.headSha} — nothing to post\n`);
+    writePostedSignal(false);
     process.exit(0);
   }
   if (resolution.kind === "not-open") {
     process.stderr.write(
       `PR #${String(resolution.prNumber)} for ${input.headSha} is not open (state: ${resolution.state}) — nothing to post\n`,
     );
+    writePostedSignal(false);
     process.exit(0);
   }
   const prNumber = resolution.prNumber;
@@ -1724,22 +1744,6 @@ export const post = async (
     renderBody(initialDisposition),
     ghApi,
   );
-  // The review LANDED: signal the runner at the true landmark, BEFORE any later write can fail — so
-  // a workflow reading `posted` can tell a landed review from one that never posted, even when the
-  // inline delivery below later exits non-zero. Written directly to the step's GITHUB_OUTPUT file
-  // (the runner registers it as the step's output at step end); absent outside Actions.
-  // The write is best-effort: a signal-write failure must never fail the post or read as
-  // 'never landed'.
-  if (process.env["GITHUB_OUTPUT"] !== undefined && process.env["GITHUB_OUTPUT"] !== "") {
-    try {
-      appendFileSync(process.env["GITHUB_OUTPUT"], "posted=true\n");
-    } catch (err) {
-      process.stderr.write(
-        `Warning: could not write the posted signal to GITHUB_OUTPUT (${errMsg(err)}) — the workflow may read the review as never-posted\n`,
-      );
-    }
-  }
-
   // Snapshot stale comments BEFORE posting the fresh ones; timing (not commit SHA) separates them.
   const priorInlineComments = await listPriorBotCommentIds(
     input.repo,

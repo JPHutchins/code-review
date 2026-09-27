@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { legacyEmbeddedMarker } from "./test-util.js";
+import { RELEASED } from "./released.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -78,7 +79,9 @@ const baseEnvelope: ResultEnvelope = {
 };
 
 const prices: PriceMap = {
-  _updated: "2026-07-03",
+  // Tied to the stamped release date so the post-level staleness warn (issue #220) stays silent
+  // in the suite without a fixture date that rots on every release.
+  _updated: RELEASED,
   _unit: "USD per 1M tokens",
   models: {
     "pro-model": { in: 3.0, out: 15.0, cache_read: 0.3, cache_write: 0.6 },

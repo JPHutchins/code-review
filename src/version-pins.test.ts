@@ -82,6 +82,17 @@ describe("copy-paste version pins (#207)", () => {
     ).toEqual([]);
   });
 
+  it("src/released.ts carries a plausible release date (stamped by the bump flow)", () => {
+    const match = readRepoFile("src/released.ts").match(/export const RELEASED = "([^"]+)"/);
+    expect(match).not.toBeNull();
+    const date = match![1]!;
+    expect(date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Round-trips through Date as its own UTC day — a malformed stamp fails here, and a typo'd
+    // year (a hand-rolled future date) must not ship: the stamp is the release day.
+    expect(new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10)).toBe(date);
+    expect(date <= new Date().toISOString().slice(0, 10)).toBe(true);
+  });
+
   it("package-lock.json's two version fields ride package.json's too", () => {
     const lock = JSON.parse(readRepoFile("package-lock.json")) as {
       version?: unknown;

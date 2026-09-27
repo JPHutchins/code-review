@@ -13,6 +13,7 @@ import {
   PER_FINDING_LINKS,
 } from "./render.js";
 import { formatMarkdown } from "./format.js";
+import { warnStalePrices } from "./cost.js";
 import {
   buildConvergence,
   carriedAncestryMarkers,
@@ -1165,6 +1166,9 @@ export const post = async (
   if (decodedPrices._tag === "Left") {
     throw new Error(`Price map at ${input.pricesPath} does not match the expected shape`);
   }
+  // Once per round, before any render — the sticky's cost collapsible carries the snapshot date,
+  // and a map predating this CLI's release warns as a step annotation (issue #220).
+  warnStalePrices(decodedPrices.right);
   const template = readFileSync(input.templatePath, "utf-8");
   const inlineRequested = input.inline === true;
   // Loaded before the notice paths: their convergence stamps read the route, exactly like the main

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { computeCost, parseInstant } from "./cost.js";
+import { computeCost, parseInstant, warnStalePrices } from "./cost.js";
+import { RELEASED } from "./released.js";
 import { PriceMapCodec } from "./schema.js";
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
 
@@ -83,9 +84,22 @@ describe("computeCost", () => {
 
     expect(report.lines[0]!.costUSD).toBe(0);
     expect(report.lines[0]!.model).toBe("unknown-model");
+    // costUSD stays a plain number (0) — the provenance signal travels beside it, never as a
+    // sentinel, so the render layer keeps owning the N/A presentation decision (issue #221).
+    expect(report.lines[0]!.known).toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("unknown-model"));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("price map"));
+  });
+
+  it("marks a priced model known:true", () => {
+    const report = computeCost(
+      [mkEntry({ model: "pro-model", input_tokens: 100, output_tokens: 10 })],
+      prices,
+      undefined,
+      vi.fn(),
+    );
+    expect(report.lines[0]!.known).toBe(true);
   });
 
   it("defaults to process.stderr.write for warnings when no warn callback is provided", () => {
@@ -605,5 +619,25 @@ describe("the repo's own price map", () => {
         expect(warn).not.toHaveBeenCalled();
       }
     }
+  });
+});
+
+describe("warnStalePrices (issue #220)", () => {
+  const map = (updated: string): PriceMap => ({ _updated: updated, _unit: "u", models: {} });
+
+  it("warns with a step-annotation prefix when the map predates the CLI's release", () => {
+    const warn = vi.fn();
+    warnStalePrices(map("2020-01-01"), warn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("::warning::"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("2020-01-01"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(RELEASED));
+  });
+
+  it("stays silent for a map verified on or after the release date", () => {
+    const warn = vi.fn();
+    warnStalePrices(map(RELEASED), warn);
+    warnStalePrices(map("2999-01-01"), warn);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

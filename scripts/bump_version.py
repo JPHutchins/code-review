@@ -10,6 +10,7 @@ then `camas build` and `camas capture_help` before committing the release.
 import json
 import pathlib
 import sys
+from datetime import datetime, timezone
 
 
 def replace(path: str, expected: int, pairs: tuple[tuple[str, str], ...]) -> None:
@@ -57,6 +58,14 @@ def main() -> None:
     replace("examples/workflows/review-on-comment.yaml", 1, ((f"@v{current}", f"@v{new}"),))
     replace("examples/workflows/README.md", 1, ((f"@v{current}", f"@v{new}"),))
     replace(".github/workflows/review.yaml", 1, ((f"@v{current}", f"@v{new}"),))
+    stamp = datetime.now(timezone.utc).date().isoformat()
+    pathlib.Path("src/released.ts").write_text(
+        "// The release date, stamped by scripts/bump_version.py at release time. The staleness signal for\n"
+        "// the price map (issue #220): a map whose `_updated` predates this date cannot reflect pricing the\n"
+        "// CLI ships — the warn fires exactly when a consumer rolled the CLI but not the prices.\n"
+        f'export const RELEASED = "{stamp}";\n'
+    )
+    print(f"src/released.ts: stamped RELEASED={stamp}")
 
 
 if __name__ == "__main__":

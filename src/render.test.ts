@@ -1520,6 +1520,36 @@ describe("render", () => {
       expect(omitted).not.toContain("No `.github/prices.json`");
       expect(omitted).toContain("**cost:** $0.06");
     });
+
+    it("renders N/A for a model missing from the price map — never a confident $0.00 (issue #221)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: { ...baseEnvelope, models: [mkEntry({ model: "unpriced-variant" })] },
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      // The model's whole row reads N/A — the cost cell never shows a confident $0.00 for a
+      // misconfigured model (the Total row still sums the known lines, which is none here).
+      expect(result).toContain("| unpriced-variant | 10,000 | 2,000 | 5,000 | 1,000 | N/A |");
+      expect(result).not.toContain("| unpriced-variant | 10,000 | 2,000 | 5,000 | 1,000 | $0.00 |");
+    });
+
+    it("renders the price snapshot's _updated in the cost collapsible (issue #220)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("Prices snapshot `_updated` 2026-07-03.");
+      expect(result).toContain("$0.06");
+    });
   });
 
   describe("LLM disclosure aside (issue #8 — [!WARNING], repo link, in-blockquote table)", () => {

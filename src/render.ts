@@ -607,6 +607,7 @@ export const render = (input: RenderInput): string => {
     incomplete,
     costReport,
     pricesProvided,
+    pricesUpdatedAt: input.prices._updated,
     route,
     effort,
     modelNames,
@@ -668,9 +669,11 @@ export const render = (input: RenderInput): string => {
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
-    // N/A (never a false $0.00) when no real price map was provided — real tokens, no rates to price them.
-    formatCost: (n: number): string =>
-      !pricesProvided
+    // N/A (never a false $0.00) when no real price map was provided — real tokens, no rates to
+    // price them — and N/A for a model that missed the map entirely (issue #221): a misconfigured
+    // row must not look like a free review.
+    formatCost: (n: number, known = true): string =>
+      !pricesProvided || !known
         ? "N/A"
         : Number.isFinite(n)
           ? n > 0 && n.toFixed(2) === "0.00"

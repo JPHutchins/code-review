@@ -7,6 +7,7 @@ import type {
   FlatModelPrices,
   PriceSlot,
 } from "./schema.js";
+import { RELEASED } from "./released.js";
 
 export interface CostLine {
   readonly model: string;
@@ -15,6 +16,10 @@ export interface CostLine {
   readonly cacheReadTokens: number;
   readonly cacheWriteTokens: number;
   readonly costUSD: number;
+  // False when the model missed the price map entirely (issue #221): the render layer shows N/A
+  // for the row instead of a confident $0.00. costUSD stays a plain number (0) — provenance is
+  // carried beside it, never as a sentinel, so the render layer keeps owning presentation.
+  readonly known: boolean;
 }
 
 export interface CostReport {
@@ -119,12 +124,13 @@ const computeModelCost = (
     cacheReadTokens: cacheRead,
     cacheWriteTokens: cacheWrite,
     costUSD: 0,
+    known: true,
   };
   if (!p) {
     warn(
-      `code-review cost: unknown model "${entry.model}" — no entry in price map; cost for this model set to $0`,
+      `code-review cost: unknown model "${entry.model}" — no entry in price map; cost for this model renders as N/A`,
     );
-    return zero;
+    return { ...zero, known: false };
   }
   const rate = resolveFlatPrices(entry.model, p, pricedAt, warn);
   if (rate === null) return zero;
@@ -155,4 +161,17 @@ export const computeCost = (
     totalCacheWriteTokens: lines.reduce((s, l) => s + l.cacheWriteTokens, 0),
     totalCostUSD: lines.reduce((s, l) => s + l.costUSD, 0),
   };
+};
+
+// The staleness signal (issue #220): a price map cannot know a vendor changed its rates, so the
+// only signal available is how old the snapshot is. A map predating THIS CLI's release date is
+// suspicious by construction — the consumer rolled the CLI but not the prices (the roll carries
+// both) — so warn exactly then, with no threshold to tune. Lives beside computeCost, not inside
+// it: computeCost has no notion of provenance, and the callers (post, the cost CLIs) own loudness.
+export const warnStalePrices = (prices: PriceMap, warn: Warn = defaultWarn): void => {
+  if (prices._updated < RELEASED) {
+    warn(
+      `::warning:: code-review cost: the price map was last verified ${prices._updated}, before this CLI's release (${RELEASED}) — the map may miss pricing this CLI ships; re-verify against the provider's pricing page`,
+    );
+  }
 };

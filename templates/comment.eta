@@ -229,9 +229,12 @@ All <%= it.testReport.total %> tests passed.
 > | Model | Input | Output | Cache read | Cache write | Cost |
 > |---|--:|--:|--:|--:|--:|
 <% it.costReport.lines.forEach(function(l) { -%>
-> | <%= l.model %> | <%= it.formatTokens(l.inputTokens) %> | <%= it.formatTokens(l.outputTokens) %> | <%= it.formatTokens(l.cacheReadTokens) %> | <%= it.formatTokens(l.cacheWriteTokens) %> | <%= it.formatCost(l.costUSD) %> |
+> | <%= l.model %> | <%= it.formatTokens(l.inputTokens) %> | <%= it.formatTokens(l.outputTokens) %> | <%= it.formatTokens(l.cacheReadTokens) %> | <%= it.formatTokens(l.cacheWriteTokens) %> | <%= it.formatCost(l.costUSD, l.known) %> |
 <% }) -%>
 > | **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD) %>** |
+<% if (it.pricesProvided) { -%>
+> Prices snapshot `_updated` <%= it.pricesUpdatedAt %>.
+<% } -%>
 <% } else if (it.usageAvailable) { -%>
 > No per-model usage was recorded for this run.
 <% } else { -%>

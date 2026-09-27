@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
 import { render, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
-import { computeCost, parseInstant } from "./cost.js";
+import { computeCost, parseInstant, warnStalePrices } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
 import {
   evaluateBudgetHook,
@@ -448,6 +448,7 @@ const costCmd = defineCommand({
   run: async ({ args }) => {
     const envelope = decode(ResultEnvelopeCodec.decode(readJSON(args.envelope)), "envelope");
     const prices = decode(PriceMapCodec.decode(readJSON(args.prices)), "prices");
+    warnStalePrices(prices);
     // Price a saved envelope at the RUN's own instant (issue #170), so re-running `cost` later prices
     // the same envelope to the same slot deterministically — not at whatever wall clock it is re-run at.
     const report = computeCost(
@@ -487,6 +488,7 @@ const checkCostCmd = defineCommand({
     const usage = sumTranscriptUsage(tree.entries);
     const priceResolution = resolvePrices(args.prices);
     const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
+    warnStalePrices(prices);
     // Price at the transcript's last activity instant (deterministic — re-running `check-cost` on the
     // same transcript prices the same slot), not the invocation wall clock (issue #170 review r2).
     const report = computeCost(

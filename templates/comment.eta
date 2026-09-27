@@ -22,7 +22,7 @@
 <% } -%>
 
 > **The review for `<%= it.reviewedSha.slice(0, 7) %>` exceeds GitHub's comment-size limit.** <% if (it.summaryAvailable && it.runUrl) { %>The whole review lives in the [run summary](<%~ it.runUrl %>).<% } else if (it.summaryAvailable) { %>The whole review lives in the workflow run's summary.<% } else if (it.findingsDocLinked) { %>The whole review lives in the machine findings document.<% } %><% if (it.findingsDocLinked) { %> The machine findings document is linked above.<% } %>
->
+
 > [!WARNING]
 > **LLM Disclosure** — this review was produced by <%= it.modelNames || "unknown model" %>.
 >
@@ -32,8 +32,8 @@
 ## <%= it.verdictBadge(it.findings.verdict) %>
 
 <% const meta = [] %><% if (it.postedAt) { meta.push('**Reviewed** `' + it.reviewedSha.slice(0, 7) + '` at ' + it.postedAt) } %><% if (it.route) { meta.push('**route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.hasUsage) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD, it.costProvenance)) } else { meta.push('_usage unavailable_') } %><sub><%~ meta.join(' · ') %></sub>
-<% if (it.shedCount > 0) { -%>
-<sub>**<%= it.shedCount %> finding<%= it.shedCount === 1 ? '' : 's' %> left out of this comment**<% if (it.summaryAvailable && it.runUrl) { %> — the [run summary](<%~ it.runUrl %>) carries the whole review<% } else if (it.findingsDocLinked) { %> — the machine findings document carries them<% } %>.</sub>
+<% if (it.shedNote) { -%>
+<%~ it.shedNote %>
 <% } -%>
 <% if (!it.incomplete) { -%>
 <% if (it.roundsSummary) { -%>

@@ -3408,7 +3408,11 @@ describe("post — the comment-size shed and the terminal guard (issue #214)", (
         (c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") ||
           c.args[0] === "repos/owner/repo/issues/comments/999"),
     );
-    return (JSON.parse(stickyCalls.at(-1)!.stdin!) as CommentBody).body;
+    // The FIRST sticky write is the initial upsert these tests pin (the later disposition patch,
+    // when one runs, must not satisfy an initial-body assertion).
+    const first = stickyCalls[0];
+    expect(first, "expected the initial sticky upsert").toBeDefined();
+    return (JSON.parse(first!.stdin!) as CommentBody).body;
   };
 
   const manyFindings = (): Findings => ({

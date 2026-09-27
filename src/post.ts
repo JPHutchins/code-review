@@ -11,6 +11,7 @@ import {
   isConvergenceRound,
   isReviewVerdict,
   PER_FINDING_LINKS,
+  shedNote,
 } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import { warnStalePrices } from "./cost.js";
@@ -40,6 +41,7 @@ import {
   reviewBodyPointer,
   mechanicConvergence,
   escapeCodeBackticks,
+  AGENTS_STOP_DIRECTIVE,
   REVIEW_COMPLETE_MARKER,
   SEVERITIES,
   DEFAULT_CONVERGENCE_THRESHOLD,
@@ -51,6 +53,10 @@ export const STICKY_CHAR_LIMIT = 65_536;
 // The reserve the initial shed leaves for the final patch's additions: the disposition line and
 // the shed-immune GitHub-rejected strays. The patch itself is re-sized against the same limit.
 export const SHED_RESERVE = 4_000;
+// The withShedNote append's length ceiling, folded into every sizing target: a caller template
+// that drops the note gets it appended AFTER measurement, so the target must leave room for it
+// or the append pushes a reserve-0 body past the limit (issue #214 review r4).
+export const SHED_NOTE_BUDGET = 256;
 import {
   ResultEnvelopeCodec,
   PriceMapCodec,
@@ -1518,15 +1524,15 @@ export const post = async (
     // 0 where no final patch can follow (the reserve is only for the patch's additions).
     reserve: number = SHED_RESERVE,
   ): { readonly body: string; readonly shedCount: number; readonly terminal: boolean } => {
-    const target = STICKY_CHAR_LIMIT - reserve;
+    const target = STICKY_CHAR_LIMIT - reserve - SHED_NOTE_BUDGET;
     const base = renderAt(0);
     if (base.length <= target) return { body: base, shedCount: 0, terminal: false };
-    // Terminal probe FIRST: when even the all-shed body exceeds the cap, unbounded non-findings
-    // content (a verbatim cloc table, a caller's template) is the culprit and the bisect is
-    // wasted work — the caller posts the short run-summary notice instead of a 422.
+    // Terminal probe FIRST: when even the all-shed body exceeds GitHub's REAL limit (a terminal
+    // body is never patched, so the reserve does not apply to this decision), unbounded non-
+    // findings content (a verbatim cloc table, a caller's template) is the culprit and the
+    // bisect is wasted work — the caller posts the short run-summary notice instead of a 422.
     const allShed = renderAt(total);
-    if (allShed.length > target) return { body: "", shedCount: total, terminal: true };
-    if (total === 0) return { body: base, shedCount: 0, terminal: false };
+    if (allShed.length > STICKY_CHAR_LIMIT) return { body: "", shedCount: total, terminal: true };
     // The shed note the template adds at count > 0 makes the length non-monotone in the shed
     // count (and the discussion budget re-runs over the kept set), so the bisect yields a
     // FITTING count, not a provably minimal one — every returned body was measured.
@@ -1543,7 +1549,10 @@ export const post = async (
         low = mid + 1;
       }
     }
-    return { body: fitted, shedCount: low, terminal: false };
+    // When only the all-shed count fits (the last-shed finding is the one whose prose crossed
+    // the line), no mid ever fitted — low === total and the already-computed all-shed body is
+    // exactly the body the count names. Never return body:"" (a bare note is not a sticky).
+    return { body: fitted !== "" ? fitted : allShed, shedCount: low, terminal: false };
   };
   // The terminal notice is rendered through the template first, then RE-MEASURED: a caller-
   // supplied template without an it.terminal branch renders the full review again, so the
@@ -1551,24 +1560,30 @@ export const post = async (
   // The comment-safe head SHA: the marker comment must not be terminated early by a crafted
   // --head-sha (the template escapes the same field; this fallback body is hand-built).
   const markerSafeHeadSha = input.headSha.replace(/--/g, "~~").replace(/\s+/g, " ");
+  // The fallback notice mirrors the template's terminal branch: the SAME disclosure wording
+  // (the producing model named), the SAME findings-document predicate, and the full directive
+  // constant — never a restated stub.
+  const terminalDocLinked = (findingsPointer: string): boolean =>
+    findingsPointer.includes("code-review:findings-json");
   const minimalTerminalBody = (
     findingsPointer: string,
     route: string | undefined,
     incomplete: boolean,
     summaryAvailable: boolean,
+    modelNames: string,
   ): string =>
     [
       DEFAULT_MARKER,
       `<!-- reviewed-sha: ${markerSafeHeadSha} -->`,
       ...(!incomplete && route !== undefined ? [`<!-- reviewed-route: ${route} -->`] : []),
       ...(!incomplete ? [REVIEW_COMPLETE_MARKER] : []),
-      // The pointer's link form already begins with AGENTS_STOP_DIRECTIVE; the convergence-only
-      // marker does not, and a terminal surface must carry the directive either way.
+      // The pointer's link form already begins with the directive; the convergence-only marker
+      // does not, and a terminal surface must carry the directive either way.
       ...(findingsPointer !== ""
         ? [
-            findingsPointer.startsWith("<!-- AGENTS: STOP")
+            findingsPointer.startsWith(AGENTS_STOP_DIRECTIVE)
               ? findingsPointer
-              : `<!-- AGENTS: STOP -->\n${findingsPointer}`,
+              : `${AGENTS_STOP_DIRECTIVE}\n${findingsPointer}`,
           ]
         : []),
       "",
@@ -1577,20 +1592,20 @@ export const post = async (
       `> **The review for \`${escapeCodeBackticks(input.headSha.slice(0, 7))}\` exceeds GitHub's comment-size limit.**` +
         (summaryAvailable
           ? input.runUrl
-            ? ` The whole review lives in the [run summary](${escapeCodeBackticks(input.runUrl)}).`
+            ? ` The whole review lives in the [run summary](<${input.runUrl}>).`
             : " The whole review lives in the workflow run's summary."
-          : carriedFindingsMarker(findingsPointer) !== null
+          : terminalDocLinked(findingsPointer)
             ? " The whole review lives in the machine findings document."
             : "") +
-        (carriedFindingsMarker(findingsPointer) !== null
+        (terminalDocLinked(findingsPointer)
           ? " The machine findings document is linked above."
           : ""),
       "",
       "> [!WARNING]",
-      "> **LLM Disclosure** — this review was produced by an AI model on behalf of the repository's review workflow.",
+      `> **LLM Disclosure** — this review was produced by ${modelNames || "unknown model"}.`,
       ">",
       "> _Generated by [code-review](https://github.com/JPHutchins/code-review)" +
-        (input.runUrl ? ` · [view the run & traces](${escapeCodeBackticks(input.runUrl)})` : "") +
+        (input.runUrl ? ` · [view the run & traces](<${input.runUrl}>)` : "") +
         "_.",
     ].join("\n");
   const terminalOrMinimal = (
@@ -1599,43 +1614,35 @@ export const post = async (
     route: string | undefined,
     incomplete: boolean,
     summaryAvailable: boolean,
+    modelNames: string,
   ): string =>
     terminalRender.length <= STICKY_CHAR_LIMIT
       ? terminalRender
-      : minimalTerminalBody(findingsPointer, route, incomplete, summaryAvailable);
+      : minimalTerminalBody(findingsPointer, route, incomplete, summaryAvailable, modelNames);
   // Whether the run summary was actually written (appendRunSummary no-ops without the env var):
   // the refuge claims must not fire on a path where the refuge does not exist.
   const summaryAvailable = (process.env["GITHUB_STEP_SUMMARY"] ?? "") !== "";
+  const modelNames =
+    envelope !== null && envelope.models.length > 0
+      ? envelope.models.map((m) => m.model).join(", ")
+      : "";
   // A caller-supplied template may render it.strays without the it.shedCount note — the silent
   // drop the note exists to prevent. The sized body is checked and a post-built line appended
   // when the template dropped the note, the same template-independent discipline as the terminal
   // fallback.
-  const withShedNote = (body: string, shedCount: number): string =>
-    shedCount === 0 || body.includes("left out of this comment")
-      ? body
-      : `${body}\n\n<sub>**${String(shedCount)} finding${shedCount === 1 ? "" : "s"} left out of this comment**${
-          summaryAvailable ? " — the run summary carries the whole review" : ""
-        }.</sub>\n`;
-  // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
-  // pointer to the prior findings document. The guard refuses only when the pointer is actually
-  // load-bearing: a COMPLETED full-review sticky whose markers gather would seed from. The
-  // review-complete requirement exempts the announce placeholder, which carries the route and the
-  // markers forward but strips review-complete — it must be replaced by an honest notice, not
-  // frozen (post.ts's empty-mechanic path handles it). A mechanic/notice sticky is never a seed
-  // either. An expired artifact link is not resolvability-checked here — a fetch in the write path
-  // is the wrong trade — so an expired link can still freeze a round; the run log's ::error:: names
-  // why (issue #233 r2 + r5 + r6).
-  if (
-    !input.jsonUrl &&
-    existingSticky !== null &&
-    parseReviewComplete(existingSticky.body) &&
-    parseReviewedRoute(existingSticky.body) === "full review" &&
-    hasFindingsMarker(existingSticky.body)
-  ) {
-    leaveInPlace(
-      "no --json-url was supplied and the existing sticky still carries the prior findings document's marker (embedded or link) — leaving it in place rather than severing the seed chain\n",
+  // The note appended is the SAME string the stock template renders (render.ts's shedNote
+  // builder — single-sourced), and the match checks the built string, not template prose: a
+  // caller template that drops the note gets it appended; the stock template's own note matches.
+  const withShedNote = (body: string, shedCount: number): string => {
+    if (shedCount === 0) return body;
+    const note = shedNote(
+      shedCount,
+      summaryAvailable,
+      input.runUrl,
+      findingsMarker.includes("code-review:findings-json"),
     );
-  }
+    return body.includes(note) ? body : `${body}\n\n${note}\n`;
+  };
 
   if (envelope === null) {
     // The envelope carried the incomplete flag; with it lost, derive incompleteness from the verdict
@@ -1742,6 +1749,7 @@ export const post = async (
           effectiveRoute,
           envelopelessIncomplete,
           summaryAvailable,
+          "",
         )
       : withShedNote(lostSized.body, lostSized.shedCount);
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi, true);
@@ -1759,6 +1767,27 @@ export const post = async (
       "Result envelope missing or malformed — posted sticky summary without usage/cost data\n",
     );
     process.exit(0);
+  }
+
+  // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
+  // pointer to the prior findings document. The guard refuses only when the pointer is actually
+  // load-bearing: a COMPLETED full-review sticky whose markers gather would seed from. The
+  // review-complete requirement exempts the announce placeholder, which carries the route and the
+  // markers forward but strips review-complete — it must be replaced by an honest notice, not
+  // frozen (post.ts's empty-mechanic path handles it). A mechanic/notice sticky is never a seed
+  // either. An expired artifact link is not resolvability-checked here — a fetch in the write path
+  // is the wrong trade — so an expired link can still freeze a round; the run log's ::error:: names
+  // why (issue #233 r2 + r5 + r6).
+  if (
+    !input.jsonUrl &&
+    existingSticky !== null &&
+    parseReviewComplete(existingSticky.body) &&
+    parseReviewedRoute(existingSticky.body) === "full review" &&
+    hasFindingsMarker(existingSticky.body)
+  ) {
+    leaveInPlace(
+      "no --json-url was supplied and the existing sticky still carries the prior findings document's marker (embedded or link) — leaving it in place rather than severing the seed chain\n",
+    );
   }
 
   // Read once the lost-envelope branch has passed — that branch posts and exits, and an ENOENT here
@@ -1918,14 +1947,12 @@ export const post = async (
       | "discussionTruncated"
       | "orphanedTruncated"
     >,
-    findingsOverride?: Findings,
     terminal = false,
     shedCount = 0,
   ): string =>
     formatMarkdown(
       render({
         ...commonRenderInput,
-        ...(findingsOverride ? { findings: findingsOverride } : {}),
         ...(straysOverride ? { strays: straysOverride } : {}),
         ...(unanchoredCount !== undefined ? { unanchoredCount } : {}),
         ...(unanchoredStrays !== undefined && unanchoredStrays.length > 0
@@ -1962,17 +1989,19 @@ export const post = async (
           undefined,
           undefined,
           undefined,
-          undefined,
           false,
           shedCount,
         );
-  const mainSized = sizeSticky(mainRenderAt, strays.length, inlineRequested ? SHED_RESERVE : 0);
+  const mainSized = sizeSticky(
+    mainRenderAt,
+    strays.length,
+    inlineRequested && rawComments.length > 0 ? SHED_RESERVE : 0,
+  );
   const fitStickyBody = (): string =>
     mainSized.terminal
       ? terminalOrMinimal(
           renderBody(
             initialDisposition,
-            undefined,
             undefined,
             undefined,
             undefined,
@@ -1984,6 +2013,7 @@ export const post = async (
           effectiveRoute,
           thisIncomplete,
           summaryAvailable,
+          modelNames,
         )
       : withShedNote(mainSized.body, mainSized.shedCount);
 
@@ -2096,7 +2126,6 @@ export const post = async (
         unanchoredCount,
         unposted,
         finalDiscussionOverride,
-        undefined,
         false,
         shedCount,
       );

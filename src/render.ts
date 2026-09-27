@@ -38,6 +38,25 @@ const encodeAutolinkParens = (url: string): string =>
 
 const linkSafeUrl = (url: string): string => encodeAutolinkParens(escapeCodeBackticks(url));
 
+// The shed note, built ONCE here — the template renders it verbatim and post's withShedNote
+// appends the same string when a caller template drops it, so the refuge ladder and the wording
+// cannot drift between the two surfaces (issue #214 review r4).
+export const shedNote = (
+  count: number,
+  summaryAvailable: boolean,
+  runUrl: string | undefined,
+  findingsDocLinked: boolean,
+): string =>
+  count === 0
+    ? ""
+    : `<sub>**${String(count)} finding${count === 1 ? "" : "s"} left out of this comment**${
+        summaryAvailable && runUrl !== undefined
+          ? ` — the [run summary](<${runUrl}>) carries the whole review`
+          : findingsDocLinked
+            ? " — the machine findings document carries them"
+            : ""
+      }.</sub>`;
+
 // A stray finding the sticky lists links back to its code at the reviewed SHA: a BARE URL — GitHub
 // autolinks it and sizes the rendering sensibly, where the nested-aside `<details>` permalink JP
 // prototyped renders dead in issue comments (issue #231). Each segment is percent-encoded: lone
@@ -624,13 +643,19 @@ export const render = (input: RenderInput): string => {
     costProvenance,
     // The terminal branch's "machine findings document is linked above" claim must only fire when
     // the pointer actually carries a findings-json marker (the convergence-only marker does not).
-    // The terminal branch's "machine findings document is linked above" claim must only fire when
-    // the pointer actually carries a findings-json marker (the convergence-only marker does not).
     // Derived from the SAME value the template renders (the jsonUrl fallback pair included).
     findingsDocLinked: (
       input.findingsPointer ?? findingsMarkerPair(input.jsonUrl, input.findings.convergence)
     ).includes("code-review:findings-json"),
     summaryAvailable: input.summaryAvailable ?? false,
+    shedNote: shedNote(
+      input.shedCount ?? 0,
+      input.summaryAvailable ?? false,
+      input.runUrl,
+      (
+        input.findingsPointer ?? findingsMarkerPair(input.jsonUrl, input.findings.convergence)
+      ).includes("code-review:findings-json"),
+    ),
     // The house sanitizer for untrusted template fields — collapses line breaks AND escapes
     // backticks, so a hand-edited stamp cannot break the code span or the blockquote.
     // A nonconforming stamp must not be presented as validated: the template shows a note

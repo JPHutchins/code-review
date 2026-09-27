@@ -15,6 +15,8 @@ import {
   mentionsOutsideKnown,
   priorIdsFrom,
   discussionRows,
+  STICKY_CHAR_LIMIT,
+  SHED_RESERVE,
 } from "./post.js";
 import { fetchThreadComments } from "./answered.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
@@ -3423,12 +3425,33 @@ describe("post — the comment-size shed and the terminal guard (issue #214)", (
       post(mkInput({ runUrl: "https://github.com/owner/repo/actions/runs/123" }), api),
     ).resolves.toBeUndefined();
     const body = stickyBodyOf(calls());
-    expect(body.length).toBeLessThanOrEqual(65_536 - 4_000);
+    expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT - SHED_RESERVE);
     expect(body).toContain("left out of this comment");
     expect(body).toContain("run summary");
     // The shed drops from the least-severe end: the first nit is gone, the major survives.
     expect(body).toContain("The kept major");
     expect(body).not.toContain("Nit finding 0");
+  });
+
+  it("falls back to the template-INDEPENDENT minimal notice when a caller template ignores it.terminal", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ title: "DistinctTitleHere" })])),
+    );
+    writeFileSync(join(tmpDir, "cloc.txt"), "x".repeat(70_000));
+    // A custom template with no it.terminal branch renders the full review again — the guard
+    // must re-measure and fall back, never 422.
+    writeFileSync(join(tmpDir, "comment.eta"), "<%~ it.clocDiff %>");
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+    await expect(
+      post(mkInput({ clocDiffPath: join(tmpDir, "cloc.txt") }), api),
+    ).resolves.toBeUndefined();
+    const body = stickyBodyOf(calls());
+    expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT);
+    expect(body).toContain("Review posted to the run summary");
+    expect(body).toContain("exceeds GitHub's comment-size limit");
+    expect(body).toContain("<!-- code-review -->");
+    expect(body).not.toContain("DistinctTitleHere");
   });
 
   it("posts the short run-summary notice when unbounded non-findings content alone exceeds the cap", async () => {
@@ -3439,7 +3462,13 @@ describe("post — the comment-size shed and the terminal guard (issue #214)", (
     writeFileSync(join(tmpDir, "cloc.txt"), "x".repeat(70_000));
     const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
     await expect(
-      post(mkInput({ clocDiffPath: join(tmpDir, "cloc.txt") }), api),
+      post(
+        mkInput({
+          clocDiffPath: join(tmpDir, "cloc.txt"),
+          runUrl: "https://github.com/owner/repo/actions/runs/123",
+        }),
+        api,
+      ),
     ).resolves.toBeUndefined();
     const body = stickyBodyOf(calls());
     expect(body).toContain("exceeds GitHub's comment-size limit");

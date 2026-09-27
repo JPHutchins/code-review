@@ -260,8 +260,9 @@ describe("post — the landed signal (issue #254)", () => {
     writeFileSync(outputPath(), "");
     process.env["GITHUB_OUTPUT"] = outputPath();
     // The pre-upsert prior-review LIST keeps its match (--paginate); only the review POST (the
-    // batch and its body-only retry) rejects, so the command exits non-zero — but the sticky
-    // already landed, so the signal must stand.
+    // batch and its body-only retry) rejects, so the round DEGRADES (issue #223) — the individual
+    // re-posts also reject, the findings surface as strays, and the sticky already landed, so the
+    // posted signal must stand.
     const responses = [
       ...mkMocks("<!-- code-review -->").filter(
         (r) => !r.match(["repos/owner/repo/pulls/42/reviews"]),
@@ -273,8 +274,10 @@ describe("post — the landed signal (issue #254)", () => {
       },
     ];
     const { api } = mkMockGhApi(responses);
-    await expect(post(mkInlineInput(), api)).rejects.toThrow();
-    expect(readFileSync(outputPath(), "utf-8")).toContain("posted=true");
+    await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
+    const output = readFileSync(outputPath(), "utf-8");
+    expect(output).toContain("posted=true");
+    expect(output).toContain("review-object=false");
   });
 
   it("a failed signal write warns and completes — the sticky and the inline flow still land", async () => {
@@ -318,6 +321,39 @@ describe("post — the landed signal (issue #254)", () => {
       exitSpy.mockRestore();
       stderrSpy.mockRestore();
     }
+  });
+
+  it("a body-only review-object POST failure degrades instead of aborting — no dismiss or minimize runs, and the signal names it", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    // inline=false: comments is empty, so the batch failure has nothing to salvage. The round must
+    // COMPLETE (the sticky carries the review), the review-object signal fires, and the prior
+    // round's reviews/threads must survive (no dismissals/minimize calls).
+    const responses = [
+      ...mkMocks("<!-- code-review -->").filter(
+        (r) => !r.match(["repos/owner/repo/pulls/42/reviews"]),
+      ),
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: "",
+      },
+    ];
+    const { api, calls } = mkMockGhApi(responses);
+    await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+    const output = readFileSync(outputPath(), "utf-8");
+    expect(output).toContain("posted=true");
+    expect(output).toContain("review-object=false");
+    const endpoints = calls().map((c) => c.args[0] ?? "");
+    expect(endpoints.some((e) => e.includes("/dismissals"))).toBe(false);
+    // The minimize mutation is the specific graphql call that must not run; other flow calls may
+    // legitimately use graphql.
+    const minimizeArgs =
+      calls()
+        .find((c) => c.args[0] === "graphql")
+        ?.args.join(" ") ?? "";
+    expect(minimizeArgs).not.toContain("minimizeComment");
+    expect(endpoints.some((e) => e === "repos/owner/repo/issues/comments/999")).toBe(true);
   });
 
   it("writes nothing when no sticky lands — the sticky upsert itself fails", async () => {

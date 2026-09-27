@@ -298,6 +298,7 @@ const postInlineReview = async (
   ghApi: GhApi,
 ): Promise<{
   readonly url: string | undefined;
+  readonly posted: boolean;
   readonly inlinePosted: number;
   readonly unposted: readonly Finding[];
 }> => {
@@ -317,16 +318,45 @@ const postInlineReview = async (
   const reviewsEndpoint = [`repos/${pr.repo}/pulls/${String(pr.prNumber)}/reviews`, "--input", "-"];
   try {
     const stdout = await ghApi(reviewsEndpoint, reviewBody(true));
-    return { url: parseHtmlUrl(stdout), inlinePosted: comments.length, unposted: [] };
+    return { url: parseHtmlUrl(stdout), posted: true, inlinePosted: comments.length, unposted: [] };
   } catch (err) {
     // The reviews endpoint is atomic — one rejected position fails the whole batch — so on rejection
     // post the body only, then re-post each comment individually, collecting the ones GitHub rejects.
-    // A body-only review that itself fails (no comments) is a genuine error and propagates.
-    if (comments.length === 0) throw err;
+    if (comments.length === 0) {
+      // No inline comments to salvage: the breadcrumb review-object POST itself failed. The sticky
+      // already carries the full review, so this is a DEGRADED-but-complete round — report it and
+      // return url undefined; the caller gates the dismiss/minimize on a breadcrumb review existing
+      // this round, so a permanent failure never leaves the PR review-less (issue #223).
+      process.stderr.write(
+        `Warning: the review-object POST on PR #${String(pr.prNumber)} failed (${errMsg(err)}) — the sticky carries the review, but no diff-anchored review object exists this round\n`,
+      );
+      appendBestEffort(
+        process.env["GITHUB_OUTPUT"],
+        "the review-object signal to GITHUB_OUTPUT",
+        "review-object=false\n",
+      );
+      return { url: undefined, posted: false, inlinePosted: 0, unposted: [] };
+    }
     process.stderr.write(
       `Warning: the batched inline review on PR #${String(pr.prNumber)} was rejected (${errMsg(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
     );
-    const url = parseHtmlUrl(await ghApi(reviewsEndpoint, reviewBody(false)));
+    let url: string | undefined;
+    let posted = false;
+    try {
+      url = parseHtmlUrl(await ghApi(reviewsEndpoint, reviewBody(false)));
+      posted = true;
+    } catch (bodyErr) {
+      // The body-only retry failed too — the individual comments still re-post, but no breadcrumb
+      // review object exists this round; the caller gates the dismiss/minimize on url (issue #223).
+      process.stderr.write(
+        `Warning: the body-only review retry on PR #${String(pr.prNumber)} failed (${errMsg(bodyErr)}) — individual comments still re-post, but no breadcrumb review object exists this round\n`,
+      );
+      appendBestEffort(
+        process.env["GITHUB_OUTPUT"],
+        "the review-object signal to GITHUB_OUTPUT",
+        "review-object=false\n",
+      );
+    }
     const commentsEndpoint = [
       `repos/${pr.repo}/pulls/${String(pr.prNumber)}/comments`,
       "--input",
@@ -349,7 +379,7 @@ const postInlineReview = async (
         );
       }
     }
-    return { url, inlinePosted, unposted };
+    return { url, posted, inlinePosted, unposted };
   }
 };
 
@@ -1766,6 +1796,7 @@ export const post = async (
   // flipping a repo to inline=false also clears the threads a previous round left on the diff.
   const {
     url: reviewUrl,
+    posted: reviewObjectPosted,
     inlinePosted,
     unposted,
   } = await postInlineReview(
@@ -1781,19 +1812,25 @@ export const post = async (
     ghApi,
   );
   process.stderr.write(
-    inlineRequested
-      ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
-      : `Posted a body-only review on PR #${String(prNumber)}; the findings are in the sticky\n`,
+    reviewObjectPosted
+      ? inlineRequested
+        ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
+        : `Posted a body-only review on PR #${String(prNumber)}; the findings are in the sticky\n`
+      : `No review object posted this round on PR #${String(prNumber)} — the sticky carries the review\n`,
   );
 
-  // Best-effort: a failed dismissal leaves a stale review beside the fresh one (logged), not a job failure.
+  // The dismiss and minimize are gated on a BREADCRUMB review being POSTED this round: when the
+  // POST failed, the prior round's reviews and threads are the only diff-anchored review objects
+  // and must stay — a permanent failure (a short-scoped token, a recurring stale SHA) must not
+  // clear them every round (issue #223). (The POST's success, not the parsed url — an unparseable
+  // response still means the object exists.)
   const priorReviewIds = botReviews.map((r) => r.id);
-  if (priorReviewIds.length > 0) {
+  if (reviewObjectPosted && priorReviewIds.length > 0) {
     await dismissReviews(input.repo, prNumber, priorReviewIds, ghApi);
   }
-
-  // Minimize the pre-post snapshot (stale threads); the fresh comments were posted after it, untouched.
-  await minimizeComments(prNumber, priorInlineComments, ghApi);
+  if (reviewObjectPosted) {
+    await minimizeComments(prNumber, priorInlineComments, ghApi);
+  }
 
   // Re-render the sticky to the truth: "posted N" is the count that ACTUALLY anchored, any
   // GitHub-rejected in-diff findings join the strays, and none-anchored says "inline unavailable",

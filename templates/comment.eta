@@ -91,7 +91,7 @@
 <% } %>
 
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'posted') { %>
-→ <%= it.inlineDisposition.count %> comment<%= it.inlineDisposition.count === 1 ? '' : 's' %> posted inline on `<%= it.inlineDisposition.sha.slice(0, 7) %>` — <% if (it.reviewUrl) { %>[see the review](<%~ it.reviewUrl %>)<% } else { %>see the review<% } %>.
+→ <%= it.inlineDisposition.count %> comment<%= it.inlineDisposition.count === 1 ? '' : 's' %> posted inline on `<%= it.inlineDisposition.sha.slice(0, 7) %>`<% if (it.reviewUrl) { %> — [see the review](<%~ it.reviewUrl %>)<% } %>.
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'none-in-diff') { %>
 → No inline comments — all findings are outside the diff (listed below).
 <% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'inline-unavailable') { %>

@@ -1406,12 +1406,9 @@ jobs:
           else
             echo "::warning::the post failed without a posted signal — the review reads as unposted for this window"
           fi
-          # A breadcrumb review-object POST failure is a degraded-but-complete round (the sticky
-          # carries the review); the post CLI writes review-object=false in exactly that case — make
-          # the degradation loud like every other silent one (issue #223).
-          if grep -q "^review-object=false$" "${GITHUB_OUTPUT:-}" 2>/dev/null; then
-            echo "::warning::the review-object POST failed this round — the sticky carries the review, but the PR has no fresh diff-anchored review object"
-          fi
+          # A breadcrumb review-object POST failure is a degraded-but-complete round; the post CLI
+          # emits its own ::warning:: annotation at the degradation site (issue #223), so every
+          # workflow copy and every pinned CLI version sees it — no grep layer here.
           exit "$POST_RC"
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is

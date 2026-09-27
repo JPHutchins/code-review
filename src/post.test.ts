@@ -246,6 +246,14 @@ const mkMockGhApi = (
   return { api, calls: () => calls };
 };
 
+// The subject IDs the flow passed to the minimizeComment mutation — shared by the landed-signal
+// describe (issue #223) and the minimize describe (issue #31/#53).
+const minimizedIdsOf = (calls: readonly RecordedCall[]): readonly string[] =>
+  calls
+    .filter((c) => c.args[0] === "graphql" && c.args.some((x) => x.includes("minimizeComment")))
+    .map((c) => c.args.find((x) => x.startsWith("id="))?.slice("id=".length))
+    .filter((x): x is string => x !== undefined);
+
 // Tests
 
 describe("post — the landed signal (issue #254)", () => {
@@ -256,28 +264,89 @@ describe("post — the landed signal (issue #254)", () => {
     delete process.env["GITHUB_OUTPUT"];
   });
 
-  it("writes posted=true to the step's GITHUB_OUTPUT the moment the sticky lands — even when the inline delivery later rejects", async () => {
+  // The discriminating fixtures: a prior bot review row on the --paginate LIST and an un-minimized
+  // bot review thread. Without them, the "no dismiss or minimize ran" assertions below pass
+  // vacuously — an empty prior-review list and an empty thread set gate nothing.
+  const priorReviewRow = JSON.stringify([
+    { id: 12345, user: { login: "github-actions[bot]" }, state: "APPROVED" },
+  ]);
+  const threadsResponse = JSON.stringify({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: false },
+            nodes: [
+              {
+                comments: {
+                  nodes: [
+                    { id: "C_prior", isMinimized: false, author: { login: "github-actions" } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+  const minimizeResponse = '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}';
+  const degradedFixtures = (
+    extra: readonly {
+      readonly match: (args: readonly string[]) => boolean;
+      readonly response: string;
+    }[] = [],
+  ) => [
+    ...mkMocks("<!-- code-review -->").filter(
+      (r) => !r.match(["repos/owner/repo/pulls/42/reviews"]),
+    ),
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+      response: priorReviewRow,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "graphql" && a.some((x) => x.includes("reviewThreads")),
+      response: threadsResponse,
+    },
+    {
+      match: (a: readonly string[]) =>
+        a[0] === "graphql" && a.some((x) => x.includes("minimizeComment")),
+      response: minimizeResponse,
+    },
+    ...extra,
+  ];
+
+  it("writes posted=true to the step's GITHUB_OUTPUT the moment the sticky lands — even when the inline delivery later degrades", async () => {
     writeFileSync(outputPath(), "");
     process.env["GITHUB_OUTPUT"] = outputPath();
-    // The pre-upsert prior-review LIST keeps its match (--paginate); only the review POST (the
-    // batch and its body-only retry) rejects, so the round DEGRADES (issue #223) — the individual
-    // re-posts also reject, the findings surface as strays, and the sticky already landed, so the
-    // posted signal must stand.
-    const responses = [
-      ...mkMocks("<!-- code-review -->").filter(
-        (r) => !r.match(["repos/owner/repo/pulls/42/reviews"]),
-      ),
-      {
-        match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
-        response: "",
-      },
-    ];
-    const { api } = mkMockGhApi(responses);
-    await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
-    const output = readFileSync(outputPath(), "utf-8");
-    expect(output).toContain("posted=true");
-    expect(output).toContain("review-object=false");
+    // The pre-upsert prior-review LIST keeps its match (--paginate); the review POST (the batch and
+    // its body-only retry) and every individual comment re-post reject, so the round DEGRADES
+    // (issue #223) — the findings surface as strays, and the sticky already landed, so the posted
+    // signal must stand. The seeded prior review and thread make the no-dismiss/no-minimize asserts
+    // real, and the degradation's loudness is the CLI's own ::warning:: annotation, not a
+    // GITHUB_OUTPUT key.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { api, calls } = mkMockGhApi(degradedFixtures());
+      await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
+      const output = readFileSync(outputPath(), "utf-8");
+      expect(output).toContain("posted=true");
+      expect(output).not.toContain("review-object");
+      expect(
+        stderrSpy.mock.calls.some(([chunk]) =>
+          String(chunk).includes("::warning:: the body-only review retry on PR #42 failed"),
+        ),
+      ).toBe(true);
+      const endpoints = calls().map((c) => c.args[0] ?? "");
+      expect(endpoints.some((e) => e.includes("/dismissals"))).toBe(false);
+      // Every re-post rejected, so inlinePosted is 0 — the minimize gate stays closed despite the
+      // seeded prior thread.
+      expect(minimizedIdsOf(calls())).toEqual([]);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 
   it("a failed signal write warns and completes — the sticky and the inline flow still land", async () => {
@@ -323,37 +392,75 @@ describe("post — the landed signal (issue #254)", () => {
     }
   });
 
-  it("a body-only review-object POST failure degrades instead of aborting — no dismiss or minimize runs, and the signal names it", async () => {
+  it("a body-only review-object POST failure degrades instead of aborting — no dismiss or minimize runs, and the CLI's annotation names it", async () => {
     writeFileSync(outputPath(), "");
     process.env["GITHUB_OUTPUT"] = outputPath();
     // inline=false: comments is empty, so the batch failure has nothing to salvage. The round must
-    // COMPLETE (the sticky carries the review), the review-object signal fires, and the prior
-    // round's reviews/threads must survive (no dismissals/minimize calls).
-    const responses = [
-      ...mkMocks("<!-- code-review -->").filter(
-        (r) => !r.match(["repos/owner/repo/pulls/42/reviews"]),
-      ),
-      {
-        match: (a: readonly string[]) =>
-          a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
-        response: "",
-      },
-    ];
-    const { api, calls } = mkMockGhApi(responses);
-    await expect(post(mkInput({}), api)).resolves.toBeUndefined();
-    const output = readFileSync(outputPath(), "utf-8");
-    expect(output).toContain("posted=true");
-    expect(output).toContain("review-object=false");
-    const endpoints = calls().map((c) => c.args[0] ?? "");
-    expect(endpoints.some((e) => e.includes("/dismissals"))).toBe(false);
-    // The minimize mutation is the specific graphql call that must not run; other flow calls may
-    // legitimately use graphql.
-    const minimizeArgs =
-      calls()
-        .find((c) => c.args[0] === "graphql")
-        ?.args.join(" ") ?? "";
-    expect(minimizeArgs).not.toContain("minimizeComment");
-    expect(endpoints.some((e) => e === "repos/owner/repo/issues/comments/999")).toBe(true);
+    // COMPLETE (the sticky carries the review), the CLI emits its own ::warning:: annotation, and
+    // the prior round's review and threads must survive — the seeded prior bot review row and
+    // thread make those no-call assertions discriminating rather than vacuous.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { api, calls } = mkMockGhApi(degradedFixtures());
+      await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+      const output = readFileSync(outputPath(), "utf-8");
+      expect(output).toContain("posted=true");
+      expect(output).not.toContain("review-object");
+      expect(
+        stderrSpy.mock.calls.some(([chunk]) =>
+          String(chunk).includes("::warning:: the review-object POST on PR #42 failed"),
+        ),
+      ).toBe(true);
+      const endpoints = calls().map((c) => c.args[0] ?? "");
+      expect(endpoints.some((e) => e.includes("/dismissals"))).toBe(false);
+      expect(minimizedIdsOf(calls())).toEqual([]);
+      expect(endpoints.some((e) => e === "repos/owner/repo/issues/comments/999")).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("the salvage-degraded path — body-only retry fails but individual comments post — still minimizes prior threads (issue #223)", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    // Both review-object POSTs reject (no --input match on the reviews endpoint), but every
+    // individual comment re-post succeeds: inlinePosted > 0, so the minimize gate must OPEN even
+    // though no review object posted — under the old url-based gate this left stale threads
+    // accumulating on every degraded round.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { api, calls } = mkMockGhApi(
+        degradedFixtures([
+          {
+            match: (a: readonly string[]) =>
+              a[0] === "repos/owner/repo/pulls/42/comments" && a.includes("--input"),
+            response: "",
+          },
+        ]),
+      );
+      await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
+      const output = readFileSync(outputPath(), "utf-8");
+      expect(output).toContain("posted=true");
+      expect(output).not.toContain("review-object");
+      expect(
+        stderrSpy.mock.calls.some(([chunk]) =>
+          String(chunk).includes("::warning:: the body-only review retry on PR #42 failed"),
+        ),
+      ).toBe(true);
+      const endpoints = calls().map((c) => c.args[0] ?? "");
+      expect(endpoints.some((e) => e.includes("/dismissals"))).toBe(false);
+      expect(minimizedIdsOf(calls())).toEqual(["C_prior"]);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("a healthy round writes only the posted signal — no review-object key exists on any path", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+    await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
+    expect(readFileSync(outputPath(), "utf-8")).toBe("posted=true\n");
   });
 
   it("writes nothing when no sticky lands — the sticky upsert itself fails", async () => {
@@ -3218,12 +3325,6 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
       response: "",
     },
   ];
-
-  const minimizedIdsOf = (calls: readonly RecordedCall[]): readonly string[] =>
-    calls
-      .filter((c) => c.args[0] === "graphql" && c.args.some((x) => x.includes("minimizeComment")))
-      .map((c) => c.args.find((x) => x.startsWith("id="))?.slice("id=".length))
-      .filter((x): x is string => x !== undefined);
 
   it("minimizes the bot's own non-minimized inline comments from prior reviews (any SHA)", async () => {
     const { api, calls } = mkMockGhApi([

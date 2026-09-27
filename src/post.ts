@@ -283,8 +283,10 @@ const commentPayload = (c: InlineComment): Record<string, unknown> => ({
   body: formatMarkdown(c.body),
 });
 
-// comments[i] is the rendered comment for inDiff[i] (1:1, same order). Returns the review url, the
-// count that actually posted, and the findings GitHub rejected (for the caller to surface in the sticky).
+// comments[i] is the rendered comment for inDiff[i] (1:1, same order). Returns the review url
+// (undefined when no breadcrumb review object posted — the caller gates the dismiss/minimize on
+// `posted`, the POST's success, not the parsed url), the count that actually posted, and the
+// findings GitHub rejected (for the caller to surface in the sticky).
 const postInlineReview = async (
   pr: {
     readonly repo: string;
@@ -325,15 +327,13 @@ const postInlineReview = async (
     if (comments.length === 0) {
       // No inline comments to salvage: the breadcrumb review-object POST itself failed. The sticky
       // already carries the full review, so this is a DEGRADED-but-complete round — report it and
-      // return url undefined; the caller gates the dismiss/minimize on a breadcrumb review existing
-      // this round, so a permanent failure never leaves the PR review-less (issue #223).
+      // return posted false; the caller gates the dismiss/minimize on `posted` (the POST's success —
+      // an unparseable response still means the object exists), so a permanent failure never leaves
+      // the PR review-less (issue #223).
+      // An Actions annotation (::warning:: in the step output), not a GITHUB_OUTPUT key: the CLI
+      // owns the loudness so every workflow copy and every pinned CLI version sees the degradation.
       process.stderr.write(
-        `Warning: the review-object POST on PR #${String(pr.prNumber)} failed (${errMsg(err)}) — the sticky carries the review, but no diff-anchored review object exists this round\n`,
-      );
-      appendBestEffort(
-        process.env["GITHUB_OUTPUT"],
-        "the review-object signal to GITHUB_OUTPUT",
-        "review-object=false\n",
+        `::warning:: the review-object POST on PR #${String(pr.prNumber)} failed (${errMsg(err)}) — the sticky carries the review, but no diff-anchored review object exists this round\n`,
       );
       return { url: undefined, posted: false, inlinePosted: 0, unposted: [] };
     }
@@ -347,14 +347,10 @@ const postInlineReview = async (
       posted = true;
     } catch (bodyErr) {
       // The body-only retry failed too — the individual comments still re-post, but no breadcrumb
-      // review object exists this round; the caller gates the dismiss/minimize on url (issue #223).
+      // review object exists this round; the caller gates the dismiss/minimize on `posted` (the
+      // POST's success — an unparseable response still means the object exists) (issue #223).
       process.stderr.write(
-        `Warning: the body-only review retry on PR #${String(pr.prNumber)} failed (${errMsg(bodyErr)}) — individual comments still re-post, but no breadcrumb review object exists this round\n`,
-      );
-      appendBestEffort(
-        process.env["GITHUB_OUTPUT"],
-        "the review-object signal to GITHUB_OUTPUT",
-        "review-object=false\n",
+        `::warning:: the body-only review retry on PR #${String(pr.prNumber)} failed (${errMsg(bodyErr)}) — individual comments still re-post, but no breadcrumb review object exists this round\n`,
       );
     }
     const commentsEndpoint = [
@@ -1816,7 +1812,9 @@ export const post = async (
       ? inlineRequested
         ? `Posted a review with ${String(inlinePosted)} inline comment(s) on PR #${String(prNumber)}\n`
         : `Posted a body-only review on PR #${String(prNumber)}; the findings are in the sticky\n`
-      : `No review object posted this round on PR #${String(prNumber)} — the sticky carries the review\n`,
+      : inlinePosted > 0
+        ? `No review object posted this round on PR #${String(prNumber)}, but ${String(inlinePosted)} inline comment(s) anchored — the sticky carries the review\n`
+        : `No review object posted this round on PR #${String(prNumber)} — the sticky carries the review\n`,
   );
 
   // The dismiss and minimize are gated on a BREADCRUMB review being POSTED this round: when the
@@ -1828,7 +1826,7 @@ export const post = async (
   if (reviewObjectPosted && priorReviewIds.length > 0) {
     await dismissReviews(input.repo, prNumber, priorReviewIds, ghApi);
   }
-  if (reviewObjectPosted) {
+  if (reviewObjectPosted || inlinePosted > 0) {
     await minimizeComments(prNumber, priorInlineComments, ghApi);
   }
 

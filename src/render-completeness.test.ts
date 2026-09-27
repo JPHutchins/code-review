@@ -231,7 +231,7 @@ const rendered = (): string =>
       duration_ms: 1,
     },
     prices: {
-      _updated: "x",
+      _updated: "2026-08-16",
       _unit: "y",
       models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
     },
@@ -341,7 +341,7 @@ describe("the comment carries every field of the findings document (issue #217)"
         duration_ms: 1,
       },
       prices: {
-        _updated: "x",
+        _updated: "2026-08-16",
         _unit: "y",
         models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
       },
@@ -388,7 +388,7 @@ describe("the comment carries every field of the findings document (issue #217)"
         duration_ms: 1,
       },
       prices: {
-        _updated: "x",
+        _updated: "2026-08-16",
         _unit: "y",
         models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
       },
@@ -430,7 +430,7 @@ describe("the comment carries every field of the findings document (issue #217)"
         duration_ms: 1,
       },
       prices: {
-        _updated: "x",
+        _updated: "2026-08-16",
         _unit: "y",
         models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
       },
@@ -474,7 +474,7 @@ describe("the comment carries every field of the findings document (issue #217)"
         duration_ms: 1,
       },
       prices: {
-        _updated: "x",
+        _updated: "2026-08-16",
         _unit: "y",
         models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
       },
@@ -509,7 +509,7 @@ describe("the comment carries every field of the findings document (issue #217)"
         duration_ms: 1,
       },
       prices: {
-        _updated: "x",
+        _updated: "2026-08-16",
         _unit: "y",
         models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
       },
@@ -546,7 +546,7 @@ describe("the comment carries every field of the findings document (issue #217)"
         duration_ms: 1,
       },
       prices: {
-        _updated: "x",
+        _updated: "2026-08-16",
         _unit: "y",
         models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
       },
@@ -582,7 +582,7 @@ describe("the comment carries every field of the findings document (issue #217)"
         duration_ms: 1,
       },
       prices: {
-        _updated: "x",
+        _updated: "2026-08-16",
         _unit: "y",
         models: { m: { in: 1, out: 1, cache_read: 0, cache_write: 0 } },
       },

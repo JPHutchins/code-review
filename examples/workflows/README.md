@@ -246,7 +246,7 @@ so it costs the gather step, not a full review.
    key with a hard spend cap** (it is exposed to untrusted PR code during the contained phase-2
    window). Both are required; an unset endpoint fails the triage step loudly.
 3. Commit `.github/prices.json` (fork [`schema/prices.example.json`](../../schema/prices.example.json))
-   so the cost footer isn't **$0** ([SPEC §4.4](../../SPEC.md#44-required-controls-conformance)). The
+   so the cost footer isn't **N/A** ([SPEC §4.4](../../SPEC.md#44-required-controls-conformance)). The
    reusable workflow checks out your repo, so it reads your committed price map too.
 4. `workflow_run` only fires from the **default branch** — merge first, then open a test PR. The
    introducing PR won't review itself. (Both paths.)

@@ -7,6 +7,8 @@ import type {
   FlatModelPrices,
   PriceSlot,
 } from "./schema.js";
+import { RELEASED } from "./released.js";
+import { annotationSafe } from "./util.js";
 
 export interface CostLine {
   readonly model: string;
@@ -15,6 +17,10 @@ export interface CostLine {
   readonly cacheReadTokens: number;
   readonly cacheWriteTokens: number;
   readonly costUSD: number;
+  // False when the model missed the price map entirely (issue #221): the render layer shows N/A
+  // for the row instead of a confident $0.00. costUSD stays a plain number (0) — provenance is
+  // carried beside it, never as a sentinel, so the render layer keeps owning presentation.
+  readonly known: boolean;
 }
 
 export interface CostReport {
@@ -24,6 +30,11 @@ export interface CostReport {
   readonly totalCacheReadTokens: number;
   readonly totalCacheWriteTokens: number;
   readonly totalCostUSD: number;
+  // The aggregate's provenance, computed beside the other rollups: false when ANY line missed
+  // the map. An EMPTY report is true — no usage was consumed, so $0 spent is the honest figure
+  // and the budget cap stays engaged (an unpriced line is the only unmeasurable shape; an empty
+  // report is not a coverage failure).
+  readonly allKnown: boolean;
 }
 
 export type Warn = (message: string) => void;
@@ -87,7 +98,7 @@ const resolveFlatPrices = (
   if (!("slots" in p)) return p;
   if (pricedAt === undefined) {
     warn(
-      `code-review cost: model "${model}" has time-slotted prices but no run instant was supplied to select a slot; cost for this model set to $0`,
+      `code-review cost: model "${annotationSafe(model)}" has time-slotted prices but no run instant was supplied to select a slot; cost for this model renders as N/A`,
     );
     return null;
   }
@@ -98,7 +109,7 @@ const resolveFlatPrices = (
   const covering = slots.filter((s) => slotCovers(s, minute));
   if (covering.length === 1) return covering[0] ?? null;
   warn(
-    `code-review cost: model "${model}" — ${String(covering.length)} price slots in \`${useWeekend ? "weekend_slots" : "slots"}\` cover ${hhmmOf(minute)} UTC (expected exactly 1); that array must partition the 24h day with no gap or overlap; cost for this model set to $0`,
+    `code-review cost: model "${annotationSafe(model)}" — ${String(covering.length)} price slots in \`${useWeekend ? "weekend_slots" : "slots"}\` cover ${hhmmOf(minute)} UTC (expected exactly 1); that array must partition the 24h day with no gap or overlap; cost for this model renders as N/A`,
   );
   return null;
 };
@@ -109,7 +120,9 @@ const computeModelCost = (
   pricedAt: Date | undefined,
   warn: Warn,
 ): CostLine => {
-  const p = prices.models[entry.model];
+  // Own-property only: a bare lookup would resolve prototype-chain names (`constructor`) as
+  // priced — the t.record hazard schema.ts documents for the same class.
+  const p = Object.hasOwn(prices.models, entry.model) ? prices.models[entry.model] : undefined;
   const cacheRead = entry.cache_read_tokens ?? 0;
   const cacheWrite = entry.cache_write_tokens ?? 0;
   const zero: CostLine = {
@@ -119,15 +132,20 @@ const computeModelCost = (
     cacheReadTokens: cacheRead,
     cacheWriteTokens: cacheWrite,
     costUSD: 0,
+    known: true,
   };
   if (!p) {
     warn(
-      `code-review cost: unknown model "${entry.model}" — no entry in price map; cost for this model set to $0`,
+      // annotationSafe: a model id is an unvalidated t.string — a CR/LF in it must not emit a
+      // second line the Actions runner parses as a workflow command.
+      `code-review cost: unknown model "${annotationSafe(entry.model)}" — no entry in price map; cost for this model renders as N/A`,
     );
-    return zero;
+    return { ...zero, known: false };
   }
   const rate = resolveFlatPrices(entry.model, p, pricedAt, warn);
-  if (rate === null) return zero;
+  // Both "cannot price this row" exits agree on provenance: an unpriceable row must not render a
+  // confident $0.00 either (issue #221 review r1).
+  if (rate === null) return { ...zero, known: false };
   const costUSD =
     (entry.input_tokens * rate.in +
       entry.output_tokens * rate.out +
@@ -154,5 +172,58 @@ export const computeCost = (
     totalCacheReadTokens: lines.reduce((s, l) => s + l.cacheReadTokens, 0),
     totalCacheWriteTokens: lines.reduce((s, l) => s + l.cacheWriteTokens, 0),
     totalCostUSD: lines.reduce((s, l) => s + l.costUSD, 0),
+    allKnown: lines.every((l) => l.known),
   };
+};
+
+// A zero-padded ISO calendar date, or undefined — round-tripped through Date so a rolled-over
+// day (2026-02-31 → 2026-03-03) is rejected, not silently compared. Exported: the render layer
+// uses it to tell a nonconforming stamp apart from a valid one (the sticky must not present a
+// smoothed invalid value as validated).
+export const parseIsoDate = (stamp: string): string | undefined => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(stamp)) return undefined;
+  const parsed = new Date(`${stamp}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === stamp
+    ? stamp
+    : undefined;
+};
+
+// The budget hook's announce/clear decision, pure and testable: announce when a report with
+// unpriced lines exists and the marker (the human was told) is absent; clear the marker when the
+// axis is engaged again; otherwise nothing. index.ts skips the whole block for subagents and
+// performs the side effects (each hook invocation is a fresh process, so the marker file beside
+// the draft is the state).
+export const costAxisAnnouncement = (
+  report: CostReport | null,
+  markerExists: boolean,
+): "announce" | "clear" | "none" => {
+  if (report === null) return "none";
+  if (!report.allKnown) return markerExists ? "none" : "announce";
+  return markerExists ? "clear" : "none";
+};
+
+// The staleness signal (issue #220): a price map cannot know a vendor changed its rates, so the
+// only signal available is how old the snapshot is. A map predating THIS CLI's release date is
+// suspicious by construction — the consumer rolled the CLI but not the prices (the roll carries
+// both) — so warn exactly then, with no threshold to tune. Lives beside computeCost, not inside
+// it: computeCost has no notion of provenance, and the callers (post, the cost CLIs) own loudness.
+// A null map is the deliberate no-pricing choice (the bundled example) — never stale. A stamp
+// that does not parse as a calendar date degrades the staleness axis instead of aborting: a
+// merely mis-stamped map must not kill the round.
+export const warnStalePrices = (prices: PriceMap | null, warn: Warn = defaultWarn): void => {
+  if (prices === null) return;
+  const updated = parseIsoDate(prices._updated);
+  if (updated === undefined) return;
+  if (updated > new Date().toISOString().slice(0, 10)) {
+    warn(
+      `::warning:: code-review cost: the price map's _updated (${prices._updated}) is in the future — a typo'd year silences the staleness check permanently; re-verify and re-stamp`,
+    );
+    return;
+  }
+  if (updated >= RELEASED) return;
+  // The stamp reaching this line passed parseIsoDate (zero-padded ISO, CR/LF-free by
+  // construction), so it interpolates unwrapped; RELEASED is a repo constant.
+  warn(
+    `::warning:: code-review cost: the price map was last verified ${prices._updated}, before this CLI's release (${RELEASED}) — the map may miss pricing this CLI ships; re-verify against the provider's pricing page`,
+  );
 };

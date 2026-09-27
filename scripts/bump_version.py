@@ -9,11 +9,18 @@ then `camas build` and `camas capture_help` before committing the release.
 
 import json
 import pathlib
+import re
 import sys
+from datetime import datetime, timezone
 
 
-def replace(path: str, expected: int, pairs: tuple[tuple[str, str], ...]) -> None:
-    text = pathlib.Path(path).read_text()
+def replace(
+    path: str,
+    expected: int,
+    pairs: tuple[tuple[str, str], ...],
+    note: str | None = None,
+) -> None:
+    text = pathlib.Path(path).read_text(encoding="utf-8")
     for old, new in pairs:
         found = text.count(old)
         if found != expected:
@@ -24,8 +31,33 @@ def replace(path: str, expected: int, pairs: tuple[tuple[str, str], ...]) -> Non
             )
             sys.exit(1)
         text = text.replace(old, new)
-    pathlib.Path(path).write_text(text)
-    print(f"{path}: bumped to {new}")
+    # encoding + newline pinned so the output is byte-identical on any platform: a locale-derived
+    # encoding or CRLF translation would rewrite every file as a whole-file diff.
+    pathlib.Path(path).write_text(text, encoding="utf-8", newline="\n")
+    print(f"{path}: {note or f'bumped to {new}'}")
+
+
+def stamp_released() -> None:
+    """Stamp src/released.ts with today's UTC date — via the same replace() drift guard, so the
+    committed header stays the file's single source (it is not regenerated here). Runs even when
+    the version is unchanged, so a re-run after a same-version bump re-stamps."""
+    path = pathlib.Path("src/released.ts")
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r'export const RELEASED = "([^"]+)"', text)
+    if match is None:
+        print('src/released.ts: no export const RELEASED = "..." line to stamp', file=sys.stderr)
+        sys.exit(1)
+    old = match.group(1)
+    stamp = datetime.now(timezone.utc).date().isoformat()
+    if old == stamp:
+        print(f"src/released.ts: already stamped {stamp}")
+        return
+    replace(
+        "src/released.ts",
+        1,
+        ((f'export const RELEASED = "{old}"', f'export const RELEASED = "{stamp}"'),),
+        note=f"stamped {stamp}",
+    )
 
 
 def main() -> None:
@@ -33,10 +65,46 @@ def main() -> None:
         print("usage: bump_version.py <new-version>", file=sys.stderr)
         sys.exit(2)
     new = sys.argv[1]
-    current = json.loads(pathlib.Path("package.json").read_text())["version"]
+    stamp_released()
+    current = json.loads(pathlib.Path("package.json").read_text(encoding="utf-8"))["version"]
     if new == current:
         print(f"already at {new}")
         sys.exit(0)
+    # The repo's own map only moves when someone re-verifies the provider's rates — surface the
+    # data task at release time so a stale dogfood map is a decision, not an unnoticed always-on
+    # warn (issue #220 review r3). Best-effort: a missing or malformed map must never abort a
+    # bump halfway through (released.ts is already re-stamped by now).
+    try:
+        repo_map = json.loads(pathlib.Path(".github/prices.json").read_text(encoding="utf-8"))
+        map_stamp = repo_map["_updated"]
+        if isinstance(map_stamp, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", map_stamp):
+            datetime.strptime(map_stamp, "%Y-%m-%d")
+            today = datetime.now(timezone.utc).date().isoformat()
+            if map_stamp > today:
+                print(
+                    f"note: .github/prices.json _updated ({map_stamp}) is in the future — a "
+                    "typo'd year silences the staleness warn; re-verify and re-stamp",
+                    file=sys.stderr,
+                )
+            elif map_stamp < today:
+                print(
+                    f"note: .github/prices.json was last verified {map_stamp} — "
+                    "re-verify the provider's rates and bump _updated, or accept the dogfood "
+                    "staleness warn",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                "note: .github/prices.json _updated is not a valid ISO date — re-verify the "
+                "rates and re-stamp it",
+                file=sys.stderr,
+            )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        print(
+            "note: .github/prices.json could not be read to check staleness — re-verify the "
+            "rates and bump _updated manually",
+            file=sys.stderr,
+        )
     replace("package.json", 1, ((f'"version": "{current}"', f'"version": "{new}"'),))
     replace("package-lock.json", 2, ((f'"version": "{current}"', f'"version": "{new}"'),))
     replace(

@@ -77,6 +77,9 @@ const envelope = orThrow(
   "envelope",
 );
 const prices = orThrow(PriceMapCodec.decode(readJSON(fx("preview.prices.json"))), "prices");
+// No staleness warn here: the fixture map is synthetic and never "re-verified", so the warn would
+// annotate every CI run about its own static fixture (issue #220 review r3) — the null discipline
+// applies, the way it does for the deliberate no-pricing case.
 const testReport = orThrow(
   TestSummaryCodec.decode(readJSON(fx("preview.testreport.json"))),
   "test report",

@@ -10,7 +10,7 @@ import pathlib
 import subprocess
 import sys
 
-version = json.loads(pathlib.Path("package.json").read_text())["version"]
+version = json.loads(pathlib.Path("package.json").read_text(encoding="utf-8"))["version"]
 short = version.removeprefix("0.1.0-")
 env = {**os.environ, "CI": "true", "NO_COLOR": "1"}
 for command in ("post", "seed-draft"):
@@ -18,11 +18,14 @@ for command in ("post", "seed-draft"):
         ["node", "dist/index.js", command, "--help"],
         capture_output=True,
         text=True,
+        # The decode must match the write below, or a non-UTF-8 locale round-trips mojibake into
+        # the fixtures.
+        encoding="utf-8",
         env=env,
     )
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
         sys.exit(result.returncode)
     path = pathlib.Path(f"test/fixtures/published-help/{command}-{short}.txt")
-    path.write_text(result.stdout)
+    path.write_text(result.stdout, encoding="utf-8", newline="")
     print(f"captured {path}")

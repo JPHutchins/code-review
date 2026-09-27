@@ -132,7 +132,7 @@ on:
         required: false
         default: 12m
       full_review_usd_limit:
-        description: Default USD spend cap; a comment budget (clamped to max_usd) overrides it. Needs a committed .github/prices.json to price the run.
+        description: Default USD spend cap; a comment budget (clamped to max_usd) overrides it. Needs a committed .github/prices.json that covers every model the run records to price the run.
         type: string
         required: false
         default: "1"
@@ -149,7 +149,7 @@ on:
         required: false
         default: 6m
       mechanic_usd_limit:
-        description: USD spend cap for the mechanic route (takes effect only with a committed .github/prices.json to price the run)
+        description: USD spend cap for the mechanic route (takes effect only with a committed .github/prices.json that covers every model the run records)
         type: string
         required: false
         default: "1"

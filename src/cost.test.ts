@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { computeCost, parseInstant } from "./cost.js";
+import { computeCost, costAxisAnnouncement, parseInstant, warnStalePrices } from "./cost.js";
+import { RELEASED } from "./released.js";
 import { PriceMapCodec } from "./schema.js";
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
 
@@ -83,9 +84,53 @@ describe("computeCost", () => {
 
     expect(report.lines[0]!.costUSD).toBe(0);
     expect(report.lines[0]!.model).toBe("unknown-model");
+    // costUSD stays a plain number (0) — the provenance signal travels beside it, never as a
+    // sentinel, so the render layer keeps owning the N/A presentation decision (issue #221).
+    expect(report.lines[0]!.known).toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("unknown-model"));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("price map"));
+  });
+
+  it("marks a priced model known:true", () => {
+    const report = computeCost(
+      [mkEntry({ model: "pro-model", input_tokens: 100, output_tokens: 10 })],
+      prices,
+      undefined,
+      vi.fn(),
+    );
+    expect(report.lines[0]!.known).toBe(true);
+  });
+
+  it("marks an unpriceable slotted row known:false too — no run instant selects no slot", () => {
+    const warn = vi.fn();
+    const report = computeCost(
+      [mkEntry({ model: "slot-model" })],
+      {
+        _updated: "2026-08-16",
+        _unit: "u",
+        models: {
+          "slot-model": {
+            slots: [
+              { utc_from: "00:00", utc_to: "00:00", in: 1, out: 1, cache_read: 0, cache_write: 0 },
+            ],
+          },
+        },
+      },
+      undefined,
+      warn,
+    );
+    expect(report.lines[0]!.known).toBe(false);
+    expect(report.lines[0]!.costUSD).toBe(0);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("does not treat a prototype-chain model name as priced", () => {
+    const warn = vi.fn();
+    const report = computeCost([mkEntry({ model: "constructor" })], prices, undefined, warn);
+    expect(report.lines[0]!.known).toBe(false);
+    expect(report.lines[0]!.costUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("unknown model"));
   });
 
   it("defaults to process.stderr.write for warnings when no warn callback is provided", () => {
@@ -389,6 +434,31 @@ describe("computeCost — UTC time-slot pricing (issue #170)", () => {
     expect(computeCost(oneM(), ds, at(0, 30)).totalCostUSD).toBeCloseTo(1.0, 6);
   });
 
+  it("escapes a line-broken model id in the slot-misconfiguration warns (annotationSafe house shape)", () => {
+    const warn = vi.fn();
+    computeCost(
+      [mkEntry({ model: "evil\n::error::forged" })],
+      {
+        _updated: "2026-08-16",
+        _unit: "u",
+        models: {
+          "evil\n::error::forged": {
+            // A real instant OUTSIDE this window reaches the coverage-count warn (the branch the
+            // escape must be proven on), not the no-instant warn.
+            slots: [
+              { utc_from: "01:00", utc_to: "02:00", in: 1, out: 1, cache_read: 0, cache_write: 0 },
+            ],
+          },
+        },
+      },
+      new Date("2026-09-27T05:00:00Z"),
+      warn,
+    );
+    const message = String(warn.mock.calls[0]?.[0] ?? "");
+    expect(message).not.toContain("\n");
+    expect(message).toContain("::error::forged");
+  });
+
   it("a degenerate utc_from == utc_to slot covers the full day (the schema's wrap semantics)", () => {
     const allDay = slotted({
       "slot-model": {
@@ -403,7 +473,14 @@ describe("computeCost — UTC time-slot pricing (issue #170)", () => {
 });
 
 describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
-  const wrap = (m: unknown): unknown => ({ _updated: "x", _unit: "y", models: { model: m } });
+  // The stamp shape is NOT a decode concern (the codec types _updated as any string; the staleness
+  // axis validates it at the consumer and degrades instead of aborting) — a valid stamp here keeps
+  // the fixtures realistic.
+  const wrap = (m: unknown): unknown => ({
+    _updated: "2026-08-16",
+    _unit: "y",
+    models: { model: m },
+  });
 
   it("parseInstant returns a Date for a valid ISO instant and undefined for garbage/absent", () => {
     expect(parseInstant("2026-08-16T03:00:00.000Z")?.getUTCHours()).toBe(3);
@@ -605,5 +682,91 @@ describe("the repo's own price map", () => {
         expect(warn).not.toHaveBeenCalled();
       }
     }
+  });
+});
+
+describe("warnStalePrices (issue #220)", () => {
+  const map = (updated: string): PriceMap => ({ _updated: updated, _unit: "u", models: {} });
+
+  it("warns with a step-annotation prefix when the map predates the CLI's release", () => {
+    const warn = vi.fn();
+    warnStalePrices(map("2020-01-01"), warn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("::warning::"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("2020-01-01"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(RELEASED));
+  });
+
+  it("stays silent for a map verified on the release date", () => {
+    const warn = vi.fn();
+    warnStalePrices(map(RELEASED), warn);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("warns when the stamp is in the future — a typo'd year silences the check permanently", () => {
+    const warn = vi.fn();
+    warnStalePrices(map("2999-01-01"), warn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("in the future"));
+  });
+
+  it("stays silent for a null map (no consumer map provided) and degrades silently on a nonconforming stamp", () => {
+    const warn = vi.fn();
+    warnStalePrices(null, warn);
+    // Hand-edited, non-ISO, calendar-impossible (V8 rolls 2026-02-31 into March), empty — none of
+    // these can be compared, so the axis degrades instead of aborting the round (issue #220 review
+    // r2).
+    for (const bad of [
+      "2026-8-22",
+      "08/22/2026",
+      "x",
+      "2026-02-31",
+      "",
+      "2020-01-01\n::error::forged",
+    ]) {
+      warnStalePrices(map(bad), warn);
+    }
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("the allKnown rollup is false for any unpriced line and true for an empty report ($0 engaged)", () => {
+    expect(computeCost([], prices, undefined, vi.fn()).allKnown).toBe(true);
+    expect(
+      computeCost([mkEntry({ model: "unknown-model" })], prices, undefined, vi.fn()).allKnown,
+    ).toBe(false);
+    expect(
+      computeCost([mkEntry({ model: "pro-model" })], prices, undefined, vi.fn()).allKnown,
+    ).toBe(true);
+  });
+
+  it("costAxisAnnouncement: announce once, clear on recovery, silent otherwise", () => {
+    const disengaged = computeCost(
+      [mkEntry({ model: "unknown-model" })],
+      prices,
+      undefined,
+      vi.fn(),
+    );
+    const engaged = computeCost([mkEntry({ model: "pro-model" })], prices, undefined, vi.fn());
+    const empty = computeCost([], prices, undefined, vi.fn());
+    expect(costAxisAnnouncement(disengaged, false)).toBe("announce");
+    expect(costAxisAnnouncement(disengaged, true)).toBe("none");
+    expect(costAxisAnnouncement(engaged, true)).toBe("clear");
+    expect(costAxisAnnouncement(engaged, false)).toBe("none");
+    // An empty report is engaged ($0), never an announce, and clears a stale marker.
+    expect(costAxisAnnouncement(empty, false)).toBe("none");
+    expect(costAxisAnnouncement(empty, true)).toBe("clear");
+    expect(costAxisAnnouncement(null, true)).toBe("none");
+  });
+
+  it("collapses line breaks in a hostile model id so it cannot break out of the warning", () => {
+    // The model id is the REACHABLE escape surface (a stamp with a line break degrades before the
+    // warn) — the interpolation is wrapped like every other untrusted ::warning:: site.
+    const warn = vi.fn();
+    computeCost([mkEntry({ model: "evil\n::error::forged" })], prices, undefined, warn);
+    const call = warn.mock.calls[0];
+    expect(call).toBeDefined();
+    const message = String(call![0]);
+    expect(message).not.toContain("\n");
+    expect(message).toContain("::error::forged");
   });
 });

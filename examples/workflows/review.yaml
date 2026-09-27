@@ -394,7 +394,8 @@ jobs:
           PRIOR_ANSWERS="${DRAFT%.json}.prior-answers.json"
           PRIOR_SUPPRESSED="${DRAFT%.json}.prior-suppressed.json"
           LAST_VALID="${DRAFT%.json}.last-valid.json"
-          rm -f "$DRAFT" "$DRAFT.nudges" "$PRIOR_CONTEXT" "$PRIOR_ANSWERS" "$PRIOR_SUPPRESSED" "$LAST_VALID"
+          AXIS_DISENGAGED="${DRAFT%.json}.cost-axis-disengaged.json"
+          rm -f "$DRAFT" "$DRAFT.nudges" "$PRIOR_CONTEXT" "$PRIOR_ANSWERS" "$PRIOR_SUPPRESSED" "$LAST_VALID" "$AXIS_DISENGAGED"
 
           # The PR's own description + the human discussion (issue comments, inline review-thread
           # replies, and review submissions) gather staged. UNTRUSTED (attacker-reachable), so it is
@@ -658,7 +659,7 @@ jobs:
           # schema; the budget hooks steer the agent to converge as it nears $AGENT_WALL (PostToolBatch)
           # and, close to the wall, deny every tool but reading and writing/validating $DRAFT
           # (PreToolUse forced convergence). --budget-usd caps spend on the cost axis, which activates
-          # only when --prices supplies a price map to value the run against.
+          # only when --prices supplies a price map that covers every model the transcript records.
           BUDGET_PRICES=()
           if [ -f "$RUNNER_TEMP/prices.json" ]; then
             BUDGET_PRICES=(--prices "$RUNNER_TEMP/prices.json")
@@ -725,7 +726,7 @@ jobs:
           # wall-kill that leaves $DRAFT truncated then recovers the last valid state instead of "did
           # not complete" — the pre-seed sentinel never validates, so it can never be checkpointed
           # into or recovered from the snapshot (issue #127). --transcript refills per-model spend from
-          # the session transcript when a wall-kill left envelope.json empty (else cost reads $0.00);
+          # the session transcript when a wall-kill left envelope.json empty (else cost reads N/A);
           # pick the newest main .jsonl, excluding subagent files.
           REVIEW_TRANSCRIPT="$(find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
           TRANSCRIPT_ARGS=()

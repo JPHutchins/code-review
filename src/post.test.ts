@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { legacyEmbeddedMarker } from "./test-util.js";
+import { RELEASED } from "./released.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -78,7 +79,9 @@ const baseEnvelope: ResultEnvelope = {
 };
 
 const prices: PriceMap = {
-  _updated: "2026-07-03",
+  // Tied to the stamped release date so the post-level staleness warn (issue #220) stays silent
+  // in the suite without a fixture date that rots on every release.
+  _updated: RELEASED,
   _unit: "USD per 1M tokens",
   models: {
     "pro-model": { in: 3.0, out: 15.0, cache_read: 0.3, cache_write: 0.6 },
@@ -3355,6 +3358,36 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
     );
     expect(reviewPost).toBeDefined();
     expect(minimizedIdsOf(calls())).toEqual([]);
+  });
+});
+
+describe("post — the stale-price warn is gated on the providedness flag (issue #220)", () => {
+  beforeEach(() => {
+    writeFileSync(
+      join(tmpDir, "prices.json"),
+      JSON.stringify({
+        _updated: "2020-01-01",
+        _unit: "u",
+        models: { "pro-model": { in: 3, out: 15, cache_read: 0.3, cache_write: 0.6 } },
+      }),
+    );
+  });
+
+  it("warns for a provided stale map and stays silent when no map was provided", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const warnFired = (): boolean =>
+        stderrSpy.mock.calls.some(([chunk]) =>
+          String(chunk).includes("::warning:: code-review cost"),
+        );
+      const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+      await expect(post(mkInput({ pricesProvided: false }), api)).resolves.toBeUndefined();
+      expect(warnFired()).toBe(false);
+      await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+      expect(warnFired()).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });
 

@@ -1520,6 +1520,179 @@ describe("render", () => {
       expect(omitted).not.toContain("No `.github/prices.json`");
       expect(omitted).toContain("**cost:** $0.06");
     });
+
+    it("renders N/A for a model missing from the price map — never a confident $0.00 (issue #221)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: { ...baseEnvelope, models: [mkEntry({ model: "unpriced-variant" })] },
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      // The model's whole row reads N/A — the cost cell never shows a confident $0.00 for a
+      // misconfigured model (the Total row still sums the known lines, which is none here).
+      expect(result).toContain("| unpriced-variant | 10,000 | 2,000 | 5,000 | 1,000 | N/A |");
+      expect(result).not.toContain("| unpriced-variant | 10,000 | 2,000 | 5,000 | 1,000 | $0.00 |");
+    });
+
+    it("reads N/A end to end when every model missed the map (issue #221 review r1)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: { ...baseEnvelope, models: [mkEntry({ model: "unpriced-variant" })] },
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      // The header meta and the Total row carry the provenance too — no confident $0.00 anywhere.
+      expect(result).toContain("**cost:** N/A");
+      expect(result).toContain(
+        "| **Total** | **10,000** | **2,000** | **5,000** | **1,000** | **N/A** |",
+      );
+    });
+
+    it("renders a MIXED report's subtotal with a ≥ marker — the real partial sum, not N/A (issue #221 review r2)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: {
+          ...baseEnvelope,
+          models: [mkEntry({}), mkEntry({ model: "unpriced-variant" })],
+        },
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      // The priced row keeps its figure, the unpriced row is N/A, and the aggregates carry the
+      // real partial subtotal marked — never a bare $0.06 (which would under-report) and never
+      // N/A (which would discard the real sum).
+      expect(result).toContain("**cost:** ≥ $0.06");
+      expect(result).toContain(
+        "| **Total** | **20,000** | **4,000** | **10,000** | **2,000** | **≥ $0.06** |",
+      );
+      expect(result).toContain("| unpriced-variant | 10,000 | 2,000 | 5,000 | 1,000 | N/A |");
+    });
+
+    it("a swapped template calling formatCost with ONE argument fails closed to N/A (issue #221 review r3)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: { ...baseEnvelope, models: [mkEntry({ model: "unpriced-variant" })] },
+        prices,
+        pricesProvided: true,
+        // Eta is runtime JS with no arity enforcement — a pre-existing template written against
+        // the one-arg signature binds provenance to undefined and must degrade to N/A, never a
+        // confident figure.
+        template: "<%= it.formatCost(it.costReport.lines[0].costUSD) %>",
+        route: "full review",
+      });
+      expect(result).toBe("N/A");
+    });
+
+    it('a partial report whose priced lines sum to a sub-cent figure renders N/A, not "≥ <$0.01" (issue #221 review r4)', () => {
+      const findings = mkFindings([]);
+      const subcent: PriceMap = {
+        ...prices,
+        models: { "pro-model": { in: 0.3, out: 0, cache_read: 0, cache_write: 0 } },
+      };
+      const result = render({
+        findings,
+        envelope: {
+          ...baseEnvelope,
+          models: [mkEntry({}), mkEntry({ model: "unpriced-variant" })],
+        },
+        prices: subcent,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**cost:** N/A");
+      expect(result).not.toContain("≥ <$0.01");
+      expect(result).not.toContain("≥ $0.00");
+    });
+
+    it('a partial report whose priced lines sum to 0 renders N/A, not "≥ $0.00" (issue #221 review r3)', () => {
+      const findings = mkFindings([]);
+      const zeroRates: PriceMap = {
+        ...prices,
+        models: { "pro-model": { in: 0, out: 0, cache_read: 0, cache_write: 0 } },
+      };
+      const result = render({
+        findings,
+        envelope: {
+          ...baseEnvelope,
+          models: [mkEntry({}), mkEntry({ model: "unpriced-variant" })],
+        },
+        prices: zeroRates,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**cost:** N/A");
+      expect(result).not.toContain("≥ $0.00");
+      expect(result).not.toContain("≥ <$0.01");
+    });
+
+    it("explains the N/A rows beside the snapshot line when the map misses a model", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: {
+          ...baseEnvelope,
+          models: [mkEntry({}), mkEntry({ model: "unpriced-variant" })],
+        },
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain(
+        "N/A rows: models missing from this price map, or slots that do not cover the run instant — check the run log for the slot warning.",
+      );
+      const clean = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(clean).not.toContain("N/A rows:");
+    });
+
+    it("presents a nonconforming stamp as a note, not as a smoothed valid date (issue #220 review r5)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices: { ...prices, _updated: "2026-8-22\n" },
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain(
+        "`_updated` is not a parseable ISO date — the staleness check is skipped.",
+      );
+      expect(result).not.toContain("Prices snapshot `_updated`");
+    });
+
+    it("renders the price snapshot's _updated in the cost collapsible (issue #220)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("Prices snapshot `_updated` 2026-07-03.");
+      expect(result).toContain("$0.06");
+    });
   });
 
   describe("LLM disclosure aside (issue #8 — [!WARNING], repo link, in-blockquote table)", () => {

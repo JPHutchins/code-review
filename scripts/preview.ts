@@ -16,6 +16,7 @@ import {
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "../src/surface.js";
 import { formatUtc } from "../src/format.js";
+import { warnStalePrices } from "../src/cost.js";
 import {
   FindingsCodec,
   ResultEnvelopeCodec,
@@ -77,6 +78,9 @@ const envelope = orThrow(
   "envelope",
 );
 const prices = orThrow(PriceMapCodec.decode(readJSON(fx("preview.prices.json"))), "prices");
+// The preview renders the snapshot date — it must carry the staleness signal too (issue #220
+// review r2); the fixture map is a real provided map.
+warnStalePrices(prices);
 const testReport = orThrow(
   TestSummaryCodec.decode(readJSON(fx("preview.testreport.json"))),
   "test report",

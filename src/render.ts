@@ -398,9 +398,18 @@ export const render = (input: RenderInput): string => {
   const costReport = input.envelope
     ? computeCost(input.envelope.models, input.prices, pricedAt)
     : null;
-  // An all-unknown report reads N/A end to end (the Total row and the header meta too) — a run
-  // whose every model missed the map must not present a confident $0.00 anywhere (issue #221).
-  const allKnown = costReport === null || costReport.lines.every((line) => line.known);
+  // The aggregate's provenance, one value for the header meta and the Total row (issue #221):
+  // complete renders the plain figure, partial renders the real subtotal with a ≥ marker (the
+  // unpriced rows are excluded and shown as N/A beside it), unknown renders N/A — a run whose
+  // every model missed the map never presents a confident $0.00 anywhere.
+  const costProvenance: "complete" | "partial" | "unknown" =
+    costReport === null || costReport.lines.length === 0
+      ? "unknown"
+      : costReport.allKnown
+        ? "complete"
+        : costReport.lines.some((line) => line.known)
+          ? "partial"
+          : "unknown";
   const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;
@@ -610,8 +619,9 @@ export const render = (input: RenderInput): string => {
     incomplete,
     costReport,
     pricesProvided,
-    allKnown,
-    pricesUpdatedAt: input.prices._updated,
+    costProvenance,
+    // Collapsed so a hostile stamp cannot inject blockquote/table lines into the sticky body.
+    pricesUpdatedAt: input.prices._updated.replace(/\s+/g, " ").trim(),
     route,
     effort,
     modelNames,
@@ -675,15 +685,17 @@ export const render = (input: RenderInput): string => {
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",
     // N/A (never a false $0.00) when no real price map was provided — real tokens, no rates to
     // price them — and N/A for a model that missed the map entirely (issue #221): a misconfigured
-    // row must not look like a free review.
-    formatCost: (n: number, known = true): string =>
-      !pricesProvided || !known
-        ? "N/A"
-        : Number.isFinite(n)
-          ? n > 0 && n.toFixed(2) === "0.00"
-            ? "<$0.01"
-            : `$${n.toFixed(2)}`
-          : "—",
+    // row must not look like a free review. Provenance is REQUIRED (no permissive default): a
+    // user-swapped template that drops the argument fails loudly, not silently fail-open.
+    formatCost: (n: number, provenance: "complete" | "partial" | "unknown"): string => {
+      if (!pricesProvided || provenance === "unknown") return "N/A";
+      const figure = Number.isFinite(n)
+        ? n > 0 && n.toFixed(2) === "0.00"
+          ? "<$0.01"
+          : `$${n.toFixed(2)}`
+        : "—";
+      return provenance === "partial" ? `≥ ${figure}` : figure;
+    },
     formatDuration: (ms: number): string => {
       if (!Number.isFinite(ms) || ms < 0) return "—";
       const s = Math.round(ms / 1000);

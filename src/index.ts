@@ -325,6 +325,9 @@ const renderCmd = defineCommand({
     const templatePath = resolveTemplatePath(args.template);
     const priceResolution = resolvePrices(args.prices);
     const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
+    // The preview renders the snapshot date — it must carry the staleness signal too (issue #220
+    // review r2). Null = the bundled example: a deliberate no-pricing choice, never stale.
+    warnStalePrices(priceResolution.kind === "provided" ? prices : null);
     const template = readFileSync(templatePath, "utf-8");
     const testReport = args["test-report"]
       ? decode(TestSummaryCodec.decode(readJSON(args["test-report"])), "test report")
@@ -448,6 +451,7 @@ const costCmd = defineCommand({
   run: async ({ args }) => {
     const envelope = decode(ResultEnvelopeCodec.decode(readJSON(args.envelope)), "envelope");
     const prices = decode(PriceMapCodec.decode(readJSON(args.prices)), "prices");
+    // The cost CLI's --prices is required, so a decoded map is always the consumer's own.
     warnStalePrices(prices);
     // Price a saved envelope at the RUN's own instant (issue #170), so re-running `cost` later prices
     // the same envelope to the same slot deterministically — not at whatever wall clock it is re-run at.
@@ -488,9 +492,8 @@ const checkCostCmd = defineCommand({
     const usage = sumTranscriptUsage(tree.entries);
     const priceResolution = resolvePrices(args.prices);
     const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
-    // Only the consumer's own map can be stale — the bundled example (no --prices) is a deliberate
-    // no-pricing choice and must not warn about a map the consumer never supplied.
-    if (priceResolution.kind === "provided") warnStalePrices(prices);
+    // Null = the bundled example (no --prices): a deliberate no-pricing choice, never stale.
+    warnStalePrices(priceResolution.kind === "provided" ? prices : null);
     // Price at the transcript's last activity instant (deterministic — re-running `check-cost` on the
     // same transcript prices the same slot), not the invocation wall clock (issue #170 review r2).
     const report = computeCost(
@@ -708,12 +711,9 @@ const budgetHookCmd = defineCommand({
             )
           : null;
       // Unmeasurable spend is null, never a confident number: a report with any unpriced line
-      // under-counts, so the steering degrades to unsteered rather than telling the agent $0.00
-      // was spent (issue #221 review r1).
-      const spentUsd =
-        costReport !== null && costReport.lines.every((line) => line.known)
-          ? costReport.totalCostUSD
-          : null;
+      // (or no lines at all) under-counts, so the steering degrades to unsteered rather than
+      // telling the agent $0.00 was spent (issue #221 review r1).
+      const spentUsd = costReport !== null && costReport.allKnown ? costReport.totalCostUSD : null;
       // The absolute anchor (set by the review job, inherited by every hook incl. fan-out subagents)
       // is the true remaining wall; the per-transcript first timestamp is only the fallback — it
       // reads ≈0 in a fresh subagent and leaves the fan-out unsteered.

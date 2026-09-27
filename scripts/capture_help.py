@@ -24,5 +24,5 @@ for command in ("post", "seed-draft"):
         print(result.stderr, file=sys.stderr)
         sys.exit(result.returncode)
     path = pathlib.Path(f"test/fixtures/published-help/{command}-{short}.txt")
-    path.write_text(result.stdout, encoding="utf-8")
+    path.write_text(result.stdout, encoding="utf-8", newline="")
     print(f"captured {path}")

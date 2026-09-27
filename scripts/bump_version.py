@@ -9,6 +9,7 @@ then `camas build` and `camas capture_help` before committing the release.
 
 import json
 import pathlib
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -25,8 +26,28 @@ def replace(path: str, expected: int, pairs: tuple[tuple[str, str], ...]) -> Non
             )
             sys.exit(1)
         text = text.replace(old, new)
-    pathlib.Path(path).write_text(text, encoding="utf-8")
+    # encoding + newline pinned so the output is byte-identical on any platform: a locale-derived
+    # encoding or CRLF translation would rewrite every file as a whole-file diff.
+    pathlib.Path(path).write_text(text, encoding="utf-8", newline="\n")
     print(f"{path}: bumped to {new}")
+
+
+def stamp_released() -> None:
+    """Stamp src/released.ts with today's UTC date — via the same replace() drift guard, so the
+    committed header stays the file's single source (it is not regenerated here). Runs even when
+    the version is unchanged, so a re-run after a same-version bump re-stamps."""
+    path = pathlib.Path("src/released.ts")
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r'export const RELEASED = "([^"]+)"', text)
+    if match is None:
+        print('src/released.ts: no export const RELEASED = "..." line to stamp', file=sys.stderr)
+        sys.exit(1)
+    old = match.group(1)
+    stamp = datetime.now(timezone.utc).date().isoformat()
+    if old == stamp:
+        print(f"src/released.ts: already stamped {stamp}")
+        return
+    replace("src/released.ts", 1, ((f'export const RELEASED = "{old}"', f'export const RELEASED = "{stamp}"'),))
 
 
 def main() -> None:
@@ -34,7 +55,8 @@ def main() -> None:
         print("usage: bump_version.py <new-version>", file=sys.stderr)
         sys.exit(2)
     new = sys.argv[1]
-    current = json.loads(pathlib.Path("package.json").read_text())["version"]
+    stamp_released()
+    current = json.loads(pathlib.Path("package.json").read_text(encoding="utf-8"))["version"]
     if new == current:
         print(f"already at {new}")
         sys.exit(0)
@@ -58,15 +80,6 @@ def main() -> None:
     replace("examples/workflows/review-on-comment.yaml", 1, ((f"@v{current}", f"@v{new}"),))
     replace("examples/workflows/README.md", 1, ((f"@v{current}", f"@v{new}"),))
     replace(".github/workflows/review.yaml", 1, ((f"@v{current}", f"@v{new}"),))
-    stamp = datetime.now(timezone.utc).date().isoformat()
-    pathlib.Path("src/released.ts").write_text(
-        "// The release date, stamped by scripts/bump_version.py at release time. The staleness signal for\n"
-        "// the price map (issue #220): a map whose `_updated` predates this date cannot reflect pricing the\n"
-        "// CLI ships — the warn fires exactly when a consumer rolled the CLI but not the prices.\n"
-        f'export const RELEASED = "{stamp}";\n',
-        encoding="utf-8",
-    )
-    print(f"src/released.ts: stamped RELEASED={stamp}")
 
 
 if __name__ == "__main__":

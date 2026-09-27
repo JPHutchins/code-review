@@ -448,8 +448,9 @@ describe("computeCost — UTC time-slot pricing (issue #170)", () => {
 });
 
 describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
-  // A VALID stamp, so these tests keep proving the model-shape gate rather than failing on the
-  // date gate first (issue #220 review r1 added the date shape to the codec).
+  // The stamp shape is NOT a decode concern (the codec types _updated as any string; the staleness
+  // axis validates it at the consumer and degrades instead of aborting) — a valid stamp here keeps
+  // the fixtures realistic.
   const wrap = (m: unknown): unknown => ({
     _updated: "2026-08-16",
     _unit: "y",
@@ -462,21 +463,6 @@ describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
     expect(parseInstant(undefined)).toBeUndefined();
     // A date-time with no UTC offset is rejected (would parse as ambiguous local time).
     expect(parseInstant("2026-08-16T03:00:00")).toBeUndefined();
-  });
-
-  it("rejects a nonconforming _updated stamp — the staleness compare depends on the shape", () => {
-    const valid = { _updated: "2026-08-16", _unit: "u", models: {} };
-    expect(PriceMapCodec.decode(valid)._tag).toBe("Right");
-    for (const bad of [
-      "2026-8-22",
-      "08/22/2026",
-      "x",
-      "2026-13-45",
-      "",
-      "2026-08-16\n::error::x",
-    ]) {
-      expect(PriceMapCodec.decode({ ...valid, _updated: bad })._tag, bad).toBe("Left");
-    }
   });
 
   it("rejects a negative rate, empty slots, and a hybrid flat+slots entry (the ajv gate rejects each)", () => {
@@ -693,9 +679,40 @@ describe("warnStalePrices (issue #220)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("collapses line breaks in the interpolated _updated so it cannot break out of the annotation", () => {
+  it("stays silent for a null map (no consumer map provided) and degrades silently on a nonconforming stamp", () => {
     const warn = vi.fn();
-    warnStalePrices({ _updated: "2020-01-01\n::error::forged", _unit: "u", models: {} }, warn);
+    warnStalePrices(null, warn);
+    // Hand-edited, non-ISO, calendar-impossible (V8 rolls 2026-02-31 into March), empty — none of
+    // these can be compared, so the axis degrades instead of aborting the round (issue #220 review
+    // r2).
+    for (const bad of [
+      "2026-8-22",
+      "08/22/2026",
+      "x",
+      "2026-02-31",
+      "",
+      "2020-01-01\n::error::forged",
+    ]) {
+      warnStalePrices(map(bad), warn);
+    }
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("the allKnown rollup is false for an empty report and for any unpriced line", () => {
+    expect(computeCost([], prices, undefined, vi.fn()).allKnown).toBe(false);
+    expect(
+      computeCost([mkEntry({ model: "unknown-model" })], prices, undefined, vi.fn()).allKnown,
+    ).toBe(false);
+    expect(
+      computeCost([mkEntry({ model: "pro-model" })], prices, undefined, vi.fn()).allKnown,
+    ).toBe(true);
+  });
+
+  it("collapses line breaks in a hostile model id so it cannot break out of the warning", () => {
+    // The model id is the REACHABLE escape surface (a stamp with a line break degrades before the
+    // warn) — the interpolation is wrapped like every other untrusted ::warning:: site.
+    const warn = vi.fn();
+    computeCost([mkEntry({ model: "evil\n::error::forged" })], prices, undefined, warn);
     const call = warn.mock.calls[0];
     expect(call).toBeDefined();
     const message = String(call![0]);

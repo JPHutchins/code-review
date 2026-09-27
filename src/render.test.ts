@@ -1554,6 +1554,29 @@ describe("render", () => {
       );
     });
 
+    it("renders a MIXED report's subtotal with a ≥ marker — the real partial sum, not N/A (issue #221 review r2)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: {
+          ...baseEnvelope,
+          models: [mkEntry({}), mkEntry({ model: "unpriced-variant" })],
+        },
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      // The priced row keeps its figure, the unpriced row is N/A, and the aggregates carry the
+      // real partial subtotal marked — never a bare $0.06 (which would under-report) and never
+      // N/A (which would discard the real sum).
+      expect(result).toContain("**cost:** ≥ $0.06");
+      expect(result).toContain(
+        "| **Total** | **20,000** | **4,000** | **10,000** | **2,000** | **≥ $0.06** |",
+      );
+      expect(result).toContain("| unpriced-variant | 10,000 | 2,000 | 5,000 | 1,000 | N/A |");
+    });
+
     it("renders the price snapshot's _updated in the cost collapsible (issue #220)", () => {
       const findings = mkFindings([]);
       const result = render({

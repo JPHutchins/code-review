@@ -1096,6 +1096,9 @@ jobs:
           else
             echo "::warning::the post failed without a posted signal — the review reads as unposted for this window"
           fi
+          # A breadcrumb review-object POST failure is a degraded-but-complete round; the post CLI
+          # emits its own ::warning:: annotation at the degradation site (issue #223), so every
+          # workflow copy and every pinned CLI version sees it — no grep layer here.
           exit "$POST_RC"
 
       # The review completed — finalize the check-run `neutral` (non-gating: the review is

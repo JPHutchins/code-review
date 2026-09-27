@@ -562,7 +562,9 @@ describe("render", () => {
       );
     });
 
-    it("keeps 'see the review' as plain text when reviewUrl is absent (issue #11)", () => {
+    it("omits the review pointer entirely when reviewUrl is absent (issue #11)", () => {
+      // No reviewUrl means no breadcrumb review object posted — a dangling "see the review" would
+      // point at nothing (issue #223).
       const result = render({
         findings,
         envelope: baseEnvelope,
@@ -570,8 +572,8 @@ describe("render", () => {
         template,
         inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
       });
-      expect(result).toContain("— see the review.");
-      expect(result).not.toContain("[see the review]");
+      expect(result).toContain("1 comment posted inline on `abc123d`.");
+      expect(result).not.toContain("see the review");
     });
 
     it("says no inline comments when all findings are outside the diff", () => {

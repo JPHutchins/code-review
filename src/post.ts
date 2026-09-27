@@ -11,6 +11,9 @@ import {
   isConvergenceRound,
   isReviewVerdict,
   PER_FINDING_LINKS,
+  shedNote,
+  terminalNotice,
+  verdictBadge,
 } from "./render.js";
 import { formatMarkdown } from "./format.js";
 import { warnStalePrices } from "./cost.js";
@@ -40,8 +43,24 @@ import {
   reviewBodyPointer,
   mechanicConvergence,
   escapeCodeBackticks,
+  AGENTS_STOP_DIRECTIVE,
+  REVIEW_COMPLETE_MARKER,
+  SEVERITIES,
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "./surface.js";
+
+// Exported so the size-guard test asserts the SAME bound the write path enforces — a cap change
+// must not silently un-test the shed (the PER_FINDING_LINKS convention).
+export const STICKY_CHAR_LIMIT = 65_536;
+// The reserve the initial shed leaves for the final patch's additions: the disposition line and
+// the shed-immune GitHub-rejected strays. The patch itself is re-sized against the same limit.
+export const SHED_RESERVE = 4_000;
+// The withShedNote append's length ceiling, folded into every sizing target: a caller template
+// that drops the note gets it appended AFTER measurement, so the target must leave room for it
+// or the append pushes a reserve-0 body past the limit (issue #214 review r4).
+// Sized for the note's embedded run URL (the note renders the raw --run-url; 512 covers a
+// ~300-char URL): a caller template that drops the note gets it appended after measurement.
+export const SHED_NOTE_BUDGET = 512;
 import {
   ResultEnvelopeCodec,
   PriceMapCodec,
@@ -1488,6 +1507,144 @@ export const post = async (
   // sticky's route marker, the guard, and the rounds logic can never disagree.
   const effectiveRoute = input.route ?? envelope?.route;
 
+  // The shed operates on the VISIBLE (suppression-filtered) view — the one the sticky actually
+  // renders; dropping a suppressed nit would be a pure no-op that inflates the note's count.
+  const shedPriority = (f: Finding): number =>
+    SEVERITIES.length - 1 - SEVERITIES.indexOf(f.severity);
+  const shedOrderOf = (list: readonly Finding[]): readonly Finding[] =>
+    list
+      .map((f, index) => ({ f, index }))
+      .sort((a, b) => shedPriority(a.f) - shedPriority(b.f) || a.index - b.index)
+      .map((entry) => entry.f);
+  // Body length is monotone in the shed count, so bisect the smallest count that fits the limit
+  // minus the patch reserve (the disposition line and the shed-immune rejected strays the final
+  // patch adds — rejected strays are immune because their inline post already failed). The
+  // terminal guard: when even the all-shed body exceeds the cap, unbounded non-findings content
+  // (a verbatim cloc table, a caller's template) is the culprit — the caller posts the short
+  // run-summary notice instead of a 422.
+  const sizeSticky = (
+    renderAt: (shedCount: number) => string,
+    total: number,
+    // 0 where no final patch can follow (the reserve is only for the patch's additions).
+    reserve: number = SHED_RESERVE,
+  ): { readonly body: string; readonly shedCount: number; readonly terminal: boolean } => {
+    const target = STICKY_CHAR_LIMIT - reserve - SHED_NOTE_BUDGET;
+    const base = renderAt(0);
+    if (base.length <= target) return { body: base, shedCount: 0, terminal: false };
+    // Terminal probe FIRST: when even the all-shed body exceeds GitHub's REAL limit (a terminal
+    // body is never patched, so the reserve does not apply to this decision), unbounded non-
+    // findings content (a verbatim cloc table, a caller's template) is the culprit and the
+    // bisect is wasted work — the caller posts the short run-summary notice instead of a 422.
+    const allShed = renderAt(total);
+    if (allShed.length > STICKY_CHAR_LIMIT - SHED_NOTE_BUDGET)
+      return { body: "", shedCount: total, terminal: true };
+    // The shed note the template adds at count > 0 makes the length non-monotone in the shed
+    // count (and the discussion budget re-runs over the kept set), so the bisect yields a
+    // FITTING count, not a provably minimal one — every returned body was measured.
+    let low = 0;
+    let high = total;
+    let fitted = "";
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      const body = renderAt(mid);
+      if (body.length <= target) {
+        high = mid;
+        fitted = body;
+      } else {
+        low = mid + 1;
+      }
+    }
+    // When only the all-shed count fits (the last-shed finding is the one whose prose crossed
+    // the line), no mid ever fitted — low === total and the already-computed all-shed body is
+    // exactly the body the count names. Never return body:"" (a bare note is not a sticky).
+    return { body: fitted !== "" ? fitted : allShed, shedCount: low, terminal: false };
+  };
+  // The terminal notice is rendered through the template first, then RE-MEASURED: a caller-
+  // supplied template without an it.terminal branch renders the full review again, so the
+  // fallback is a template-INDEPENDENT minimal notice with the seed-chain markers intact.
+  // The raw head SHA, exactly as the stock template's marker renders it — the CLI rejects a
+  // -- or whitespace-bearing value at the boundary, so mutating it here would only break the
+  // same-head equality checks the next round relies on.
+  // The fallback notice reuses the SAME terminalNotice builder the template's terminal branch
+  // renders — only the markers are hand-built here (the seed chain); the prose cannot drift.
+  const minimalTerminalBody = (
+    findingsPointer: string,
+    route: string | undefined,
+    incomplete: boolean,
+    summaryAvailable: boolean,
+    modelNames: string,
+  ): string =>
+    [
+      DEFAULT_MARKER,
+      `<!-- reviewed-sha: ${input.headSha} -->`,
+      ...(!incomplete && route !== undefined
+        ? [`<!-- reviewed-route: ${route.replace(/--/g, "~~").replace(/\s+/g, " ")} -->`]
+        : []),
+      ...(!incomplete ? [REVIEW_COMPLETE_MARKER] : []),
+      // The pointer's link form already begins with the directive; the convergence-only marker
+      // does not, and a terminal surface must carry the directive either way.
+      ...(findingsPointer !== ""
+        ? [
+            findingsPointer.startsWith(AGENTS_STOP_DIRECTIVE)
+              ? findingsPointer
+              : `${AGENTS_STOP_DIRECTIVE}\n${findingsPointer}`,
+          ]
+        : []),
+      "",
+      terminalNotice({
+        reviewedSha: input.headSha,
+        verdictBadge: verdictBadge(loadedFindings.verdict),
+        route: route ?? undefined,
+        postedAt: input.postedAt,
+        roundsSummary: "",
+        convergenceSummary: "",
+        inlinePosted: 0,
+        runUrl: input.runUrl,
+        summaryAvailable,
+        findingsDocLinked: hasFindingsMarker(findingsPointer),
+        thisRunArtifact: input.jsonUrl !== undefined,
+        modelNames,
+      }),
+    ].join("\n");
+  const terminalOrMinimal = (
+    terminalRender: string,
+    findingsPointer: string,
+    route: string | undefined,
+    incomplete: boolean,
+    summaryAvailable: boolean,
+    modelNames: string,
+  ): string =>
+    terminalRender.length <= STICKY_CHAR_LIMIT
+      ? terminalRender
+      : minimalTerminalBody(findingsPointer, route, incomplete, summaryAvailable, modelNames);
+  // Whether the run summary was actually written (appendRunSummary no-ops without the env var):
+  // the refuge claims must not fire on a path where the refuge does not exist.
+  const summaryAvailable = (process.env["GITHUB_STEP_SUMMARY"] ?? "") !== "";
+  const modelNames =
+    envelope !== null && envelope.models.length > 0
+      ? envelope.models.map((m) => m.model).join(", ")
+      : "";
+  // A caller-supplied template may render it.strays without the it.shedCount note — the silent
+  // drop the note exists to prevent. The sized body is checked and a post-built line appended
+  // when the template dropped the note, the same template-independent discipline as the terminal
+  // fallback.
+  // The note appended is the SAME string the stock template renders (render.ts's shedNote
+  // builder — single-sourced), and the match checks the built string, not template prose: a
+  // caller template that drops the note gets it appended; the stock template's own note matches.
+  // The pointer is a PARAMETER — the lost-envelope branch calls this before the main path's
+  // findingsMarker binding exists (the TDZ crash this helper must never close over).
+  const withShedNote = (body: string, shedCount: number, findingsPointer: string): string => {
+    if (shedCount === 0) return body;
+    const note = shedNote(
+      shedCount,
+      summaryAvailable,
+      input.runUrl,
+      hasFindingsMarker(findingsPointer),
+      input.jsonUrl !== undefined,
+    );
+    return body.includes(note) ? body : `${body}\n\n${note}\n`;
+  };
+
   if (envelope === null) {
     // The envelope carried the incomplete flag; with it lost, derive incompleteness from the verdict
     // (render does the same) so an error-verdict findings doc here still reads as a notice and — via
@@ -1515,53 +1672,94 @@ export const post = async (
     );
     // This branch lists every visible finding, exactly like the inline-off default, so it can exceed
     // GitHub's comment limit the same way — and here a 422 is the difference between a notice and
-    // nothing at all.
-    const body = formatMarkdown(
-      render({
-        findings: stampedFindings,
-        envelope: null,
-        incomplete: envelopelessIncomplete,
-        prices: decodedPrices.right,
-        pricesProvided: input.pricesProvided,
-        template,
-        route: effectiveRoute,
-        reviewedSha: input.headSha,
-        repo: input.headRepo || input.repo,
-        effort: input.effort,
-        sameRootNotes: {},
-        // The answered-state honesty rules apply on EVERY surface that renders the filtered
-        // findings — the lost-envelope branch lists every VISIBLE finding (no inline review exists to
-        // carry them) so the kept re-raises' annotations actually render, and names the drops
-        // exactly like the main path (issues #151 review r1 + r2). The nit visibility floor applies
-        // here too (issue #164): below-floor nits are hidden from the human list and shown only in the
-        // collapsed aside — the floor is a human-visibility policy, not an inline-comment policy, so it
-        // must hold on the surface that lists findings without an inline review.
-        strays: visibleFindings,
-        suppressedNits,
-        nitVisibilityFloor: input.nitVisibilityFloor,
-        answeredNotes: reRaisedNotes,
-        answeredReRaiseNote: answeredDropNote,
-        roundCount: priorRoundCount,
-        convergenceRound: false,
-        testReport,
-        clocDiff,
-        inlineDisposition: inlineRequested ? { kind: "no-envelope" } : { kind: "disabled" },
-        runUrl: input.runUrl,
-        unverifiedNoLogs: input.unverifiedNoLogs,
-        jsonUrl: input.jsonUrl,
-        findingsPointer: findingsBlob(stampedFindings),
-        postedAt: input.postedAt,
-        discussionByFinding,
-        orphanedDiscussion,
-        orphanedTotal,
-        discussionTruncated,
-        orphanedTruncated,
-        orphanedUnresolvable: orphanResolveFailed,
-      }),
-    );
+    // nothing at all. Sized by the same shed + terminal machinery as the main path (issue #214).
+    // One shared render input; the varying parts are the strays (the shed's cut), shedCount, and
+    // the terminal flag.
+    const lostInput: Omit<
+      RenderInput,
+      "inlineDisposition" | "reviewUrl" | "strays" | "shedCount" | "terminal"
+    > = {
+      findings: stampedFindings,
+      envelope: null,
+      incomplete: envelopelessIncomplete,
+      prices: decodedPrices.right,
+      pricesProvided: input.pricesProvided,
+      template,
+      route: effectiveRoute,
+      reviewedSha: input.headSha,
+      repo: input.headRepo || input.repo,
+      effort: input.effort,
+      sameRootNotes: {},
+      // The answered-state honesty rules apply on EVERY surface that renders the filtered
+      // findings — the lost-envelope branch lists every VISIBLE finding (no inline review exists to
+      // carry them) so the kept re-raises' annotations actually render, and names the drops
+      // exactly like the main path (issues #151 review r1 + r2). The nit visibility floor applies
+      // here too (issue #164): below-floor nits are hidden from the human list and shown only in the
+      // collapsed aside — the floor is a human-visibility policy, not an inline-comment policy, so it
+      // must hold on the surface that lists findings without an inline review.
+      suppressedNits,
+      nitVisibilityFloor: input.nitVisibilityFloor,
+      answeredNotes: reRaisedNotes,
+      answeredReRaiseNote: answeredDropNote,
+      roundCount: priorRoundCount,
+      convergenceRound: false,
+      testReport,
+      clocDiff,
+      runUrl: input.runUrl,
+      unverifiedNoLogs: input.unverifiedNoLogs,
+      jsonUrl: input.jsonUrl,
+      findingsPointer: findingsBlob(stampedFindings),
+      postedAt: input.postedAt,
+      summaryAvailable,
+      discussionByFinding,
+      orphanedDiscussion,
+      orphanedTotal,
+      discussionTruncated,
+      orphanedTruncated,
+      orphanedUnresolvable: orphanResolveFailed,
+    };
+    const lostRender = (opts: {
+      readonly strays: readonly Finding[];
+      readonly shedCount?: number;
+      readonly terminal?: boolean;
+    }): string =>
+      formatMarkdown(
+        render({
+          ...lostInput,
+          ...opts,
+          inlineDisposition: inlineRequested ? { kind: "no-envelope" } : { kind: "disabled" },
+        }),
+      );
+    const lostShedOrder = shedOrderOf(visibleFindings);
+    const lostRenderAt = (shedCount: number): string =>
+      shedCount === 0
+        ? lostRender({ strays: visibleFindings })
+        : (() => {
+            const dropped = new Set(lostShedOrder.slice(0, shedCount));
+            return lostRender({
+              strays: visibleFindings.filter((f) => !dropped.has(f)),
+              shedCount,
+            });
+          })();
+    // No patch ever follows this branch, so the reserve is 0 — the shed stops at GitHub's real
+    // limit.
+    const lostSized = sizeSticky(lostRenderAt, visibleFindings.length, 0);
+    const body = lostSized.terminal
+      ? terminalOrMinimal(
+          lostRender({ strays: visibleFindings, terminal: true }),
+          findingsBlob(stampedFindings),
+          effectiveRoute,
+          envelopelessIncomplete,
+          summaryAvailable,
+          "",
+        )
+      : withShedNote(lostSized.body, lostSized.shedCount, findingsBlob(stampedFindings));
     await upsertSticky(input.repo, prNumber, existingSticky, body, ghApi, true);
-    // The body this branch posts, whatever shape it took, also goes to the run summary.
-    appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => body);
+    // The run summary carries the WHOLE review on this branch too — the shed's refuge claim
+    // ("the run summary carries the whole review") must stay true on every path.
+    appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () =>
+      lostSized.shedCount === 0 ? lostSized.body : lostRender({ strays: visibleFindings }),
+    );
     if (inlineRequested) {
       process.stderr.write(
         "Warning: inline: true was requested, but the result envelope is missing — inline comments cannot be built; the findings are in the sticky and the run summary instead\n",
@@ -1589,6 +1787,27 @@ export const post = async (
 
   if (emptyMechanicWouldBury(effectiveRoute, thisIncomplete) && existingSticky !== null)
     await emptyMechanicLeaveOrNote(existingSticky);
+
+  // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
+  // pointer to the prior findings document. The guard refuses only when the pointer is actually
+  // load-bearing: a COMPLETED full-review sticky whose markers gather would seed from. The
+  // review-complete requirement exempts the announce placeholder, which carries the route and the
+  // markers forward but strips review-complete — it must be replaced by an honest notice, not
+  // frozen (post.ts's empty-mechanic path handles it). A mechanic/notice sticky is never a seed
+  // either. An expired artifact link is not resolvability-checked here — a fetch in the write path
+  // is the wrong trade — so an expired link can still freeze a round; the run log's ::error:: names
+  // why (issue #233 r2 + r5 + r6).
+  if (
+    !input.jsonUrl &&
+    existingSticky !== null &&
+    parseReviewComplete(existingSticky.body) &&
+    parseReviewedRoute(existingSticky.body) === "full review" &&
+    hasFindingsMarker(existingSticky.body)
+  ) {
+    leaveInPlace(
+      "no --json-url was supplied and the existing sticky still carries the prior findings document's marker (embedded or link) — leaving it in place rather than severing the seed chain\n",
+    );
+  }
 
   // A convergence round is a COMPLETED FULL review (effectiveRoute read above — `input.route` first,
   // then the envelope — the same way render does). A mechanic pass or any incomplete/failed run
@@ -1709,6 +1928,7 @@ export const post = async (
     findingsPointer: findingsMarker,
     postedAt: input.postedAt,
     pricedAt: input.pricedAt,
+    summaryAvailable,
   };
   const longFilesNote =
     longFiles.length > 0
@@ -1729,6 +1949,8 @@ export const post = async (
       | "discussionTruncated"
       | "orphanedTruncated"
     >,
+    terminal = false,
+    shedCount = 0,
   ): string =>
     formatMarkdown(
       render({
@@ -1739,39 +1961,66 @@ export const post = async (
           ? { unanchoredStrays }
           : {}),
         ...(discussionOverride ?? {}),
+        ...(terminal ? { terminal } : {}),
+        ...(shedCount > 0 ? { shedCount } : {}),
         inlineDisposition,
         reviewUrl,
       }) + longFilesNote,
     );
 
-  // The body is posted unshed: GitHub rejects one over 65536 chars, and postComment/patchComment let
-  // that 422 propagate, so an oversized body fails the job with the announce placeholder still up.
-  // Inline off makes that reachable — every finding's prose now renders into this one comment, where
-  // the in-diff ones used to be separate posts. Shedding is issue #214; tolerating a failed write
-  // after the sticky is up is issue #223. The embedded document is gone from this body (issue #217),
-  // which removed the largest fixed cost it had — an oversized round is now a matter of finding prose,
-  // not of a ~32KB blob. Each sticky-listed stray's permalink adds a URL line (~55–130 chars) to this
-  // budgeted-by-nobody section, so a nit-heavy inline-off round sits closer to the limit (issue #231 r1).
-  // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
-  // pointer to the prior findings document. The guard refuses only when the pointer is actually
-  // load-bearing: a COMPLETED full-review sticky whose markers gather would seed from. The
-  // review-complete requirement exempts the announce placeholder, which carries the route and the
-  // markers forward but strips review-complete — it must be replaced by an honest notice, not
-  // frozen (post.ts's empty-mechanic path handles it). A mechanic/notice sticky is never a seed
-  // either. An expired artifact link is not resolvability-checked here — a fetch in the write path
-  // is the wrong trade — so an expired link can still freeze a round; the run log's ::error:: names
-  // why (issue #233 r2 + r5 + r6).
-  if (
-    !input.jsonUrl &&
-    existingSticky !== null &&
-    parseReviewComplete(existingSticky.body) &&
-    parseReviewedRoute(existingSticky.body) === "full review" &&
-    hasFindingsMarker(existingSticky.body)
-  ) {
-    leaveInPlace(
-      "no --json-url was supplied and the existing sticky still carries the prior findings document's marker (embedded or link) — leaving it in place rather than severing the seed chain\n",
-    );
-  }
+  // GitHub rejects a comment over 65536 chars, and postComment/patchComment let that 422 propagate,
+  // so the body is sized HERE, before the write (issue #214): the findings shed least-severe-first
+  // until the body fits the limit minus the patch reserve (the disposition line and the
+  // GitHub-rejected strays the final patch adds — those strays are shed-immune by construction:
+  // their inline post already failed, so the sticky is the only human surface they have). The
+  // embedded blob is gone from this body (issue #217), so the shed now trades in finding prose
+  // only; the run summary renders the WHOLE review with no size limit and is the shed's refuge
+  // (issue #205). A failed write AFTER the sticky is up degrades instead of aborting (issue #223).
+  // The shed's universe is the sticky's own render universe — the strays — so the count the
+  // note names is exactly what the comment lost (an in-diff finding is never in the comment).
+  // The kept list keeps the DOCUMENT order: the shed decides WHAT is dropped, the document
+  // decides HOW the kept findings are listed.
+  const mainShedOrder = shedOrderOf(strays);
+  const mainRenderAt = (shedCount: number): string =>
+    shedCount === 0
+      ? renderBody(initialDisposition)
+      : renderBody(
+          initialDisposition,
+          undefined,
+          strays.filter((f) => !new Set(mainShedOrder.slice(0, shedCount)).has(f)),
+          undefined,
+          undefined,
+          undefined,
+          false,
+          shedCount,
+        );
+  // The reserve over-sheds when the patch it funds never runs (the review POST failed wholesale,
+  // or every raw comment was dropped) — accepted: patching the sticky back up after a failed
+  // review POST costs a second write for a degraded round, and the patch re-fits on its own.
+  const mainSized = sizeSticky(
+    mainRenderAt,
+    strays.length,
+    inlineRequested && rawComments.length > 0 ? SHED_RESERVE : 0,
+  );
+  const fitStickyBody = (): string =>
+    mainSized.terminal
+      ? terminalOrMinimal(
+          renderBody(
+            initialDisposition,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          ),
+          findingsMarker,
+          effectiveRoute,
+          thisIncomplete,
+          summaryAvailable,
+          modelNames,
+        )
+      : withShedNote(mainSized.body, mainSized.shedCount, findingsMarker);
 
   // Phase 2: writes — sticky first, inline second. The carry is a property of the rendered body
   // (findingsBlob above), so every write site gets it for free.
@@ -1779,7 +2028,7 @@ export const post = async (
     input.repo,
     prNumber,
     existingSticky,
-    renderBody(initialDisposition),
+    fitStickyBody(),
     ghApi,
     true,
   );
@@ -1839,7 +2088,6 @@ export const post = async (
   // GitHub-rejected in-diff findings join the strays, and none-anchored says "inline unavailable",
   // never a false "posted". Best-effort — the sticky and review are already posted.
   const unanchoredCount = unposted.length;
-  const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
   // GitHub-rejected in-diff findings render on the final sticky as strays — the discussion grouping
   // was built before their rejection was knowable, so it is rebuilt with their ids in the known set:
   // their asides render, and their replies never land in the "no longer reports" bucket.
@@ -1866,27 +2114,82 @@ export const post = async (
       inlinePosted > 0
         ? { kind: "posted", count: inlinePosted, sha: input.headSha }
         : { kind: "inline-unavailable" };
-    try {
-      await patchComment(
-        input.repo,
-        stickyRef.id,
-        renderBody(
+    if (mainSized.terminal) {
+      // The terminal sticky must not understate where the review lives: the inline review IS
+      // posted, so a short patch adds the disposition line (the terminal body is tiny).
+      try {
+        const terminalPatch = renderBody(
           finalDisposition,
           reviewUrl,
-          finalStrays,
+          undefined,
           unanchoredCount,
           unposted,
           finalDiscussionOverride,
-        ),
-        ghApi,
-      );
-      process.stderr.write(
-        `Updated sticky comment #${String(stickyRef.id)} to reflect the review\n`,
-      );
-    } catch (err) {
-      process.stderr.write(
-        `Warning: failed to update the sticky summary after the review: ${errMsg(err)}\n`,
-      );
+          true,
+        );
+        if (terminalPatch.length <= STICKY_CHAR_LIMIT) {
+          await patchComment(input.repo, stickyRef.id, terminalPatch, ghApi);
+          process.stderr.write(
+            `Updated sticky comment #${String(stickyRef.id)} to reflect the review\n`,
+          );
+        } else {
+          process.stderr.write(
+            `Warning: the terminal sticky patch exceeds GitHub's comment limit — the sticky stands; the run summary carries the review\n`,
+          );
+        }
+      } catch (err) {
+        process.stderr.write(
+          `Warning: failed to update the terminal sticky after the review: ${errMsg(err)}\n`,
+        );
+      }
+    } else {
+      // The patch re-sizes against the same limit: its additions (the disposition, the immune
+      // rejected strays, the rebuilt discussion) can push the body past the initial reserve, so
+      // the shed re-fits from scratch — the rejected strays stay immune either way.
+      const patchShedOrder = shedOrderOf(strays);
+      const patchRenderAt = (shedCount: number): string =>
+        renderBody(
+          finalDisposition,
+          reviewUrl,
+          [
+            ...unposted,
+            ...(shedCount === 0
+              ? strays
+              : strays.filter((f) => !new Set(patchShedOrder.slice(0, shedCount)).has(f))),
+          ],
+          unanchoredCount,
+          unposted,
+          finalDiscussionOverride,
+          false,
+          shedCount,
+        );
+      // The patch is the last write — no reserve.
+      const patchSized = sizeSticky(patchRenderAt, strays.length, 0);
+      try {
+        if (patchSized.terminal) {
+          process.stderr.write(
+            `Warning: the final sticky patch still exceeds GitHub's comment limit — the sticky stands as posted${
+              summaryAvailable
+                ? "; the whole review (rejected findings included) is in the run summary"
+                : ""
+            }\n`,
+          );
+        } else {
+          await patchComment(
+            input.repo,
+            stickyRef.id,
+            withShedNote(patchSized.body, patchSized.shedCount, findingsMarker),
+            ghApi,
+          );
+          process.stderr.write(
+            `Updated sticky comment #${String(stickyRef.id)} to reflect the review\n`,
+          );
+        }
+      } catch (err) {
+        process.stderr.write(
+          `Warning: failed to update the sticky summary after the review: ${errMsg(err)}\n`,
+        );
+      }
     }
   }
 

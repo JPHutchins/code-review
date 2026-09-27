@@ -15,6 +15,7 @@ import {
   mentionsOutsideKnown,
   priorIdsFrom,
   discussionRows,
+  STICKY_CHAR_LIMIT,
 } from "./post.js";
 import { fetchThreadComments } from "./answered.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
@@ -3388,6 +3389,124 @@ describe("post — the stale-price warn is gated on the providedness flag (issue
     } finally {
       stderrSpy.mockRestore();
     }
+  });
+});
+
+describe("post — the comment-size shed and the terminal guard (issue #214)", () => {
+  beforeEach(() => {
+    // test-setup neutralizes GITHUB_STEP_SUMMARY for the suite; the refuge claims these tests
+    // assert only fire when the summary is actually written.
+    process.env["GITHUB_STEP_SUMMARY"] = join(tmpDir, "summary.md");
+  });
+  afterEach(() => {
+    delete process.env["GITHUB_STEP_SUMMARY"];
+  });
+  const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
+    const stickyCalls = calls.filter(
+      (c) =>
+        c.stdin !== undefined &&
+        (c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") ||
+          c.args[0] === "repos/owner/repo/issues/comments/999"),
+    );
+    // The FIRST sticky write is the initial upsert these tests pin (the later disposition patch,
+    // when one runs, must not satisfy an initial-body assertion).
+    const first = stickyCalls[0];
+    expect(first, "expected the initial sticky upsert").toBeDefined();
+    return (JSON.parse(first!.stdin!) as CommentBody).body;
+  };
+
+  const manyFindings = (): Findings => ({
+    ...mkFindings([]),
+    findings: [
+      ...Array.from({ length: 60 }, (_, i) =>
+        mkFinding({
+          severity: "nit",
+          title: `Nit finding ${String(i)}`,
+          description: `Nit ${String(i)}: ${"x".repeat(1_500)}`,
+        }),
+      ),
+      mkFinding({ severity: "major", title: "The kept major", description: "y".repeat(200) }),
+    ],
+  });
+
+  it("sheds the least severe findings until the sticky fits, and names the run summary as the refuge", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(manyFindings()));
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+    await expect(
+      post(mkInput({ runUrl: "https://github.com/owner/repo/actions/runs/123" }), api),
+    ).resolves.toBeUndefined();
+    const body = stickyBodyOf(calls());
+    // Inline off never patches, so the shed targets GitHub's REAL limit (reserve 0).
+    expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT);
+    expect(body).toContain("left out of this comment");
+    expect(body).toContain("run summary");
+    // The shed drops from the least-severe end: the first nit is gone, the major survives.
+    expect(body).toContain("The kept major");
+    expect(body).not.toContain("Nit finding 0");
+  });
+
+  it("falls back to the template-INDEPENDENT minimal notice when a caller template ignores it.terminal", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ title: "DistinctTitleHere" })])),
+    );
+    writeFileSync(join(tmpDir, "cloc.txt"), "x".repeat(70_000));
+    // A custom template with no it.terminal branch renders the full review again — the guard
+    // must re-measure and fall back, never 422.
+    writeFileSync(join(tmpDir, "comment.eta"), "<%~ it.clocDiff %>");
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+    await expect(
+      post(mkInput({ clocDiffPath: join(tmpDir, "cloc.txt") }), api),
+    ).resolves.toBeUndefined();
+    const body = stickyBodyOf(calls());
+    expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT);
+    expect(body).toContain("exceeds GitHub's comment-size limit");
+    expect(body).toContain("<!-- code-review -->");
+    expect(body).not.toContain("DistinctTitleHere");
+  });
+
+  it("the lost-envelope branch sheds instead of crashing — the findingsMarker TDZ is pinned (issue #214 review r5)", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(manyFindings()));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    try {
+      const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+      await expect(
+        post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+      ).rejects.toThrow("exit");
+      const body = stickyBodyOf(calls());
+      expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT);
+      expect(body).toContain("left out of this comment");
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("posts the short run-summary notice when unbounded non-findings content alone exceeds the cap", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ title: "DistinctTitleHere" })])),
+    );
+    writeFileSync(join(tmpDir, "cloc.txt"), "x".repeat(70_000));
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+    await expect(
+      post(
+        mkInput({
+          clocDiffPath: join(tmpDir, "cloc.txt"),
+          runUrl: "https://github.com/owner/repo/actions/runs/123",
+        }),
+        api,
+      ),
+    ).resolves.toBeUndefined();
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("exceeds GitHub's comment-size limit");
+    expect(body).toContain("run summary");
+    expect(body).not.toContain("DistinctTitleHere");
+    // The seed chain survives the notice: markers + the findings link + review-complete.
+    expect(body).toContain("<!-- code-review -->");
+    expect(body).toContain("<!-- review-complete -->");
+    expect(body).toContain("findings-json");
   });
 });
 

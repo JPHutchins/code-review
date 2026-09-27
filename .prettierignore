@@ -1,5 +1,9 @@
 dist/
 node_modules/
+# tsup's TS-config bundling writes a temporary tsup.config.bundled_<hash>.mjs during the build;
+# the ci task runs build and format_check in PARALLEL, so prettier's whole-tree scan can hit the
+# temp file mid-delete (an intermittent ENOENT that fails CI).
+tsup.config.bundled_*
 schema/
 .mypy_cache/
 .camas/

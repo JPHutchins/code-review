@@ -1945,6 +1945,14 @@ const postCmd = defineCommand({
   },
   run: async ({ args }) => {
     const priceResolution = resolvePrices(args.prices);
+    // A "--" or whitespace in the head SHA would terminate the sticky's reviewed-sha marker
+    // comment early; a real commit SHA contains neither, so reject at the boundary instead of
+    // mutating the value the same-head equality checks compare (issue #214 review r5).
+    if (/--|\s/.test(args["head-sha"])) {
+      throw new Error(
+        '--head-sha must be a commit SHA (no "--" or whitespace): ' + args["head-sha"],
+      );
+    }
     await post({
       repo: args.repo,
       // The workflow's post step threads HEAD_REPO env (the fork's owner/name) — a finding

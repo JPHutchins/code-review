@@ -92,6 +92,18 @@ export type InlineDisposition =
 
 export interface RenderInput {
   readonly findings: Findings;
+  // The comment-size shed (issue #214): how many of the least severe findings the caller dropped
+  // before rendering, so the template can name them and point at the run summary. 0 ⇒ nothing
+  // shed (the default).
+  readonly shedCount?: number;
+  // The terminal guard: non-findings content alone (cloc, a caller template) exceeded the comment
+  // cap even with every finding shed — the template renders the short run-summary notice instead
+  // of the review. The markers and the findings pointer still render (the seed chain survives).
+  readonly terminal?: boolean;
+  // Whether the run summary was actually written (appendRunSummary no-ops without the env var):
+  // the shed note's and the terminal notice's refuge claims must not fire on a path where the
+  // refuge does not exist. Omitted ⇒ false (the standalone render command has no summary).
+  readonly summaryAvailable?: boolean;
   readonly envelope: ResultEnvelope | null;
   // An explicit signal, never inferred from the map: an absent (all-zero) map renders cost as N/A,
   // never a false $0.00. Omitted ⇒ treated as provided.

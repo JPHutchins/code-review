@@ -50,7 +50,7 @@ afterEach(() => {
 
 describe("cli — check-cost", () => {
   it("sums a real transcript per model and reports real cost against a provided price map", async () => {
-    const { stdout, exitCode } = await runCli([
+    const { stdout, stderr, exitCode } = await runCli([
       "check-cost",
       transcriptFixture("deepseek-main.jsonl"),
       "--prices",
@@ -71,6 +71,8 @@ describe("cli — check-cost", () => {
     expect(out.totalCostUSD).toBeGreaterThan(0);
     expect(out.pricesProvided).toBe(true);
     expect(out.transcripts).toHaveLength(1);
+    // The fixture map predates the CLI's release — a PROVIDED stale map warns (issue #220).
+    expect(stderr).toContain("::warning:: code-review cost");
   });
 
   it("reports zero spend and warns (never crashes) when the transcript is unreadable", async () => {
@@ -99,6 +101,9 @@ describe("cli — check-cost", () => {
     ]);
     expect(exitCode).toBeNull();
     expect(stderr).toContain("cost will be reported as N/A");
+    // The bundled example map never trips the staleness warn — a consumer who configured no
+    // pricing must not be told to fix a map they never supplied (issue #220 review r1).
+    expect(stderr).not.toContain("::warning:: code-review cost");
     const out = JSON.parse(stdout) as {
       totalInputTokens: number;
       totalCostUSD: number;

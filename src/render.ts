@@ -398,6 +398,9 @@ export const render = (input: RenderInput): string => {
   const costReport = input.envelope
     ? computeCost(input.envelope.models, input.prices, pricedAt)
     : null;
+  // An all-unknown report reads N/A end to end (the Total row and the header meta too) — a run
+  // whose every model missed the map must not present a confident $0.00 anywhere (issue #221).
+  const allKnown = costReport === null || costReport.lines.every((line) => line.known);
   const pricesProvided = input.pricesProvided ?? true;
   const route = input.route ?? input.envelope?.route ?? null;
   const effort = input.effort ?? input.envelope?.effort ?? null;
@@ -607,6 +610,7 @@ export const render = (input: RenderInput): string => {
     incomplete,
     costReport,
     pricesProvided,
+    allKnown,
     pricesUpdatedAt: input.prices._updated,
     route,
     effort,

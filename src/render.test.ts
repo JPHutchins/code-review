@@ -1537,6 +1537,23 @@ describe("render", () => {
       expect(result).not.toContain("| unpriced-variant | 10,000 | 2,000 | 5,000 | 1,000 | $0.00 |");
     });
 
+    it("reads N/A end to end when every model missed the map (issue #221 review r1)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: { ...baseEnvelope, models: [mkEntry({ model: "unpriced-variant" })] },
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      // The header meta and the Total row carry the provenance too — no confident $0.00 anywhere.
+      expect(result).toContain("**cost:** N/A");
+      expect(result).toContain(
+        "| **Total** | **10,000** | **2,000** | **5,000** | **1,000** | **N/A** |",
+      );
+    });
+
     it("renders the price snapshot's _updated in the cost collapsible (issue #220)", () => {
       const findings = mkFindings([]);
       const result = render({

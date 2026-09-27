@@ -3361,6 +3361,36 @@ describe("post — minimize prior inline comments (issue #31/#53)", () => {
   });
 });
 
+describe("post — the stale-price warn is gated on the providedness flag (issue #220)", () => {
+  beforeEach(() => {
+    writeFileSync(
+      join(tmpDir, "prices.json"),
+      JSON.stringify({
+        _updated: "2020-01-01",
+        _unit: "u",
+        models: { "pro-model": { in: 3, out: 15, cache_read: 0.3, cache_write: 0.6 } },
+      }),
+    );
+  });
+
+  it("warns for a provided stale map and stays silent when no map was provided", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const warnFired = (): boolean =>
+        stderrSpy.mock.calls.some(([chunk]) =>
+          String(chunk).includes("::warning:: code-review cost"),
+        );
+      const { api } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+      await expect(post(mkInput({ pricesProvided: false }), api)).resolves.toBeUndefined();
+      expect(warnFired()).toBe(false);
+      await expect(post(mkInput({}), api)).resolves.toBeUndefined();
+      expect(warnFired()).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+});
+
 describe("post — inline review 422 salvage (issue #57)", () => {
   // GitHub rejects the batched review when ANY comment position is invalid; the fallback posts the
   // review body-only, then each comment individually — line 10 is accepted, line 11 is rejected.

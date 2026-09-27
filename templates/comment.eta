@@ -12,7 +12,7 @@
 
 ## <%= it.verdictBadge(it.findings.verdict) %>
 
-<% const meta = [] %><% if (it.postedAt) { meta.push('**Reviewed** `' + it.reviewedSha.slice(0, 7) + '` at ' + it.postedAt) } %><% if (it.route) { meta.push('**route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.hasUsage) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD)) } else { meta.push('_usage unavailable_') } %><sub><%~ meta.join(' · ') %></sub>
+<% const meta = [] %><% if (it.postedAt) { meta.push('**Reviewed** `' + it.reviewedSha.slice(0, 7) + '` at ' + it.postedAt) } %><% if (it.route) { meta.push('**route:** ' + it.route) } %><% if (it.effort) { meta.push('**effort:** ' + it.effort) } %><% if (it.hasUsage) { meta.push('**turns:** ' + it.envelope.turns); meta.push('**wall:** ' + it.formatDuration(it.envelope.duration_ms)); meta.push('**models:** ' + it.modelNames); meta.push('**cost:** ' + it.formatCost(it.costReport.totalCostUSD, it.allKnown)) } else { meta.push('_usage unavailable_') } %><sub><%~ meta.join(' · ') %></sub>
 <% if (!it.incomplete) { -%>
 <% if (it.roundsSummary) { -%>
 <sub><%~ it.roundsSummary %></sub>
@@ -231,8 +231,8 @@ All <%= it.testReport.total %> tests passed.
 <% it.costReport.lines.forEach(function(l) { -%>
 > | <%= l.model %> | <%= it.formatTokens(l.inputTokens) %> | <%= it.formatTokens(l.outputTokens) %> | <%= it.formatTokens(l.cacheReadTokens) %> | <%= it.formatTokens(l.cacheWriteTokens) %> | <%= it.formatCost(l.costUSD, l.known) %> |
 <% }) -%>
-> | **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD) %>** |
-<% if (it.pricesProvided) { -%>
+> | **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD, it.allKnown) %>** |
+<% if (it.pricesProvided && it.pricesUpdatedAt) { -%>
 > Prices snapshot `_updated` <%= it.pricesUpdatedAt %>.
 <% } -%>
 <% } else if (it.usageAvailable) { -%>

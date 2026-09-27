@@ -1167,8 +1167,10 @@ export const post = async (
     throw new Error(`Price map at ${input.pricesPath} does not match the expected shape`);
   }
   // Once per round, before any render — the sticky's cost collapsible carries the snapshot date,
-  // and a map predating this CLI's release warns as a step annotation (issue #220).
-  warnStalePrices(decodedPrices.right);
+  // and a map predating this CLI's release warns as a step annotation (issue #220). Gated on the
+  // providedness flag: a consumer who deliberately configured no pricing must not be warned about
+  // a bundled example map they never supplied.
+  if (input.pricesProvided) warnStalePrices(decodedPrices.right);
   const template = readFileSync(input.templatePath, "utf-8");
   const inlineRequested = input.inline === true;
   // Loaded before the notice paths: their convergence stamps read the route, exactly like the main

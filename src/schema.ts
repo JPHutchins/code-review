@@ -677,8 +677,25 @@ const SlottedModelPricesCodec = strictExact("SlottedModelPricesStrict", SlottedS
 // are strict-keyed (above), so the union rejects a hybrid entry instead of silently resolving it to one.
 export const ModelPricesCodec = t.union([FlatModelPricesCodec, SlottedModelPricesCodec]);
 
+// Zero-padded ISO YYYY-MM-DD — the shape the staleness compare (cost.ts) and the sticky's
+// snapshot line depend on, so a nonconforming stamp fails decode loudly instead of comparing
+// wrongly or injecting markup (issue #220 review r1).
+const IsoDateCodec = t.string.pipe(
+  new t.Type<string, string, unknown>(
+    "ISO8601Date",
+    t.string.is,
+    (u, c) =>
+      t.string.is(u) &&
+      /^\d{4}-\d{2}-\d{2}$/.test(u) &&
+      !Number.isNaN(new Date(`${u}T00:00:00Z`).getTime())
+        ? t.success(u)
+        : t.failure(u, c, "expected a zero-padded ISO YYYY-MM-DD date"),
+    t.identity,
+  ),
+);
+
 export const PriceMapCodec = t.type({
-  _updated: t.string,
+  _updated: IsoDateCodec,
   _unit: t.string,
   models: t.record(t.string, ModelPricesCodec),
 });

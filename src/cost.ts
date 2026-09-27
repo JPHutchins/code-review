@@ -8,6 +8,7 @@ import type {
   PriceSlot,
 } from "./schema.js";
 import { RELEASED } from "./released.js";
+import { annotationSafe } from "./util.js";
 
 export interface CostLine {
   readonly model: string;
@@ -114,7 +115,9 @@ const computeModelCost = (
   pricedAt: Date | undefined,
   warn: Warn,
 ): CostLine => {
-  const p = prices.models[entry.model];
+  // Own-property only: a bare lookup would resolve prototype-chain names (`constructor`) as
+  // priced — the t.record hazard schema.ts documents for the same class.
+  const p = Object.hasOwn(prices.models, entry.model) ? prices.models[entry.model] : undefined;
   const cacheRead = entry.cache_read_tokens ?? 0;
   const cacheWrite = entry.cache_write_tokens ?? 0;
   const zero: CostLine = {
@@ -133,7 +136,9 @@ const computeModelCost = (
     return { ...zero, known: false };
   }
   const rate = resolveFlatPrices(entry.model, p, pricedAt, warn);
-  if (rate === null) return zero;
+  // Both "cannot price this row" exits agree on provenance: an unpriceable row must not render a
+  // confident $0.00 either (issue #221 review r1).
+  if (rate === null) return { ...zero, known: false };
   const costUSD =
     (entry.input_tokens * rate.in +
       entry.output_tokens * rate.out +
@@ -171,7 +176,9 @@ export const computeCost = (
 export const warnStalePrices = (prices: PriceMap, warn: Warn = defaultWarn): void => {
   if (prices._updated < RELEASED) {
     warn(
-      `::warning:: code-review cost: the price map was last verified ${prices._updated}, before this CLI's release (${RELEASED}) — the map may miss pricing this CLI ships; re-verify against the provider's pricing page`,
+      // annotationSafe keeps a CR/LF in _updated from ending the annotation early (RELEASED is a
+      // repo constant — no wrap needed), the house shape at every ::warning:: site.
+      `::warning:: code-review cost: the price map was last verified ${annotationSafe(prices._updated)}, before this CLI's release (${RELEASED}) — the map may miss pricing this CLI ships; re-verify against the provider's pricing page`,
     );
   }
 };

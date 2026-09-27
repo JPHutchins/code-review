@@ -102,6 +102,37 @@ describe("computeCost", () => {
     expect(report.lines[0]!.known).toBe(true);
   });
 
+  it("marks an unpriceable slotted row known:false too — no run instant selects no slot", () => {
+    const warn = vi.fn();
+    const report = computeCost(
+      [mkEntry({ model: "slot-model" })],
+      {
+        _updated: "2026-08-16",
+        _unit: "u",
+        models: {
+          "slot-model": {
+            slots: [
+              { utc_from: "00:00", utc_to: "00:00", in: 1, out: 1, cache_read: 0, cache_write: 0 },
+            ],
+          },
+        },
+      },
+      undefined,
+      warn,
+    );
+    expect(report.lines[0]!.known).toBe(false);
+    expect(report.lines[0]!.costUSD).toBe(0);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("does not treat a prototype-chain model name as priced", () => {
+    const warn = vi.fn();
+    const report = computeCost([mkEntry({ model: "constructor" })], prices, undefined, warn);
+    expect(report.lines[0]!.known).toBe(false);
+    expect(report.lines[0]!.costUSD).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("unknown model"));
+  });
+
   it("defaults to process.stderr.write for warnings when no warn callback is provided", () => {
     const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
@@ -417,7 +448,13 @@ describe("computeCost — UTC time-slot pricing (issue #170)", () => {
 });
 
 describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
-  const wrap = (m: unknown): unknown => ({ _updated: "x", _unit: "y", models: { model: m } });
+  // A VALID stamp, so these tests keep proving the model-shape gate rather than failing on the
+  // date gate first (issue #220 review r1 added the date shape to the codec).
+  const wrap = (m: unknown): unknown => ({
+    _updated: "2026-08-16",
+    _unit: "y",
+    models: { model: m },
+  });
 
   it("parseInstant returns a Date for a valid ISO instant and undefined for garbage/absent", () => {
     expect(parseInstant("2026-08-16T03:00:00.000Z")?.getUTCHours()).toBe(3);
@@ -425,6 +462,21 @@ describe("parseInstant + PriceMapCodec parity (issue #170 review)", () => {
     expect(parseInstant(undefined)).toBeUndefined();
     // A date-time with no UTC offset is rejected (would parse as ambiguous local time).
     expect(parseInstant("2026-08-16T03:00:00")).toBeUndefined();
+  });
+
+  it("rejects a nonconforming _updated stamp — the staleness compare depends on the shape", () => {
+    const valid = { _updated: "2026-08-16", _unit: "u", models: {} };
+    expect(PriceMapCodec.decode(valid)._tag).toBe("Right");
+    for (const bad of [
+      "2026-8-22",
+      "08/22/2026",
+      "x",
+      "2026-13-45",
+      "",
+      "2026-08-16\n::error::x",
+    ]) {
+      expect(PriceMapCodec.decode({ ...valid, _updated: bad })._tag, bad).toBe("Left");
+    }
   });
 
   it("rejects a negative rate, empty slots, and a hybrid flat+slots entry (the ajv gate rejects each)", () => {
@@ -639,5 +691,15 @@ describe("warnStalePrices (issue #220)", () => {
     warnStalePrices(map(RELEASED), warn);
     warnStalePrices(map("2999-01-01"), warn);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("collapses line breaks in the interpolated _updated so it cannot break out of the annotation", () => {
+    const warn = vi.fn();
+    warnStalePrices({ _updated: "2020-01-01\n::error::forged", _unit: "u", models: {} }, warn);
+    const call = warn.mock.calls[0];
+    expect(call).toBeDefined();
+    const message = String(call![0]);
+    expect(message).not.toContain("\n");
+    expect(message).toContain("::error::forged");
   });
 });

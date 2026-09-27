@@ -488,7 +488,9 @@ const checkCostCmd = defineCommand({
     const usage = sumTranscriptUsage(tree.entries);
     const priceResolution = resolvePrices(args.prices);
     const prices = decode(PriceMapCodec.decode(readJSON(priceResolution.path)), "prices");
-    warnStalePrices(prices);
+    // Only the consumer's own map can be stale — the bundled example (no --prices) is a deliberate
+    // no-pricing choice and must not warn about a map the consumer never supplied.
+    if (priceResolution.kind === "provided") warnStalePrices(prices);
     // Price at the transcript's last activity instant (deterministic — re-running `check-cost` on the
     // same transcript prices the same slot), not the invocation wall clock (issue #170 review r2).
     const report = computeCost(
@@ -693,7 +695,7 @@ const budgetHookCmd = defineCommand({
       const tree = transcriptPath ? readTranscriptTree(resolve(transcriptPath)) : undefined;
       const usage = tree ? sumTranscriptUsage(tree.entries) : undefined;
       const prices = args.prices ? tryReadPrices(args.prices) : null;
-      const spentUsd =
+      const costReport =
         prices !== null && usage
           ? // Price at the transcript's last activity instant, not the wall clock (issue #170 review
             // r2). Silent warn: this budget-steering cost is recomputed on EVERY tool event, so a
@@ -703,7 +705,14 @@ const budgetHookCmd = defineCommand({
               prices,
               usage.lastTsMs !== null ? new Date(usage.lastTsMs) : new Date(),
               () => undefined,
-            ).totalCostUSD
+            )
+          : null;
+      // Unmeasurable spend is null, never a confident number: a report with any unpriced line
+      // under-counts, so the steering degrades to unsteered rather than telling the agent $0.00
+      // was spent (issue #221 review r1).
+      const spentUsd =
+        costReport !== null && costReport.lines.every((line) => line.known)
+          ? costReport.totalCostUSD
           : null;
       // The absolute anchor (set by the review job, inherited by every hook incl. fan-out subagents)
       // is the true remaining wall; the per-transcript first timestamp is only the fallback — it

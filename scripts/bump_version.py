@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 
 def replace(path: str, expected: int, pairs: tuple[tuple[str, str], ...]) -> None:
-    text = pathlib.Path(path).read_text()
+    text = pathlib.Path(path).read_text(encoding="utf-8")
     for old, new in pairs:
         found = text.count(old)
         if found != expected:
@@ -25,7 +25,7 @@ def replace(path: str, expected: int, pairs: tuple[tuple[str, str], ...]) -> Non
             )
             sys.exit(1)
         text = text.replace(old, new)
-    pathlib.Path(path).write_text(text)
+    pathlib.Path(path).write_text(text, encoding="utf-8")
     print(f"{path}: bumped to {new}")
 
 
@@ -63,7 +63,8 @@ def main() -> None:
         "// The release date, stamped by scripts/bump_version.py at release time. The staleness signal for\n"
         "// the price map (issue #220): a map whose `_updated` predates this date cannot reflect pricing the\n"
         "// CLI ships — the warn fires exactly when a consumer rolled the CLI but not the prices.\n"
-        f'export const RELEASED = "{stamp}";\n'
+        f'export const RELEASED = "{stamp}";\n',
+        encoding="utf-8",
     )
     print(f"src/released.ts: stamped RELEASED={stamp}")
 

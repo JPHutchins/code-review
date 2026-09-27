@@ -8,7 +8,7 @@ import type {
   PriceSlot,
 } from "./schema.js";
 import { RELEASED } from "./released.js";
-import { annotationSafe } from "./util.js";
+import { annotationSafe, modelIdentity } from "./util.js";
 
 export interface CostLine {
   readonly model: string;
@@ -121,8 +121,13 @@ const computeModelCost = (
   warn: Warn,
 ): CostLine => {
   // Own-property only: a bare lookup would resolve prototype-chain names (`constructor`) as
-  // priced — the t.record hazard schema.ts documents for the same class.
-  const p = Object.hasOwn(prices.models, entry.model) ? prices.models[entry.model] : undefined;
+  // priced — the t.record hazard schema.ts documents for the same class. The entry id is
+  // canonicalized like the map keys (issue #209): the CLI granted the window to the SUFFIXED id,
+  // so the suffix must never price the row as unknown.
+  const canonicalModel = modelIdentity(entry.model);
+  const p = Object.hasOwn(prices.models, canonicalModel)
+    ? prices.models[canonicalModel]
+    : undefined;
   const cacheRead = entry.cache_read_tokens ?? 0;
   const cacheWrite = entry.cache_write_tokens ?? 0;
   const zero: CostLine = {
@@ -163,7 +168,25 @@ export const computeCost = (
   pricedAt?: Date,
   warn: Warn = defaultWarn,
 ): CostReport => {
-  const lines = models.map((entry) => computeModelCost(entry, prices, pricedAt, warn));
+  // The suffix canonicalization lives HERE, in the shared pricing funnel, so every ingress —
+  // cost, check-cost, render/post, the budget hook — prices the id the agent CLI actually
+  // granted the window to (issue #209). Two map keys canonicalizing to one model would silently
+  // mis-price one of them, so the collision warns instead.
+  const canonicalModels: PriceMap["models"] = {};
+  const seenCanonical = new Map<string, string>();
+  for (const [key, rate] of Object.entries(prices.models)) {
+    const canonical = modelIdentity(key);
+    const prior = seenCanonical.get(canonical);
+    if (prior !== undefined) {
+      warn(
+        `code-review cost: the price map keys "${prior}" and "${key}" both canonicalize to "${canonical}" — one declared rate silently overrides the other; fix the map`,
+      );
+    }
+    seenCanonical.set(canonical, key);
+    canonicalModels[canonical] = rate;
+  }
+  const canonicalPrices = { ...prices, models: canonicalModels };
+  const lines = models.map((entry) => computeModelCost(entry, canonicalPrices, pricedAt, warn));
 
   return {
     lines,

@@ -24,14 +24,19 @@ export const annotationSafe = (msg: string): string => msg.replaceAll(/[\r\n]+/g
 // must strip wherever it appears). NON-global: a stateful /g in a .test() alternates true/false
 // across calls; the canonicalizer re-flags it (issue #209).
 export const CONTEXT_SUFFIX_RE = /\[[12]m\]/i;
+// The canonicalizer's global form — hoisted so a per-entry replace() never recompiles, and
+// sharing the SAME source the guard's non-global .test() uses (a global regex in .test() would
+// alternate on its stateful lastIndex).
+const MODEL_IDENTITY_SUFFIX_RE = /\[[12]m\]/gi;
 export const modelIdentity = (configuredModelId: string): string =>
-  configuredModelId.replace(new RegExp(CONTEXT_SUFFIX_RE.source, "gi"), "");
+  configuredModelId.replace(MODEL_IDENTITY_SUFFIX_RE, "");
 
-// The ONE per-model accumulation for a ModelUsageEntry (issue #209): the cache fields take the
-// always-0 convention sumTranscriptUsage's entries carry, so adapt's fold and the transcript
-// fold cannot drift on absent-vs-0 again.
+// The per-model accumulation adapt's fold uses (issue #209): the cache fields take the always-0
+// convention the transcript fold's entries carry, so FOLDED rows cannot drift on absent-vs-0.
+// (The transcript fold accumulates its own Totals shape; the shared convention covers the folded
+// path.) The spread keeps any field ModelUsageEntry gains.
 export const addModelUsage = (prior: ModelUsageEntry, entry: ModelUsageEntry): ModelUsageEntry => ({
-  model: prior.model,
+  ...prior,
   input_tokens: prior.input_tokens + entry.input_tokens,
   output_tokens: prior.output_tokens + entry.output_tokens,
   cache_read_tokens: (prior.cache_read_tokens ?? 0) + (entry.cache_read_tokens ?? 0),

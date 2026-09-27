@@ -46,13 +46,13 @@ const asPermissionSet = (declared: unknown): PermissionSet => {
 };
 
 const union = (sets: readonly PermissionSet[]): PermissionSet =>
-  new Map(
-    [...sets.flatMap((set) => [...set])].reduce<Map<string, string>>((merged, [scope, access]) => {
+  sets
+    .flatMap((set) => [...set])
+    .reduce<Map<string, string>>((merged, [scope, access]) => {
       const held = merged.get(scope);
       if (held === undefined || rankOf(access) > rankOf(held)) merged.set(scope, access);
       return merged;
-    }, new Map()),
-  );
+    }, new Map());
 
 type Job = { readonly permissions?: unknown; readonly uses?: unknown };
 
@@ -142,10 +142,13 @@ const callSites = (): readonly CallSite[] =>
 // derived from the reusables themselves, off a real YAML parse rather than a line scan, so a fourth
 // caller cannot repeat it and an unmodelled YAML form cannot quietly under-count the requirement.
 describe("reusable-workflow callers grant what the reusable requests (#208)", () => {
-  const sites = callSites();
+  // Computed INSIDE the tests, not at describe-body time: a uses: cycle in any call site would
+  // throw during collection and abort the whole file (issue #209 review r1). A cycle then fails
+  // the one located test instead.
+  const sites = (): ReturnType<typeof callSites> => callSites();
 
   it("finds every call site into this project's reusables", () => {
-    expect(sites.map((site) => site.path)).toEqual([
+    expect(sites().map((site) => site.path)).toEqual([
       ".github/workflows/review-on-comment.yaml",
       ".github/workflows/review-selftest.yaml",
       ".github/workflows/review.yaml",
@@ -153,9 +156,16 @@ describe("reusable-workflow callers grant what the reusable requests (#208)", ()
     ]);
   });
 
-  for (const [index, site] of sites.entries()) {
-    it(`${site.path} (call site ${String(index)}) grants every permission its reusables request`, () => {
-      expect(site.missing).toEqual([]);
+  for (const [index, path] of [
+    ".github/workflows/review-on-comment.yaml",
+    ".github/workflows/review-selftest.yaml",
+    ".github/workflows/review.yaml",
+    "examples/workflows/review-on-comment.yaml",
+  ].entries()) {
+    it(`${path} (call site ${String(index)}) grants every permission its reusables request`, () => {
+      const site = sites().find((s) => s.path === path);
+      expect(site).toBeDefined();
+      expect(site!.missing).toEqual([]);
     });
   }
 });

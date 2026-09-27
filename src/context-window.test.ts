@@ -27,19 +27,27 @@ type ConfiguredModel = { readonly key: string; readonly value: string };
 // that id is written — but it can also embed literals, which are ids configured here. Comparison
 // operands are dropped first: in `conclusion == 'success' && 'a-model' || 'another'`, only the
 // branches can reach ANTHROPIC_MODEL.
-const modelIdsIn = (value: string): readonly string[] =>
-  value.startsWith("${{")
-    ? [
-        ...value
-          // Comparison operands first (either quote style), then both quote styles' literals —
-          // a double-quoted literal inside the expression is config too.
-          .replace(/(?:==|!=)\s*(?:'[^']*'|"[^"]*")/g, "")
-          .matchAll(/'([^']+)'|"([^"]+)"/g),
-      ].flatMap((match) =>
-        match[1] !== undefined ? [match[1]] : match[2] !== undefined ? [match[2]] : [],
+const modelIdsIn = (value: string): readonly string[] => {
+  // Normalize FIRST, dispatch second — a double-quoted expression is an expression, and the
+  // outer quotes are not part of any id (issue #209 review r1).
+  const unquoted = value.replace(/^"(.*)"$/, "$1");
+  if (!unquoted.startsWith("${{")) return [unquoted];
+  return [
+    ...unquoted
+      // Comparison operands first (either quote style), then expression-function arguments —
+      // startsWith(github.ref, 'x[1m]') keeps only the second literal, format/join arguments are
+      // not model config at all — then the remaining quoted literals are the branch candidates.
+      .replace(/(?:==|!=)\s*(?:'[^']*'|"[^"]*")/g, "")
+      .replace(
+        /(?:startsWith|endsWith|contains|eq|ne)\s*\(\s*['"][^'"]*['"]\s*,\s*['"]([^'"]*)['"]\s*\)/g,
+        " $1",
       )
-    : [value.replace(/^"(.*)"$/, "$1")];
-
+      .replace(/(?:format|join|concat|replace|toLowerCase|toUpperCase)\s*\([^()]*\)/g, "")
+      .matchAll(/'([^']+)'|"([^"]+)"/g),
+  ].flatMap((match) =>
+    match[1] !== undefined ? [match[1]] : match[2] !== undefined ? [match[2]] : [],
+  );
+};
 // A literal assignment to one of those keys, whether live or commented out — a commented example is
 // config a consumer uncomments.
 const configuredModels = (relativePath: string): readonly ConfiguredModel[] =>

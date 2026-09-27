@@ -1,59 +1,93 @@
 import { describe, it, expect } from "vitest";
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { parse as parseYaml } from "yaml";
-import { allWorkflows, readRepoFile, repoRoot } from "./test-util.js";
+import { readRepoFile, repoRoot, WORKFLOW_EXTENSIONS } from "./test-util.js";
+import { readPackageVersion } from "./index.js";
 
-// A pinned JPHutchins/code-review workflow ref, wherever it appears — a uses: line or a doc
-// comment. The capture is the bare version so `@v`-prefixed refs and the workflow pins compare
-// against package.json with one shape.
+// The pin shape, wherever a consumer-facing surface names it: a uses: line in a workflow or a
+// doc's fenced example (the line rule below), possibly commented out (the internal dogfood
+// trigger documents its pin in a comment). The capture is semver.org's recommended expression —
+// strict enough that prose punctuation ending the ref (…@v0.1.0-alpha.60.) is never swallowed,
+// and +build metadata (0.1.0-alpha.60+fix) captures whole. The @v prefix is optional (a v-less
+// ref is a legal pin the guard must not silently ignore) and the owner/filename classes are
+// case-permissive (GitHub treats owner names case-insensitively).
 const PINNED_REF_RE =
-  /JPHutchins\/code-review\/\.github\/workflows\/[a-z0-9-]+\.ya?ml@v([0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?)/g;
+  /JPHutchins\/code-review\/\.github\/workflows\/[A-Za-z0-9_-]+\.ya?ml@v?((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)/gi;
+
+const pinnedRefsOf = (
+  path: string,
+): readonly { readonly line: number; readonly version: string }[] =>
+  readRepoFile(path)
+    .split("\n")
+    .flatMap((line, index) => {
+      // A pin lives on a workflow-reference line (mapping or list form, commented or not).
+      // Restricting to reference lines is what lets the scan be repo-wide: historical version
+      // citations in prose (workflow-probe.test.ts names alpha.52/alpha.53) are not pins and must
+      // not fail a release.
+      const stripped = line.replace(/^\s*(?:[-#]\s*)*/, "");
+      if (!stripped.startsWith("uses:")) return [];
+      return [...line.matchAll(PINNED_REF_RE)].map((m) => ({
+        line: index + 1,
+        version: m[1]!,
+      }));
+    });
+
+const SKIP_DIRECTORIES = new Set([".git", "node_modules", "dist", ".camas"]);
 
 const walk = (directory: string): readonly string[] =>
   readdirSync(resolvePath(repoRoot, directory), { withFileTypes: true }).flatMap((entry) => {
+    if (SKIP_DIRECTORIES.has(entry.name)) return [];
     const relative = `${directory}/${entry.name}`;
-    return entry.isDirectory() ? walk(relative) : [relative];
+    if (entry.isDirectory()) return walk(relative);
+    if (entry.isSymbolicLink()) {
+      // A symlinked directory must be followed, not read as a file (EISDIR); a broken link skipped.
+      try {
+        return statSync(resolvePath(repoRoot, relative)).isDirectory()
+          ? walk(relative)
+          : [relative];
+      } catch {
+        return [];
+      }
+    }
+    return [relative];
   });
 
-const packageVersion = (): string =>
-  (JSON.parse(readRepoFile("package.json")) as { version: string }).version;
+// The extension policy reuses the shared workflow extensions (test-util.ts's one-policy rule); the
+// docs half is the only addition.
+const PIN_SURFACE_EXTENSIONS = [...WORKFLOW_EXTENSIONS, ".md"] as const;
+
+const pinSurfaces = (): readonly string[] =>
+  walk(".").filter((path) => PIN_SURFACE_EXTENSIONS.some((extension) => path.endsWith(extension)));
 
 describe("copy-paste version pins (#207)", () => {
-  // Every copy-paste surface that names a pinned ref: the example workflows, their README, the
-  // adapter docs, and the internal workflows' doc comments. A release that misses one fails HERE
-  // with the path and the expected version, instead of a consumer copy-pasting a 25-release-old
-  // reusable.
-  const surfaces = [
-    ...walk("examples"),
-    ...walk("docs"),
-    ...walk(".github/workflows"),
-    "README.md",
-  ].filter((path) => /\.(ya?ml|md)$/.test(path));
-
-  const pinnedRefsOf = (path: string): readonly string[] =>
-    [...readRepoFile(path).matchAll(PINNED_REF_RE)].map((m) => m[1]!);
+  // The guard's boundary: pins must equal package.json — the version about to be published — so
+  // the check runs at the release commit, before the tag exists. That ordering is deliberate: a
+  // miss must fail before a tag is pushed. release.yaml's tag guard then enforces the pushed tag
+  // carries that same version, and tag + npm publish ride the same push.
+  const expected = readPackageVersion();
 
   it("every pinned JPHutchins/code-review workflow ref matches package.json's version", () => {
-    const expected = packageVersion();
-    const mismatches = surfaces.flatMap((path) =>
-      pinnedRefsOf(path).flatMap((version) =>
-        version === expected ? [] : [`${path}: @v${version} (expected ${expected})`],
-      ),
+    const sites = pinSurfaces().flatMap((path) =>
+      pinnedRefsOf(path).map((site) => ({ path, ...site })),
     );
-    // The guard must not rot to vacuity — the docs pin at least one ref, or the regex drifted.
-    expect(surfaces.flatMap(pinnedRefsOf).length).toBeGreaterThan(0);
-    expect(mismatches).toEqual([]);
+    // The vacuity tripwire reads the SAME collection the comparison does, so a narrowing edit
+    // cannot leave one loop green off files the other no longer reads.
+    expect(sites.length).toBeGreaterThan(0);
+    expect(
+      sites.flatMap((site) =>
+        site.version === expected
+          ? []
+          : [`${site.path}:${String(site.line)}: @v${site.version} (expected ${expected})`],
+      ),
+    ).toEqual([]);
   });
 
-  it("the workflow CODE_REVIEW_VERSION pins agree with package.json's version", () => {
-    const expected = packageVersion();
-    const pins = allWorkflows().flatMap((path) => {
-      const version = (parseYaml(readRepoFile(path)) as { env?: { CODE_REVIEW_VERSION?: string } })
-        .env?.CODE_REVIEW_VERSION;
-      return version === undefined ? [] : [version];
-    });
-    expect(pins.length).toBeGreaterThan(0);
-    expect(pins.every((version) => version === expected)).toBe(true);
+  it("package-lock.json's two version fields ride package.json's too", () => {
+    const lock = JSON.parse(readRepoFile("package-lock.json")) as {
+      version?: unknown;
+      packages?: { ""?: { version?: unknown } };
+    };
+    expect(lock.version).toBe(expected);
+    expect(lock.packages?.[""]?.version).toBe(expected);
   });
 });

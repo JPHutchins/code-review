@@ -44,7 +44,7 @@ jobs:
       startsWith(github.event.comment.body, '/code-review') &&
       github.event.comment.user.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
-    uses: JPHutchins/code-review/.github/workflows/review-on-comment-reusable.yaml@v0.1.0-alpha.60
+    uses: JPHutchins/code-review/.github/workflows/review-on-comment-reusable.yaml@v0.1.0-alpha.61
     with:
       api_base_url:    ${{ vars.API_BASE_URL }}
       # `[1m]` declares the model's real 1M context window to the agent CLI (it assumes 200k for an

@@ -92,12 +92,15 @@ describe("adapt — claude-code", () => {
     expect(result._tag).toBe("Right");
     if (result._tag !== "Right") return;
 
+    // The fold uses the shared addModelUsage — the always-0 cache convention the transcript
+    // fold carries, so the two ingresses can never drift on absent-vs-0 (issue #209).
     expect(result.right.models).toEqual([
       {
         model: "deepseek-v4-pro",
         input_tokens: 11,
         output_tokens: 5,
         cache_read_tokens: 5,
+        cache_write_tokens: 0,
       },
     ]);
   });

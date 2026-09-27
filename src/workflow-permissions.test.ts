@@ -46,19 +46,13 @@ const asPermissionSet = (declared: unknown): PermissionSet => {
 };
 
 const union = (sets: readonly PermissionSet[]): PermissionSet =>
-  new Map(
-    sets
-      .flatMap((set) => [...set])
-      .reduce<readonly (readonly [string, string])[]>(
-        (merged, [scope, access]) =>
-          merged.some(([seen]) => seen === scope)
-            ? merged.map(([seen, held]) =>
-                seen === scope && rankOf(access) > rankOf(held) ? [scope, access] : [seen, held],
-              )
-            : [...merged, [scope, access]],
-        [],
-      ),
-  );
+  sets
+    .flatMap((set) => [...set])
+    .reduce<Map<string, string>>((merged, [scope, access]) => {
+      const held = merged.get(scope);
+      if (held === undefined || rankOf(access) > rankOf(held)) merged.set(scope, access);
+      return merged;
+    }, new Map());
 
 type Job = { readonly permissions?: unknown; readonly uses?: unknown };
 
@@ -92,7 +86,13 @@ const calledReusable = (job: Job): string | null => {
 // everything its jobs request, plus what the reusables it delegates to need in turn. A callee that
 // declares nothing requests nothing extra — it inherits whatever the caller granted.
 const requiredBy = (reusablePath: string, seen: readonly string[] = []): PermissionSet => {
-  if (seen.includes(reusablePath)) return EMPTY;
+  // A uses: cycle is a malformed workflow — fail loudly, never under-count the requirement
+  // silently (issue #209).
+  if (seen.includes(reusablePath)) {
+    throw new Error(
+      `uses: cycle detected — ${reusablePath} was already on the call path: ${[...seen, reusablePath].join(" -> ")}`,
+    );
+  }
   const workflow = workflowOf(reusablePath);
   return union([
     ...(workflow.permissions !== undefined ? [asPermissionSet(workflow.permissions)] : []),
@@ -142,10 +142,14 @@ const callSites = (): readonly CallSite[] =>
 // derived from the reusables themselves, off a real YAML parse rather than a line scan, so a fourth
 // caller cannot repeat it and an unmodelled YAML form cannot quietly under-count the requirement.
 describe("reusable-workflow callers grant what the reusable requests (#208)", () => {
-  const sites = callSites();
+  // Computed INSIDE the tests (not at describe-body time: a uses: cycle in any call site would
+  // throw during collection and abort the whole file — a cycle fails the one located test
+  // instead) and MEMOIZED so the scan runs once per file (issue #209 review r2).
+  let cachedSites: ReturnType<typeof callSites> | undefined;
+  const sites = (): ReturnType<typeof callSites> => (cachedSites ??= callSites());
 
   it("finds every call site into this project's reusables", () => {
-    expect(sites.map((site) => site.path)).toEqual([
+    expect(sites().map((site) => site.path)).toEqual([
       ".github/workflows/review-on-comment.yaml",
       ".github/workflows/review-selftest.yaml",
       ".github/workflows/review.yaml",
@@ -153,8 +157,11 @@ describe("reusable-workflow callers grant what the reusable requests (#208)", ()
     ]);
   });
 
-  for (const [index, site] of sites.entries()) {
-    it(`${site.path} (call site ${String(index)}) grants every permission its reusables request`, () => {
+  // One entry per call-site JOB, asserted over the entries themselves — a hardcoded path list
+  // would drift when a fifth caller (or a second job in an existing one) appears, and a
+  // path-keyed find would collapse a file's multiple jobs to the first.
+  for (const site of sites()) {
+    it(`${site.path} grants every permission its reusables request`, () => {
       expect(site.missing).toEqual([]);
     });
   }

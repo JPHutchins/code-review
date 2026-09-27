@@ -685,6 +685,64 @@ describe("the repo's own price map", () => {
   });
 });
 
+describe("the [1m] suffix canonicalization in the pricing funnel (issue #209)", () => {
+  const suffixMap: PriceMap = {
+    _updated: RELEASED,
+    _unit: "u",
+    models: { "deepseek-v4-pro": { in: 1, out: 2, cache_read: 0.1, cache_write: 0.2 } },
+  };
+
+  it("prices a suffix-keyed envelope id against the canonical map key", () => {
+    const report = computeCost(
+      [{ model: "deepseek-v4-pro[1m]", input_tokens: 1_000_000, output_tokens: 0 }],
+      suffixMap,
+      undefined,
+      vi.fn(),
+    );
+    expect(report.lines[0]!.known).toBe(true);
+    expect(report.totalCostUSD).toBeCloseTo(1.0, 6);
+  });
+
+  it("prices a canonical envelope id against a suffix-keyed map key", () => {
+    const map: PriceMap = {
+      _updated: RELEASED,
+      _unit: "u",
+      models: { "deepseek-v4-pro[1m]": { in: 1, out: 2, cache_read: 0.1, cache_write: 0.2 } },
+    };
+    const report = computeCost(
+      [{ model: "deepseek-v4-pro", input_tokens: 1_000_000, output_tokens: 0 }],
+      map,
+      undefined,
+      vi.fn(),
+    );
+    expect(report.lines[0]!.known).toBe(true);
+    expect(report.totalCostUSD).toBeCloseTo(1.0, 6);
+  });
+
+  it("warns when two map keys canonicalize to one model instead of silently merging", () => {
+    const map: PriceMap = {
+      _updated: RELEASED,
+      _unit: "u",
+      models: {
+        "deepseek-v4-pro": { in: 1, out: 2, cache_read: 0.1, cache_write: 0.2 },
+        "deepseek-v4-pro[1m]": { in: 3, out: 4, cache_read: 0.1, cache_write: 0.2 },
+      },
+    };
+    const warn = vi.fn();
+    const report = computeCost(
+      [{ model: "deepseek-v4-pro", input_tokens: 1, output_tokens: 0 }],
+      map,
+      undefined,
+      warn,
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("canonicalize"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("deepseek-v4-pro"));
+    // No silent winner: the colliding model is UNPRICED, never priced off one of the two rates.
+    expect(report.lines[0]!.known).toBe(false);
+    expect(report.lines[0]!.costUSD).toBe(0);
+  });
+});
+
 describe("warnStalePrices (issue #220)", () => {
   const map = (updated: string): PriceMap => ({ _updated: updated, _unit: "u", models: {} });
 

@@ -9,7 +9,7 @@ import { resolve } from "./registry.js";
 import { extractStructured, describeLadderFailure } from "./extract.js";
 import { DEFAULT_SCHEMA_VERSION, incompleteFindings } from "./schema.js";
 import type { Findings, ModelUsageEntry, ResultEnvelope } from "./schema.js";
-import { modelIdentity } from "./util.js";
+import { addModelUsage, modelIdentity } from "./util.js";
 
 // No value-level fp-ts import: a bare "fp-ts/Either" subpath import breaks under strict Node ESM
 // (fp-ts ships no "exports" map), so Either values are plain tagged literals, as in validate.ts.
@@ -46,22 +46,6 @@ export const ClaudeCodeEnvelopeCodec = t.intersection([
 
 type ClaudeCodeEnvelope = t.TypeOf<typeof ClaudeCodeEnvelopeCodec>;
 
-const sumUsage = (into: ModelUsageEntry, entry: ModelUsageEntry): ModelUsageEntry => ({
-  ...into,
-  input_tokens: into.input_tokens + entry.input_tokens,
-  output_tokens: into.output_tokens + entry.output_tokens,
-  ...(into.cache_read_tokens !== undefined || entry.cache_read_tokens !== undefined
-    ? { cache_read_tokens: (into.cache_read_tokens ?? 0) + (entry.cache_read_tokens ?? 0) }
-    : {}),
-  ...(into.cache_write_tokens !== undefined || entry.cache_write_tokens !== undefined
-    ? { cache_write_tokens: (into.cache_write_tokens ?? 0) + (entry.cache_write_tokens ?? 0) }
-    : {}),
-});
-
-// The agent keys modelUsage by the CONFIGURED model id, so it carries any context-window suffix the
-// caller declared. Keying the fold by the model's identity (see modelIdentity) both canonicalizes it
-// and folds together the rows a mixed configuration splits, in one pass; order follows first
-// appearance, as it did when this was a plain map.
 const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsageEntry[] => [
   ...Object.entries(modelUsage)
     .reduce<Map<string, ModelUsageEntry>>((byModel, [configuredModelId, entry]) => {
@@ -78,7 +62,7 @@ const mapModelUsage = (modelUsage: ClaudeCodeEnvelope["modelUsage"]): ModelUsage
           : {}),
       };
       const prior = byModel.get(model);
-      return byModel.set(model, prior === undefined ? mapped : sumUsage(prior, mapped));
+      return byModel.set(model, prior === undefined ? mapped : addModelUsage(prior, mapped));
     }, new Map())
     .values(),
 ];

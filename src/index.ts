@@ -454,11 +454,13 @@ const costCmd = defineCommand({
     const prices = decode(PriceMapCodec.decode(readJSON(args.prices)), "prices");
     // The cost CLI's --prices is required, so a decoded map is always the consumer's own.
     warnStalePrices(prices);
-    // Price a saved envelope at the RUN's own instant (issue #170), so re-running `cost` later prices
-    // the same envelope to the same slot deterministically — not at whatever wall clock it is re-run at.
+    // The suffix canonicalization lives in computeCost — the shared pricing funnel — so this
+    // ingress needs no wrapper of its own (issue #209).
     const report = computeCost(
       envelope.models,
       prices,
+      // Price a saved envelope at the RUN's own instant (issue #170), so re-running `cost` later prices
+      // the same envelope to the same slot deterministically — not at whatever wall clock it is re-run at.
       parseInstant(envelope.generated_at) ?? new Date(),
     );
     process.stdout.write(JSON.stringify(report, null, 2));

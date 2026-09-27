@@ -3460,10 +3460,27 @@ describe("post — the comment-size shed and the terminal guard (issue #214)", (
     ).resolves.toBeUndefined();
     const body = stickyBodyOf(calls());
     expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT);
-    expect(body).toContain("Review posted to the run summary");
     expect(body).toContain("exceeds GitHub's comment-size limit");
     expect(body).toContain("<!-- code-review -->");
     expect(body).not.toContain("DistinctTitleHere");
+  });
+
+  it("the lost-envelope branch sheds instead of crashing — the findingsMarker TDZ is pinned (issue #214 review r5)", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(manyFindings()));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    try {
+      const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+      await expect(
+        post(mkInput({ envelopePath: join(tmpDir, "no-envelope.json") }), api),
+      ).rejects.toThrow("exit");
+      const body = stickyBodyOf(calls());
+      expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT);
+      expect(body).toContain("left out of this comment");
+    } finally {
+      exitSpy.mockRestore();
+    }
   });
 
   it("posts the short run-summary notice when unbounded non-findings content alone exceeds the cap", async () => {

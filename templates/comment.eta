@@ -21,7 +21,7 @@
 <sub><%~ it.convergenceSummary %></sub>
 <% } -%>
 
-> **The review for `<%= it.reviewedSha.slice(0, 7) %>` exceeds GitHub's comment-size limit.** <% if (it.runUrl) { %>The whole review lives in the [run summary](<%~ it.runUrl %>).<% } else { %>The whole review lives in the workflow run's summary.<% } %><% if (it.findingsPointer) { %> The machine findings document is linked above.<% } %>
+> **The review for `<%= it.reviewedSha.slice(0, 7) %>` exceeds GitHub's comment-size limit.** <% if (it.runUrl) { %>The whole review lives in the [run summary](<%~ it.runUrl %>).<% } else { %>The whole review lives in the workflow run's summary.<% } %><% if (it.findingsDocLinked) { %> The machine findings document is linked above.<% } %>
 >
 > [!WARNING]
 > **LLM Disclosure** — this review was produced by <%= it.modelNames || "unknown model" %>.

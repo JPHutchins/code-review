@@ -68,7 +68,7 @@ in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the ad
    letting the CLI pick where your key gets sent.
 3. Commit `.github/prices.json` (fork [schema/prices.example.json](schema/prices.example.json) and
    fill in your provider's per-token rates, and set `_updated` to the day you verified them — the
-   staleness warn keys on it) — without it the cost footer renders **$0**
+   staleness warn keys on it) — without it the cost footer renders **N/A**
    ([SPEC §4.4](SPEC.md#44-required-controls-conformance)).
 4. Merge to your default branch first — `workflow_run` only fires from the default branch, so the
    introducing PR won't review itself — then open a test PR.

@@ -154,11 +154,6 @@ const computeModelCost = (
   return { ...zero, costUSD };
 };
 
-// The budget hook's steering gate: a report with any unpriced line (or no lines at all) cannot
-// yield a confident spend, so the cost axis disengages for the run (index.ts announces it once).
-export const costAxisDisengaged = (report: CostReport | null): boolean =>
-  report !== null && !report.allKnown;
-
 export const computeCost = (
   models: readonly ModelUsageEntry[],
   prices: PriceMap,

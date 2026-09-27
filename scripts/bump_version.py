@@ -72,12 +72,30 @@ def main() -> None:
         sys.exit(0)
     # The repo's own map only moves when someone re-verifies the provider's rates — surface the
     # data task at release time so a stale dogfood map is a decision, not an unnoticed always-on
-    # warn (issue #220 review r3).
-    repo_map = json.loads(pathlib.Path(".github/prices.json").read_text(encoding="utf-8"))
-    if repo_map["_updated"] < datetime.now(timezone.utc).date().isoformat():
+    # warn (issue #220 review r3). Best-effort: a missing or malformed map must never abort a
+    # bump halfway through (released.ts is already re-stamped by now).
+    try:
+        repo_map = json.loads(pathlib.Path(".github/prices.json").read_text(encoding="utf-8"))
+        map_stamp = repo_map["_updated"]
+        if isinstance(map_stamp, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", map_stamp):
+            datetime.strptime(map_stamp, "%Y-%m-%d")
+            if map_stamp < datetime.now(timezone.utc).date().isoformat():
+                print(
+                    f"note: .github/prices.json was last verified {map_stamp} — "
+                    "re-verify the provider's rates and bump _updated, or accept the dogfood "
+                    "staleness warn",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                "note: .github/prices.json _updated is not a valid ISO date — re-verify the "
+                "rates and re-stamp it",
+                file=sys.stderr,
+            )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         print(
-            f"note: .github/prices.json was last verified {repo_map['_updated']} — "
-            "re-verify the provider's rates and bump _updated, or accept the dogfood staleness warn",
+            "note: .github/prices.json could not be read to check staleness — re-verify the "
+            "rates and bump _updated manually",
             file=sys.stderr,
         )
     replace("package.json", 1, ((f'"version": "{current}"', f'"version": "{new}"'),))

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { computeCost, costAxisDisengaged, parseInstant, warnStalePrices } from "./cost.js";
+import { computeCost, parseInstant, warnStalePrices } from "./cost.js";
 import { RELEASED } from "./released.js";
 import { PriceMapCodec } from "./schema.js";
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
@@ -443,13 +443,15 @@ describe("computeCost — UTC time-slot pricing (issue #170)", () => {
         _unit: "u",
         models: {
           "evil\n::error::forged": {
+            // A real instant OUTSIDE this window reaches the coverage-count warn (the branch the
+            // escape must be proven on), not the no-instant warn.
             slots: [
-              { utc_from: "00:00", utc_to: "00:00", in: 1, out: 1, cache_read: 0, cache_write: 0 },
+              { utc_from: "01:00", utc_to: "02:00", in: 1, out: 1, cache_read: 0, cache_write: 0 },
             ],
           },
         },
       },
-      undefined,
+      new Date("2026-09-27T05:00:00Z"),
       warn,
     );
     const message = String(warn.mock.calls[0]?.[0] ?? "");
@@ -719,21 +721,6 @@ describe("warnStalePrices (issue #220)", () => {
       warnStalePrices(map(bad), warn);
     }
     expect(warn).not.toHaveBeenCalled();
-  });
-
-  it("costAxisDisengaged is true exactly for a report that cannot yield a confident spend", () => {
-    expect(costAxisDisengaged(null)).toBe(false);
-    expect(costAxisDisengaged(computeCost([], prices, undefined, vi.fn()))).toBe(true);
-    expect(
-      costAxisDisengaged(
-        computeCost([mkEntry({ model: "unknown-model" })], prices, undefined, vi.fn()),
-      ),
-    ).toBe(true);
-    expect(
-      costAxisDisengaged(
-        computeCost([mkEntry({ model: "pro-model" })], prices, undefined, vi.fn()),
-      ),
-    ).toBe(false);
   });
 
   it("the allKnown rollup is false for an empty report and for any unpriced line", () => {

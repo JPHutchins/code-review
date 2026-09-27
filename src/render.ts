@@ -622,7 +622,7 @@ export const render = (input: RenderInput): string => {
     costProvenance,
     // The house sanitizer for untrusted template fields — collapses line breaks AND escapes
     // backticks, so a hand-edited stamp cannot break the code span or the blockquote.
-    pricesUpdatedAt: escapeCodeBackticks(input.prices._updated),
+    pricesUpdatedAt: escapeCodeBackticks(input.prices._updated.replace(/\r/g, " ")).trim(),
     route,
     effort,
     modelNames,
@@ -693,7 +693,8 @@ export const render = (input: RenderInput): string => {
       // drops the argument binds provenance to undefined — anything but the two explicit states
       // renders N/A, never a confident figure.
       if (!pricesProvided || (provenance !== "complete" && provenance !== "partial")) return "N/A";
-      if (provenance === "partial" && !(n > 0)) return "N/A";
+      // A sub-cent partial figure is a lower bound on nothing — the ≤ marker must not wrap it.
+      if (provenance === "partial" && !(n >= 0.005)) return "N/A";
       const figure = Number.isFinite(n)
         ? n > 0 && n.toFixed(2) === "0.00"
           ? "<$0.01"

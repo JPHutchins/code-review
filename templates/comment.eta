@@ -236,7 +236,7 @@ All <%= it.testReport.total %> tests passed.
 > Prices snapshot `_updated` <%= it.pricesUpdatedAt %>.
 <% } -%>
 <% if (it.pricesProvided && it.costProvenance !== 'complete') { -%>
-> N/A rows: models missing from this price map — add them and re-verify.
+> N/A rows: models missing from this price map, or slots that do not cover the run instant — check the run log for the slot warning.
 <% } -%>
 <% } else if (it.usageAvailable) { -%>
 > No per-model usage was recorded for this run.

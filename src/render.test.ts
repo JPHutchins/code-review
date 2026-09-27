@@ -1593,6 +1593,28 @@ describe("render", () => {
       expect(result).toBe("N/A");
     });
 
+    it('a partial report whose priced lines sum to a sub-cent figure renders N/A, not "≥ <$0.01" (issue #221 review r4)', () => {
+      const findings = mkFindings([]);
+      const subcent: PriceMap = {
+        ...prices,
+        models: { "pro-model": { in: 0.3, out: 0, cache_read: 0, cache_write: 0 } },
+      };
+      const result = render({
+        findings,
+        envelope: {
+          ...baseEnvelope,
+          models: [mkEntry({}), mkEntry({ model: "unpriced-variant" })],
+        },
+        prices: subcent,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**cost:** N/A");
+      expect(result).not.toContain("≥ <$0.01");
+      expect(result).not.toContain("≥ $0.00");
+    });
+
     it('a partial report whose priced lines sum to 0 renders N/A, not "≥ $0.00" (issue #221 review r3)', () => {
       const findings = mkFindings([]);
       const zeroRates: PriceMap = {
@@ -1629,7 +1651,7 @@ describe("render", () => {
         route: "full review",
       });
       expect(result).toContain(
-        "N/A rows: models missing from this price map — add them and re-verify.",
+        "N/A rows: models missing from this price map, or slots that do not cover the run instant — check the run log for the slot warning.",
       );
       const clean = render({
         findings,

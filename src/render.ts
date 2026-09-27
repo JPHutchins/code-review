@@ -620,8 +620,9 @@ export const render = (input: RenderInput): string => {
     costReport,
     pricesProvided,
     costProvenance,
-    // Collapsed so a hostile stamp cannot inject blockquote/table lines into the sticky body.
-    pricesUpdatedAt: input.prices._updated.replace(/\s+/g, " ").trim(),
+    // The house sanitizer for untrusted template fields — collapses line breaks AND escapes
+    // backticks, so a hand-edited stamp cannot break the code span or the blockquote.
+    pricesUpdatedAt: escapeCodeBackticks(input.prices._updated),
     route,
     effort,
     modelNames,
@@ -688,7 +689,11 @@ export const render = (input: RenderInput): string => {
     // row must not look like a free review. Provenance is REQUIRED (no permissive default): a
     // user-swapped template that drops the argument fails loudly, not silently fail-open.
     formatCost: (n: number, provenance: "complete" | "partial" | "unknown"): string => {
-      if (!pricesProvided || provenance === "unknown") return "N/A";
+      // Fail CLOSED: Eta is runtime JS with no arity enforcement, so a swapped template that
+      // drops the argument binds provenance to undefined — anything but the two explicit states
+      // renders N/A, never a confident figure.
+      if (!pricesProvided || (provenance !== "complete" && provenance !== "partial")) return "N/A";
+      if (provenance === "partial" && !(n > 0)) return "N/A";
       const figure = Number.isFinite(n)
         ? n > 0 && n.toFixed(2) === "0.00"
           ? "<$0.01"

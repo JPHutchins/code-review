@@ -18,6 +18,9 @@ for command in ("post", "seed-draft"):
         ["node", "dist/index.js", command, "--help"],
         capture_output=True,
         text=True,
+        # The decode must match the write below, or a non-UTF-8 locale round-trips mojibake into
+        # the fixtures.
+        encoding="utf-8",
         env=env,
     )
     if result.returncode != 0:

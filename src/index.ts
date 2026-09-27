@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
 import { render, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
-import { computeCost, parseInstant, warnStalePrices } from "./cost.js";
+import { computeCost, costAxisDisengaged, parseInstant, warnStalePrices } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
 import {
   evaluateBudgetHook,
@@ -712,7 +712,14 @@ const budgetHookCmd = defineCommand({
           : null;
       // Unmeasurable spend is null, never a confident number: a report with any unpriced line
       // (or no lines at all) under-counts, so the steering degrades to unsteered rather than
-      // telling the agent $0.00 was spent (issue #221 review r1).
+      // telling the agent $0.00 was spent (issue #221 review r1). The disengagement is announced
+      // ONCE per run (before the main draft exists — this hook fires on every tool event): a
+      // silently dropped cost cap would read as a working cap.
+      if (costAxisDisengaged(costReport) && !mainHasWrittenDraft(readFileOrNull(draftPath))) {
+        process.stderr.write(
+          "code-review budget-hook: the price map does not cover every model in the transcript — the cost axis is disengaged for this run; add the missing models and re-verify\n",
+        );
+      }
       const spentUsd = costReport !== null && costReport.allKnown ? costReport.totalCostUSD : null;
       // The absolute anchor (set by the review job, inherited by every hook incl. fan-out subagents)
       // is the true remaining wall; the per-transcript first timestamp is only the fallback — it

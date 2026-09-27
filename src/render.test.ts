@@ -1577,6 +1577,71 @@ describe("render", () => {
       expect(result).toContain("| unpriced-variant | 10,000 | 2,000 | 5,000 | 1,000 | N/A |");
     });
 
+    it("a swapped template calling formatCost with ONE argument fails closed to N/A (issue #221 review r3)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: { ...baseEnvelope, models: [mkEntry({ model: "unpriced-variant" })] },
+        prices,
+        pricesProvided: true,
+        // Eta is runtime JS with no arity enforcement — a pre-existing template written against
+        // the one-arg signature binds provenance to undefined and must degrade to N/A, never a
+        // confident figure.
+        template: "<%= it.formatCost(it.costReport.lines[0].costUSD) %>",
+        route: "full review",
+      });
+      expect(result).toBe("N/A");
+    });
+
+    it('a partial report whose priced lines sum to 0 renders N/A, not "≥ $0.00" (issue #221 review r3)', () => {
+      const findings = mkFindings([]);
+      const zeroRates: PriceMap = {
+        ...prices,
+        models: { "pro-model": { in: 0, out: 0, cache_read: 0, cache_write: 0 } },
+      };
+      const result = render({
+        findings,
+        envelope: {
+          ...baseEnvelope,
+          models: [mkEntry({}), mkEntry({ model: "unpriced-variant" })],
+        },
+        prices: zeroRates,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain("**cost:** N/A");
+      expect(result).not.toContain("≥ $0.00");
+      expect(result).not.toContain("≥ <$0.01");
+    });
+
+    it("explains the N/A rows beside the snapshot line when the map misses a model", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: {
+          ...baseEnvelope,
+          models: [mkEntry({}), mkEntry({ model: "unpriced-variant" })],
+        },
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain(
+        "N/A rows: models missing from this price map — add them and re-verify.",
+      );
+      const clean = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(clean).not.toContain("N/A rows:");
+    });
+
     it("renders the price snapshot's _updated in the cost collapsible (issue #220)", () => {
       const findings = mkFindings([]);
       const result = render({

@@ -235,6 +235,9 @@ All <%= it.testReport.total %> tests passed.
 <% if (it.pricesProvided && it.pricesUpdatedAt) { -%>
 > Prices snapshot `_updated` <%= it.pricesUpdatedAt %>.
 <% } -%>
+<% if (it.pricesProvided && it.costProvenance !== 'complete') { -%>
+> N/A rows: models missing from this price map — add them and re-verify.
+<% } -%>
 <% } else if (it.usageAvailable) { -%>
 > No per-model usage was recorded for this run.
 <% } else { -%>

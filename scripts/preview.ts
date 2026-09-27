@@ -16,7 +16,6 @@ import {
   DEFAULT_CONVERGENCE_THRESHOLD,
 } from "../src/surface.js";
 import { formatUtc } from "../src/format.js";
-import { warnStalePrices } from "../src/cost.js";
 import {
   FindingsCodec,
   ResultEnvelopeCodec,
@@ -78,9 +77,9 @@ const envelope = orThrow(
   "envelope",
 );
 const prices = orThrow(PriceMapCodec.decode(readJSON(fx("preview.prices.json"))), "prices");
-// The preview renders the snapshot date — it must carry the staleness signal too (issue #220
-// review r2); the fixture map is a real provided map.
-warnStalePrices(prices);
+// No staleness warn here: the fixture map is synthetic and never "re-verified", so the warn would
+// annotate every CI run about its own static fixture (issue #220 review r3) — the null discipline
+// applies, the way it does for the deliberate no-pricing case.
 const testReport = orThrow(
   TestSummaryCodec.decode(readJSON(fx("preview.testreport.json"))),
   "test report",

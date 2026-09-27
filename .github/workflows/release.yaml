@@ -56,7 +56,10 @@ jobs:
           # every release.
           released="$(grep -oE 'export const RELEASED = "[0-9]{4}-[0-9]{2}-[0-9]{2}"' src/released.ts | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')"
           commit_date="$(date -u -d "@$(git log -1 --format=%ct HEAD)" +%F)"
-          if [ "$released" != "$commit_date" ]; then
+          # Equal, or the bump's next UTC day — a bump/commit straddling UTC midnight must not wedge
+          # the publish (the remedy, re-running the bump, re-stamps).
+          next_day="$(date -u -d "$commit_date + 1 day" +%F)"
+          if [ "$released" != "$commit_date" ] && [ "$released" != "$next_day" ]; then
             echo "::error::src/released.ts stamp ($released) does not match the release commit's UTC date ($commit_date) — a release cut without re-running the bump would ship a dead staleness signal (issue #220); re-run scripts/bump_version.py"
             exit 1
           fi

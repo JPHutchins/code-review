@@ -97,7 +97,7 @@ const resolveFlatPrices = (
   if (!("slots" in p)) return p;
   if (pricedAt === undefined) {
     warn(
-      `code-review cost: model "${model}" has time-slotted prices but no run instant was supplied to select a slot; cost for this model renders as N/A`,
+      `code-review cost: model "${annotationSafe(model)}" has time-slotted prices but no run instant was supplied to select a slot; cost for this model renders as N/A`,
     );
     return null;
   }
@@ -108,7 +108,7 @@ const resolveFlatPrices = (
   const covering = slots.filter((s) => slotCovers(s, minute));
   if (covering.length === 1) return covering[0] ?? null;
   warn(
-    `code-review cost: model "${model}" — ${String(covering.length)} price slots in \`${useWeekend ? "weekend_slots" : "slots"}\` cover ${hhmmOf(minute)} UTC (expected exactly 1); that array must partition the 24h day with no gap or overlap; cost for this model renders as N/A`,
+    `code-review cost: model "${annotationSafe(model)}" — ${String(covering.length)} price slots in \`${useWeekend ? "weekend_slots" : "slots"}\` cover ${hhmmOf(minute)} UTC (expected exactly 1); that array must partition the 24h day with no gap or overlap; cost for this model renders as N/A`,
   );
   return null;
 };
@@ -154,6 +154,11 @@ const computeModelCost = (
   return { ...zero, costUSD };
 };
 
+// The budget hook's steering gate: a report with any unpriced line (or no lines at all) cannot
+// yield a confident spend, so the cost axis disengages for the run (index.ts announces it once).
+export const costAxisDisengaged = (report: CostReport | null): boolean =>
+  report !== null && !report.allKnown;
+
 export const computeCost = (
   models: readonly ModelUsageEntry[],
   prices: PriceMap,
@@ -197,9 +202,9 @@ export const warnStalePrices = (prices: PriceMap | null, warn: Warn = defaultWar
   if (prices === null) return;
   const updated = parseIsoDate(prices._updated);
   if (updated === undefined || updated >= RELEASED) return;
+  // The stamp reaching this line passed parseIsoDate (zero-padded ISO, CR/LF-free by
+  // construction), so it interpolates unwrapped; RELEASED is a repo constant.
   warn(
-    // annotationSafe keeps a CR/LF in _updated from ending the annotation early (RELEASED is a
-    // repo constant — no wrap needed), the house shape at every ::warning:: site.
-    `::warning:: code-review cost: the price map was last verified ${annotationSafe(prices._updated)}, before this CLI's release (${RELEASED}) — the map may miss pricing this CLI ships; re-verify against the provider's pricing page`,
+    `::warning:: code-review cost: the price map was last verified ${prices._updated}, before this CLI's release (${RELEASED}) — the map may miss pricing this CLI ships; re-verify against the provider's pricing page`,
   );
 };

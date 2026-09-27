@@ -658,7 +658,7 @@ jobs:
           # schema; the budget hooks steer the agent to converge as it nears $AGENT_WALL (PostToolBatch)
           # and, close to the wall, deny every tool but reading and writing/validating $DRAFT
           # (PreToolUse forced convergence). --budget-usd caps spend on the cost axis, which activates
-          # only when --prices supplies a price map to value the run against.
+          # only when --prices supplies a price map that covers every model the transcript records.
           BUDGET_PRICES=()
           if [ -f "$RUNNER_TEMP/prices.json" ]; then
             BUDGET_PRICES=(--prices "$RUNNER_TEMP/prices.json")

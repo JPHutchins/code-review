@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { computeCost, parseInstant, warnStalePrices } from "./cost.js";
+import { computeCost, costAxisDisengaged, parseInstant, warnStalePrices } from "./cost.js";
 import { RELEASED } from "./released.js";
 import { PriceMapCodec } from "./schema.js";
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
@@ -434,6 +434,29 @@ describe("computeCost — UTC time-slot pricing (issue #170)", () => {
     expect(computeCost(oneM(), ds, at(0, 30)).totalCostUSD).toBeCloseTo(1.0, 6);
   });
 
+  it("escapes a line-broken model id in the slot-misconfiguration warns (annotationSafe house shape)", () => {
+    const warn = vi.fn();
+    computeCost(
+      [mkEntry({ model: "evil\n::error::forged" })],
+      {
+        _updated: "2026-08-16",
+        _unit: "u",
+        models: {
+          "evil\n::error::forged": {
+            slots: [
+              { utc_from: "00:00", utc_to: "00:00", in: 1, out: 1, cache_read: 0, cache_write: 0 },
+            ],
+          },
+        },
+      },
+      undefined,
+      warn,
+    );
+    const message = String(warn.mock.calls[0]?.[0] ?? "");
+    expect(message).not.toContain("\n");
+    expect(message).toContain("::error::forged");
+  });
+
   it("a degenerate utc_from == utc_to slot covers the full day (the schema's wrap semantics)", () => {
     const allDay = slotted({
       "slot-model": {
@@ -696,6 +719,21 @@ describe("warnStalePrices (issue #220)", () => {
       warnStalePrices(map(bad), warn);
     }
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("costAxisDisengaged is true exactly for a report that cannot yield a confident spend", () => {
+    expect(costAxisDisengaged(null)).toBe(false);
+    expect(costAxisDisengaged(computeCost([], prices, undefined, vi.fn()))).toBe(true);
+    expect(
+      costAxisDisengaged(
+        computeCost([mkEntry({ model: "unknown-model" })], prices, undefined, vi.fn()),
+      ),
+    ).toBe(true);
+    expect(
+      costAxisDisengaged(
+        computeCost([mkEntry({ model: "pro-model" })], prices, undefined, vi.fn()),
+      ),
+    ).toBe(false);
   });
 
   it("the allKnown rollup is false for an empty report and for any unpriced line", () => {

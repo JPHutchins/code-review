@@ -14,7 +14,12 @@ import sys
 from datetime import datetime, timezone
 
 
-def replace(path: str, expected: int, pairs: tuple[tuple[str, str], ...]) -> None:
+def replace(
+    path: str,
+    expected: int,
+    pairs: tuple[tuple[str, str], ...],
+    note: str | None = None,
+) -> None:
     text = pathlib.Path(path).read_text(encoding="utf-8")
     for old, new in pairs:
         found = text.count(old)
@@ -29,7 +34,7 @@ def replace(path: str, expected: int, pairs: tuple[tuple[str, str], ...]) -> Non
     # encoding + newline pinned so the output is byte-identical on any platform: a locale-derived
     # encoding or CRLF translation would rewrite every file as a whole-file diff.
     pathlib.Path(path).write_text(text, encoding="utf-8", newline="\n")
-    print(f"{path}: bumped to {new}")
+    print(f"{path}: {note or f'bumped to {new}'}")
 
 
 def stamp_released() -> None:
@@ -47,7 +52,12 @@ def stamp_released() -> None:
     if old == stamp:
         print(f"src/released.ts: already stamped {stamp}")
         return
-    replace("src/released.ts", 1, ((f'export const RELEASED = "{old}"', f'export const RELEASED = "{stamp}"'),))
+    replace(
+        "src/released.ts",
+        1,
+        ((f'export const RELEASED = "{old}"', f'export const RELEASED = "{stamp}"'),),
+        note=f"stamped {stamp}",
+    )
 
 
 def main() -> None:
@@ -60,6 +70,16 @@ def main() -> None:
     if new == current:
         print(f"already at {new}")
         sys.exit(0)
+    # The repo's own map only moves when someone re-verifies the provider's rates — surface the
+    # data task at release time so a stale dogfood map is a decision, not an unnoticed always-on
+    # warn (issue #220 review r3).
+    repo_map = json.loads(pathlib.Path(".github/prices.json").read_text(encoding="utf-8"))
+    if repo_map["_updated"] < datetime.now(timezone.utc).date().isoformat():
+        print(
+            f"note: .github/prices.json was last verified {repo_map['_updated']} — "
+            "re-verify the provider's rates and bump _updated, or accept the dogfood staleness warn",
+            file=sys.stderr,
+        )
     replace("package.json", 1, ((f'"version": "{current}"', f'"version": "{new}"'),))
     replace("package-lock.json", 2, ((f'"version": "{current}"', f'"version": "{new}"'),))
     replace(

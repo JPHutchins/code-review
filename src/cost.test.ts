@@ -729,7 +729,7 @@ describe("the [1m] suffix canonicalization in the pricing funnel (issue #209)", 
       },
     };
     const warn = vi.fn();
-    computeCost(
+    const report = computeCost(
       [{ model: "deepseek-v4-pro", input_tokens: 1, output_tokens: 0 }],
       map,
       undefined,
@@ -737,6 +737,9 @@ describe("the [1m] suffix canonicalization in the pricing funnel (issue #209)", 
     );
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("canonicalize"));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("deepseek-v4-pro"));
+    // No silent winner: the colliding model is UNPRICED, never priced off one of the two rates.
+    expect(report.lines[0]!.known).toBe(false);
+    expect(report.lines[0]!.costUSD).toBe(0);
   });
 });
 

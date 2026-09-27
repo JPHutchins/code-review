@@ -119,15 +119,12 @@ const computeModelCost = (
   prices: PriceMap,
   pricedAt: Date | undefined,
   warn: Warn,
+  colliding: ReadonlySet<string> = new Set(),
 ): CostLine => {
   // Own-property only: a bare lookup would resolve prototype-chain names (`constructor`) as
   // priced — the t.record hazard schema.ts documents for the same class. The entry id is
   // canonicalized like the map keys (issue #209): the CLI granted the window to the SUFFIXED id,
   // so the suffix must never price the row as unknown.
-  const canonicalModel = modelIdentity(entry.model);
-  const p = Object.hasOwn(prices.models, canonicalModel)
-    ? prices.models[canonicalModel]
-    : undefined;
   const cacheRead = entry.cache_read_tokens ?? 0;
   const cacheWrite = entry.cache_write_tokens ?? 0;
   const zero: CostLine = {
@@ -139,6 +136,16 @@ const computeModelCost = (
     costUSD: 0,
     known: true,
   };
+  const canonicalModel = modelIdentity(entry.model);
+  if (colliding.has(canonicalModel)) {
+    warn(
+      `code-review cost: model "${annotationSafe(entry.model)}" is unpriced — its price map key collides with another key after canonicalization`,
+    );
+    return { ...zero, known: false };
+  }
+  const p = Object.hasOwn(prices.models, canonicalModel)
+    ? prices.models[canonicalModel]
+    : undefined;
   if (!p) {
     warn(
       // annotationSafe: a model id is an unvalidated t.string — a CR/LF in it must not emit a
@@ -170,23 +177,32 @@ export const computeCost = (
 ): CostReport => {
   // The suffix canonicalization lives HERE, in the shared pricing funnel, so every ingress —
   // cost, check-cost, render/post, the budget hook — prices the id the agent CLI actually
-  // granted the window to (issue #209). Two map keys canonicalizing to one model would silently
-  // mis-price one of them, so the collision warns instead.
-  const canonicalModels: PriceMap["models"] = {};
+  // granted the window to (issue #209). Two map keys canonicalizing to one model make the model
+  // UNPRICEABLE (known: false) instead of letting a silent winner mis-price it — on the budget
+  // hook, whose warn sink is deliberately silent, that wrong rate would steer the run.
+  // Object.fromEntries (not a {} literal): a __proto__ key must not set the object's prototype.
+  // The rebuild runs once per process in every current consumer (the hook is a fresh process
+  // per event), so the per-call cost is one map pass.
+  const colliding = new Set<string>();
   const seenCanonical = new Map<string, string>();
-  for (const [key, rate] of Object.entries(prices.models)) {
-    const canonical = modelIdentity(key);
-    const prior = seenCanonical.get(canonical);
-    if (prior !== undefined) {
-      warn(
-        `code-review cost: the price map keys "${prior}" and "${key}" both canonicalize to "${canonical}" — one declared rate silently overrides the other; fix the map`,
-      );
-    }
-    seenCanonical.set(canonical, key);
-    canonicalModels[canonical] = rate;
-  }
+  const canonicalModels = Object.fromEntries(
+    Object.entries(prices.models).map(([key, rate]) => {
+      const canonical = modelIdentity(key);
+      const prior = seenCanonical.get(canonical);
+      if (prior !== undefined) {
+        colliding.add(canonical);
+        warn(
+          `code-review cost: the price map keys "${annotationSafe(prior)}" and "${annotationSafe(key)}" both canonicalize to "${annotationSafe(canonical)}" — the model is unpriced; fix the map`,
+        );
+      }
+      seenCanonical.set(canonical, key);
+      return [canonical, rate];
+    }),
+  );
   const canonicalPrices = { ...prices, models: canonicalModels };
-  const lines = models.map((entry) => computeModelCost(entry, canonicalPrices, pricedAt, warn));
+  const lines = models.map((entry) =>
+    computeModelCost(entry, canonicalPrices, pricedAt, warn, colliding),
+  );
 
   return {
     lines,

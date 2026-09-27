@@ -142,10 +142,11 @@ const callSites = (): readonly CallSite[] =>
 // derived from the reusables themselves, off a real YAML parse rather than a line scan, so a fourth
 // caller cannot repeat it and an unmodelled YAML form cannot quietly under-count the requirement.
 describe("reusable-workflow callers grant what the reusable requests (#208)", () => {
-  // Computed INSIDE the tests, not at describe-body time: a uses: cycle in any call site would
-  // throw during collection and abort the whole file (issue #209 review r1). A cycle then fails
-  // the one located test instead.
-  const sites = (): ReturnType<typeof callSites> => callSites();
+  // Computed INSIDE the tests (not at describe-body time: a uses: cycle in any call site would
+  // throw during collection and abort the whole file — a cycle fails the one located test
+  // instead) and MEMOIZED so the scan runs once per file (issue #209 review r2).
+  let cachedSites: ReturnType<typeof callSites> | undefined;
+  const sites = (): ReturnType<typeof callSites> => (cachedSites ??= callSites());
 
   it("finds every call site into this project's reusables", () => {
     expect(sites().map((site) => site.path)).toEqual([
@@ -156,16 +157,12 @@ describe("reusable-workflow callers grant what the reusable requests (#208)", ()
     ]);
   });
 
-  for (const [index, path] of [
-    ".github/workflows/review-on-comment.yaml",
-    ".github/workflows/review-selftest.yaml",
-    ".github/workflows/review.yaml",
-    "examples/workflows/review-on-comment.yaml",
-  ].entries()) {
-    it(`${path} (call site ${String(index)}) grants every permission its reusables request`, () => {
-      const site = sites().find((s) => s.path === path);
-      expect(site).toBeDefined();
-      expect(site!.missing).toEqual([]);
+  // One entry per call-site JOB, asserted over the entries themselves — a hardcoded path list
+  // would drift when a fifth caller (or a second job in an existing one) appears, and a
+  // path-keyed find would collapse a file's multiple jobs to the first.
+  for (const site of sites()) {
+    it(`${site.path} grants every permission its reusables request`, () => {
+      expect(site.missing).toEqual([]);
     });
   }
 });

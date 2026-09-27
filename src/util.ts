@@ -24,10 +24,13 @@ export const annotationSafe = (msg: string): string => msg.replaceAll(/[\r\n]+/g
 // must strip wherever it appears). NON-global: a stateful /g in a .test() alternates true/false
 // across calls; the canonicalizer re-flags it (issue #209).
 export const CONTEXT_SUFFIX_RE = /\[[12]m\]/i;
-// The canonicalizer's global form — hoisted so a per-entry replace() never recompiles, and
-// sharing the SAME source the guard's non-global .test() uses (a global regex in .test() would
-// alternate on its stateful lastIndex).
-const MODEL_IDENTITY_SUFFIX_RE = /\[[12]m\]/gi;
+// The canonicalizer's global form, DERIVED from the shared source — one grammar, one literal
+// (a global regex in .test() would alternate on its stateful lastIndex, hence the two objects).
+const MODEL_IDENTITY_SUFFIX_RE = new RegExp(CONTEXT_SUFFIX_RE.source, "gi");
+// The 1M-WINDOW declaration pattern, the agent CLI's documented grant (/\[1m\]/i): the guard
+// polices THIS suffix specifically — a [2m] suffix is canonicalized but never claims the 1M
+// window the declaration test exists to protect (issue #209 review r2).
+export const ONE_M_SUFFIX_RE = /\[[1]m\]/i;
 export const modelIdentity = (configuredModelId: string): string =>
   configuredModelId.replace(MODEL_IDENTITY_SUFFIX_RE, "");
 

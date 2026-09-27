@@ -390,9 +390,7 @@ export const render = (input: RenderInput): string => {
   // never renders "clean review" or the review-complete marker.
   const incomplete =
     (input.incomplete ?? input.envelope?.incomplete ?? false) ||
-    // A shed-empty list is not a real empty doc: an error-verdict doc whose every finding was
-    // size-shed must not flip the marker decision the caller already made (issue #214 review r2).
-    (isIncompleteFindings(input.findings) && (input.shedCount ?? 0) === 0);
+    isIncompleteFindings(input.findings);
   // Price a time-slotted model at the RUN's completion instant (issue #170) — stamped in the envelope
   // by adapt, so re-rendering the same envelope always picks the same slot; input.pricedAt is only the
   // fallback for a pre-#170 envelope that carries no generated_at.
@@ -626,7 +624,13 @@ export const render = (input: RenderInput): string => {
     costProvenance,
     // The terminal branch's "machine findings document is linked above" claim must only fire when
     // the pointer actually carries a findings-json marker (the convergence-only marker does not).
-    findingsDocLinked: (input.findingsPointer ?? "").includes("code-review:findings-json"),
+    // The terminal branch's "machine findings document is linked above" claim must only fire when
+    // the pointer actually carries a findings-json marker (the convergence-only marker does not).
+    // Derived from the SAME value the template renders (the jsonUrl fallback pair included).
+    findingsDocLinked: (
+      input.findingsPointer ?? findingsMarkerPair(input.jsonUrl, input.findings.convergence)
+    ).includes("code-review:findings-json"),
+    summaryAvailable: input.summaryAvailable ?? false,
     // The house sanitizer for untrusted template fields — collapses line breaks AND escapes
     // backticks, so a hand-edited stamp cannot break the code span or the blockquote.
     // A nonconforming stamp must not be presented as validated: the template shows a note

@@ -16,7 +16,6 @@ import {
   priorIdsFrom,
   discussionRows,
   STICKY_CHAR_LIMIT,
-  SHED_RESERVE,
 } from "./post.js";
 import { fetchThreadComments } from "./answered.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
@@ -3394,6 +3393,14 @@ describe("post — the stale-price warn is gated on the providedness flag (issue
 });
 
 describe("post — the comment-size shed and the terminal guard (issue #214)", () => {
+  beforeEach(() => {
+    // test-setup neutralizes GITHUB_STEP_SUMMARY for the suite; the refuge claims these tests
+    // assert only fire when the summary is actually written.
+    process.env["GITHUB_STEP_SUMMARY"] = join(tmpDir, "summary.md");
+  });
+  afterEach(() => {
+    delete process.env["GITHUB_STEP_SUMMARY"];
+  });
   const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
     const stickyCalls = calls.filter(
       (c) =>
@@ -3425,7 +3432,8 @@ describe("post — the comment-size shed and the terminal guard (issue #214)", (
       post(mkInput({ runUrl: "https://github.com/owner/repo/actions/runs/123" }), api),
     ).resolves.toBeUndefined();
     const body = stickyBodyOf(calls());
-    expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT - SHED_RESERVE);
+    // Inline off never patches, so the shed targets GitHub's REAL limit (reserve 0).
+    expect(body.length).toBeLessThanOrEqual(STICKY_CHAR_LIMIT);
     expect(body).toContain("left out of this comment");
     expect(body).toContain("run summary");
     // The shed drops from the least-severe end: the first nit is gone, the major survives.

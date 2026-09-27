@@ -100,6 +100,10 @@ export interface RenderInput {
   // cap even with every finding shed — the template renders the short run-summary notice instead
   // of the review. The markers and the findings pointer still render (the seed chain survives).
   readonly terminal?: boolean;
+  // Whether the run summary was actually written (appendRunSummary no-ops without the env var):
+  // the shed note's and the terminal notice's refuge claims must not fire on a path where the
+  // refuge does not exist. Omitted ⇒ false (the standalone render command has no summary).
+  readonly summaryAvailable?: boolean;
   readonly envelope: ResultEnvelope | null;
   // An explicit signal, never inferred from the map: an absent (all-zero) map renders cost as N/A,
   // never a false $0.00. Omitted ⇒ treated as provided.

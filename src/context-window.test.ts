@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readRepoFile, repoFiles, WORKFLOW_EXTENSIONS } from "./test-util.js";
+import { CONTEXT_SUFFIX_RE } from "./util.js";
 
 // Every key that carries a model id into the agent CLI: the reusables' inputs, and the env vars a
 // standalone workflow sets directly. This list and the scanned directories below are the guard's
@@ -28,10 +29,16 @@ type ConfiguredModel = { readonly key: string; readonly value: string };
 // branches can reach ANTHROPIC_MODEL.
 const modelIdsIn = (value: string): readonly string[] =>
   value.startsWith("${{")
-    ? [...value.replace(/(?:==|!=)\s*'[^']*'/g, "").matchAll(/'([^']+)'/g)].flatMap((match) =>
-        match[1] === undefined ? [] : [match[1]],
+    ? [
+        ...value
+          // Comparison operands first (either quote style), then both quote styles' literals —
+          // a double-quoted literal inside the expression is config too.
+          .replace(/(?:==|!=)\s*(?:'[^']*'|"[^"]*")/g, "")
+          .matchAll(/'([^']+)'|"([^"]+)"/g),
+      ].flatMap((match) =>
+        match[1] !== undefined ? [match[1]] : match[2] !== undefined ? [match[2]] : [],
       )
-    : [value];
+    : [value.replace(/^"(.*)"$/, "$1")];
 
 // A literal assignment to one of those keys, whether live or commented out — a commented example is
 // config a consumer uncomments.
@@ -76,7 +83,7 @@ describe("1M context window declaration (#157)", () => {
     it(`${path} declares [1m] on every model id it configures`, () => {
       expect(
         configuredModels(path)
-          .filter((configured) => !configured.value.endsWith("[1m]"))
+          .filter((configured) => !CONTEXT_SUFFIX_RE.test(configured.value))
           .map((configured) => `${configured.key}: ${configured.value}`),
       ).toEqual([]);
     });

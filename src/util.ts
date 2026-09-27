@@ -5,6 +5,8 @@ export const asRecord = (u: unknown): Record<string, unknown> | null =>
 
 export const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+import type { ModelUsageEntry } from "./schema.js";
+
 // A GitHub Actions workflow command (`::warning::…`) is single-line: a CR/LF in the message ends the
 // annotation early, and a following `::…::` in the remainder would be parsed as another command.
 // Collapse line breaks so an untrusted interpolation (e.g. `gh` stderr) can't break out of one.
@@ -16,8 +18,25 @@ export const annotationSafe = (msg: string): string => msg.replaceAll(/[\r\n]+/g
 // usage telemetry by the configured id. Every ingress that reads a model id from the agent
 // canonicalizes it here: carried through, it misses the price map, prices the run at $0, and voids
 // the spend clamp that steers off those same entries.
+// The context-window suffix grammar — ONE definition, consumed by the canonicalizer, the
+// context-window guard, and the cost ingresses. UNANCHORED on purpose, matching the agent CLI's
+// own resolver (the CLI grants the 1M window wherever the suffix appears, so the canonicalizer
+// must strip wherever it appears). NON-global: a stateful /g in a .test() alternates true/false
+// across calls; the canonicalizer re-flags it (issue #209).
+export const CONTEXT_SUFFIX_RE = /\[[12]m\]/i;
 export const modelIdentity = (configuredModelId: string): string =>
-  configuredModelId.replace(/\[[12]m\]$/i, "");
+  configuredModelId.replace(new RegExp(CONTEXT_SUFFIX_RE.source, "gi"), "");
+
+// The ONE per-model accumulation for a ModelUsageEntry (issue #209): the cache fields take the
+// always-0 convention sumTranscriptUsage's entries carry, so adapt's fold and the transcript
+// fold cannot drift on absent-vs-0 again.
+export const addModelUsage = (prior: ModelUsageEntry, entry: ModelUsageEntry): ModelUsageEntry => ({
+  model: prior.model,
+  input_tokens: prior.input_tokens + entry.input_tokens,
+  output_tokens: prior.output_tokens + entry.output_tokens,
+  cache_read_tokens: (prior.cache_read_tokens ?? 0) + (entry.cache_read_tokens ?? 0),
+  cache_write_tokens: (prior.cache_write_tokens ?? 0) + (entry.cache_write_tokens ?? 0),
+});
 
 export type ParseResult = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
 

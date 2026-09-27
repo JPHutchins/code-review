@@ -102,7 +102,14 @@ import {
   parseExtraEndpoints,
 } from "./sandbox.js";
 import { parseScope } from "./scope.js";
-import { annotationSafe, asRecord, errMsg, readFileOrNull, tryParseJson } from "./util.js";
+import {
+  annotationSafe,
+  asRecord,
+  errMsg,
+  modelIdentity,
+  readFileOrNull,
+  tryParseJson,
+} from "./util.js";
 
 // The seed's upcast (the registry's resolveTolerantFindings — the ONE place the migration policy
 // lives): the ajv gate then validates the UPCAST value, never the raw doc: validating the raw legacy
@@ -454,11 +461,19 @@ const costCmd = defineCommand({
     const prices = decode(PriceMapCodec.decode(readJSON(args.prices)), "prices");
     // The cost CLI's --prices is required, so a decoded map is always the consumer's own.
     warnStalePrices(prices);
-    // Price a saved envelope at the RUN's own instant (issue #170), so re-running `cost` later prices
-    // the same envelope to the same slot deterministically — not at whatever wall clock it is re-run at.
+    // The cost ingress canonicalizes the suffix like every other ingress (issue #209): a
+    // pre-fix envelope keyed `deepseek-v4-pro[1m]` — or a suffix-keyed consumer price map —
+    // must not price at $0 for the id the CLI actually granted the window to.
     const report = computeCost(
-      envelope.models,
-      prices,
+      envelope.models.map((entry) => ({ ...entry, model: modelIdentity(entry.model) })),
+      {
+        ...prices,
+        models: Object.fromEntries(
+          Object.entries(prices.models).map(([model, rate]) => [modelIdentity(model), rate]),
+        ),
+      },
+      // Price a saved envelope at the RUN's own instant (issue #170), so re-running `cost` later prices
+      // the same envelope to the same slot deterministically — not at whatever wall clock it is re-run at.
       parseInstant(envelope.generated_at) ?? new Date(),
     );
     process.stdout.write(JSON.stringify(report, null, 2));

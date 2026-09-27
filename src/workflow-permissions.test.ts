@@ -47,17 +47,11 @@ const asPermissionSet = (declared: unknown): PermissionSet => {
 
 const union = (sets: readonly PermissionSet[]): PermissionSet =>
   new Map(
-    sets
-      .flatMap((set) => [...set])
-      .reduce<readonly (readonly [string, string])[]>(
-        (merged, [scope, access]) =>
-          merged.some(([seen]) => seen === scope)
-            ? merged.map(([seen, held]) =>
-                seen === scope && rankOf(access) > rankOf(held) ? [scope, access] : [seen, held],
-              )
-            : [...merged, [scope, access]],
-        [],
-      ),
+    [...sets.flatMap((set) => [...set])].reduce<Map<string, string>>((merged, [scope, access]) => {
+      const held = merged.get(scope);
+      if (held === undefined || rankOf(access) > rankOf(held)) merged.set(scope, access);
+      return merged;
+    }, new Map()),
   );
 
 type Job = { readonly permissions?: unknown; readonly uses?: unknown };
@@ -92,7 +86,13 @@ const calledReusable = (job: Job): string | null => {
 // everything its jobs request, plus what the reusables it delegates to need in turn. A callee that
 // declares nothing requests nothing extra — it inherits whatever the caller granted.
 const requiredBy = (reusablePath: string, seen: readonly string[] = []): PermissionSet => {
-  if (seen.includes(reusablePath)) return EMPTY;
+  // A uses: cycle is a malformed workflow — fail loudly, never under-count the requirement
+  // silently (issue #209).
+  if (seen.includes(reusablePath)) {
+    throw new Error(
+      `uses: cycle detected — ${reusablePath} was already on the call path: ${[...seen, reusablePath].join(" -> ")}`,
+    );
+  }
   const workflow = workflowOf(reusablePath);
   return union([
     ...(workflow.permissions !== undefined ? [asPermissionSet(workflow.permissions)] : []),

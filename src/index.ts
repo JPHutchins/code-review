@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import type { Either } from "fp-ts/Either";
 import { render, isConvergenceRound, isReviewVerdict } from "./render.js";
 import { buildInlineComments, renderStraysSection } from "./inline.js";
-import { computeCost, parseInstant, warnStalePrices } from "./cost.js";
+import { computeCost, costAxisAnnouncement, parseInstant, warnStalePrices } from "./cost.js";
 import { readTranscriptTree, sumTranscriptUsage } from "./transcript.js";
 import {
   evaluateBudgetHook,
@@ -27,6 +27,7 @@ import {
   priorAnswersPath,
   priorSuppressedPath,
   lastValidPath,
+  costAxisDisengagedPath,
   isSubagentHookInput,
   DEFAULT_RESERVE,
   DEADLINE_ENV,
@@ -710,30 +711,31 @@ const budgetHookCmd = defineCommand({
               () => undefined,
             )
           : null;
-      // Unmeasurable spend is null, never a confident number: a report with any unpriced line
-      // (or no lines at all) under-counts, so the steering degrades to unsteered rather than
-      // telling the agent $0.00 was spent (issue #221 review r1).
-      // The disengagement is announced on the STATE TRANSITION, tracked in a marker file beside
-      // the draft (each hook invocation is a fresh process): draft existence was a false proxy —
-      // it re-announced on every early event and never announced a disengagement detected after
-      // the draft exists. An empty report (no usage recorded) is not a coverage failure and is
-      // not announced.
-      if (costReport !== null && costReport.lines.length > 0 && !costReport.allKnown) {
-        if (readFileOrNull(`${draftPath}.cost-axis-disengaged`) === null) {
+      // Unmeasurable spend is null, never a confident number: a report with an unpriced line
+      // under-counts, so the steering degrades to unsteered rather than telling the agent $0.00
+      // was spent (issue #221 review r1). An empty report stays ENGAGED at $0 — no usage was
+      // consumed, which is honest, not unmeasurable.
+      // The disengagement is announced on the STATE TRANSITION via the marker sidecar (each hook
+      // invocation is a fresh process), skipped for subagents — their transcript view is their
+      // own file, so they must not announce the aggregate's axis or clear its marker.
+      if (!isSubagentHookInput(input)) {
+        const axisPath = costAxisDisengagedPath(draftPath);
+        const action = costAxisAnnouncement(costReport, readFileOrNull(axisPath) !== null);
+        if (action === "announce") {
           process.stderr.write(
-            "code-review budget-hook: the price map does not cover every model in the transcript — the cost axis is disengaged for this run; add the missing models and re-verify\n",
+            "code-review budget-hook: the price map does not cover every model in the transcript, or its slots leave the run instant uncovered — the cost axis is disengaged for this run; add the missing models (or fix the slot partition) and re-verify\n",
           );
           try {
-            writeFileSync(`${draftPath}.cost-axis-disengaged`, "");
+            writeFileSync(axisPath, "");
           } catch {
             // Best-effort: a failed marker just means the next event re-announces.
           }
-        }
-      } else if (readFileOrNull(`${draftPath}.cost-axis-disengaged`) !== null) {
-        try {
-          unlinkSync(`${draftPath}.cost-axis-disengaged`);
-        } catch {
-          // Best-effort cleanup.
+        } else if (action === "clear") {
+          try {
+            unlinkSync(axisPath);
+          } catch {
+            // Best-effort cleanup.
+          }
         }
       }
       const spentUsd = costReport !== null && costReport.allKnown ? costReport.totalCostUSD : null;

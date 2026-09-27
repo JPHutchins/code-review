@@ -1664,6 +1664,22 @@ describe("render", () => {
       expect(clean).not.toContain("N/A rows:");
     });
 
+    it("presents a nonconforming stamp as a note, not as a smoothed valid date (issue #220 review r5)", () => {
+      const findings = mkFindings([]);
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices: { ...prices, _updated: "2026-8-22\n" },
+        pricesProvided: true,
+        template,
+        route: "full review",
+      });
+      expect(result).toContain(
+        "`_updated` is not a parseable ISO date — the staleness check is skipped.",
+      );
+      expect(result).not.toContain("Prices snapshot `_updated`");
+    });
+
     it("renders the price snapshot's _updated in the cost collapsible (issue #220)", () => {
       const findings = mkFindings([]);
       const result = render({

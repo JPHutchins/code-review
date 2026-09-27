@@ -31,8 +31,9 @@ export interface CostReport {
   readonly totalCacheWriteTokens: number;
   readonly totalCostUSD: number;
   // The aggregate's provenance, computed beside the other rollups: false when ANY line missed
-  // the map — and for an EMPTY report too (nothing was measured, so nothing is "known"; the
-  // budget hook's unmeasurable-is-null invariant reads this directly).
+  // the map. An EMPTY report is true — no usage was consumed, so $0 spent is the honest figure
+  // and the budget cap stays engaged (an unpriced line is the only unmeasurable shape; an empty
+  // report is not a coverage failure).
   readonly allKnown: boolean;
 }
 
@@ -171,18 +172,34 @@ export const computeCost = (
     totalCacheReadTokens: lines.reduce((s, l) => s + l.cacheReadTokens, 0),
     totalCacheWriteTokens: lines.reduce((s, l) => s + l.cacheWriteTokens, 0),
     totalCostUSD: lines.reduce((s, l) => s + l.costUSD, 0),
-    allKnown: lines.length > 0 && lines.every((l) => l.known),
+    allKnown: lines.every((l) => l.known),
   };
 };
 
 // A zero-padded ISO calendar date, or undefined — round-tripped through Date so a rolled-over
-// day (2026-02-31 → 2026-03-03) is rejected, not silently compared.
-const parseIsoDate = (stamp: string): string | undefined => {
+// day (2026-02-31 → 2026-03-03) is rejected, not silently compared. Exported: the render layer
+// uses it to tell a nonconforming stamp apart from a valid one (the sticky must not present a
+// smoothed invalid value as validated).
+export const parseIsoDate = (stamp: string): string | undefined => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(stamp)) return undefined;
   const parsed = new Date(`${stamp}T00:00:00Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === stamp
     ? stamp
     : undefined;
+};
+
+// The budget hook's announce/clear decision, pure and testable: announce when a report with
+// unpriced lines exists and the marker (the human was told) is absent; clear the marker when the
+// axis is engaged again; otherwise nothing. index.ts skips the whole block for subagents and
+// performs the side effects (each hook invocation is a fresh process, so the marker file beside
+// the draft is the state).
+export const costAxisAnnouncement = (
+  report: CostReport | null,
+  markerExists: boolean,
+): "announce" | "clear" | "none" => {
+  if (report === null) return "none";
+  if (!report.allKnown) return markerExists ? "none" : "announce";
+  return markerExists ? "clear" : "none";
 };
 
 // The staleness signal (issue #220): a price map cannot know a vendor changed its rates, so the
@@ -196,7 +213,14 @@ const parseIsoDate = (stamp: string): string | undefined => {
 export const warnStalePrices = (prices: PriceMap | null, warn: Warn = defaultWarn): void => {
   if (prices === null) return;
   const updated = parseIsoDate(prices._updated);
-  if (updated === undefined || updated >= RELEASED) return;
+  if (updated === undefined) return;
+  if (updated > new Date().toISOString().slice(0, 10)) {
+    warn(
+      `::warning:: code-review cost: the price map's _updated (${prices._updated}) is in the future — a typo'd year silences the staleness check permanently; re-verify and re-stamp`,
+    );
+    return;
+  }
+  if (updated >= RELEASED) return;
   // The stamp reaching this line passed parseIsoDate (zero-padded ISO, CR/LF-free by
   // construction), so it interpolates unwrapped; RELEASED is a repo constant.
   warn(

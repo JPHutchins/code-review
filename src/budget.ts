@@ -192,7 +192,7 @@ export const mainHasWrittenDraft = (draftText: string | null): boolean => {
 
 // One sidecar-name derivation for every postfix-before-extension convention, so last-valid and
 // prior-context can never drift apart.
-const sidecarPath = (draftPath: string, postfix: string): string => {
+export const sidecarPath = (draftPath: string, postfix: string): string => {
   const ext = extname(draftPath);
   return join(dirname(draftPath), `${basename(draftPath, ext)}${postfix}${ext}`);
 };
@@ -222,6 +222,8 @@ export const priorSuppressedPath = (draftPath: string): string =>
 // the snapshot keeps the draft's real type (findings-draft.last-valid.json). The sentinel never
 // validates, so it can never be checkpointed here.
 export const lastValidPath = (draftPath: string): string => sidecarPath(draftPath, ".last-valid");
+export const costAxisDisengagedPath = (draftPath: string): string =>
+  sidecarPath(draftPath, ".cost-axis-disengaged");
 
 // Agent-facing: no internal refs.
 export const spawnFloorMessage = (draftPath: string): string =>

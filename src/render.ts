@@ -5,7 +5,7 @@ import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings, resolveFindingId } from "./schema.js";
 import type { DiscussionLink, RenderInput, SeverityCounts } from "./types.js";
-import { computeCost, parseInstant } from "./cost.js";
+import { computeCost, parseInstant, parseIsoDate } from "./cost.js";
 import {
   severityEmoji,
   projectPatch,
@@ -622,6 +622,9 @@ export const render = (input: RenderInput): string => {
     costProvenance,
     // The house sanitizer for untrusted template fields — collapses line breaks AND escapes
     // backticks, so a hand-edited stamp cannot break the code span or the blockquote.
+    // A nonconforming stamp must not be presented as validated: the template shows a note
+    // instead of the smoothed value when the staleness axis cannot parse it.
+    stampValid: parseIsoDate(input.prices._updated) !== undefined,
     pricesUpdatedAt: escapeCodeBackticks(input.prices._updated.replace(/\r/g, " ")).trim(),
     route,
     effort,

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { computeCost, parseInstant, warnStalePrices } from "./cost.js";
+import { computeCost, costAxisAnnouncement, parseInstant, warnStalePrices } from "./cost.js";
 import { RELEASED } from "./released.js";
 import { PriceMapCodec } from "./schema.js";
 import type { PriceMap, ModelUsageEntry } from "./schema.js";
@@ -697,11 +697,17 @@ describe("warnStalePrices (issue #220)", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(RELEASED));
   });
 
-  it("stays silent for a map verified on or after the release date", () => {
+  it("stays silent for a map verified on the release date", () => {
     const warn = vi.fn();
     warnStalePrices(map(RELEASED), warn);
-    warnStalePrices(map("2999-01-01"), warn);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("warns when the stamp is in the future — a typo'd year silences the check permanently", () => {
+    const warn = vi.fn();
+    warnStalePrices(map("2999-01-01"), warn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("in the future"));
   });
 
   it("stays silent for a null map (no consumer map provided) and degrades silently on a nonconforming stamp", () => {
@@ -723,14 +729,33 @@ describe("warnStalePrices (issue #220)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("the allKnown rollup is false for an empty report and for any unpriced line", () => {
-    expect(computeCost([], prices, undefined, vi.fn()).allKnown).toBe(false);
+  it("the allKnown rollup is false for any unpriced line and true for an empty report ($0 engaged)", () => {
+    expect(computeCost([], prices, undefined, vi.fn()).allKnown).toBe(true);
     expect(
       computeCost([mkEntry({ model: "unknown-model" })], prices, undefined, vi.fn()).allKnown,
     ).toBe(false);
     expect(
       computeCost([mkEntry({ model: "pro-model" })], prices, undefined, vi.fn()).allKnown,
     ).toBe(true);
+  });
+
+  it("costAxisAnnouncement: announce once, clear on recovery, silent otherwise", () => {
+    const disengaged = computeCost(
+      [mkEntry({ model: "unknown-model" })],
+      prices,
+      undefined,
+      vi.fn(),
+    );
+    const engaged = computeCost([mkEntry({ model: "pro-model" })], prices, undefined, vi.fn());
+    const empty = computeCost([], prices, undefined, vi.fn());
+    expect(costAxisAnnouncement(disengaged, false)).toBe("announce");
+    expect(costAxisAnnouncement(disengaged, true)).toBe("none");
+    expect(costAxisAnnouncement(engaged, true)).toBe("clear");
+    expect(costAxisAnnouncement(engaged, false)).toBe("none");
+    // An empty report is engaged ($0), never an announce, and clears a stale marker.
+    expect(costAxisAnnouncement(empty, false)).toBe("none");
+    expect(costAxisAnnouncement(empty, true)).toBe("clear");
+    expect(costAxisAnnouncement(null, true)).toBe("none");
   });
 
   it("collapses line breaks in a hostile model id so it cannot break out of the warning", () => {

@@ -232,8 +232,12 @@ All <%= it.testReport.total %> tests passed.
 > | <%= l.model %> | <%= it.formatTokens(l.inputTokens) %> | <%= it.formatTokens(l.outputTokens) %> | <%= it.formatTokens(l.cacheReadTokens) %> | <%= it.formatTokens(l.cacheWriteTokens) %> | <%= it.formatCost(l.costUSD, l.known ? 'complete' : 'unknown') %> |
 <% }) -%>
 > | **Total** | **<%= it.formatTokens(it.costReport.totalInputTokens) %>** | **<%= it.formatTokens(it.costReport.totalOutputTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheReadTokens) %>** | **<%= it.formatTokens(it.costReport.totalCacheWriteTokens) %>** | **<%= it.formatCost(it.costReport.totalCostUSD, it.costProvenance) %>** |
-<% if (it.pricesProvided && it.pricesUpdatedAt) { -%>
+<% if (it.pricesProvided) { -%>
+<% if (it.stampValid) { -%>
 > Prices snapshot `_updated` <%= it.pricesUpdatedAt %>.
+<% } else { -%>
+> `_updated` is not a parseable ISO date — the staleness check is skipped.
+<% } -%>
 <% } -%>
 <% if (it.pricesProvided && it.costProvenance !== 'complete') { -%>
 > N/A rows: models missing from this price map, or slots that do not cover the run instant — check the run log for the slot warning.

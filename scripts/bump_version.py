@@ -79,7 +79,14 @@ def main() -> None:
         map_stamp = repo_map["_updated"]
         if isinstance(map_stamp, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", map_stamp):
             datetime.strptime(map_stamp, "%Y-%m-%d")
-            if map_stamp < datetime.now(timezone.utc).date().isoformat():
+            today = datetime.now(timezone.utc).date().isoformat()
+            if map_stamp > today:
+                print(
+                    f"note: .github/prices.json _updated ({map_stamp}) is in the future — a "
+                    "typo'd year silences the staleness warn; re-verify and re-stamp",
+                    file=sys.stderr,
+                )
+            elif map_stamp < today:
                 print(
                     f"note: .github/prices.json was last verified {map_stamp} — "
                     "re-verify the provider's rates and bump _updated, or accept the dogfood "

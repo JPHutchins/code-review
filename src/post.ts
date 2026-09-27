@@ -1729,29 +1729,109 @@ export const post = async (
       | "discussionTruncated"
       | "orphanedTruncated"
     >,
+    findingsOverride?: Findings,
+    terminal = false,
+    shedCount = 0,
   ): string =>
     formatMarkdown(
       render({
         ...commonRenderInput,
+        ...(findingsOverride ? { findings: findingsOverride } : {}),
         ...(straysOverride ? { strays: straysOverride } : {}),
         ...(unanchoredCount !== undefined ? { unanchoredCount } : {}),
         ...(unanchoredStrays !== undefined && unanchoredStrays.length > 0
           ? { unanchoredStrays }
           : {}),
         ...(discussionOverride ?? {}),
+        ...(terminal ? { terminal } : {}),
+        ...(shedCount > 0 ? { shedCount } : {}),
         inlineDisposition,
         reviewUrl,
       }) + longFilesNote,
     );
 
-  // The body is posted unshed: GitHub rejects one over 65536 chars, and postComment/patchComment let
-  // that 422 propagate, so an oversized body fails the job with the announce placeholder still up.
-  // Inline off makes that reachable — every finding's prose now renders into this one comment, where
-  // the in-diff ones used to be separate posts. Shedding is issue #214; tolerating a failed write
-  // after the sticky is up is issue #223. The embedded document is gone from this body (issue #217),
-  // which removed the largest fixed cost it had — an oversized round is now a matter of finding prose,
-  // not of a ~32KB blob. Each sticky-listed stray's permalink adds a URL line (~55–130 chars) to this
-  // budgeted-by-nobody section, so a nit-heavy inline-off round sits closer to the limit (issue #231 r1).
+  // GitHub rejects a comment over 65536 chars, and postComment/patchComment let that 422 propagate,
+  // so the body is sized HERE, before the write (issue #214): the findings shed least-severe-first
+  // until the body fits the limit minus the patch reserve (the disposition line and the
+  // GitHub-rejected strays the final patch adds — those strays are shed-immune by construction:
+  // their inline post already failed, so the sticky is the only human surface they have). The
+  // embedded blob is gone from this body (issue #217), so the shed now trades in finding prose
+  // only; the run summary renders the WHOLE review with no size limit and is the shed's refuge
+  // (issue #205). A failed write AFTER the sticky is up degrades instead of aborting (issue #223).
+  const STICKY_CHAR_LIMIT = 65_536;
+  const SHED_RESERVE = 4_000;
+  const severityRank = (severity: Finding["severity"]): number =>
+    severity === "critical" ? 3 : severity === "major" ? 2 : severity === "minor" ? 1 : 0;
+  const shedOrder = stampedFindings.findings
+    .map((f, index) => ({ f, index }))
+    .sort((a, b) => severityRank(a.f.severity) - severityRank(b.f.severity) || a.index - b.index)
+    .map((entry) => entry.f);
+  const shedBody = (shedCount: number): { readonly body: string; readonly count: number } => {
+    const dropped = new Set(shedOrder.slice(0, shedCount));
+    // With inline off every visible finding renders as a stray, so the shed must apply to BOTH
+    // surfaces: the main findings list and the strays array (the same objects, dropped from both).
+    // The view is the SUPPRESSION-FILTERED one — the same doc the sticky renders unshed.
+    const kept = stampedFindings.findings.filter((f) => !dropped.has(f));
+    return {
+      body: renderBody(
+        initialDisposition,
+        undefined,
+        // The overrides apply ONLY when shedding — a zero-shed render keeps the exact call shape
+        // the unshed path always used (the render's own strays/findings views are untouched).
+        shedCount > 0 ? kept : undefined,
+        undefined,
+        undefined,
+        undefined,
+        shedCount > 0 ? { ...stampedFindings, findings: kept } : undefined,
+        false,
+        shedCount,
+      ),
+      count: shedCount,
+    };
+  };
+  // Body length is monotone in the shed count, so bisect the smallest count that fits. The
+  // terminal guard: when even the all-shed body exceeds the cap, non-findings content alone
+  // (a verbatim cloc table, a caller's template) is the culprit — post the short run-summary
+  // notice instead of a 422. The state is kept once, so the initial write AND the final patch
+  // shed identically (the patch adds the disposition and the shed-immune rejected strays).
+  const shedState: {
+    readonly shedCount: number;
+    readonly dropped: ReadonlySet<Finding>;
+    readonly terminal: boolean;
+  } = (() => {
+    const target = STICKY_CHAR_LIMIT - SHED_RESERVE;
+    const base = shedBody(0);
+    if (base.body.length <= target) return { shedCount: 0, dropped: new Set(), terminal: false };
+    let low = 0;
+    let high = stampedFindings.findings.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (shedBody(mid).body.length <= target) high = mid;
+      else low = mid + 1;
+    }
+    const shed = shedBody(low);
+    if (low < stampedFindings.findings.length || shed.body.length <= target) {
+      return { shedCount: low, dropped: new Set(shedOrder.slice(0, low)), terminal: false };
+    }
+    return { shedCount: low, dropped: new Set(shedOrder), terminal: true };
+  })();
+  const shedKept = (list: readonly Finding[]): readonly Finding[] =>
+    list.filter((f) => !shedState.dropped.has(f));
+  const fitStickyBody = (): string =>
+    shedState.terminal
+      ? renderBody(
+          initialDisposition,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          true,
+        )
+      : shedState.shedCount > 0
+        ? shedBody(shedState.shedCount).body
+        : shedBody(0).body;
   // A body with no --json-url carries no findings marker, and upserting it would overwrite the last
   // pointer to the prior findings document. The guard refuses only when the pointer is actually
   // load-bearing: a COMPLETED full-review sticky whose markers gather would seed from. The
@@ -1779,7 +1859,7 @@ export const post = async (
     input.repo,
     prNumber,
     existingSticky,
-    renderBody(initialDisposition),
+    fitStickyBody(),
     ghApi,
     true,
   );
@@ -1839,7 +1919,6 @@ export const post = async (
   // GitHub-rejected in-diff findings join the strays, and none-anchored says "inline unavailable",
   // never a false "posted". Best-effort — the sticky and review are already posted.
   const unanchoredCount = unposted.length;
-  const finalStrays = unanchoredCount > 0 ? [...unposted, ...strays] : strays;
   // GitHub-rejected in-diff findings render on the final sticky as strays — the discussion grouping
   // was built before their rejection was knowable, so it is rebuilt with their ids in the known set:
   // their asides render, and their replies never land in the "no longer reports" bucket.
@@ -1861,7 +1940,7 @@ export const post = async (
           orphanedTruncated: finalDiscussion.orphanedTruncated,
         }
       : undefined;
-  if (stickyRef !== null && (inlinePosted > 0 || unanchoredCount > 0)) {
+  if (stickyRef !== null && !shedState.terminal && (inlinePosted > 0 || unanchoredCount > 0)) {
     const finalDisposition: InlineDisposition =
       inlinePosted > 0
         ? { kind: "posted", count: inlinePosted, sha: input.headSha }
@@ -1873,10 +1952,17 @@ export const post = async (
         renderBody(
           finalDisposition,
           reviewUrl,
-          finalStrays,
+          // The shed applies to the patch too; the GitHub-rejected strays are immune — their
+          // inline post already failed, so the sticky is the only human surface they have.
+          [...unposted, ...shedKept(strays)],
           unanchoredCount,
           unposted,
           finalDiscussionOverride,
+          shedState.shedCount > 0
+            ? { ...stampedFindings, findings: [...shedKept(stampedFindings.findings)] }
+            : undefined,
+          false,
+          shedState.shedCount,
         ),
         ghApi,
       );

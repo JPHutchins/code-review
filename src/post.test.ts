@@ -3391,6 +3391,67 @@ describe("post — the stale-price warn is gated on the providedness flag (issue
   });
 });
 
+describe("post — the comment-size shed and the terminal guard (issue #214)", () => {
+  const stickyBodyOf = (calls: readonly RecordedCall[]): string => {
+    const stickyCalls = calls.filter(
+      (c) =>
+        c.stdin !== undefined &&
+        (c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") ||
+          c.args[0] === "repos/owner/repo/issues/comments/999"),
+    );
+    return (JSON.parse(stickyCalls.at(-1)!.stdin!) as CommentBody).body;
+  };
+
+  const manyFindings = (): Findings => ({
+    ...mkFindings([]),
+    findings: [
+      ...Array.from({ length: 60 }, (_, i) =>
+        mkFinding({
+          severity: "nit",
+          title: `Nit finding ${String(i)}`,
+          description: `Nit ${String(i)}: ${"x".repeat(1_500)}`,
+        }),
+      ),
+      mkFinding({ severity: "major", title: "The kept major", description: "y".repeat(200) }),
+    ],
+  });
+
+  it("sheds the least severe findings until the sticky fits, and names the run summary as the refuge", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(manyFindings()));
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+    await expect(
+      post(mkInput({ runUrl: "https://github.com/owner/repo/actions/runs/123" }), api),
+    ).resolves.toBeUndefined();
+    const body = stickyBodyOf(calls());
+    expect(body.length).toBeLessThanOrEqual(65_536 - 4_000);
+    expect(body).toContain("left out of this comment");
+    expect(body).toContain("run summary");
+    // The shed drops from the least-severe end: the first nit is gone, the major survives.
+    expect(body).toContain("The kept major");
+    expect(body).not.toContain("Nit finding 0");
+  });
+
+  it("posts the short run-summary notice when unbounded non-findings content alone exceeds the cap", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify(mkFindings([mkFinding({ title: "DistinctTitleHere" })])),
+    );
+    writeFileSync(join(tmpDir, "cloc.txt"), "x".repeat(70_000));
+    const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+    await expect(
+      post(mkInput({ clocDiffPath: join(tmpDir, "cloc.txt") }), api),
+    ).resolves.toBeUndefined();
+    const body = stickyBodyOf(calls());
+    expect(body).toContain("exceeds GitHub's comment-size limit");
+    expect(body).toContain("run summary");
+    expect(body).not.toContain("DistinctTitleHere");
+    // The seed chain survives the notice: markers + the findings link + review-complete.
+    expect(body).toContain("<!-- code-review -->");
+    expect(body).toContain("<!-- review-complete -->");
+    expect(body).toContain("findings-json");
+  });
+});
+
 describe("post — inline review 422 salvage (issue #57)", () => {
   // GitHub rejects the batched review when ANY comment position is invalid; the fallback posts the
   // review body-only, then each comment individually — line 10 is accepted, line 11 is rejected.

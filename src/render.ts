@@ -613,6 +613,8 @@ export const render = (input: RenderInput): string => {
 
   return eta.renderString(input.template, {
     findings: input.findings,
+    shedCount: input.shedCount ?? 0,
+    terminal: input.terminal ?? false,
     envelope: input.envelope,
     usageAvailable,
     hasUsage,

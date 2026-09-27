@@ -224,9 +224,12 @@ const transcriptFallbackFrom = (path: string): TranscriptTelemetry => {
 const bundledPath = (...segments: string[]): string =>
   resolve(import.meta.dirname, "..", ...segments);
 
-const packageVersion = (
-  JSON.parse(readFileSync(bundledPath("package.json"), "utf-8")) as { version: string }
-).version;
+// The repo's single version reader — the CLI's --version print and the copy-paste drift guard
+// (src/version-pins.test.ts) must model "the repo's version" identically.
+export const readPackageVersion = (): string =>
+  (JSON.parse(readFileSync(bundledPath("package.json"), "utf-8")) as { version: string }).version;
+
+const packageVersion = readPackageVersion();
 
 const resolveTemplatePath = (templateArg: string | undefined): string =>
   templateArg ? resolve(templateArg) : bundledPath("templates", "comment.eta");

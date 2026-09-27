@@ -14,6 +14,16 @@ typecheck = Task("npx tsc --noEmit", help="static type-check with TypeScript")
 test = Task("npx vitest run", help="run the vitest test suite")
 build = Task("npx tsup", help="bundle with tsup (ESM, sourcemaps)")
 
+bump_version = Task(
+    ("python3", "scripts/bump_version.py"),
+    help="derive every version surface from one version: `camas bump_version -- 0.1.0-alpha.61` "
+    "(the drift guard src/version-pins.test.ts is the backstop for any surface it misses)",
+)
+capture_help = Task(
+    ("python3", "scripts/capture_help.py"),
+    help="capture the published-help fixtures from the freshly built dist (run after `camas build`)",
+)
+
 _workflow_yamls = tuple(
     str(p)
     for d in (Path("examples/workflows"), Path(".github/workflows"))

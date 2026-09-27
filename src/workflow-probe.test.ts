@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { allWorkflows, readRepoFile } from "./test-util.js";
+import { readPackageVersion } from "./index.js";
 
 // The capability probes (seed_accepts/post_accepts) live as inline bash in the workflows, and their
 // correctness depends on citty's --help rendering — a version-mutable, human-facing surface. These
@@ -135,13 +136,49 @@ describe("workflow capability probes (issue #233 r2)", () => {
   it("reports the published pinned generation as carrying the CI-gated flags", () => {
     const seedFn = sites.find((s) => s.name === "seed_accepts")!.fn;
     const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
-    const pinnedVersions = workflowTexts().flatMap((text) => {
-      const version = (parseYaml(text) as { env?: { CODE_REVIEW_VERSION?: string } }).env
-        ?.CODE_REVIEW_VERSION;
-      return version === undefined ? [] : [version];
+    const expected = readPackageVersion();
+    // Pins may be declared at any env level (this repo already uses step-level env for other
+    // pins), so collect every site with its address — a drift names the workflow AND the level.
+    const pinSites = allWorkflows().flatMap((path) => {
+      const doc = parseYaml(readRepoFile(path)) as {
+        env?: { CODE_REVIEW_VERSION?: unknown };
+        jobs?: Record<
+          string,
+          {
+            env?: { CODE_REVIEW_VERSION?: unknown };
+            steps?: Array<{ env?: { CODE_REVIEW_VERSION?: unknown } }>;
+          }
+        >;
+      };
+      const found: { readonly address: string; readonly value: unknown }[] = [];
+      if (doc.env?.CODE_REVIEW_VERSION !== undefined)
+        found.push({ address: "env", value: doc.env.CODE_REVIEW_VERSION });
+      for (const [jobName, job] of Object.entries(doc.jobs ?? {})) {
+        if (job.env?.CODE_REVIEW_VERSION !== undefined)
+          found.push({ address: `${jobName}.env`, value: job.env.CODE_REVIEW_VERSION });
+        (job.steps ?? []).forEach((step, stepIndex) => {
+          if (step.env?.CODE_REVIEW_VERSION !== undefined)
+            found.push({
+              address: `${jobName}.steps[${String(stepIndex)}].env`,
+              value: step.env.CODE_REVIEW_VERSION,
+            });
+        });
+      }
+      return found.map((site) => ({ path, ...site }));
     });
-    expect(new Set(pinnedVersions).size).toBe(1);
-    const pinnedVersion = pinnedVersions[0]!;
+    expect(pinSites.length).toBeGreaterThan(0);
+    // String() comparison plus the raw JSON in the failure: a YAML numeric retype (an unquoted
+    // `1.0` pin parsing as the number 1) fails with the site named, not a bare boolean.
+    expect(
+      pinSites.flatMap((site) =>
+        String(site.value) === expected
+          ? []
+          : [
+              `${site.path} ${site.address}: CODE_REVIEW_VERSION=${JSON.stringify(site.value)} (expected ${expected})`,
+            ],
+      ),
+    ).toEqual([]);
+    const pinnedVersion = expected;
     const shortPin = pinnedVersion.replace("0.1.0-", "");
     const seedHelp = readRepoFile(`test/fixtures/published-help/seed-draft-${shortPin}.txt`);
     const postHelp = readRepoFile(`test/fixtures/published-help/post-${shortPin}.txt`);

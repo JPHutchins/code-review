@@ -248,6 +248,92 @@ const mkMockGhApi = (
 
 // Tests
 
+describe("post — the landed signal (issue #254)", () => {
+  const outputPath = (): string => join(tmpDir, "gh-output.txt");
+  // test-setup neutralizes GITHUB_OUTPUT for the whole suite, so an unconditional delete restores
+  // it (the sibling summary block's form).
+  afterEach(() => {
+    delete process.env["GITHUB_OUTPUT"];
+  });
+
+  it("writes posted=true to the step's GITHUB_OUTPUT the moment the sticky lands — even when the inline delivery later rejects", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    // The pre-upsert prior-review LIST keeps its match (--paginate); only the review POST (the
+    // batch and its body-only retry) rejects, so the command exits non-zero — but the sticky
+    // already landed, so the signal must stand.
+    const responses = [
+      ...mkMocks("<!-- code-review -->").filter(
+        (r) => !r.match(["repos/owner/repo/pulls/42/reviews"]),
+      ),
+      {
+        match: (a: readonly string[]) =>
+          a[0] === "repos/owner/repo/pulls/42/reviews" && a.includes("--paginate"),
+        response: "",
+      },
+    ];
+    const { api } = mkMockGhApi(responses);
+    await expect(post(mkInlineInput(), api)).rejects.toThrow();
+    expect(readFileSync(outputPath(), "utf-8")).toContain("posted=true");
+  });
+
+  it("a failed signal write warns and completes — the sticky and the inline flow still land", async () => {
+    // GITHUB_OUTPUT pointing at a DIRECTORY makes appendFileSync throw; the write is best-effort,
+    // so the post completes with a stderr warning instead of failing the round.
+    process.env["GITHUB_OUTPUT"] = tmpDir;
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { api, calls } = mkMockGhApi(mkMocks("<!-- code-review -->"));
+      await expect(post(mkInlineInput(), api)).resolves.toBeUndefined();
+      const endpoints = calls().map((c) => c.args[0] ?? "");
+      expect(endpoints.some((e) => e === "repos/owner/repo/issues/comments/999")).toBe(true);
+      expect(endpoints.some((e) => e === "repos/owner/repo/pulls/42/reviews")).toBe(true);
+      expect(
+        stderrSpy.mock.calls.some(([chunk]) =>
+          String(chunk).includes("could not write the posted signal"),
+        ),
+      ).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("a deliberate no-write exit emits posted=false — a never-landed run never reads as landed", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    const { api } = mkMockGhApi([
+      {
+        match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+        response: '{"number":42,"state":"closed","headRef":"feature-branch"}\n',
+      },
+    ]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+      expect(readFileSync(outputPath(), "utf-8")).toContain("posted=false");
+    } finally {
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("writes nothing when no sticky lands — the sticky upsert itself fails", async () => {
+    writeFileSync(outputPath(), "");
+    process.env["GITHUB_OUTPUT"] = outputPath();
+    const responses = mkMocks("<!-- code-review -->").filter(
+      (r) =>
+        !r.match(["repos/owner/repo/issues/comments/999"]) &&
+        !r.match(["repos/owner/repo/issues/comments"]),
+    );
+    const { api } = mkMockGhApi(responses);
+    await expect(post(mkInlineInput(), api)).rejects.toThrow();
+    expect(readFileSync(outputPath(), "utf-8")).toBe("");
+  });
+});
+
 // The sticky is overwritten every round; the run summary is the per-run record. Same findings, same
 // options, same template — the divergence is that the summary has no diff, so it carries the findings
 // the inline comments took off the sticky (issue #205).

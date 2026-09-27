@@ -4,3 +4,8 @@
 // reach GitHub's step-summary size cap. Tests that are ABOUT the summary set it to a temp path
 // themselves and restore it afterwards.
 delete process.env["GITHUB_STEP_SUMMARY"];
+
+// `post` appends its posted signal to $GITHUB_OUTPUT — under Actions CI that is the real step-output
+// file, so tests driving post() would write duplicate posted keys into the vitest step's outputs.
+// Tests that are ABOUT the signal set it to a temp path themselves and restore it afterwards.
+delete process.env["GITHUB_OUTPUT"];

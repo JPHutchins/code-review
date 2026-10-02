@@ -66,15 +66,13 @@ describe("parseExtraEndpoints", () => {
 });
 
 describe("buildSandboxConfig", () => {
-  it("allows the model host, GitHub, and the consumer's extras, deduped", () => {
+  it("allows the model host and the consumer's extras, deduped", () => {
     const config = buildSandboxConfig({
       apiBaseUrl: "https://api.deepseek.com/anthropic",
       extra: "pypi.org:443 files.pythonhosted.org:443",
     });
     expect(config.network.allowedDomains).toEqual([
       "api.deepseek.com",
-      "api.github.com",
-      "github.com",
       "pypi.org",
       "files.pythonhosted.org",
     ]);
@@ -83,19 +81,15 @@ describe("buildSandboxConfig", () => {
 
   it("deduplicates a model host that repeats an extra", () => {
     const config = buildSandboxConfig({
-      apiBaseUrl: "https://api.github.com/anthropic",
-      extra: "github.com:443",
+      apiBaseUrl: "https://api.deepseek.com/anthropic",
+      extra: "api.deepseek.com:443 pypi.org",
     });
-    expect(config.network.allowedDomains).toEqual(["api.github.com", "github.com"]);
+    expect(config.network.allowedDomains).toEqual(["api.deepseek.com", "pypi.org"]);
   });
 
-  it("needs no extras — the model host and GitHub are always present", () => {
+  it("needs no extras — the model host is the whole default allowlist, with no GitHub host", () => {
     const config = buildSandboxConfig({ apiBaseUrl: "https://api.anthropic.com" });
-    expect(config.network.allowedDomains).toEqual([
-      "api.anthropic.com",
-      "api.github.com",
-      "github.com",
-    ]);
+    expect(config.network.allowedDomains).toEqual(["api.anthropic.com"]);
   });
 
   it("disables filesystem isolation (network-only jail)", () => {

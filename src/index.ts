@@ -2346,7 +2346,7 @@ const sandboxConfigCmd = defineCommand({
   meta: {
     name: "sandbox-config",
     description:
-      "Emit the sandbox-runtime (srt) settings that jail the untrusted review agent's egress: allow the model host (derived from api_base_url), the GitHub API/host, and the consumer's extra_endpoints; deny all else; filesystem isolation off",
+      "Emit the sandbox-runtime (srt) settings that jail the untrusted review agent's egress: allow the model host (derived from api_base_url) and the consumer's extra_endpoints; deny all else; filesystem isolation off",
   },
   args: {
     "api-base-url": {

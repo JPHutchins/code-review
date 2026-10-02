@@ -185,7 +185,7 @@ on:
         required: false
         default: ""
       extra_endpoints:
-        description: Extra hostnames to allow through the review agent's sandbox egress proxy, on top of the baked-in set (the model host derived from api_base_url + the GitHub API/host). Whitespace-separated host[:port]; a :port is ignored (the proxy matches on hostname). E.g. your ecosystem's package registries (pypi.org files.pythonhosted.org cache.nixos.org) or a self-hosted model host.
+        description: Extra hostnames to allow through the review agent's sandbox egress proxy, on top of the baked-in model host (derived from api_base_url). Whitespace-separated host[:port]; a :port is ignored (the proxy matches on hostname). E.g. your ecosystem's package registries (pypi.org files.pythonhosted.org cache.nixos.org) or a self-hosted model host.
         type: string
         required: false
         default: ""
@@ -484,6 +484,11 @@ jobs:
             echo "::error::jail canary reached a non-allowlisted host — the sandbox is NOT enforcing agent egress; failing closed"
             exit 1
           fi
+          if ! jq -e '.network.allowedDomains | index("api.github.com")' "$RUNNER_TEMP/sandbox.json" >/dev/null &&
+             srt --settings "$RUNNER_TEMP/sandbox.json" -- curl -sS --max-time 12 -o /dev/null https://api.github.com; then
+            echo "::error::jail canary reached api.github.com, which no allowlist entry names — failing closed"
+            exit 1
+          fi
           # Positive control: the agent binary must actually START inside the jail — a broken mount or a
           # silently-wrong sandbox would let the deny probes above pass while leaving the agent unable to
           # run (surfacing later only as a generic triage error). Model-host reachability is not
@@ -527,6 +532,31 @@ jobs:
             --conclusion "$CONCLUSION" \
             --out-dir "$GATHER_DIR" \
             >> "$GITHUB_OUTPUT"
+
+      # The PR head's objects are fetched while the checkout's persisted credential still exists (a
+      # private repo needs it for the fetch), then the credential is deleted, so neither jailed agent
+      # (the triage below, the review after it) can read the job's token. Objects only: nothing from
+      # the PR is checked out or run here.
+      # refs/pull/<n>/head makes the head fetchable for fork PRs as well as same-repo ones.
+      - name: Fetch the PR head, then remove the persisted git credential
+        if: ${{ steps.gather.outputs.skip != 'true' }}
+        env:
+          HEAD_SHA: ${{ inputs.head_sha }}
+          PR: ${{ steps.gather.outputs.pr }}
+        run: |
+          set -uo pipefail
+          git fetch --quiet origin "$HEAD_SHA" 2>/dev/null \
+            || git fetch --quiet origin "refs/pull/${PR}/head" 2>/dev/null \
+            || echo "::warning::could not fetch the PR head $HEAD_SHA — the review step reports it"
+          git config --local --name-only --get-regexp '^includeIf\.gitdir:' \
+            | while read -r key; do git config --local --unset-all "$key"; done || true
+          git config --local --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true
+          rm -f "$RUNNER_TEMP"/git-credentials-*.config
+          if git config --get-regexp '\.extraheader$' >/dev/null 2>&1 \
+             || compgen -G "$RUNNER_TEMP/git-credentials-*" >/dev/null; then
+            echo "::error::a persisted git credential survived the removal — refusing to start the jailed agents"
+            exit 1
+          fi
 
       # Data-only: never executes PR code.
       - name: Phase 1 — security triage
@@ -900,7 +930,6 @@ jobs:
           # $RUNNER_TEMP before any PR data, so the head's own .github/prices.json cannot tamper with
           # the rates. Detached HEAD is the PR-head commit itself, so the `git reset --hard HEAD`
           # before validate-patches restores exactly it — no snapshot commit needed.
-          # refs/pull/<n>/head makes the head fetchable for fork PRs as well as same-repo ones.
           checkout_failed() {
             echo "::warning::$1 — skipping the review rather than reviewing the wrong tree"
             mkdir -p "$FINDINGS_DIR"
@@ -909,8 +938,7 @@ jobs:
             echo "::endgroup::"
             exit 0
           }
-          git fetch --quiet origin "$HEAD_SHA" 2>/dev/null \
-            || git fetch --quiet origin "refs/pull/${PR}/head" 2>/dev/null \
+          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null \
             || checkout_failed "could not fetch the PR head $HEAD_SHA"
           git -c advice.detachedHead=false checkout --quiet --force "$HEAD_SHA" \
             || checkout_failed "could not check out the PR head $HEAD_SHA"

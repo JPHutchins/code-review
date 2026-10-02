@@ -369,32 +369,38 @@ describe("route budget parity — the example's literals mirror the reusable inp
   });
 });
 
-describe("the credential drop before the jailed agents", () => {
-  const STEP = "Fetch the PR head, then remove the persisted git credential";
+describe("the jailed agents never hold the job token", () => {
+  const REMOVAL = "Remove the persisted git credential before the jailed agents";
+  const FETCH = "Fetch the PR head";
   const GITHUB_HEADER = "http.https://github.com/.extraheader";
   const SECRET = "AUTHORIZATION: basic c2VjcmV0";
-  const scriptOf = (workflowPath: string): string => {
-    const found = runScripts(workflowPath).filter((s) => s.step.endsWith(`→ ${STEP}`));
-    expect(found, workflowPath).toHaveLength(1);
+  const scriptOf = (workflowPath: string, stepName: string): string => {
+    const found = runScripts(workflowPath).filter((s) => s.step.endsWith(`→ ${stepName}`));
+    expect(found, `${workflowPath} → ${stepName}`).toHaveLength(1);
     return found[0]!.script;
   };
 
-  it("is byte-identical between review-reusable.yaml and the example", () => {
-    expect(scriptOf("examples/workflows/review.yaml")).toBe(
-      scriptOf(".github/workflows/review-reusable.yaml"),
-    );
-  });
+  it.each([REMOVAL, FETCH])(
+    "%s is byte-identical between review-reusable.yaml and the example",
+    (step) => {
+      expect(scriptOf("examples/workflows/review.yaml", step)).toBe(
+        scriptOf(".github/workflows/review-reusable.yaml", step),
+      );
+    },
+  );
 
-  // A checkout's on-disk shape: a repo whose HEAD is the PR head (so the fetch short-circuits), a
-  // runner temp dir, and an isolated global config, so the developer's own ~/.gitconfig never leaks in.
+  // A checkout's on-disk shape: a repo, a runner temp dir, and an isolated global config, so the
+  // developer's own ~/.gitconfig never leaks in.
   const checkout = (): {
+    readonly root: string;
     readonly repo: string;
     readonly temp: string;
     readonly globalConfig: string;
+    readonly env: NodeJS.ProcessEnv;
     readonly git: (...args: readonly string[]) => string;
-    readonly run: () => ReturnType<typeof spawnSync>;
+    readonly run: (stepName: string, extra?: NodeJS.ProcessEnv) => ReturnType<typeof spawnSync>;
   } => {
-    const root = mkdtempSync(join(tmpdir(), "cred-drop-"));
+    const root = mkdtempSync(join(tmpdir(), "token-drop-"));
     const repo = join(root, "repo");
     const temp = join(root, "temp");
     const globalConfig = join(root, "global.gitconfig");
@@ -406,14 +412,17 @@ describe("the credential drop before the jailed agents", () => {
       execFileSync("git", args, { cwd: repo, env, encoding: "utf-8" });
     git("init", "-q");
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
-    const headSha = git("rev-parse", "HEAD").trim();
-    const run = (): ReturnType<typeof spawnSync> =>
-      spawnSync("bash", ["-e", "-c", scriptOf(".github/workflows/review-reusable.yaml")], {
-        cwd: repo,
-        env: { ...env, RUNNER_TEMP: temp, HEAD_SHA: headSha, PR: "1" },
-        encoding: "utf-8",
-      });
-    return { repo, temp, globalConfig, git, run };
+    const run = (stepName: string, extra: NodeJS.ProcessEnv = {}): ReturnType<typeof spawnSync> =>
+      spawnSync(
+        "bash",
+        ["-e", "-c", scriptOf(".github/workflows/review-reusable.yaml", stepName)],
+        {
+          cwd: repo,
+          env: { ...env, RUNNER_TEMP: temp, SERVER_URL: "https://github.com", ...extra },
+          encoding: "utf-8",
+        },
+      );
+    return { root, repo, temp, globalConfig, env, git, run };
   };
   const credentialFile = (path: string): string => {
     writeFileSync(path, `[http "https://github.com/"]\n\textraheader = ${SECRET}\n`);
@@ -428,45 +437,101 @@ describe("the credential drop before the jailed agents", () => {
     }
   };
 
-  it("removes checkout's layout: the includeIf entry and the credentials file it points at", () => {
-    const { repo, temp, git, run } = checkout();
-    const file = credentialFile(join(temp, "git-credentials-0123.config"));
-    git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
-    expect(resolvesGithubHeader(git)).toBe(true);
-    expect(run().status).toBe(0);
-    expect(existsSync(file)).toBe(false);
-    expect(resolvesGithubHeader(git)).toBe(false);
+  describe("the removal, before the triage", () => {
+    it("removes checkout's layout: every include entry for the credentials file, and the file", () => {
+      const { repo, temp, git, run } = checkout();
+      const file = credentialFile(join(temp, "git-credentials-0123.config"));
+      git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
+      git("config", "--local", `includeIf.gitdir:${repo}/.git/worktrees/*.path`, file);
+      expect(resolvesGithubHeader(git)).toBe(true);
+      expect(run(REMOVAL).status).toBe(0);
+      expect(existsSync(file)).toBe(false);
+      expect(resolvesGithubHeader(git)).toBe(false);
+      expect(() => git("config", "--local", "--get-regexp", "^includeif")).toThrow();
+    });
+
+    it("follows the include pointer, not checkout's file naming, through a path with a space", () => {
+      const { repo, temp, git, run } = checkout();
+      mkdirSync(join(temp, "a dir"));
+      const file = credentialFile(join(temp, "a dir", "renamed-by-a-future-checkout.cfg"));
+      git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
+      expect(run(REMOVAL).status).toBe(0);
+      expect(existsSync(file)).toBe(false);
+      expect(resolvesGithubHeader(git)).toBe(false);
+    });
+
+    it("leaves a consumer's credential for another host, and an include that carries no GitHub credential", () => {
+      const { repo, temp, git, run } = checkout();
+      git(
+        "config",
+        "--local",
+        "http.https://registry.example.com/.extraheader",
+        "AUTHORIZATION: x",
+      );
+      const unrelated = join(temp, "consumer.cfg");
+      writeFileSync(unrelated, "[core]\n\tautocrlf = false\n");
+      git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, unrelated);
+      expect(run(REMOVAL).status).toBe(0);
+      expect(git("config", "--get", "http.https://registry.example.com/.extraheader").trim()).toBe(
+        "AUTHORIZATION: x",
+      );
+      expect(existsSync(unrelated)).toBe(true);
+    });
+
+    it("fails closed on a GitHub credential it cannot remove, naming where it lives and never the secret", () => {
+      const { globalConfig, run } = checkout();
+      credentialFile(globalConfig);
+      const result = run(REMOVAL);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("::error::a GitHub credential is still readable");
+      expect(result.stdout).toContain(globalConfig);
+      expect(`${String(result.stdout)}${String(result.stderr)}`).not.toContain("c2VjcmV0");
+    });
+
+    it("fails closed when git config itself errors, never reading the error as 'no credential'", () => {
+      const { repo, run } = checkout();
+      writeFileSync(join(repo, ".git", "config"), "[core\n");
+      const result = run(REMOVAL);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("cannot be verified");
+    });
   });
 
-  it("follows the include pointer, not checkout's file naming — a renamed credentials file goes too", () => {
-    const { repo, temp, git, run } = checkout();
-    const file = credentialFile(join(temp, "renamed-by-a-future-checkout.cfg"));
-    git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
-    expect(run().status).toBe(0);
-    expect(existsSync(file)).toBe(false);
-    expect(resolvesGithubHeader(git)).toBe(false);
-  });
-
-  it("leaves a consumer's credential for another host, and an include that carries no GitHub credential", () => {
-    const { repo, temp, git, run } = checkout();
-    git("config", "--local", "http.https://registry.example.com/.extraheader", "AUTHORIZATION: x");
-    const unrelated = join(temp, "consumer.cfg");
-    writeFileSync(unrelated, "[core]\n\tautocrlf = false\n");
-    git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, unrelated);
-    expect(run().status).toBe(0);
-    expect(git("config", "--get", "http.https://registry.example.com/.extraheader").trim()).toBe(
-      "AUTHORIZATION: x",
-    );
-    expect(existsSync(unrelated)).toBe(true);
-  });
-
-  it("fails closed on a GitHub credential it cannot remove, naming where it lives and never the secret", () => {
-    const { globalConfig, run } = checkout();
-    credentialFile(globalConfig);
-    const result = run();
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain("::error::a GitHub credential is still readable");
-    expect(result.stdout).toContain(globalConfig);
-    expect(`${String(result.stdout)}${String(result.stderr)}`).not.toContain("c2VjcmV0");
+  describe("the fetch, after the triage", () => {
+    it("fetches the head from origin with the token on the command only, never in config or output", () => {
+      const { root, git, env, run } = checkout();
+      const origin = join(root, "origin.git");
+      execFileSync("git", ["clone", "-q", "--bare", join(root, "repo"), origin], { env });
+      const work = join(root, "work");
+      execFileSync("git", ["clone", "-q", origin, work], { env });
+      const inWork = (...args: readonly string[]): string =>
+        execFileSync("git", args, { cwd: work, env, encoding: "utf-8" });
+      inWork(
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "pr",
+      );
+      inWork("push", "-q", "origin", "HEAD:refs/pull/7/head");
+      const head = inWork("rev-parse", "HEAD").trim();
+      git("remote", "add", "origin", origin);
+      expect(() => git("cat-file", "-e", `${head}^{commit}`)).toThrow();
+      const result = run(FETCH, { HEAD_SHA: head, PR: "7", FETCH_TOKEN: "ghs_unit-test-token" });
+      expect(result.status).toBe(0);
+      expect(() => git("cat-file", "-e", `${head}^{commit}`)).not.toThrow();
+      expect(() => git("config", "--get-regexp", "extraheader")).toThrow();
+      const output = `${String(result.stdout)}${String(result.stderr)}`;
+      const basic = Buffer.from("x-access-token:ghs_unit-test-token").toString("base64");
+      expect(output).not.toContain("ghs_unit-test-token");
+      // The runner consumes the ::add-mask:: command and masks the value in every later line.
+      expect(output.split("\n").filter((line) => line.includes(basic))).toEqual([
+        `::add-mask::${basic}`,
+      ]);
+    });
   });
 });

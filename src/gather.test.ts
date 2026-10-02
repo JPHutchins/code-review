@@ -301,7 +301,7 @@ describe("gather — diff resolution", () => {
       { match: commentsMatch(42), response: "" },
     ]);
     const { git, calls: gitCalls } = mkMockGit([
-      { match: (a) => a[0] === "fetch" && a[1] === "origin" && a[2] === "abc123", response: "" },
+      { match: (a) => a.includes("fetch") && a.at(-1) === "abc123", response: "" },
       {
         match: (a) => a[0] === "diff" && a[1] === "base" && a[2] === "abc123",
         response: "GIT DIFF TEXT",
@@ -313,7 +313,7 @@ describe("gather — diff resolution", () => {
 
     expect(outFile("pr.diff")).toBe("GIT DIFF TEXT");
     expect(gitCalls()).toEqual([
-      ["fetch", "origin", "abc123"],
+      ["-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "origin", "abc123"],
       ["diff", "base", "abc123"],
     ]);
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("falling back to git diff"));
@@ -335,7 +335,7 @@ describe("gather — diff resolution", () => {
       { match: commentsMatch(42), response: "" },
     ]);
     const { git } = mkMockGit([
-      { match: (a) => a[0] === "fetch", response: "" },
+      { match: (a) => a.includes("fetch"), response: "" },
       { match: (a) => a[0] === "diff", response: "GIT DIFF TEXT" },
     ]);
 
@@ -375,7 +375,7 @@ describe("gather — diff resolution", () => {
       { match: commentsMatch(42), response: "" },
     ]);
     const { git } = mkMockGit([
-      { match: (a) => a[0] === "fetch", response: new Error("no network") },
+      { match: (a) => a.includes("fetch"), response: new Error("no network") },
     ]);
 
     await expect(gather(mkInput({}), api, git)).rejects.toThrow();

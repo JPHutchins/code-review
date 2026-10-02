@@ -281,36 +281,75 @@ jobs:
           # Extra inputs the review should see (a lockfile manifest, a CLAUDE.md) go here — write
           # them into $GATHER_DIR; files in the workspace can be clobbered or planted at checkout.
 
-      # The PR head's objects are fetched while the checkout's persisted credential still exists (a
-      # private repo needs it for the fetch), then the credential is deleted, so neither jailed agent
-      # (the triage below, the review after it) can read the job's token. Objects only: nothing from
-      # the PR is checked out or run here.
-      # refs/pull/<n>/head makes the head fetchable for fork PRs as well as same-repo ones.
-      - name: Fetch the PR head, then remove the persisted git credential
+      # actions/checkout persists the job's token as an http extraheader; it is deleted before the first
+      # jailed agent starts (the triage below, then the review), so neither can read it. The PR head is
+      # fetched after the triage passes, with the token handed to that one git command.
+      - name: Remove the persisted git credential before the jailed agents
         if: ${{ steps.gather.outputs.skip != 'true' }}
         env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          PR: ${{ steps.gather.outputs.pr }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
-          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null \
-            || git fetch --quiet origin "$HEAD_SHA" 2>/dev/null \
-            || git fetch --quiet origin "refs/pull/${PR}/head" 2>/dev/null \
-            || echo "::warning::could not fetch the PR head $HEAD_SHA — the review step reports it"
-          github_header='http.https://github.com/.extraheader'
-          git config --local --get-regexp '^include(if\..*)?\.path$' \
-            | while read -r key path; do
-                if git config --file "$path" --get-all "$github_header" >/dev/null 2>&1; then
-                  rm -f "$path"
-                  git config --local --unset-all "$key"
-                fi
-              done || true
-          git config --local --unset-all "$github_header" 2>/dev/null || true
-          if git config --get-all "$github_header" >/dev/null 2>&1; then
-            echo "::error::a GitHub credential is still readable through git config — refusing to start the jailed agents. It comes from:"
-            git config --show-origin --name-only --get-regexp '^http\.https://github\.com/\.extraheader$' || true
+          [[ "$SERVER_URL" =~ ^https?://[^/[:space:]]+$ && "$REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+            echo "::error::unexpected server URL or repository ('$SERVER_URL', '$REPOSITORY') — the credential state cannot be verified; refusing to start the jailed agents"
             exit 1
+          }
+          # Git's own URL matching, against the immutable URL of this repository (never the mutable
+          # origin), decides which extraheader git would send there: every spelling of checkout's
+          # header is caught, and a header for another host never is. An empty value sends nothing.
+          repo_url="$SERVER_URL/$REPOSITORY"
+          carries_github_credential() {
+            local value
+            value=$(git config --file "$1" --get-urlmatch http.extraheader "$repo_url" 2>/dev/null) && [[ -n "$value" ]]
+          }
+          git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || {
+            echo "::error::git cannot read this checkout, so the credential state cannot be verified — refusing to start the jailed agents"
+            exit 1
+          }
+          credential_files=()
+          while IFS= read -r -d '' entry; do
+            key=${entry%%$'\n'*}
+            path=${entry#*$'\n'}
+            case "$path" in
+              \~/*) path="$HOME/${path#\~/}" ;;
+              /*) ;;
+              *) path="$git_dir/$path" ;;
+            esac
+            if [[ -f "$path" ]] && carries_github_credential "$path"; then
+              git config --local --unset-all "$key" 2>/dev/null || true
+              credential_files+=("$path")
+            fi
+          done < <(git config -z --local --get-regexp '^include(if\..*)?\.path$' 2>/dev/null)
+          # A credentials file no include of this repo points at (another checkout's) is swept too:
+          # only the top level of the runner temp dir, where checkout writes them, and parsed by git,
+          # so a gathered file that merely mentions a header is never mistaken for one.
+          while IFS= read -r -d '' file; do
+            if carries_github_credential "$file"; then
+              credential_files+=("$file")
+            fi
+          done < <(find "$RUNNER_TEMP" -maxdepth 1 -type f -print0 2>/dev/null)
+          for file in ${credential_files[@]+"${credential_files[@]}"}; do
+            rm -f "$file"
+          done
+          git config --local --unset-all "http.${SERVER_URL}/.extraheader" 2>/dev/null || true
+          rc=0
+          value=$(git config --get-urlmatch http.extraheader "$repo_url" 2>/dev/null) || rc=$?
+          if [[ "$rc" -eq 0 && -z "$value" ]]; then
+            rc=1
           fi
+          case "$rc" in
+            0)
+              echo "::error::an http.extraheader for this repository is still configured — refusing to start the jailed agents. Extra headers configured:"
+              git config --show-origin --name-only --get-regexp '^http\.(.*\.)?extraheader$' || true
+              exit 1
+              ;;
+            1) ;;
+            *)
+              echo "::error::git config failed (exit $rc), so the credential state cannot be verified — refusing to start the jailed agents"
+              exit 1
+              ;;
+          esac
 
       # Data-only: never executes PR code.
       - name: Phase 1 — security triage
@@ -396,6 +435,29 @@ jobs:
             OUTCOME=error
             REASONS="Triage produced a non-boolean safe value (\"$PARSED_SAFE\") — failing closed."
           fi
+
+      # Triage passed, so the PR head's objects are fetched here (gather's diff fallback may already
+      # have fetched them, when the compare API failed). The persisted credential is gone, so a
+      # private repo's fetch authenticates with the job token handed to this one git command, while
+      # no jailed agent is running; maintenance and gc are off for it, so no detached git child
+      # inherits the token past the step. Objects only: the review step checks out.
+      # refs/pull/<n>/head makes the head fetchable for fork PRs as well as same-repo ones.
+      - name: Fetch the PR head
+        if: ${{ steps.gather.outputs.skip != 'true' && steps.triage.outputs.safe == 'true' }}
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR: ${{ steps.gather.outputs.pr }}
+          SERVER_URL: ${{ github.server_url }}
+          FETCH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          basic=$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$basic"
+          header="http.${SERVER_URL}/.extraheader=AUTHORIZATION: basic $basic"
+          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null \
+            || git -c maintenance.auto=false -c gc.auto=0 -c "$header" fetch --quiet origin "$HEAD_SHA" 2>/dev/null \
+            || git -c maintenance.auto=false -c gc.auto=0 -c "$header" fetch --quiet origin "refs/pull/${PR}/head" 2>/dev/null \
+            || echo "::warning::could not fetch the PR head $HEAD_SHA — the review step reports it"
 
       # bypassPermissions is safe here: throwaway runner, read-only token.
       - name: Phase 2 — agentic review
@@ -663,7 +725,7 @@ jobs:
             exit 0
           }
           git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null \
-            || checkout_failed "the PR head $HEAD_SHA is not present locally (its fetch, before the triage, failed)"
+            || checkout_failed "the PR head $HEAD_SHA is not present locally (its fetch failed)"
           git -c advice.detachedHead=false checkout --quiet --force "$HEAD_SHA" \
             || checkout_failed "could not check out the PR head $HEAD_SHA"
 
@@ -797,7 +859,7 @@ jobs:
 
       # Deterministic change-size static analysis for the sticky's cloc collapsible. Runs in the review
       # job that holds the PR-head checkout (the comment job has none) and only when the head is present
-      # (triage safe ⇒ the review step already fetched + checked it out). Best-effort: cloc is a single
+      # (triage safe ⇒ the fetch step fetched it and the review step checked it out). Best-effort: cloc is a single
       # Perl script (a SHA-256-pinned release — a runtime-downloaded script we execute is a supply-chain
       # surface — no sudo/apt), and any failure emits a ::warning:: and produces NO file rather than
       # failing the review. The comment job passes --cloc-diff only when the file exists.

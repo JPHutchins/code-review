@@ -65,6 +65,14 @@ export const renderOutputs = (result: GatherResult): string => {
 
 export type GitRun = (args: readonly string[]) => Promise<string>;
 
+export const FETCH_WITHOUT_DETACHED_CHILDREN = [
+  "-c",
+  "maintenance.auto=false",
+  "-c",
+  "gc.auto=0",
+  "fetch",
+] as const;
+
 export const runGit: GitRun = (args) =>
   execFileWithTimeout({
     command: "git",
@@ -160,7 +168,7 @@ const fetchFullDiff = async (
   } catch (err) {
     process.stderr.write(`compare diff fetch failed (${errMsg(err)}) — falling back to git diff\n`);
   }
-  await gitRun(["fetch", "origin", headSha]);
+  await gitRun([...FETCH_WITHOUT_DETACHED_CHILDREN, "origin", headSha]);
   // Three-dot, matching the compare API's semantics (merge-base...head): the checked-out default
   // branch is HEAD, so this is the same untrusted surface the compare primary computes.
   const base = (await gitRun(["rev-parse", "HEAD"])).trim();
@@ -462,7 +470,7 @@ export const gather = async (
     process.stderr.write(
       `PR diff fetch failed or was empty for ${String(meta.changed_files)} changed files — falling back to git diff\n`,
     );
-    await gitRun(["fetch", "origin", input.headSha]);
+    await gitRun([...FETCH_WITHOUT_DETACHED_CHILDREN, "origin", input.headSha]);
     return gitRun(["diff", meta.base_sha, input.headSha]);
   })();
 

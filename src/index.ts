@@ -43,9 +43,9 @@ import {
   TestSummaryCodec,
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
-  DEFAULT_SCHEMA_VERSION,
   anchoredSchemaVersionPattern,
   resolveFindingId,
+  withoutRebuttals,
 } from "./schema.js";
 import type { Triage, Finding, Findings, PriceMap } from "./schema.js";
 import {
@@ -83,6 +83,7 @@ import {
   declaredVersion,
   resolveTolerantFindings,
   defaultVersion,
+  versionFor,
 } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
 import { validatePatch } from "./patch.js";
@@ -910,12 +911,23 @@ const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefine
  *  the versions the registry dispatches to the live entry — the FROZEN legacy copies keep their
  *  tolerant shape, and the schema FILES stay version-tolerant: the registry dispatches on the
  *  declared version, only the live enforcement copy pins. */
-export const printableSchema = (schemaPath: string, pinVersion: boolean): string => {
+// The version a printed schema pins: the resolved entry's, and only for the live file — a frozen
+// legacy copy prints as frozen.
+const liveSchemaPin = (
+  kind: SchemaKind,
+  schemaPath: string,
+  requestedVersion: string | undefined,
+): string | undefined =>
+  kind === "findings" && schemaPath === schemaPathFor(kind)
+    ? versionFor(kind, requestedVersion)
+    : undefined;
+
+export const printableSchema = (schemaPath: string, pinVersion: string | undefined): string => {
   const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as Record<string, unknown>;
   const enforcementSchema = Object.fromEntries(
     Object.entries(schema).filter(([key]) => key !== "$schema"),
   );
-  if (!pinVersion) return JSON.stringify(enforcementSchema, null, 2);
+  if (pinVersion === undefined) return JSON.stringify(enforcementSchema, null, 2);
   const properties = enforcementSchema["properties"];
   const schemaVersion =
     typeof properties === "object" && properties !== null
@@ -924,7 +936,7 @@ export const printableSchema = (schemaPath: string, pinVersion: boolean): string
   if (typeof schemaVersion === "object" && schemaVersion !== null) {
     (properties as Record<string, unknown>)["schema_version"] = {
       ...(schemaVersion as Record<string, unknown>),
-      pattern: anchoredSchemaVersionPattern(DEFAULT_SCHEMA_VERSION),
+      pattern: anchoredSchemaVersionPattern(pinVersion),
     };
   }
   return JSON.stringify(enforcementSchema, null, 2);
@@ -965,9 +977,10 @@ const validateCmd = defineCommand({
   run: async ({ args }) => {
     const kind = requireSchemaKind(args.kind || "findings");
     const documentRaw = readJSON(args.document);
+    const requestedVersion = args["schema-version"] || derivedSchemaVersion(kind, documentRaw);
     const schemaPath = args.schema
       ? resolve(args.schema)
-      : requireSchemaPath(kind, args["schema-version"] || derivedSchemaVersion(kind, documentRaw));
+      : requireSchemaPath(kind, requestedVersion);
     const { valid, errors } = validateAgainstSchema(documentRaw, schemaPath);
     if (valid) {
       process.stdout.write("✅ valid\n");
@@ -976,7 +989,7 @@ const validateCmd = defineCommand({
       for (const e of errors) process.stderr.write(`  - ${e}\n`);
       if (args.explain) {
         process.stderr.write(
-          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, kind === "findings" && schemaPath === schemaPathFor(kind))}\n`,
+          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, liveSchemaPin(kind, schemaPath, args.schema ? undefined : requestedVersion))}\n`,
         );
       }
       process.exit(1);
@@ -1318,7 +1331,10 @@ const seedDraftCmd = defineCommand({
               if (isIncompleteFindings(seedDoc)) return false;
               if (!isFullReviewAncestry(priorBody ?? "")) return false;
               writeFileSync(outPath, SEED_SENTINEL);
-              writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
+              writeFileSync(
+                priorContextPath(outPath),
+                `${JSON.stringify(withoutRebuttals(seedDoc), null, 2)}\n`,
+              );
               process.stderr.write(
                 `Seeded ${outPath} with the sentinel and wrote the prior review (${String(seedDoc.findings.length)} finding(s)) to ${priorContextPath(outPath)} as context\n`,
               );
@@ -1650,7 +1666,7 @@ const printSchemaCmd = defineCommand({
     const schemaKind = requireSchemaKind(args.name);
     const schemaPath = requireSchemaPath(schemaKind, args["schema-version"]);
     process.stdout.write(
-      `${printableSchema(schemaPath, schemaKind === "findings" && schemaPath === schemaPathFor(schemaKind))}\n`,
+      `${printableSchema(schemaPath, liveSchemaPin(schemaKind, schemaPath, args["schema-version"]))}\n`,
     );
   },
 });

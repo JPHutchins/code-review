@@ -323,6 +323,16 @@ export const RECOVERABLE_OPTIONAL_FIELDS: ReadonlySet<string> = new Set([
   "change_size",
 ]);
 
+// The prior review the seed hands the next round, minus each rebuttal: a rebuttal answers ONE
+// round's response, so a re-raise must supply its own rather than copy the prior one forward.
+export const withoutRebuttals = (doc: Findings): Findings => ({
+  ...doc,
+  findings: doc.findings.map(({ rebuttal: _rebuttal, ...f }) => f),
+  ...(doc.systemic_problems !== undefined
+    ? { systemic_problems: doc.systemic_problems.map(({ rebuttal: _rebuttal, ...s }) => s) }
+    : {}),
+});
+
 // The content-derived identity a finding WITHOUT an id resolves to: deterministic across rounds (the
 // same path + title always synthesizes the same id), so a pre-id finding re-raised next round keys to
 // the same ledger entry. A systemic problem has no path; its synthesized id keys on the title alone.
@@ -406,7 +416,15 @@ const LegacyRuleCodec = t.partial({
   code_url: UriString,
 });
 
-const FindingShapeV09 = t.intersection([FindingCoreRequired, LegacyRuleCodec, FindingOptional]);
+// The frozen legacy optionals: a pre-0.10 document never carried `rebuttal`, so the tolerant-in
+// legacy route strips it like any other unknown key, agreeing with the frozen v0.9 schema.
+const FindingOptionalV09 = t.partial({
+  side: SideCodec,
+  recommendation: t.string,
+  patch: t.string,
+});
+
+const FindingShapeV09 = t.intersection([FindingCoreRequired, LegacyRuleCodec, FindingOptionalV09]);
 
 // The legacy finding stays tolerant-in on KEYS — no strict-key gate, unlike its 0.10 counterpart —
 // because the legacy route's contract is tolerant-in/strict-out (normalizeV09 rewrites to the strict

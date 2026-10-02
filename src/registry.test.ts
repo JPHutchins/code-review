@@ -82,6 +82,17 @@ describe('resolve("findings", ...)', () => {
     }
   });
 
+  it("the legacy rescue strips a rebuttal on a pre-0.10 document, like any key the frozen shape lacks", () => {
+    const legacy = {
+      ...validFindings,
+      schema_version: "0.9.0",
+      findings: [{ ...validFinding, code: "x", rebuttal: "r" }],
+    };
+    const rescued = resolveTolerantFindings(legacy);
+    expect(rescued).not.toBeNull();
+    expect(rescued?.findings[0]).not.toHaveProperty("rebuttal");
+  });
+
   it("resolves a 0.5.0 document carrying the pipeline-reserved `error` verdict — issue #117", () => {
     const result = resolve("findings", {
       ...validFindings,

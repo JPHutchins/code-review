@@ -3,7 +3,8 @@
 // the registry so the next-round agent does not re-raise, and post() treats a VERBATIM re-raise as
 // closed: identical match (id), identical claim TEXT (title + description + reasoning),
 // identical severity, and identical location/fix (path + patch — the line is deliberately excluded,
-// positional drift is not evidence), i.e. no new evidence by definition. The drop is removed from
+// positional drift is not evidence), i.e. no new evidence by definition. A re-raise carrying a
+// non-blank rebuttal answers the prior response, so it is never verbatim. The drop is removed from
 // the surfaced review and NAMED in the sticky; a re-raise with any changed component is kept and
 // annotated with the prior answer's link.
 
@@ -368,12 +369,10 @@ export const answeredNoteKey = (f: { id: string; title: string }): string =>
 // The title second chance, run ONLY on an id miss (the common case pays nothing): the synthesized
 // same-title entry sharing the most verbatim claim fields, ties keeping registry order. Scored in
 // one pass — each candidate once, strict > preserves the first on ties.
-const NO_TITLE_MATCH = { entry: undefined, score: -1 } as const;
-
 const bestTitleMatch = (
   f: Finding,
   registry: readonly AnsweredEntry[],
-): { entry: AnsweredEntry | undefined; score: number } => {
+): AnsweredEntry | undefined => {
   let best: AnsweredEntry | undefined;
   let bestScore = -1;
   for (const e of registry) {
@@ -385,7 +384,7 @@ const bestTitleMatch = (
       if (score === VERBATIM_FIELDS.length) break;
     }
   }
-  return { entry: best, score: bestScore };
+  return best;
 };
 
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
@@ -418,8 +417,9 @@ export interface AnsweredFilter {
 // and dropped from this review, so the round's counts and stop signal reflect the dismissal. The
 // claim TEXT is the evidence: a change to any of title/description/reasoning, or to the severity,
 // means the re-raise carries something new and MUST be kept + annotated (issue #151 review r2 — the
-// SPEC's "no new evidence" criterion, not just a title+reasoning byte-match). A critical is never
-// dropped — the pipeline must not suppress a critical from the surfaced review.
+// SPEC's "no new evidence" criterion, not just a title+reasoning byte-match). A re-raise carrying a
+// non-blank rebuttal is kept too. A critical is never dropped — the pipeline must not suppress a
+// critical from the surfaced review.
 export const applyAnswered = (
   findings: readonly Finding[],
   registry: readonly AnsweredEntry[],
@@ -438,15 +438,14 @@ export const applyAnswered = (
     // not mis-bind its annotation (the id match wins wherever it exists). The second chance picks
     // the synthesized same-title entry sharing the MOST verbatim claim fields (ties keep registry
     // order), so two codeless same-title answers under different paths cannot mis-bind a kept
-    // re-raise. The chosen entry alone feeds the drop decision: a title-matched entry drops the
-    // finding exactly when its score is a full verbatim match (6/6), while the seed pre-filter is
-    // existential over the whole registry — so the two sides disagree in one corner (a non-verbatim
-    // id match beside a verbatim same-title entry; documented on isAnsweredDrop). The scorer
-    // changes suppression, not just annotation.
+    // re-raise. The chosen entry alone feeds the drop decision, through the isVerbatimReRaise the
+    // seed's pre-filter also asks (rebuttal rule included), while that pre-filter is existential over
+    // the whole registry — so the two sides disagree in one corner (a non-verbatim id match beside a
+    // verbatim same-title entry; documented on isAnsweredDrop). Because the scorer picks the entry,
+    // it changes suppression, not just annotation.
     const resolvedId = resolveFindingId(f);
     const idMatch = registry.find((e) => e.code === resolvedId);
-    const { entry: titleMatch } =
-      idMatch === undefined ? bestTitleMatch(f, registry) : NO_TITLE_MATCH;
+    const titleMatch = idMatch === undefined ? bestTitleMatch(f, registry) : undefined;
     const entry = idMatch ?? titleMatch;
     if (entry === undefined) {
       kept.push(f);

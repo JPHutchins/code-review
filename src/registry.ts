@@ -198,7 +198,7 @@ export const defaultVersion = (kind: SchemaKind): string => {
 const bundledSchemaPath = (relativePath: string): string =>
   resolvePath(import.meta.dirname, "..", "schema", relativePath);
 
-export const schemaPathFor = (kind: SchemaKind, version?: string): string => {
+const entryFor = <K extends SchemaKind>(kind: K, version?: string): Table<K>[number] => {
   const table = tableFor(kind);
   const entry =
     version === undefined
@@ -209,8 +209,15 @@ export const schemaPathFor = (kind: SchemaKind, version?: string): string => {
       `Unsupported ${kind} schema version "${version ?? ""}" — supported: ${supportedVersions(kind).join(", ")}`,
     );
   }
-  return bundledSchemaPath(entry.schemaFile);
+  return entry;
 };
+
+export const schemaPathFor = (kind: SchemaKind, version?: string): string =>
+  bundledSchemaPath(entryFor(kind, version).schemaFile);
+
+// The version a resolution enforces: the requested minor's entry, or the latest.
+export const versionFor = (kind: SchemaKind, version?: string): string =>
+  entryFor(kind, version).defaultVersion;
 
 const resolveFindings = (raw: unknown): Resolution<"findings"> => {
   const version = declaredVersion(raw);

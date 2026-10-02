@@ -95,6 +95,7 @@ export const buildInlineComments = (
           ...(f.recommendation != null
             ? { recommendation: clipText(f.recommendation, BODY_CLIP_CHARS) }
             : {}),
+          ...(f.rebuttal != null ? { rebuttal: clipText(f.rebuttal, BODY_CLIP_CHARS) } : {}),
           reasoning: clipText(f.reasoning, BODY_CLIP_CHARS),
           ...(f.patch != null ? { patch: clipText(f.patch, BODY_CLIP_CHARS) } : {}),
         }

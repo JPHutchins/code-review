@@ -3,7 +3,7 @@
 import { Eta } from "eta";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
-import { isIncompleteFindings, resolveFindingId } from "./schema.js";
+import { isIncompleteFindings, resolveFindingId, hasRebuttal } from "./schema.js";
 import type { DiscussionLink, RenderInput, SeverityCounts } from "./types.js";
 import { computeCost, parseInstant, parseIsoDate } from "./cost.js";
 import { hasFindingsMarker } from "./artifact.js";
@@ -394,7 +394,7 @@ const carriedLines = (f: Finding): readonly string[] =>
     ...(f.recommendation !== undefined
       ? [`recommendation: ${clipText(f.recommendation, BODY_CLIP_CHARS)}`]
       : []),
-    ...(f.rebuttal !== undefined ? [`rebuttal: ${clipText(f.rebuttal, BODY_CLIP_CHARS)}`] : []),
+    ...(hasRebuttal(f) ? [`rebuttal: ${clipText(f.rebuttal ?? "", BODY_CLIP_CHARS)}`] : []),
     `reasoning: ${clipText(f.reasoning, BODY_CLIP_CHARS)}`,
     ...(f.patch !== undefined ? ["patch:", clipText(f.patch, BODY_CLIP_CHARS)] : []),
   ]
@@ -838,5 +838,6 @@ export const render = (input: RenderInput): string => {
     verdictBadge,
     severityEmoji,
     formatConfidence,
+    hasRebuttal,
   });
 };

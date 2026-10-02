@@ -58,7 +58,7 @@
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_ids && s.finding_ids.length > 0) { meta.push('Ties together: ' + s.finding_ids.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
 <%~ s.description %>
-<% if (s.rebuttal) { -%>
+<% if (it.hasRebuttal(s)) { -%>
 
 **Rebuttal:** <%~ s.rebuttal %>
 <% } -%>
@@ -142,7 +142,7 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 
 > ↩️ <%~ f.answeredNote %>
 <% } -%>
-<% if (f.rebuttal) { -%>
+<% if (it.hasRebuttal(f)) { -%>
 
 **Rebuttal:** <%~ f.rebuttal %>
 <% } -%>

@@ -305,6 +305,7 @@ index abc..def 100644
       "**Rebuttal:** The reply measured 3.12; the defect is 3.14-only.",
     );
     expect(bodyOf({})).not.toContain("Rebuttal:");
+    expect(bodyOf({ rebuttal: " \n " })).not.toContain("Rebuttal:");
   });
 
   it("projects a lowerable patch into a ```suggestion block with the added text", () => {

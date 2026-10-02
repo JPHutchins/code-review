@@ -82,6 +82,48 @@ describe('resolve("findings", ...)', () => {
     }
   });
 
+  // Every key the live item shapes add over the frozen v0.9 file is draft-only: the legacy route must
+  // strip it from findings and systemic problems alike, so a pre-0.10 document never gains one.
+  it("the legacy rescue strips every finding and systemic key the frozen v0.9 schema lacks", () => {
+    const itemKeys = (path: string, item: "findings" | "systemic_problems"): readonly string[] => {
+      const schema = JSON.parse(readFileSync(resolvePath(repoRoot, path), "utf-8")) as {
+        properties: Record<string, { items: { properties: Record<string, unknown> } }>;
+      };
+      return Object.keys(schema.properties[item]!.items.properties);
+    };
+    const draftOnly = (item: "findings" | "systemic_problems"): readonly string[] => {
+      const frozen = new Set(itemKeys("schema/v0.9/findings.schema.json", item));
+      return itemKeys("schema/findings.schema.json", item).filter((key) => !frozen.has(key));
+    };
+    expect(draftOnly("findings")).toContain("rebuttal");
+    expect(draftOnly("systemic_problems")).toContain("rebuttal");
+    const extra = (keys: readonly string[]): Record<string, string> =>
+      Object.fromEntries(keys.map((key) => [key, "x"]));
+    const legacy = {
+      ...validFindings,
+      schema_version: "0.9.0",
+      findings: [{ ...validFinding, code: "f", ...extra(draftOnly("findings")) }],
+      systemic_problems: [
+        {
+          title: "t",
+          description: "d",
+          severity: "minor",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 1,
+          code: "s",
+          ...extra(draftOnly("systemic_problems")),
+        },
+      ],
+    };
+    const rescued = resolveTolerantFindings(legacy);
+    expect(rescued).not.toBeNull();
+    for (const key of draftOnly("findings")) expect(rescued?.findings[0]).not.toHaveProperty(key);
+    for (const key of draftOnly("systemic_problems")) {
+      expect(rescued?.systemic_problems?.[0]).not.toHaveProperty(key);
+    }
+  });
+
   it("the legacy rescue strips a rebuttal on a pre-0.10 document, like any key the frozen shape lacks", () => {
     const legacy = {
       ...validFindings,

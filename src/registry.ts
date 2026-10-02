@@ -70,7 +70,7 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
     minor: "0.4",
     defaultVersion: "0.4.0",
-    // The frozen tolerant-in legacy schema, NOT the live 0.10 file: every ajv-gated channel
+    // The frozen tolerant-in legacy schema, NOT the live file: every ajv-gated channel
     // (validate --schema-version, the extraction ladder) dispatches the RAW doc's declared minor
     // through schemaPathFor, so the ajv gate must accept exactly what the tolerant legacy codec
     // accepts — the live file (id required) would reject the legacy docs the upcast promises to read.
@@ -189,12 +189,6 @@ export const declaredVersion = (raw: unknown): string | undefined =>
 export const supportedVersions = (kind: SchemaKind): readonly string[] =>
   tableFor(kind).map((entry) => entry.minor);
 
-export const defaultVersion = (kind: SchemaKind): string => {
-  const latest = tableFor(kind).find((entry) => entry.latest);
-  if (!latest) throw new Error(`Registry invariant violated — no latest entry for "${kind}"`);
-  return latest.defaultVersion;
-};
-
 const bundledSchemaPath = (relativePath: string): string =>
   resolvePath(import.meta.dirname, "..", "schema", relativePath);
 
@@ -204,6 +198,9 @@ const entryFor = <K extends SchemaKind>(kind: K, version?: string): Table<K>[num
     version === undefined
       ? table.find((v) => v.latest)
       : table.find((v) => v.minor === majorMinor(version));
+  if (!entry && version === undefined) {
+    throw new Error(`Registry invariant violated — no latest entry for "${kind}"`);
+  }
   if (!entry) {
     throw new Error(
       `Unsupported ${kind} schema version "${version ?? ""}" — supported: ${supportedVersions(kind).join(", ")}`,
@@ -218,6 +215,8 @@ export const schemaPathFor = (kind: SchemaKind, version?: string): string =>
 // The version a resolution enforces: the requested minor's entry, or the latest.
 export const versionFor = (kind: SchemaKind, version?: string): string =>
   entryFor(kind, version).defaultVersion;
+
+export const defaultVersion = (kind: SchemaKind): string => versionFor(kind);
 
 const resolveFindings = (raw: unknown): Resolution<"findings"> => {
   const version = declaredVersion(raw);

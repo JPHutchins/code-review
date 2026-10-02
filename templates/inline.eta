@@ -12,7 +12,7 @@
 
 > ↩️ <%~ it.answeredNote %>
 <% } -%>
-<% if (it.rebuttal) { -%>
+<% if (it.hasRebuttal(it)) { -%>
 
 **Rebuttal:** <%~ it.rebuttal %>
 <% } -%>

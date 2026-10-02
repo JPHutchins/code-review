@@ -906,9 +906,9 @@ const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefine
  *  draft declaration stripped. `claude -p --json-schema` silently disables enforcement when a schema
  *  carries `$schema`, and the field DESCRIPTIONS are the authoritative spec the agent must follow, so
  *  this is the form both `print-schema` and `validate --explain` emit. When `pinVersion` is set (the
- *  caller resolved the LIVE findings schema — no version override, no legacy-stamped explain), the
- *  schema_version's pattern is narrowed to the in-force minor so `--json-schema` enforces exactly
- *  the versions the registry dispatches to the live entry — the FROZEN legacy copies keep their
+ *  version the caller RESOLVED — the default or an override — and only for the live findings file),
+ *  the schema_version's pattern is narrowed to that minor so `--json-schema` enforces exactly the
+ *  versions the registry dispatches to its entry — the FROZEN legacy copies keep their
  *  tolerant shape, and the schema FILES stay version-tolerant: the registry dispatches on the
  *  declared version, only the live enforcement copy pins. */
 // The version a printed schema pins: the resolved entry's, and only for the live file — a frozen
@@ -989,7 +989,7 @@ const validateCmd = defineCommand({
       for (const e of errors) process.stderr.write(`  - ${e}\n`);
       if (args.explain) {
         process.stderr.write(
-          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, liveSchemaPin(kind, schemaPath, args.schema ? undefined : requestedVersion))}\n`,
+          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, liveSchemaPin(kind, schemaPath, requestedVersion))}\n`,
         );
       }
       process.exit(1);
@@ -1303,11 +1303,13 @@ const seedDraftCmd = defineCommand({
                       ),
                     )
                   : priorFindings;
+              // Rebuttals answer the PRIOR round only, so the carried doc drops them before the
+              // gate: a pinned schema predating the field never rejects the whole prior over one.
               const accepts = (doc: unknown): Findings | null => {
                 const resolved = resolvedPriorValue(doc);
-                return resolved !== null && validateAgainstSchema(resolved, schemaPath).valid
-                  ? resolved
-                  : null;
+                if (resolved === null) return null;
+                const carried = withoutRebuttals(resolved);
+                return validateAgainstSchema(carried, schemaPath).valid ? carried : null;
               };
               const seedDoc =
                 accepts(priorFindings) ??
@@ -1331,10 +1333,7 @@ const seedDraftCmd = defineCommand({
               if (isIncompleteFindings(seedDoc)) return false;
               if (!isFullReviewAncestry(priorBody ?? "")) return false;
               writeFileSync(outPath, SEED_SENTINEL);
-              writeFileSync(
-                priorContextPath(outPath),
-                `${JSON.stringify(withoutRebuttals(seedDoc), null, 2)}\n`,
-              );
+              writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
               process.stderr.write(
                 `Seeded ${outPath} with the sentinel and wrote the prior review (${String(seedDoc.findings.length)} finding(s)) to ${priorContextPath(outPath)} as context\n`,
               );

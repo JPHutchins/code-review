@@ -26,7 +26,8 @@
       "likelihood": 1,
       "paths": ["src/upload/config.ts", "src/upload/client.ts", "src/legacy/old_code.ts"],
       "id": "retry-policy-inconsistent",
-      "finding_ids": ["widened-type"]
+      "finding_ids": ["widened-type"],
+      "rebuttal": "The second retry site added this round repeats the inconsistency."
     }
   ],
   "findings": [
@@ -43,7 +44,8 @@
       "confidence": 0.9,
       "likelihood": 1,
       "patch": "@@ -4 +4 @@\n-  timeout: number | string;\n+  timeout: number;\n",
-      "id": "widened-type"
+      "id": "widened-type",
+      "rebuttal": "The reply said callers never pass null; the new public overload does."
     },
     {
       "path": "src/upload/client.ts",
@@ -57,7 +59,8 @@
       "reasoning": "A future reader cannot tell from the comment what the wrapper does; the retry logic it refers to is several lines above.",
       "confidence": 0.55,
       "likelihood": 1,
-      "id": "vague-comment"
+      "id": "vague-comment",
+      "rebuttal": "Still vague after the rename: it does not say which invariant holds."
     },
     {
       "path": "src/upload/__init__.py",

@@ -18,6 +18,7 @@ import {
   resolveFindingId,
   resolveRuleId,
   synthesizedFindingId,
+  hasRebuttal,
 } from "./schema.js";
 import type { Finding, Severity } from "./schema.js";
 import { clipText, errMsg } from "./util.js";
@@ -333,8 +334,7 @@ const verbatimFieldEqual = (
 // A rebuttal answers the response the prior round's finding received, so a re-raise carrying one is
 // never verbatim, however unchanged its claim fields are.
 export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
-  (f.rebuttal ?? "").trim() === "" &&
-  VERBATIM_FIELDS.every((field) => verbatimFieldEqual(f, e, field));
+  !hasRebuttal(f) && VERBATIM_FIELDS.every((field) => verbatimFieldEqual(f, e, field));
 
 // Would post's answered-filter DROP this finding? applyAnswered below and the seed's pre-filter
 // both ask this (issue #233 r2), so "answered" can never mean two things across the pipeline. e is
@@ -455,10 +455,9 @@ export const applyAnswered = (
     // (path, patch) — a re-raise relocated to another file or proposing a different fix carries
     // something new. The line is deliberately excluded: positional drift (a rebase moving the same
     // claim) is not evidence (issue #151 review r3). patch is normalized (undefined → null) so an
-    // absent patch on both sides compares equal. isAnsweredDrop's conjunction holds by
-    // construction here (the entry was selected BY a match), so both paths ask the predicate the
-    // seed shares, rebuttal rule included.
-    const dropped = isVerbatimReRaise(f, entry) && f.severity !== "critical";
+    // absent patch on both sides compares equal. Both paths ask isAnsweredDrop, the predicate the
+    // seed's pre-filter shares, rebuttal rule included.
+    const dropped = isAnsweredDrop(resolvedId, f, entry);
     if (dropped) {
       droppedByEntry.set(entry.replyId, entry);
       droppedFindingIds.push(resolvedId);

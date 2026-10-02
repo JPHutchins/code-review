@@ -110,6 +110,7 @@ const FindingOptional = t.partial({
   side: SideCodec,
   recommendation: t.string,
   patch: t.string,
+  rebuttal: t.string,
 });
 
 // ONE line-anchor gate shared by BOTH finding shapes — they differ only in their identity field.
@@ -153,6 +154,7 @@ const SystemicOptional = t.partial({
   id: t.string,
   finding_ids: t.array(t.string),
   paths: t.array(t.string),
+  rebuttal: t.string,
 });
 
 const SystemicProblemShape = t.intersection([SystemicRequired, RuleUrlCodec, SystemicOptional]);
@@ -702,7 +704,7 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.10.0";
+export const DEFAULT_SCHEMA_VERSION = "0.11.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;

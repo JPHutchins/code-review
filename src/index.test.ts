@@ -997,7 +997,7 @@ describe("cli — print-schema", () => {
     // The exact literal for the CURRENT default — pinned, not just mirrored, so a suffix change in
     // the helper is a visible diff at every bump.
     expect(printed.properties?.schema_version?.pattern).toBe(
-      "^0\\.10\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+      "^0\\.11\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
     );
   });
 
@@ -1302,12 +1302,12 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.findings[1]!.id).toBe(
       synthesizedFindingId("src/b.ts", "Codeless prior finding"),
     );
-    expect(context.schema_version).toBe("0.10.0");
+    expect(context.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
   });
 
   it("a prior stamped with an UNSUPPORTED version is never upcast-laundered — the allowlist still governs the seed", async () => {
     const futurePrior = {
-      schema_version: "0.11.0",
+      schema_version: "0.12.0",
       summary: "Prior review summary.",
       verdict: "changes",
       findings: [
@@ -1559,8 +1559,8 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings;
-    // stripSurfaceFields restores the CURRENT draft version (0.10.0 after the id migration), not the surfaced 0.8.0.
-    expect(context.schema_version).toBe("0.10.0");
+    // stripSurfaceFields restores the CURRENT draft version, not the surfaced 0.8.0.
+    expect(context.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
     expect(context).not.toHaveProperty("convergence");
     expect(context).not.toHaveProperty("round");
     expect(context.findings).toHaveLength(1);
@@ -1588,7 +1588,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings & { scope_metastasis?: unknown };
-    expect(context.schema_version).toBe("0.10.0");
+    expect(context.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
     expect(context.scope_metastasis).toEqual(entry);
   });
 
@@ -2096,7 +2096,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ) as typeof priorFindings & {
       scope_metastasis?: unknown;
     };
-    expect(context.schema_version).toBe("0.10.0");
+    expect(context.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
       recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],

@@ -329,7 +329,10 @@ const verbatimFieldEqual = (
   field: (typeof VERBATIM_FIELDS)[number],
 ): boolean => (field === "patch" ? (f.patch ?? null) === e.patch : f[field] === e[field]);
 
+// A rebuttal answers the response the prior round's finding received, so a re-raise carrying one is
+// never verbatim, however unchanged its claim fields are.
 export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
+  (f.rebuttal ?? "").trim() === "" &&
   VERBATIM_FIELDS.every((field) => verbatimFieldEqual(f, e, field));
 
 // Would post's answered-filter DROP this finding? applyAnswered below and the seed's pre-filter
@@ -442,7 +445,7 @@ export const applyAnswered = (
     // changes suppression, not just annotation.
     const resolvedId = resolveFindingId(f);
     const idMatch = registry.find((e) => e.code === resolvedId);
-    const { entry: titleMatch, score: titleScore } =
+    const { entry: titleMatch } =
       idMatch === undefined ? bestTitleMatch(f, registry) : NO_TITLE_MATCH;
     const entry = idMatch ?? titleMatch;
     if (entry === undefined) {
@@ -454,13 +457,9 @@ export const applyAnswered = (
     // something new. The line is deliberately excluded: positional drift (a rebase moving the same
     // claim) is not evidence (issue #151 review r3). patch is normalized (undefined → null) so an
     // absent patch on both sides compares equal. isAnsweredDrop's conjunction holds by
-    // construction here (the entry was selected BY a match), so the drop reuses the scorer's
-    // already-computed verbatim count on the title path — score === VERBATIM_FIELDS.length is
-    // exactly isVerbatimReRaise, and the id path re-runs the predicate the seed shares.
-    const dropped =
-      (idMatch !== undefined
-        ? isVerbatimReRaise(f, entry)
-        : titleScore === VERBATIM_FIELDS.length) && f.severity !== "critical";
+    // construction here (the entry was selected BY a match), so both paths ask the predicate the
+    // seed shares, rebuttal rule included.
+    const dropped = isVerbatimReRaise(f, entry) && f.severity !== "critical";
     if (dropped) {
       droppedByEntry.set(entry.replyId, entry);
       droppedFindingIds.push(resolvedId);

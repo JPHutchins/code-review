@@ -42,6 +42,46 @@ describe('resolve("findings", ...)', () => {
     expect(result.value.summary).toBe("A summary.");
   });
 
+  it("resolves a 0.10 document through the live entry unchanged — 0.11 only adds optional fields", () => {
+    const doc = {
+      ...validFindings,
+      schema_version: "0.10.2",
+      findings: [{ ...validFinding, id: "x" }],
+    };
+    const result = resolve("findings", doc);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.version).toBe("0.10.2");
+    expect(result.value).toEqual(doc);
+  });
+
+  it("accepts a rebuttal on a finding and a systemic problem — in 0.11, and in a 0.10 stamp that shares its file", () => {
+    for (const schema_version of ["0.11.0", "0.10.0"]) {
+      const doc = {
+        ...validFindings,
+        schema_version,
+        findings: [{ ...validFinding, id: "x", rebuttal: "r" }],
+        systemic_problems: [
+          {
+            title: "t",
+            description: "d",
+            severity: "minor",
+            reasoning: "r",
+            confidence: 0.5,
+            likelihood: 1,
+            id: "s",
+            rebuttal: "r",
+          },
+        ],
+      };
+      const result = resolve("findings", doc);
+      expect(result.kind, schema_version).toBe("ok");
+      if (result.kind !== "ok") return;
+      expect(result.value.findings[0]!.rebuttal).toBe("r");
+      expect(result.value.systemic_problems?.[0]!.rebuttal).toBe("r");
+    }
+  });
+
   it("resolves a 0.5.0 document carrying the pipeline-reserved `error` verdict — issue #117", () => {
     const result = resolve("findings", {
       ...validFindings,
@@ -89,7 +129,7 @@ describe('resolve("findings", ...)', () => {
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
     expect(result.version).toBe("1.0.0");
-    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10"]);
+    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10", "0.11"]);
   });
 
   it("returns invalid-shape for a supported version with a malformed body", () => {
@@ -166,14 +206,14 @@ describe('resolve("findings", ...) — 0.4 requires reasoning + confidence (sche
     const result = resolve("findings", { ...validFindings, schema_version: "0.2.0" });
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
-    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10"]);
+    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10", "0.11"]);
   });
 
   it("degrades a 0.3.0 document to unsupported-version too", () => {
     const result = resolve("findings", { ...validFindings, schema_version: "0.3.0" });
     expect(result.kind).toBe("unsupported-version");
     if (result.kind !== "unsupported-version") return;
-    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10"]);
+    expect(result.supported).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10", "0.11"]);
   });
 });
 
@@ -207,7 +247,7 @@ describe("resolveTolerantFindings — the seed chain's upcast", () => {
 
   it("returns null for an unsupported version stamp — the fallback never revives a version the allowlist refuses", () => {
     const future = {
-      schema_version: "0.11.0",
+      schema_version: "0.12.0",
       summary: "s",
       verdict: "comment",
       findings: [
@@ -383,8 +423,8 @@ describe("schemaPathFor", () => {
 
 describe("defaultVersion / supportedVersions", () => {
   it("report today's supported entries per kind", () => {
-    expect(defaultVersion("findings")).toBe("0.10.0");
-    expect(supportedVersions("findings")).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10"]);
+    expect(defaultVersion("findings")).toBe("0.11.0");
+    expect(supportedVersions("findings")).toEqual(["0.4", "0.5", "0.6", "0.9", "0.10", "0.11"]);
     expect(defaultVersion("triage")).toBe("0.1.0");
     expect(supportedVersions("triage")).toEqual(["0.1"]);
     expect(defaultVersion("prices")).toBe("0.2.0");

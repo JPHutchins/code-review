@@ -46,6 +46,10 @@
             "type": "string",
             "description": "Rationale/evidence for why the systemic problem holds, so a human or downstream agent can judge its soundness — distinct from `description`, which explains the pattern to the reader. Mirrors the finding field of the same name."
           },
+          "rebuttal": {
+            "type": "string",
+            "description": "On a re-raise, why the response recorded against this id does not hold."
+          },
           "confidence": {
             "type": "number",
             "minimum": 0,
@@ -60,7 +64,7 @@
           },
           "id": {
             "type": "string",
-            "description": "Stable mechanism identifier (e.g. \"repeated-null-check\") for rule-based filtering, suppression, and cross-run dedup — mirrors the finding field of the same name."
+            "description": "Stable mechanism identifier (e.g. \"repeated-null-check\") for rule-based filtering, suppression, and cross-run dedup — mirrors the finding field of the same name. A re-raise of the same class reuses the id."
           },
           "code_url": {
             "type": "string",
@@ -270,6 +274,10 @@
           "recommendation": {
             "type": "string",
             "description": "1-2 sentence markdown prose describing what to do about the finding — distinct from `patch`, which is a machine-applicable unified diff. Use this when the fix is best explained rather than mechanically applied, or to accompany a `patch` with rationale."
+          },
+          "rebuttal": {
+            "type": "string",
+            "description": "On a re-raise, why the response recorded against this id does not hold."
           },
           "confidence": {
             "type": "number",

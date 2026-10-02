@@ -57,8 +57,10 @@ const identity = <A>(decoded: A): A => decoded;
 // made `id` REQUIRED (code → id), so every pre-0.10 minor now decodes through the one tolerant legacy
 // codec and upcasts to the 0.10 shape (code → id, or the synthesized content-derived id when a
 // finding carried none) — a pre-0.10 doc without an id still resolves, and the dropped 0.2/0.3 minors
-// still can't (they lack the required reasoning/confidence). Keeping the older minors live matches
-// their declared version to a supported entry rather than reporting an unknown version.
+// still can't (they lack the required reasoning/confidence). 0.11 only adds the optional `rebuttal`,
+// so a 0.10 document is a valid 0.11 document and both minors resolve through the live file and
+// codec, the way 0.4–0.9 share the frozen legacy file. Keeping the older minors live matches their
+// declared version to a supported entry rather than reporting an unknown version.
 const legacyFindingsCodec = FindingsCodecV09 as unknown as Decoder<unknown, Findings> &
   Encoder<Findings, unknown>;
 const legacyFindingsNormalize = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =>
@@ -103,6 +105,14 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   },
   {
     minor: "0.10",
+    defaultVersion: "0.10.0",
+    schemaFile: "findings.schema.json",
+    codec: FindingsCodec,
+    normalize: identity,
+    latest: false,
+  },
+  {
+    minor: "0.11",
     defaultVersion: DEFAULT_SCHEMA_VERSION,
     schemaFile: "findings.schema.json",
     codec: FindingsCodec,
@@ -246,8 +256,9 @@ export const resolve = <K extends SchemaKind>(kind: K, raw: unknown): Resolution
 // blob re-stamped with the CURRENT draft version, or a hybrid doc whose findings carry the pre-0.10
 // `code` spelling) — the legacy codec's upcast value. null for an unsupported-version stamp: the
 // fallback must never revive a version the allowlist refuses (a dropped 0.2/0.3 minor, a future
-// 0.11+/1.x) and re-stamp it 0.10.0. The ONE place this upcast policy lives, shared by every raw-
-// document channel (the seed gate; the marker readers apply the same precedence on their fragments).
+// 0.12+/1.x) and re-stamp it as the current version. The ONE place this upcast policy lives,
+// shared by every raw-document channel (the seed gate; the marker readers apply the same precedence
+// on their fragments).
 export const resolveTolerantFindings = (doc: unknown): Findings | null => {
   const r = resolveFindings(doc);
   if (r.kind === "ok") return r.value;

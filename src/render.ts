@@ -394,6 +394,7 @@ const carriedLines = (f: Finding): readonly string[] =>
     ...(f.recommendation !== undefined
       ? [`recommendation: ${clipText(f.recommendation, BODY_CLIP_CHARS)}`]
       : []),
+    ...(f.rebuttal !== undefined ? [`rebuttal: ${clipText(f.rebuttal, BODY_CLIP_CHARS)}`] : []),
     `reasoning: ${clipText(f.reasoning, BODY_CLIP_CHARS)}`,
     ...(f.patch !== undefined ? ["patch:", clipText(f.patch, BODY_CLIP_CHARS)] : []),
   ]

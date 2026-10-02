@@ -546,32 +546,52 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
         run: |
           set -uo pipefail
-          github_header="http.${SERVER_URL}/.extraheader"
-          includes() { git config -z --local --get-regexp '^include(if\..*)?\.path$' 2>/dev/null; }
-          declare -A credential_files=()
-          while IFS= read -r -d '' entry; do
-            path=${entry#*$'\n'}
-            if git config --file "$path" --get-all "$github_header" >/dev/null 2>&1; then
-              credential_files["$path"]=1
-            fi
-          done < <(includes)
+          [[ "$SERVER_URL" =~ ^https?://[^/[:space:]]+$ ]] || {
+            echo "::error::unexpected server URL '$SERVER_URL' — the credential state cannot be verified; refusing to start the jailed agents"
+            exit 1
+          }
+          # Git's own URL matching decides what counts as a GitHub credential, so every spelling git
+          # would send to this server is caught, and credentials for other hosts never are.
+          remote_url=$(git remote get-url origin 2>/dev/null || printf '%s/' "$SERVER_URL")
+          carries_github_credential() {
+            git config --file "$1" --get-urlmatch http.extraheader "$remote_url" >/dev/null 2>&1
+          }
+          git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || {
+            echo "::error::git cannot read this checkout, so the credential state cannot be verified — refusing to start the jailed agents"
+            exit 1
+          }
+          credential_files=()
           while IFS= read -r -d '' entry; do
             key=${entry%%$'\n'*}
             path=${entry#*$'\n'}
-            if [[ -n "${credential_files[$path]:-}" ]]; then
-              git config --local --unset-all "$key"
+            case "$path" in
+              \~/*) path="$HOME/${path#\~/}" ;;
+              /*) ;;
+              *) path="$git_dir/$path" ;;
+            esac
+            if [[ -f "$path" ]] && carries_github_credential "$path"; then
+              git config --local --unset-all "$key" 2>/dev/null || true
+              credential_files+=("$path")
             fi
-          done < <(includes)
-          for path in "${!credential_files[@]}"; do
-            rm -f "$path"
+          done < <(git config -z --local --get-regexp '^include(if\..*)?\.path$' 2>/dev/null)
+          # A credentials file no include of this repo points at (another checkout's) is swept too:
+          # only the top level of the runner temp dir, where checkout writes them, and parsed by git,
+          # so a gathered file that merely mentions a header is never mistaken for one.
+          while IFS= read -r -d '' file; do
+            if carries_github_credential "$file"; then
+              credential_files+=("$file")
+            fi
+          done < <(find "$RUNNER_TEMP" -maxdepth 1 -type f -print0 2>/dev/null)
+          for file in ${credential_files[@]+"${credential_files[@]}"}; do
+            rm -f "$file"
           done
-          git config --local --unset-all "$github_header" 2>/dev/null || true
+          git config --local --unset-all "http.${SERVER_URL}/.extraheader" 2>/dev/null || true
           rc=0
-          git config --get-all "$github_header" >/dev/null 2>&1 || rc=$?
+          git config --get-urlmatch http.extraheader "$remote_url" >/dev/null 2>&1 || rc=$?
           case "$rc" in
             0)
-              echo "::error::a GitHub credential is still readable through git config — refusing to start the jailed agents. It comes from:"
-              git config --show-origin --name-only --get-regexp "^${github_header//./\\.}\$" || true
+              echo "::error::a GitHub credential is still readable through git config — refusing to start the jailed agents. Extra headers configured:"
+              git config --show-origin --name-only --get-regexp '^http\.(.*\.)?extraheader$' || true
               exit 1
               ;;
             1) ;;
@@ -662,9 +682,11 @@ jobs:
             REASONS="Triage produced a non-boolean safe value (\"$PARSED_SAFE\") — failing closed."
           fi
 
-      # Triage passed, so the PR head's objects can be fetched. The persisted credential is already
-      # gone, so a private repo's fetch authenticates with the job token handed to this one git
-      # command, while no jailed agent is running. Objects only: the review step checks out.
+      # Triage passed, so the PR head's objects are fetched here (gather's diff fallback may already
+      # have fetched them, when the compare API failed). The persisted credential is gone, so a
+      # private repo's fetch authenticates with the job token handed to this one git command, while
+      # no jailed agent is running; maintenance and gc are off for it, so no detached git child
+      # inherits the token past the step. Objects only: the review step checks out.
       # refs/pull/<n>/head makes the head fetchable for fork PRs as well as same-repo ones.
       - name: Fetch the PR head
         if: ${{ steps.gather.outputs.skip != 'true' && steps.triage.outputs.safe == 'true' }}
@@ -679,8 +701,8 @@ jobs:
           echo "::add-mask::$basic"
           header="http.${SERVER_URL}/.extraheader=AUTHORIZATION: basic $basic"
           git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null \
-            || git -c "$header" fetch --quiet origin "$HEAD_SHA" 2>/dev/null \
-            || git -c "$header" fetch --quiet origin "refs/pull/${PR}/head" 2>/dev/null \
+            || git -c maintenance.auto=false -c gc.auto=0 -c "$header" fetch --quiet origin "$HEAD_SHA" 2>/dev/null \
+            || git -c maintenance.auto=false -c gc.auto=0 -c "$header" fetch --quiet origin "refs/pull/${PR}/head" 2>/dev/null \
             || echo "::warning::could not fetch the PR head $HEAD_SHA — the review step reports it"
 
       # bypassPermissions is safe here: throwaway runner, read-only token.
@@ -1126,7 +1148,7 @@ jobs:
 
       # Deterministic change-size static analysis for the sticky's cloc collapsible. Runs in the review
       # job that holds the PR-head checkout (the comment job has none) and only when the head is present
-      # (triage safe ⇒ the review step already fetched + checked it out). Best-effort: cloc is a single
+      # (triage safe ⇒ the fetch step fetched it and the review step checked it out). Best-effort: cloc is a single
       # Perl script (a SHA-256-pinned release — a runtime-downloaded script we execute is a supply-chain
       # surface — no sudo/apt), and any failure emits a ::warning:: and produces NO file rather than
       # failing the review. The comment job passes --cloc-diff only when the file exists.

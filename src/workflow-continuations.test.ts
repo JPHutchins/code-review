@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readRepoFile, allWorkflows } from "./test-util.js";
@@ -372,25 +372,44 @@ describe("route budget parity — the example's literals mirror the reusable inp
 describe("the jailed agents never hold the job token", () => {
   const REMOVAL = "Remove the persisted git credential before the jailed agents";
   const FETCH = "Fetch the PR head";
-  const GITHUB_HEADER = "http.https://github.com/.extraheader";
   const SECRET = "AUTHORIZATION: basic c2VjcmV0";
-  const scriptOf = (workflowPath: string, stepName: string): string => {
-    const found = runScripts(workflowPath).filter((s) => s.step.endsWith(`→ ${stepName}`));
+  const stepOf = (
+    workflowPath: string,
+    stepName: string,
+  ): { readonly if?: unknown; readonly env?: Record<string, unknown>; readonly run?: unknown } => {
+    const doc = parseYaml(readRepoFile(workflowPath)) as {
+      jobs: Record<string, { steps?: readonly { name?: unknown }[] }>;
+    };
+    const found = Object.values(doc.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => step.name === stepName);
     expect(found, `${workflowPath} → ${stepName}`).toHaveLength(1);
-    return found[0]!.script;
+    return found[0] as { readonly if?: unknown; readonly env?: Record<string, unknown> };
   };
+  const scriptOf = (stepName: string): string =>
+    String(stepOf(".github/workflows/review-reusable.yaml", stepName).run);
 
   it.each([REMOVAL, FETCH])(
-    "%s is byte-identical between review-reusable.yaml and the example",
-    (step) => {
-      expect(scriptOf("examples/workflows/review.yaml", step)).toBe(
-        scriptOf(".github/workflows/review-reusable.yaml", step),
-      );
+    "%s carries the same script, condition, and env between review-reusable.yaml and the example",
+    (stepName) => {
+      const reusable = stepOf(".github/workflows/review-reusable.yaml", stepName);
+      const example = stepOf("examples/workflows/review.yaml", stepName);
+      expect(example.run).toBe(reusable.run);
+      expect(example.if).toBe(reusable.if);
+      // HEAD_SHA is the one deliberate difference: an input there, the triggering run here.
+      const withoutHead = (env: Record<string, unknown> = {}): Record<string, unknown> =>
+        Object.fromEntries(Object.entries(env).filter(([key]) => key !== "HEAD_SHA"));
+      expect(withoutHead(example.env)).toEqual(withoutHead(reusable.env));
     },
   );
 
-  // A checkout's on-disk shape: a repo, a runner temp dir, and an isolated global config, so the
-  // developer's own ~/.gitconfig never leaks in.
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  // A checkout's on-disk shape: a repo with a GitHub origin, a runner temp dir, and an isolated
+  // global config, so the developer's own ~/.gitconfig never leaks in.
   const checkout = (): {
     readonly root: string;
     readonly repo: string;
@@ -401,6 +420,7 @@ describe("the jailed agents never hold the job token", () => {
     readonly run: (stepName: string, extra?: NodeJS.ProcessEnv) => ReturnType<typeof spawnSync>;
   } => {
     const root = mkdtempSync(join(tmpdir(), "token-drop-"));
+    roots.push(root);
     const repo = join(root, "repo");
     const temp = join(root, "temp");
     const globalConfig = join(root, "global.gitconfig");
@@ -412,25 +432,22 @@ describe("the jailed agents never hold the job token", () => {
       execFileSync("git", args, { cwd: repo, env, encoding: "utf-8" });
     git("init", "-q");
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+    git("remote", "add", "origin", "https://github.com/owner/repo");
     const run = (stepName: string, extra: NodeJS.ProcessEnv = {}): ReturnType<typeof spawnSync> =>
-      spawnSync(
-        "bash",
-        ["-e", "-c", scriptOf(".github/workflows/review-reusable.yaml", stepName)],
-        {
-          cwd: repo,
-          env: { ...env, RUNNER_TEMP: temp, SERVER_URL: "https://github.com", ...extra },
-          encoding: "utf-8",
-        },
-      );
+      spawnSync("bash", ["-e", "-c", scriptOf(stepName)], {
+        cwd: repo,
+        env: { ...env, RUNNER_TEMP: temp, SERVER_URL: "https://github.com", ...extra },
+        encoding: "utf-8",
+      });
     return { root, repo, temp, globalConfig, env, git, run };
   };
-  const credentialFile = (path: string): string => {
-    writeFileSync(path, `[http "https://github.com/"]\n\textraheader = ${SECRET}\n`);
+  const credentialFile = (path: string, section = '[http "https://github.com/"]'): string => {
+    writeFileSync(path, `${section}\n\textraheader = ${SECRET}\n`);
     return path;
   };
-  const resolvesGithubHeader = (git: (...args: readonly string[]) => string): boolean => {
+  const githubHeaderResolves = (git: (...args: readonly string[]) => string): boolean => {
     try {
-      git("config", "--get-all", GITHUB_HEADER);
+      git("config", "--get-urlmatch", "http.extraheader", "https://github.com/owner/repo");
       return true;
     } catch {
       return false;
@@ -438,26 +455,58 @@ describe("the jailed agents never hold the job token", () => {
   };
 
   describe("the removal, before the triage", () => {
-    it("removes checkout's layout: every include entry for the credentials file, and the file", () => {
+    it("removes checkout's layout — both host include entries and the file — leaving its inert container-path entries", () => {
       const { repo, temp, git, run } = checkout();
       const file = credentialFile(join(temp, "git-credentials-0123.config"));
       git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
       git("config", "--local", `includeIf.gitdir:${repo}/.git/worktrees/*.path`, file);
-      expect(resolvesGithubHeader(git)).toBe(true);
+      git(
+        "config",
+        "--local",
+        "includeIf.gitdir:/github/workspace/.git.path",
+        "/github/runner_temp/x.config",
+      );
+      git(
+        "config",
+        "--local",
+        "includeIf.gitdir:/github/workspace/.git/worktrees/*.path",
+        "/github/runner_temp/x.config",
+      );
+      expect(githubHeaderResolves(git)).toBe(true);
       expect(run(REMOVAL).status).toBe(0);
       expect(existsSync(file)).toBe(false);
-      expect(resolvesGithubHeader(git)).toBe(false);
-      expect(() => git("config", "--local", "--get-regexp", "^includeif")).toThrow();
+      expect(githubHeaderResolves(git)).toBe(false);
+      expect(
+        git("config", "--local", "--name-only", "--get-regexp", "^includeif").trim().split("\n"),
+      ).toEqual([
+        "includeif.gitdir:/github/workspace/.git.path",
+        "includeif.gitdir:/github/workspace/.git/worktrees/*.path",
+      ]);
     });
 
-    it("follows the include pointer, not checkout's file naming, through a path with a space", () => {
+    it("follows the include pointer, whatever the file is called, through a path with a space and a relative include", () => {
       const { repo, temp, git, run } = checkout();
       mkdirSync(join(temp, "a dir"));
-      const file = credentialFile(join(temp, "a dir", "renamed-by-a-future-checkout.cfg"));
-      git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
+      const renamed = credentialFile(join(temp, "a dir", "renamed-by-a-future-checkout.cfg"));
+      git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, renamed);
+      const relative = credentialFile(join(repo, ".git", "creds.cfg"));
+      git("config", "--local", "--add", "include.path", "creds.cfg");
+      git("config", "--local", "--add", "include.path", "creds.cfg");
       expect(run(REMOVAL).status).toBe(0);
-      expect(existsSync(file)).toBe(false);
-      expect(resolvesGithubHeader(git)).toBe(false);
+      expect(existsSync(renamed)).toBe(false);
+      expect(existsSync(relative)).toBe(false);
+      expect(githubHeaderResolves(git)).toBe(false);
+    });
+
+    it("sweeps a credentials file at the top of the runner temp dir that no include of this repo points at", () => {
+      const { temp, run } = checkout();
+      const other = credentialFile(join(temp, "git-credentials-other-checkout.config"));
+      mkdirSync(join(temp, "gather"));
+      const gathered = join(temp, "gather", "full.diff");
+      writeFileSync(gathered, `+[http "https://github.com/"]\n+\textraheader = ${SECRET}\n`);
+      expect(run(REMOVAL).status).toBe(0);
+      expect(existsSync(other)).toBe(false);
+      expect(existsSync(gathered)).toBe(true);
     });
 
     it("leaves a consumer's credential for another host, and an include that carries no GitHub credential", () => {
@@ -478,27 +527,50 @@ describe("the jailed agents never hold the job token", () => {
       expect(existsSync(unrelated)).toBe(true);
     });
 
-    it("fails closed on a GitHub credential it cannot remove, naming where it lives and never the secret", () => {
+    it.each([
+      ["no trailing slash", "http.https://github.com.extraheader"],
+      ["unscoped", "http.extraheader"],
+      ["path-scoped", "http.https://github.com/owner.extraheader"],
+    ])(
+      "fails closed on a GitHub credential spelled %s, never printing the secret",
+      (_label, key) => {
+        const { git, run } = checkout();
+        git("config", "--local", key, SECRET);
+        const result = run(REMOVAL);
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain("::error::a GitHub credential is still readable");
+        expect(`${String(result.stdout)}${String(result.stderr)}`).not.toContain("c2VjcmV0");
+      },
+    );
+
+    it("fails closed on a GitHub credential it cannot remove, naming the config it lives in", () => {
       const { globalConfig, run } = checkout();
       credentialFile(globalConfig);
       const result = run(REMOVAL);
       expect(result.status).toBe(1);
-      expect(result.stdout).toContain("::error::a GitHub credential is still readable");
       expect(result.stdout).toContain(globalConfig);
-      expect(`${String(result.stdout)}${String(result.stderr)}`).not.toContain("c2VjcmV0");
     });
 
-    it("fails closed when git config itself errors, never reading the error as 'no credential'", () => {
+    it.each([
+      [
+        "git config errors",
+        (repo: string) => {
+          writeFileSync(join(repo, ".git", "config"), "[core\n");
+        },
+        {},
+      ],
+      ["the server URL is malformed", () => undefined, { SERVER_URL: "https://github.com/x y" }],
+    ])("fails closed when %s, never reading it as 'no credential'", (_label, breakIt, extra) => {
       const { repo, run } = checkout();
-      writeFileSync(join(repo, ".git", "config"), "[core\n");
-      const result = run(REMOVAL);
+      breakIt(repo);
+      const result = run(REMOVAL, extra);
       expect(result.status).toBe(1);
-      expect(result.stdout).toContain("cannot be verified");
+      expect(result.stdout).toMatch(/cannot be verified/);
     });
   });
 
   describe("the fetch, after the triage", () => {
-    it("fetches the head from origin with the token on the command only, never in config or output", () => {
+    it("fetches the head with the token on that one git command — never in config or output, and no detached child", () => {
       const { root, git, env, run } = checkout();
       const origin = join(root, "origin.git");
       execFileSync("git", ["clone", "-q", "--bare", join(root, "repo"), origin], { env });
@@ -519,19 +591,48 @@ describe("the jailed agents never hold the job token", () => {
       );
       inWork("push", "-q", "origin", "HEAD:refs/pull/7/head");
       const head = inWork("rev-parse", "HEAD").trim();
-      git("remote", "add", "origin", origin);
+      git("remote", "set-url", "origin", origin);
       expect(() => git("cat-file", "-e", `${head}^{commit}`)).toThrow();
-      const result = run(FETCH, { HEAD_SHA: head, PR: "7", FETCH_TOKEN: "ghs_unit-test-token" });
-      expect(result.status).toBe(0);
+      const trace = join(root, "git.trace2.json");
+      const token = "ghs_unit-test-token";
+      const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+      const result = run(FETCH, {
+        HEAD_SHA: head,
+        PR: "7",
+        FETCH_TOKEN: token,
+        GIT_TRACE2_EVENT: trace,
+        GIT_TRACE2_CONFIG_PARAMS: "http.*.extraheader,maintenance.auto,gc.auto",
+      });
       expect(() => git("cat-file", "-e", `${head}^{commit}`)).not.toThrow();
       expect(() => git("config", "--get-regexp", "extraheader")).toThrow();
       const output = `${String(result.stdout)}${String(result.stderr)}`;
-      const basic = Buffer.from("x-access-token:ghs_unit-test-token").toString("base64");
-      expect(output).not.toContain("ghs_unit-test-token");
+      expect(output).not.toContain(token);
       // The runner consumes the ::add-mask:: command and masks the value in every later line.
       expect(output.split("\n").filter((line) => line.includes(basic))).toEqual([
         `::add-mask::${basic}`,
       ]);
+      const events = readFileSync(trace, "utf-8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map(
+          (line) =>
+            JSON.parse(line) as { event: string; param?: string; value?: string; argv?: string[] },
+        );
+      const params = new Map(
+        events.filter((e) => e.event === "def_param").map((e) => [e.param, e.value] as const),
+      );
+      expect(params.get("http.https://github.com/.extraheader")).toBe(
+        `AUTHORIZATION: basic ${basic}`,
+      );
+      expect(params.get("maintenance.auto")).toBe("false");
+      expect(params.get("gc.auto")).toBe("0");
+      expect(
+        events.filter(
+          (e) =>
+            e.event === "child_start" &&
+            (e.argv ?? []).some((a) => a === "maintenance" || a === "gc"),
+        ),
+      ).toEqual([]);
     });
   });
 });

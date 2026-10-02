@@ -1,6 +1,6 @@
 // The untrusted review agent's network jail as one sandbox-runtime (`srt`) settings file (data, not
-// shell). The allowlist is the model endpoint the CLI actually dials plus the GitHub API/host and any
-// consumer-supplied hosts; the host-side proxy denies everything else. Filesystem isolation is off —
+// shell). The allowlist is the model endpoint the CLI actually dials plus any consumer-supplied
+// hosts; the host-side proxy denies everything else. Filesystem isolation is off —
 // the threat this closes is network exfil of the burner key, not the throwaway runner's disk — so the
 // jail confines only egress while the agent still reads the worktree and writes its draft freely.
 
@@ -16,9 +16,6 @@ export interface SandboxConfig {
     readonly denyWrite: readonly string[];
   };
 }
-
-// GitHub hosts the agent may reach when it shells out to gh/git during a review.
-const GITHUB_HOSTS = ["api.github.com", "github.com"] as const;
 
 // The model host from api_base_url (ANTHROPIC_BASE_URL) — the single source of truth for the endpoint
 // the CLI dials, rather than a hardcoded vendor. Bare hostname (no scheme/port/path) to match the
@@ -71,11 +68,7 @@ export const buildSandboxConfig = (opts: {
 }): SandboxConfig => ({
   network: {
     allowedDomains: [
-      ...new Set([
-        deriveModelHost(opts.apiBaseUrl),
-        ...GITHUB_HOSTS,
-        ...parseExtraEndpoints(opts.extra ?? ""),
-      ]),
+      ...new Set([deriveModelHost(opts.apiBaseUrl), ...parseExtraEndpoints(opts.extra ?? "")]),
     ],
     deniedDomains: [],
   },

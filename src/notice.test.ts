@@ -177,7 +177,7 @@ describe("parseAgentAllowlist — issue #97", () => {
 });
 
 describe("buildNoticeEnvelope egress note — issue #97", () => {
-  const allowlist = ["api.deepseek.com", "api.github.com", "github.com"];
+  const allowlist = ["api.deepseek.com", "pypi.org"];
 
   it("names the agent jail's allowlist on the notices where a jailed agent ran", () => {
     for (const kind of ["no-output", "triage-error"] as const) {

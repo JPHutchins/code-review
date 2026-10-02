@@ -2735,7 +2735,7 @@ describe("cli — notice --sandbox-config (issue #97)", () => {
       "notice",
       "no-output",
       "--sandbox-config",
-      writeSandbox(["api.deepseek.com", "github.com"]),
+      writeSandbox(["api.deepseek.com", "pypi.org"]),
     ]);
     expect(exitCode).toBeNull();
     expect(parseSummary(stdout)).toContain("`api.deepseek.com`");

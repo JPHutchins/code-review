@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { parse as parseYaml } from "yaml";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { readRepoFile, allWorkflows } from "./test-util.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
@@ -362,5 +366,107 @@ describe("route budget parity — the example's literals mirror the reusable inp
     for (const [envKey, inputKey] of Object.entries(ENV_TO_INPUT)) {
       expect(fallbacks[envKey], envKey).toBe(reusable[inputKey]);
     }
+  });
+});
+
+describe("the credential drop before the jailed agents", () => {
+  const STEP = "Fetch the PR head, then remove the persisted git credential";
+  const GITHUB_HEADER = "http.https://github.com/.extraheader";
+  const SECRET = "AUTHORIZATION: basic c2VjcmV0";
+  const scriptOf = (workflowPath: string): string => {
+    const found = runScripts(workflowPath).filter((s) => s.step.endsWith(`→ ${STEP}`));
+    expect(found, workflowPath).toHaveLength(1);
+    return found[0]!.script;
+  };
+
+  it("is byte-identical between review-reusable.yaml and the example", () => {
+    expect(scriptOf("examples/workflows/review.yaml")).toBe(
+      scriptOf(".github/workflows/review-reusable.yaml"),
+    );
+  });
+
+  // A checkout's on-disk shape: a repo whose HEAD is the PR head (so the fetch short-circuits), a
+  // runner temp dir, and an isolated global config, so the developer's own ~/.gitconfig never leaks in.
+  const checkout = (): {
+    readonly repo: string;
+    readonly temp: string;
+    readonly globalConfig: string;
+    readonly git: (...args: readonly string[]) => string;
+    readonly run: () => ReturnType<typeof spawnSync>;
+  } => {
+    const root = mkdtempSync(join(tmpdir(), "cred-drop-"));
+    const repo = join(root, "repo");
+    const temp = join(root, "temp");
+    const globalConfig = join(root, "global.gitconfig");
+    mkdirSync(repo);
+    mkdirSync(temp);
+    writeFileSync(globalConfig, "");
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: "1" };
+    const git = (...args: readonly string[]): string =>
+      execFileSync("git", args, { cwd: repo, env, encoding: "utf-8" });
+    git("init", "-q");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+    const headSha = git("rev-parse", "HEAD").trim();
+    const run = (): ReturnType<typeof spawnSync> =>
+      spawnSync("bash", ["-e", "-c", scriptOf(".github/workflows/review-reusable.yaml")], {
+        cwd: repo,
+        env: { ...env, RUNNER_TEMP: temp, HEAD_SHA: headSha, PR: "1" },
+        encoding: "utf-8",
+      });
+    return { repo, temp, globalConfig, git, run };
+  };
+  const credentialFile = (path: string): string => {
+    writeFileSync(path, `[http "https://github.com/"]\n\textraheader = ${SECRET}\n`);
+    return path;
+  };
+  const resolvesGithubHeader = (git: (...args: readonly string[]) => string): boolean => {
+    try {
+      git("config", "--get-all", GITHUB_HEADER);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it("removes checkout's layout: the includeIf entry and the credentials file it points at", () => {
+    const { repo, temp, git, run } = checkout();
+    const file = credentialFile(join(temp, "git-credentials-0123.config"));
+    git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
+    expect(resolvesGithubHeader(git)).toBe(true);
+    expect(run().status).toBe(0);
+    expect(existsSync(file)).toBe(false);
+    expect(resolvesGithubHeader(git)).toBe(false);
+  });
+
+  it("follows the include pointer, not checkout's file naming — a renamed credentials file goes too", () => {
+    const { repo, temp, git, run } = checkout();
+    const file = credentialFile(join(temp, "renamed-by-a-future-checkout.cfg"));
+    git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
+    expect(run().status).toBe(0);
+    expect(existsSync(file)).toBe(false);
+    expect(resolvesGithubHeader(git)).toBe(false);
+  });
+
+  it("leaves a consumer's credential for another host, and an include that carries no GitHub credential", () => {
+    const { repo, temp, git, run } = checkout();
+    git("config", "--local", "http.https://registry.example.com/.extraheader", "AUTHORIZATION: x");
+    const unrelated = join(temp, "consumer.cfg");
+    writeFileSync(unrelated, "[core]\n\tautocrlf = false\n");
+    git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, unrelated);
+    expect(run().status).toBe(0);
+    expect(git("config", "--get", "http.https://registry.example.com/.extraheader").trim()).toBe(
+      "AUTHORIZATION: x",
+    );
+    expect(existsSync(unrelated)).toBe(true);
+  });
+
+  it("fails closed on a GitHub credential it cannot remove, naming where it lives and never the secret", () => {
+    const { globalConfig, run } = checkout();
+    credentialFile(globalConfig);
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("::error::a GitHub credential is still readable");
+    expect(result.stdout).toContain(globalConfig);
+    expect(`${String(result.stdout)}${String(result.stderr)}`).not.toContain("c2VjcmV0");
   });
 });

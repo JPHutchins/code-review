@@ -417,7 +417,7 @@ jobs:
 
       # The untrusted review agent (Phase 1 triage + Phase 2 review) runs inside a per-process network
       # namespace via Anthropic's sandbox-runtime (`srt`): bubblewrap --unshare-net gives the agent a
-      # loopback-only netns and a host-side proxy allows only the model host + GitHub + the consumer's
+      # loopback-only netns and a host-side proxy allows only the model host + the consumer's
       # extra domains, denying all other egress. Unlike job-level harden-runner egress-block, this never
       # filters the RUNNER's own control-plane heartbeat (it stays in the root netns), so it cannot get
       # the runner reclaimed mid-review — the confirmed #107 cause (block reclaimed ~48% of long jobs,
@@ -455,7 +455,7 @@ jobs:
           timeout 30s bwrap --unshare-net --unshare-user --bind / / -- /bin/sh -c 'exit 0' \
             || { echo "::error::bwrap cannot create an unprivileged user+net namespace — the sandbox cannot start on this runner; if kernel.apparmor_restrict_unprivileged_userns is non-zero, the AppArmor grant above did not take effect; failing closed"; exit 1; }
 
-          # Allowlist is the type-safe CLI's job (SSOT): model host (from api_base_url) + GitHub +
+          # Allowlist is the type-safe CLI's job (SSOT): model host (from api_base_url) +
           # extra_endpoints. Add your ecosystem's hosts (registries, a non-default model API) via the
           # extra_endpoints input, e.g. "pypi.org files.pythonhosted.org cache.nixos.org".
           code-review sandbox-config \
@@ -484,11 +484,15 @@ jobs:
             echo "::error::jail canary reached a non-allowlisted host — the sandbox is NOT enforcing agent egress; failing closed"
             exit 1
           fi
-          if ! jq -e '.network.allowedDomains | index("api.github.com")' "$RUNNER_TEMP/sandbox.json" >/dev/null &&
-             srt --settings "$RUNNER_TEMP/sandbox.json" -- curl -sS --max-time 12 -o /dev/null https://api.github.com; then
-            echo "::error::jail canary reached api.github.com, which no allowlist entry names — failing closed"
-            exit 1
-          fi
+          command -v jq >/dev/null 2>&1 || { echo "::error::jq not found — cannot read the jail allowlist; failing closed"; exit 1; }
+          for host in api.github.com github.com; do
+            if jq -e --arg host "$host" '[.network.allowedDomains[] | ascii_downcase] | index($host)' "$RUNNER_TEMP/sandbox.json" >/dev/null; then
+              echo "::notice::$host is allowlisted through extra_endpoints — the jailed agents can reach it"
+            elif srt --settings "$RUNNER_TEMP/sandbox.json" -- curl -sS --max-time 12 -o /dev/null "https://$host"; then
+              echo "::error::jail canary reached $host, which no allowlist entry names — failing closed"
+              exit 1
+            fi
+          done
           # Positive control: the agent binary must actually START inside the jail — a broken mount or a
           # silently-wrong sandbox would let the deny probes above pass while leaving the agent unable to
           # run (surfacing later only as a generic triage error). Model-host reachability is not
@@ -545,16 +549,22 @@ jobs:
           PR: ${{ steps.gather.outputs.pr }}
         run: |
           set -uo pipefail
-          git fetch --quiet origin "$HEAD_SHA" 2>/dev/null \
+          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null \
+            || git fetch --quiet origin "$HEAD_SHA" 2>/dev/null \
             || git fetch --quiet origin "refs/pull/${PR}/head" 2>/dev/null \
             || echo "::warning::could not fetch the PR head $HEAD_SHA — the review step reports it"
-          git config --local --name-only --get-regexp '^includeIf\.gitdir:' \
-            | while read -r key; do git config --local --unset-all "$key"; done || true
-          git config --local --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true
-          rm -f "$RUNNER_TEMP"/git-credentials-*.config
-          if git config --get-regexp '\.extraheader$' >/dev/null 2>&1 \
-             || compgen -G "$RUNNER_TEMP/git-credentials-*" >/dev/null; then
-            echo "::error::a persisted git credential survived the removal — refusing to start the jailed agents"
+          github_header='http.https://github.com/.extraheader'
+          git config --local --get-regexp '^include(if\..*)?\.path$' \
+            | while read -r key path; do
+                if git config --file "$path" --get-all "$github_header" >/dev/null 2>&1; then
+                  rm -f "$path"
+                  git config --local --unset-all "$key"
+                fi
+              done || true
+          git config --local --unset-all "$github_header" 2>/dev/null || true
+          if git config --get-all "$github_header" >/dev/null 2>&1; then
+            echo "::error::a GitHub credential is still readable through git config — refusing to start the jailed agents. It comes from:"
+            git config --show-origin --name-only --get-regexp '^http\.https://github\.com/\.extraheader$' || true
             exit 1
           fi
 
@@ -665,7 +675,6 @@ jobs:
           STAGED_JOB_LOGS: ${{ steps.gather.outputs.staged_job_logs }}
           FAILING_JOBS: ${{ steps.gather.outputs.failing_jobs }}
           HEAD_SHA: ${{ inputs.head_sha }}
-          PR: ${{ steps.gather.outputs.pr }}
           # Coerce an explicit empty string to the default — a workflow_call default applies only when
           # the key is OMITTED, but a consumer wiring `full_review_time_limit: ${{ vars.X }}` with X
           # unset passes "", which would unbind the USD cap or make dur_to_secs abort on an empty
@@ -939,7 +948,7 @@ jobs:
             exit 0
           }
           git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null \
-            || checkout_failed "could not fetch the PR head $HEAD_SHA"
+            || checkout_failed "the PR head $HEAD_SHA is not present locally (its fetch, before the triage, failed)"
           git -c advice.detachedHead=false checkout --quiet --force "$HEAD_SHA" \
             || checkout_failed "could not check out the PR head $HEAD_SHA"
 

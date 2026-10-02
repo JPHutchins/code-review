@@ -7,7 +7,6 @@ import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff, indexDiff, partitionFindings } from "./diff.js";
 import {
   render,
-  computeSeverityCounts,
   isConvergenceRound,
   isReviewVerdict,
   PER_FINDING_LINKS,
@@ -999,6 +998,39 @@ const minimizeComments = async (
   }
 };
 
+type PresentRenderKeys<K extends keyof RenderInput> = { readonly [P in K]-?: RenderInput[P] };
+type RenderRunKey =
+  | "prices"
+  | "pricesProvided"
+  | "template"
+  | "route"
+  | "reviewedSha"
+  | "effort"
+  | "runUrl"
+  | "jsonUrl"
+  | "postedAt";
+type RenderSurfaceKey =
+  | "findings"
+  | "envelope"
+  | "incomplete"
+  | "sameRootNotes"
+  | "roundCount"
+  | "convergenceRound"
+  | "strays"
+  | "findingsPointer";
+type RenderCallKey =
+  | "shedCount"
+  | "terminal"
+  | "unanchoredStrays"
+  | "unanchoredCount"
+  | "inlineDisposition"
+  | "reviewUrl";
+type RenderDerivedKey = "severityCounts" | "rounds";
+type SharedRenderKey = Exclude<
+  keyof RenderInput,
+  RenderSurfaceKey | RenderCallKey | RenderDerivedKey
+>;
+
 export const post = async (
   input: PostInput,
   ghApi: GhApi = runGhApi,
@@ -1194,6 +1226,21 @@ export const post = async (
   // Loaded before the notice paths: their convergence stamps read the route, exactly like the main
   // path (issue #224's mechanic pin must hold on EVERY write path).
   const envelope = loadEnvelope(input.envelopePath);
+  // The route the review job stamped, read the same way render does — `input.route` first, then the
+  // envelope — so the workflow's --route passthrough and standalone callers both work, and the
+  // sticky's route marker, the guard, and the rounds logic can never disagree.
+  const effectiveRoute = input.route ?? envelope?.route;
+  const runRenderInput: PresentRenderKeys<RenderRunKey> = {
+    prices: decodedPrices.right,
+    pricesProvided: input.pricesProvided,
+    template,
+    route: effectiveRoute,
+    reviewedSha: input.headSha,
+    effort: input.effort,
+    runUrl: input.runUrl,
+    jsonUrl: input.jsonUrl,
+    postedAt: input.postedAt,
+  };
 
   const reachable =
     existingSticky !== null ? discussionRows(commentRows, existingSticky.id, input.botLogin) : [];
@@ -1251,7 +1298,7 @@ export const post = async (
     // MECHANIC notice stamps the never-converged pin instead — CI failed, whatever the prior said
     // (issue #224: the pin holds on every write path, not just the main one).
     const noticeConvergence =
-      (input.route ?? envelope?.route) === "mechanic"
+      effectiveRoute === "mechanic"
         ? mechanicConvergence(
             priorConv,
             input.convergenceThreshold ?? DEFAULT_CONVERGENCE_THRESHOLD,
@@ -1275,22 +1322,14 @@ export const post = async (
     };
     return formatMarkdown(
       render({
+        ...runRenderInput,
         findings,
         envelope: null,
         incomplete: true,
-        prices: decodedPrices.right,
-        pricesProvided: input.pricesProvided,
-        template,
-        route: input.route,
-        reviewedSha: input.headSha,
-        effort: input.effort,
         sameRootNotes: {},
         roundCount: priorRoundCount,
         convergenceRound: false,
-        runUrl: input.runUrl,
-        jsonUrl: input.jsonUrl,
         findingsPointer: noticeFindingsPointer(findings),
-        postedAt: input.postedAt,
         orphanedDiscussion: discussion.orphanedDiscussion,
         orphanedTotal: discussion.orphanedTotal,
         orphanedTruncated: discussion.orphanedTruncated,
@@ -1502,11 +1541,6 @@ export const post = async (
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
   const clocDiff = input.clocDiffPath ? loadClocDiff(input.clocDiffPath) : undefined;
 
-  // The route the review job stamped, read the same way render does — `input.route` first, then the
-  // envelope — so the workflow's --route passthrough and standalone callers both work, and the
-  // sticky's route marker, the guard, and the rounds logic can never disagree.
-  const effectiveRoute = input.route ?? envelope?.route;
-
   // The shed operates on the VISIBLE (suppression-filtered) view — the one the sticky actually
   // renders; dropping a suppressed nit would be a pure no-op that inflates the note's count.
   const shedPriority = (f: Finding): number =>
@@ -1645,17 +1679,11 @@ export const post = async (
     return body.includes(note) ? body : `${body}\n\n${note}\n`;
   };
 
-  const sharedRenderInput = {
-    prices: decodedPrices.right,
-    pricesProvided: input.pricesProvided,
-    template,
-    route: effectiveRoute,
-    reviewedSha: input.headSha,
+  const sharedRenderInput: PresentRenderKeys<SharedRenderKey> = {
+    ...runRenderInput,
     repo: input.headRepo || input.repo,
-    effort: input.effort,
     testReport,
     clocDiff,
-    severityCounts: computeSeverityCounts(findings.findings),
     // The answered-state honesty rules apply on EVERY surface that renders the filtered
     // findings — the lost-envelope branch lists every VISIBLE finding (no inline review exists to
     // carry them) so the kept re-raises' annotations actually render, and names the drops
@@ -1674,13 +1702,10 @@ export const post = async (
     orphanedTruncated,
     orphanedUnresolvable: orphanResolveFailed,
     convergenceThreshold: input.convergenceThreshold,
-    runUrl: input.runUrl,
     unverifiedNoLogs: input.unverifiedNoLogs,
-    jsonUrl: input.jsonUrl,
-    postedAt: input.postedAt,
     pricedAt: input.pricedAt,
     summaryAvailable,
-  } satisfies Partial<RenderInput>;
+  };
 
   if (envelope === null) {
     // The envelope carried the incomplete flag; with it lost, derive incompleteness from the verdict

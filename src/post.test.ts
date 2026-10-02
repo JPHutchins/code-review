@@ -1789,6 +1789,28 @@ describe("post — §5.5 error semantics", () => {
     exitSpy.mockRestore();
   });
 
+  it("a notice names the envelope-carried route, the same route its convergence pin reads", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), "{ not valid json");
+    writeFileSync(
+      join(tmpDir, "envelope.json"),
+      JSON.stringify({ ...baseEnvelope, route: "mechanic" }),
+    );
+    const { api, calls } = mkMockGhApi(mkBaseMocks());
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    await expect(post(mkInput({ route: undefined }), api)).rejects.toThrow("exit");
+
+    const stickyCall = calls().find(
+      (c) => c.args[0]?.startsWith("repos/owner/repo/issues/42/comments") && c.stdin !== undefined,
+    );
+    const body = (JSON.parse(stickyCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("did not complete");
+    expect(body).toContain("**route:** mechanic");
+    exitSpy.mockRestore();
+  });
+
   it("posts a sticky-only notice when the findings file is absent; exit 0", async () => {
     const { api, calls } = mkMockGhApi(mkBaseMocks());
 

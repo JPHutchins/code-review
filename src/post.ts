@@ -7,7 +7,6 @@ import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff, indexDiff, partitionFindings } from "./diff.js";
 import {
   render,
-  computeSeverityCounts,
   isConvergenceRound,
   isReviewVerdict,
   PER_FINDING_LINKS,
@@ -999,6 +998,39 @@ const minimizeComments = async (
   }
 };
 
+type PresentRenderKeys<K extends keyof RenderInput> = { readonly [P in K]-?: RenderInput[P] };
+type RenderRunKey =
+  | "prices"
+  | "pricesProvided"
+  | "template"
+  | "route"
+  | "reviewedSha"
+  | "effort"
+  | "runUrl"
+  | "jsonUrl"
+  | "postedAt";
+type RenderSurfaceKey =
+  | "findings"
+  | "envelope"
+  | "incomplete"
+  | "sameRootNotes"
+  | "roundCount"
+  | "convergenceRound"
+  | "strays"
+  | "findingsPointer";
+type RenderCallKey =
+  | "shedCount"
+  | "terminal"
+  | "unanchoredStrays"
+  | "unanchoredCount"
+  | "inlineDisposition"
+  | "reviewUrl";
+type RenderDerivedKey = "severityCounts" | "rounds";
+type SharedRenderKey = Exclude<
+  keyof RenderInput,
+  RenderSurfaceKey | RenderCallKey | RenderDerivedKey
+>;
+
 export const post = async (
   input: PostInput,
   ghApi: GhApi = runGhApi,
@@ -1194,6 +1226,21 @@ export const post = async (
   // Loaded before the notice paths: their convergence stamps read the route, exactly like the main
   // path (issue #224's mechanic pin must hold on EVERY write path).
   const envelope = loadEnvelope(input.envelopePath);
+  // The route the review job stamped, read the same way render does — `input.route` first, then the
+  // envelope — so the workflow's --route passthrough and standalone callers both work, and the
+  // sticky's route marker, the guard, and the rounds logic can never disagree.
+  const effectiveRoute = input.route ?? envelope?.route;
+  const runRenderInput: PresentRenderKeys<RenderRunKey> = {
+    prices: decodedPrices.right,
+    pricesProvided: input.pricesProvided,
+    template,
+    route: effectiveRoute,
+    reviewedSha: input.headSha,
+    effort: input.effort,
+    runUrl: input.runUrl,
+    jsonUrl: input.jsonUrl,
+    postedAt: input.postedAt,
+  };
 
   const reachable =
     existingSticky !== null ? discussionRows(commentRows, existingSticky.id, input.botLogin) : [];
@@ -1251,7 +1298,7 @@ export const post = async (
     // MECHANIC notice stamps the never-converged pin instead — CI failed, whatever the prior said
     // (issue #224: the pin holds on every write path, not just the main one).
     const noticeConvergence =
-      (input.route ?? envelope?.route) === "mechanic"
+      effectiveRoute === "mechanic"
         ? mechanicConvergence(
             priorConv,
             input.convergenceThreshold ?? DEFAULT_CONVERGENCE_THRESHOLD,
@@ -1275,22 +1322,14 @@ export const post = async (
     };
     return formatMarkdown(
       render({
+        ...runRenderInput,
         findings,
         envelope: null,
         incomplete: true,
-        prices: decodedPrices.right,
-        pricesProvided: input.pricesProvided,
-        template,
-        route: input.route,
-        reviewedSha: input.headSha,
-        effort: input.effort,
         sameRootNotes: {},
         roundCount: priorRoundCount,
         convergenceRound: false,
-        runUrl: input.runUrl,
-        jsonUrl: input.jsonUrl,
         findingsPointer: noticeFindingsPointer(findings),
-        postedAt: input.postedAt,
         orphanedDiscussion: discussion.orphanedDiscussion,
         orphanedTotal: discussion.orphanedTotal,
         orphanedTruncated: discussion.orphanedTruncated,
@@ -1502,11 +1541,6 @@ export const post = async (
   const testReport = input.testReportPath ? loadTestReport(input.testReportPath) : undefined;
   const clocDiff = input.clocDiffPath ? loadClocDiff(input.clocDiffPath) : undefined;
 
-  // The route the review job stamped, read the same way render does — `input.route` first, then the
-  // envelope — so the workflow's --route passthrough and standalone callers both work, and the
-  // sticky's route marker, the guard, and the rounds logic can never disagree.
-  const effectiveRoute = input.route ?? envelope?.route;
-
   // The shed operates on the VISIBLE (suppression-filtered) view — the one the sticky actually
   // renders; dropping a suppressed nit would be a pure no-op that inflates the note's count.
   const shedPriority = (f: Finding): number =>
@@ -1645,6 +1679,34 @@ export const post = async (
     return body.includes(note) ? body : `${body}\n\n${note}\n`;
   };
 
+  const sharedRenderInput: PresentRenderKeys<SharedRenderKey> = {
+    ...runRenderInput,
+    repo: input.headRepo || input.repo,
+    testReport,
+    clocDiff,
+    // The answered-state honesty rules apply on EVERY surface that renders the filtered
+    // findings — the lost-envelope branch lists every VISIBLE finding (no inline review exists to
+    // carry them) so the kept re-raises' annotations actually render, and names the drops
+    // exactly like the main path (issues #151 review r1 + r2). The nit visibility floor applies
+    // here too (issue #164): below-floor nits are hidden from the human list and shown only in the
+    // collapsed aside — the floor is a human-visibility policy, not an inline-comment policy, so it
+    // must hold on the surface that lists findings without an inline review.
+    suppressedNits,
+    nitVisibilityFloor: input.nitVisibilityFloor,
+    answeredNotes: reRaisedNotes,
+    answeredReRaiseNote: answeredDropNote,
+    discussionByFinding,
+    orphanedDiscussion,
+    orphanedTotal,
+    discussionTruncated,
+    orphanedTruncated,
+    orphanedUnresolvable: orphanResolveFailed,
+    convergenceThreshold: input.convergenceThreshold,
+    unverifiedNoLogs: input.unverifiedNoLogs,
+    pricedAt: input.pricedAt,
+    summaryAvailable,
+  };
+
   if (envelope === null) {
     // The envelope carried the incomplete flag; with it lost, derive incompleteness from the verdict
     // (render does the same) so an error-verdict findings doc here still reads as a notice and — via
@@ -1679,44 +1741,14 @@ export const post = async (
       RenderInput,
       "inlineDisposition" | "reviewUrl" | "strays" | "shedCount" | "terminal"
     > = {
+      ...sharedRenderInput,
       findings: stampedFindings,
       envelope: null,
       incomplete: envelopelessIncomplete,
-      prices: decodedPrices.right,
-      pricesProvided: input.pricesProvided,
-      template,
-      route: effectiveRoute,
-      reviewedSha: input.headSha,
-      repo: input.headRepo || input.repo,
-      effort: input.effort,
       sameRootNotes: {},
-      // The answered-state honesty rules apply on EVERY surface that renders the filtered
-      // findings — the lost-envelope branch lists every VISIBLE finding (no inline review exists to
-      // carry them) so the kept re-raises' annotations actually render, and names the drops
-      // exactly like the main path (issues #151 review r1 + r2). The nit visibility floor applies
-      // here too (issue #164): below-floor nits are hidden from the human list and shown only in the
-      // collapsed aside — the floor is a human-visibility policy, not an inline-comment policy, so it
-      // must hold on the surface that lists findings without an inline review.
-      suppressedNits,
-      nitVisibilityFloor: input.nitVisibilityFloor,
-      answeredNotes: reRaisedNotes,
-      answeredReRaiseNote: answeredDropNote,
       roundCount: priorRoundCount,
       convergenceRound: false,
-      testReport,
-      clocDiff,
-      runUrl: input.runUrl,
-      unverifiedNoLogs: input.unverifiedNoLogs,
-      jsonUrl: input.jsonUrl,
       findingsPointer: findingsBlob(stampedFindings),
-      postedAt: input.postedAt,
-      summaryAvailable,
-      discussionByFinding,
-      orphanedDiscussion,
-      orphanedTotal,
-      discussionTruncated,
-      orphanedTruncated,
-      orphanedUnresolvable: orphanResolveFailed,
     };
     const lostRender = (opts: {
       readonly strays: readonly Finding[];
@@ -1862,8 +1894,6 @@ export const post = async (
       ? { kind: "none-in-diff" }
       : undefined;
 
-  const currentCounts = computeSeverityCounts(findings.findings);
-
   // This round's mechanism-frequency map (findings + the codes systemic problems tie together) and the
   // true completed-round number, which numbers itself after the carried count. buildConvergence appends
   // this round's score + codes + head SHA to the carried trajectory (prior rounds verbatim) when the run
@@ -1894,41 +1924,15 @@ export const post = async (
   const findingsMarker = findingsBlob(stampedFindings);
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
+    ...sharedRenderInput,
     findings: stampedFindings,
     envelope,
     incomplete: thisIncomplete,
-    prices: decodedPrices.right,
-    pricesProvided: input.pricesProvided,
-    template,
-    route: effectiveRoute,
-    reviewedSha: input.headSha,
-    repo: input.headRepo || input.repo,
-    effort: input.effort,
-    testReport,
-    clocDiff,
-    severityCounts: currentCounts,
     sameRootNotes,
-    answeredNotes: reRaisedNotes,
-    answeredReRaiseNote: answeredDropNote,
-    discussionByFinding,
-    orphanedDiscussion,
-    orphanedTotal,
-    discussionTruncated,
-    orphanedTruncated,
-    orphanedUnresolvable: orphanResolveFailed,
     roundCount: currentRoundCount,
-    convergenceThreshold: input.convergenceThreshold,
-    nitVisibilityFloor: input.nitVisibilityFloor,
     convergenceRound: isRound,
     strays,
-    suppressedNits,
-    runUrl: input.runUrl,
-    unverifiedNoLogs: input.unverifiedNoLogs,
-    jsonUrl: input.jsonUrl,
     findingsPointer: findingsMarker,
-    postedAt: input.postedAt,
-    pricedAt: input.pricedAt,
-    summaryAvailable,
   };
   const longFilesNote =
     longFiles.length > 0

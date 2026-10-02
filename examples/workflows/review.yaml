@@ -281,24 +281,27 @@ jobs:
           # Extra inputs the review should see (a lockfile manifest, a CLAUDE.md) go here — write
           # them into $GATHER_DIR; files in the workspace can be clobbered or planted at checkout.
 
-      # The checkout's persisted credential is deleted before the first jailed agent starts (the triage
-      # below, then the review), so neither can read the job's token. The PR head is fetched after the
-      # triage passes, with the token handed to that one git command.
+      # actions/checkout persists the job's token as an http extraheader; it is deleted before the first
+      # jailed agent starts (the triage below, then the review), so neither can read it. The PR head is
+      # fetched after the triage passes, with the token handed to that one git command.
       - name: Remove the persisted git credential before the jailed agents
         if: ${{ steps.gather.outputs.skip != 'true' }}
         env:
           SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
-          [[ "$SERVER_URL" =~ ^https?://[^/[:space:]]+$ ]] || {
-            echo "::error::unexpected server URL '$SERVER_URL' — the credential state cannot be verified; refusing to start the jailed agents"
+          [[ "$SERVER_URL" =~ ^https?://[^/[:space:]]+$ && "$REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+            echo "::error::unexpected server URL or repository ('$SERVER_URL', '$REPOSITORY') — the credential state cannot be verified; refusing to start the jailed agents"
             exit 1
           }
-          # Git's own URL matching decides what counts as a GitHub credential, so every spelling git
-          # would send to this server is caught, and credentials for other hosts never are.
-          remote_url=$(git remote get-url origin 2>/dev/null || printf '%s/' "$SERVER_URL")
+          # Git's own URL matching, against the immutable URL of this repository (never the mutable
+          # origin), decides which extraheader git would send there: every spelling of checkout's
+          # header is caught, and a header for another host never is. An empty value sends nothing.
+          repo_url="$SERVER_URL/$REPOSITORY"
           carries_github_credential() {
-            git config --file "$1" --get-urlmatch http.extraheader "$remote_url" >/dev/null 2>&1
+            local value
+            value=$(git config --file "$1" --get-urlmatch http.extraheader "$repo_url" 2>/dev/null) && [[ -n "$value" ]]
           }
           git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || {
             echo "::error::git cannot read this checkout, so the credential state cannot be verified — refusing to start the jailed agents"
@@ -331,10 +334,13 @@ jobs:
           done
           git config --local --unset-all "http.${SERVER_URL}/.extraheader" 2>/dev/null || true
           rc=0
-          git config --get-urlmatch http.extraheader "$remote_url" >/dev/null 2>&1 || rc=$?
+          value=$(git config --get-urlmatch http.extraheader "$repo_url" 2>/dev/null) || rc=$?
+          if [[ "$rc" -eq 0 && -z "$value" ]]; then
+            rc=1
+          fi
           case "$rc" in
             0)
-              echo "::error::a GitHub credential is still readable through git config — refusing to start the jailed agents. Extra headers configured:"
+              echo "::error::an http.extraheader for this repository is still configured — refusing to start the jailed agents. Extra headers configured:"
               git config --show-origin --name-only --get-regexp '^http\.(.*\.)?extraheader$' || true
               exit 1
               ;;
@@ -445,7 +451,7 @@ jobs:
           FETCH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          basic=$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 -w0)
+          basic=$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 | tr -d '\n')
           echo "::add-mask::$basic"
           header="http.${SERVER_URL}/.extraheader=AUTHORIZATION: basic $basic"
           git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null \

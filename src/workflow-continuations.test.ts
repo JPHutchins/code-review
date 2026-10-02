@@ -403,6 +403,22 @@ describe("the jailed agents never hold the job token", () => {
     },
   );
 
+  it.each([".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"])(
+    "%s runs gather, then the credential removal, then the triage, then the fetch, then the review",
+    (workflowPath) => {
+      const names = runScripts(workflowPath).map((s) => s.step.split(" → ").at(-1));
+      const order = [
+        "Gather review inputs",
+        REMOVAL,
+        "Phase 1 — security triage",
+        FETCH,
+        "Phase 2 — agentic review",
+      ].map((name) => names.indexOf(name));
+      expect(order.every((index) => index >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+    },
+  );
+
   const roots: string[] = [];
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -436,7 +452,13 @@ describe("the jailed agents never hold the job token", () => {
     const run = (stepName: string, extra: NodeJS.ProcessEnv = {}): ReturnType<typeof spawnSync> =>
       spawnSync("bash", ["-e", "-c", scriptOf(stepName)], {
         cwd: repo,
-        env: { ...env, RUNNER_TEMP: temp, SERVER_URL: "https://github.com", ...extra },
+        env: {
+          ...env,
+          RUNNER_TEMP: temp,
+          SERVER_URL: "https://github.com",
+          REPOSITORY: "owner/repo",
+          ...extra,
+        },
         encoding: "utf-8",
       });
     return { root, repo, temp, globalConfig, env, git, run };
@@ -527,6 +549,35 @@ describe("the jailed agents never hold the job token", () => {
       expect(existsSync(unrelated)).toBe(true);
     });
 
+    it("removes checkout's legacy inline header, written straight into .git/config", () => {
+      const { git, run } = checkout();
+      git("config", "--local", "http.https://github.com/.extraheader", SECRET);
+      expect(run(REMOVAL).status).toBe(0);
+      expect(githubHeaderResolves(git)).toBe(false);
+    });
+
+    it("reads an empty header as clean — git sends nothing for it", () => {
+      const { git, run } = checkout();
+      git("config", "--local", "http.https://github.com/.extraheader", "");
+      expect(run(REMOVAL).status).toBe(0);
+    });
+
+    it.each([
+      ["an scp-style origin", "git@github.com:owner/repo"],
+      ["an origin on another host", "https://mirror.example.com/owner/repo"],
+    ])(
+      "keys on the repository's own URL, never the origin — %s neither hard-fails nor hides the credential",
+      (_label, origin) => {
+        const { repo, temp, git, run } = checkout();
+        git("remote", "set-url", "origin", origin);
+        expect(run(REMOVAL).status).toBe(0);
+        const file = credentialFile(join(temp, "git-credentials-0123.config"));
+        git("config", "--local", `includeIf.gitdir:${repo}/.git.path`, file);
+        expect(run(REMOVAL).status).toBe(0);
+        expect(existsSync(file)).toBe(false);
+      },
+    );
+
     it.each([
       ["no trailing slash", "http.https://github.com.extraheader"],
       ["unscoped", "http.extraheader"],
@@ -538,7 +589,9 @@ describe("the jailed agents never hold the job token", () => {
         git("config", "--local", key, SECRET);
         const result = run(REMOVAL);
         expect(result.status).toBe(1);
-        expect(result.stdout).toContain("::error::a GitHub credential is still readable");
+        expect(result.stdout).toContain(
+          "::error::an http.extraheader for this repository is still configured",
+        );
         expect(`${String(result.stdout)}${String(result.stderr)}`).not.toContain("c2VjcmV0");
       },
     );
@@ -560,6 +613,7 @@ describe("the jailed agents never hold the job token", () => {
         {},
       ],
       ["the server URL is malformed", () => undefined, { SERVER_URL: "https://github.com/x y" }],
+      ["the repository is malformed", () => undefined, { REPOSITORY: "owner/repo/../x" }],
     ])("fails closed when %s, never reading it as 'no credential'", (_label, breakIt, extra) => {
       const { repo, run } = checkout();
       breakIt(repo);

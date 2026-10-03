@@ -47,6 +47,10 @@
 <% } -%>
 
 <%~ it.findings.summary %>
+<% if (!it.incomplete && (it.findings.findings.length > 0 || it.systemic.length > 0)) { -%>
+
+<sub>To answer a finding, put `Review-Response: <id> fixed|refuted|dismissed — <reason>` in a commit message or a PR comment; a systemic problem's id answers its whole class.</sub>
+<% } -%>
 
 <% if (!it.incomplete && it.systemic.length > 0) { -%>
 

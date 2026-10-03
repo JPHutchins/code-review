@@ -203,6 +203,30 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
     expect(blank).not.toContain("Rebuttal:");
   });
 
+  it("teaches the response line under a review with findings, never on a clean review or a notice", () => {
+    const line =
+      "To answer a finding, put `Review-Response: <id> fixed|refuted|dismissed — <reason>`";
+    const finding = mkFinding({});
+    const withFindings = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+    });
+    expect(withFindings).toContain(line);
+    const clean = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+    expect(clean).not.toContain(line);
+    const notice = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      incomplete: true,
+    });
+    expect(notice).not.toContain(line);
+  });
+
   it("says nothing when the logs were there", () => {
     expect(renderWith({ unverifiedNoLogs: false })).not.toContain("no failing-job logs");
   });

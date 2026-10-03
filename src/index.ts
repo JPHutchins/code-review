@@ -43,9 +43,9 @@ import {
   TestSummaryCodec,
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
-  DEFAULT_SCHEMA_VERSION,
   anchoredSchemaVersionPattern,
   resolveFindingId,
+  withoutRebuttals,
 } from "./schema.js";
 import type { Triage, Finding, Findings, PriceMap } from "./schema.js";
 import {
@@ -83,6 +83,7 @@ import {
   declaredVersion,
   resolveTolerantFindings,
   defaultVersion,
+  livePinFor,
 } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
 import { validatePatch } from "./patch.js";
@@ -905,17 +906,28 @@ const derivedSchemaVersion = (kind: SchemaKind, raw: unknown): string | undefine
  *  draft declaration stripped. `claude -p --json-schema` silently disables enforcement when a schema
  *  carries `$schema`, and the field DESCRIPTIONS are the authoritative spec the agent must follow, so
  *  this is the form both `print-schema` and `validate --explain` emit. When `pinVersion` is set (the
- *  caller resolved the LIVE findings schema — no version override, no legacy-stamped explain), the
- *  schema_version's pattern is narrowed to the in-force minor so `--json-schema` enforces exactly
- *  the versions the registry dispatches to the live entry — the FROZEN legacy copies keep their
+ *  version the caller RESOLVED — the default or an override — and only for the live findings file),
+ *  the schema_version's pattern is narrowed to that minor so `--json-schema` enforces exactly the
+ *  versions the registry dispatches to its entry — the FROZEN legacy copies keep their
  *  tolerant shape, and the schema FILES stay version-tolerant: the registry dispatches on the
  *  declared version, only the live enforcement copy pins. */
-export const printableSchema = (schemaPath: string, pinVersion: boolean): string => {
+// The version a printed schema pins: the resolved entry's, and only for the live file — a frozen
+// legacy copy prints as frozen.
+const liveSchemaPin = (
+  kind: SchemaKind,
+  schemaPath: string,
+  requestedVersion: string | undefined,
+): string | undefined =>
+  kind === "findings" && schemaPath === schemaPathFor(kind)
+    ? livePinFor(kind, requestedVersion)
+    : undefined;
+
+export const printableSchema = (schemaPath: string, pinVersion: string | undefined): string => {
   const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as Record<string, unknown>;
   const enforcementSchema = Object.fromEntries(
     Object.entries(schema).filter(([key]) => key !== "$schema"),
   );
-  if (!pinVersion) return JSON.stringify(enforcementSchema, null, 2);
+  if (pinVersion === undefined) return JSON.stringify(enforcementSchema, null, 2);
   const properties = enforcementSchema["properties"];
   const schemaVersion =
     typeof properties === "object" && properties !== null
@@ -924,7 +936,7 @@ export const printableSchema = (schemaPath: string, pinVersion: boolean): string
   if (typeof schemaVersion === "object" && schemaVersion !== null) {
     (properties as Record<string, unknown>)["schema_version"] = {
       ...(schemaVersion as Record<string, unknown>),
-      pattern: anchoredSchemaVersionPattern(DEFAULT_SCHEMA_VERSION),
+      pattern: anchoredSchemaVersionPattern(pinVersion),
     };
   }
   return JSON.stringify(enforcementSchema, null, 2);
@@ -965,9 +977,10 @@ const validateCmd = defineCommand({
   run: async ({ args }) => {
     const kind = requireSchemaKind(args.kind || "findings");
     const documentRaw = readJSON(args.document);
+    const requestedVersion = args["schema-version"] || derivedSchemaVersion(kind, documentRaw);
     const schemaPath = args.schema
       ? resolve(args.schema)
-      : requireSchemaPath(kind, args["schema-version"] || derivedSchemaVersion(kind, documentRaw));
+      : requireSchemaPath(kind, requestedVersion);
     const { valid, errors } = validateAgainstSchema(documentRaw, schemaPath);
     if (valid) {
       process.stdout.write("✅ valid\n");
@@ -976,7 +989,7 @@ const validateCmd = defineCommand({
       for (const e of errors) process.stderr.write(`  - ${e}\n`);
       if (args.explain) {
         process.stderr.write(
-          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, kind === "findings" && schemaPath === schemaPathFor(kind))}\n`,
+          `\nThe ${kind} document must conform to this schema (the field descriptions are the authoritative spec — match the property names exactly):\n${printableSchema(schemaPath, liveSchemaPin(kind, schemaPath, requestedVersion))}\n`,
         );
       }
       process.exit(1);
@@ -1290,11 +1303,13 @@ const seedDraftCmd = defineCommand({
                       ),
                     )
                   : priorFindings;
+              // Rebuttals answer the PRIOR round only, so the carried doc drops them before the
+              // gate: a pinned schema predating the field never rejects the whole prior over one.
               const accepts = (doc: unknown): Findings | null => {
                 const resolved = resolvedPriorValue(doc);
-                return resolved !== null && validateAgainstSchema(resolved, schemaPath).valid
-                  ? resolved
-                  : null;
+                if (resolved === null) return null;
+                const carried = withoutRebuttals(resolved);
+                return validateAgainstSchema(carried, schemaPath).valid ? carried : null;
               };
               const seedDoc =
                 accepts(priorFindings) ??
@@ -1650,7 +1665,7 @@ const printSchemaCmd = defineCommand({
     const schemaKind = requireSchemaKind(args.name);
     const schemaPath = requireSchemaPath(schemaKind, args["schema-version"]);
     process.stdout.write(
-      `${printableSchema(schemaPath, schemaKind === "findings" && schemaPath === schemaPathFor(schemaKind))}\n`,
+      `${printableSchema(schemaPath, liveSchemaPin(schemaKind, schemaPath, args["schema-version"]))}\n`,
     );
   },
 });

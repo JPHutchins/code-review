@@ -970,7 +970,7 @@ describe("cli — print-schema", () => {
     expect(stderr).toContain("bogus");
   });
 
-  it("--schema-version 0.4 prints the FROZEN legacy schema (the tolerant-in 0.9 shape), the default prints the live 0.10 file", async () => {
+  it("--schema-version 0.4 prints the FROZEN legacy schema (the tolerant-in 0.9 shape), the default prints the live file", async () => {
     const withVersion = await runCli(["print-schema", "findings", "--schema-version", "0.4"]);
     const withoutVersion = await runCli(["print-schema", "findings"]);
     expect(withVersion.exitCode).toBeNull();
@@ -997,8 +997,25 @@ describe("cli — print-schema", () => {
     // The exact literal for the CURRENT default — pinned, not just mirrored, so a suffix change in
     // the helper is a visible diff at every bump.
     expect(printed.properties?.schema_version?.pattern).toBe(
-      "^0\\.10\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+      "^0\\.11\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
     );
+  });
+
+  it("print-schema --schema-version 0.10 pins the 0.10 stamps it resolved, though 0.10 shares the live file", async () => {
+    const { stdout, exitCode } = await runCli([
+      "print-schema",
+      "findings",
+      "--schema-version",
+      "0.10",
+    ]);
+    expect(exitCode).toBeNull();
+    const printed = JSON.parse(stdout) as {
+      properties?: { schema_version?: { pattern?: string } };
+    };
+    const pattern = printed.properties?.schema_version?.pattern ?? "";
+    expect(pattern).toBe(anchoredSchemaVersionPattern("0.10.0"));
+    expect(new RegExp(pattern).test("0.10.4")).toBe(true);
+    expect(new RegExp(pattern).test(DEFAULT_SCHEMA_VERSION)).toBe(false);
   });
 
   it("default-version prints the in-force version the installed registry resolves by default", async () => {
@@ -1025,10 +1042,10 @@ describe("cli — print-schema", () => {
           properties: { schema_version: { type: "string", pattern: "^(0|[1-9]\\d*)\\." } },
         }),
       );
-      const pinned = JSON.parse(printableSchema(tagged, true)) as {
+      const pinned = JSON.parse(printableSchema(tagged, DEFAULT_SCHEMA_VERSION)) as {
         properties?: { schema_version?: { pattern?: string } };
       };
-      const unpinned = JSON.parse(printableSchema(tagged, false)) as {
+      const unpinned = JSON.parse(printableSchema(tagged, undefined)) as {
         properties?: { schema_version?: { pattern?: string } };
       };
       expect(pinned.properties?.schema_version?.pattern).toBe(
@@ -1170,6 +1187,46 @@ describe("cli — validate --explain (issue #45: schema on failure, fix the shap
     expect(stderr).toContain('"confidence"');
   });
 
+  it("--explain on the bundled live file pins the version it resolved — a 0.10 stamp gets the 0.10 pin", async () => {
+    const badPath = join(tmpDir, "stamped-0.10.json");
+    writeFileSync(
+      badPath,
+      JSON.stringify({ schema_version: "0.10.0", verdict: "comment", findings: [] }),
+    );
+    const live = resolve(repoRoot, "schema", "findings.schema.json");
+    const { stderr, exitCode } = await runCli(["validate", badPath, "--schema", live, "--explain"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain(JSON.stringify(anchoredSchemaVersionPattern("0.10.0")));
+  });
+
+  it.each(["0.12.0", "0.9.0"])(
+    "--explain on the bundled live file prints a %s stamp's schema unpinned — never a throw or a contradictory pin",
+    async (stamp) => {
+      const badPath = join(tmpDir, `stamped-${stamp}.json`);
+      writeFileSync(
+        badPath,
+        JSON.stringify({ schema_version: stamp, verdict: "comment", findings: [] }),
+      );
+      const live = resolve(repoRoot, "schema", "findings.schema.json");
+      const { stderr, exitCode } = await runCli([
+        "validate",
+        badPath,
+        "--schema",
+        live,
+        "--explain",
+      ]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("authoritative spec");
+      expect(stderr).not.toContain("Unsupported");
+      const general = (
+        JSON.parse(readFileSync(live, "utf-8")) as {
+          properties: { schema_version: { pattern: string } };
+        }
+      ).properties.schema_version.pattern;
+      expect(stderr).toContain(JSON.stringify(general));
+    },
+  );
+
   it("without --explain, dumps only the errors (no schema)", async () => {
     const badPath = join(tmpDir, "skill-shaped2.json");
     writeFileSync(badPath, JSON.stringify(skillShapedDraft));
@@ -1233,6 +1290,71 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     // No seed marker sidecar remains — the sentinel's CONTENT is the signal, not an mtime.
     expect(existsSync(`${out}.seed`)).toBe(false);
   };
+
+  it("seeds a rebuttal-carrying prior through a pinned schema that predates the field", async () => {
+    const live = JSON.parse(
+      readFileSync(resolve(repoRoot, "schema", "findings.schema.json"), "utf-8"),
+    ) as { properties: Record<string, { items: { properties: Record<string, unknown> } }> };
+    for (const item of ["findings", "systemic_problems"]) {
+      delete live.properties[item]!.items.properties["rebuttal"];
+    }
+    const pinned = join(tmpDir, "pinned-0.10.schema.json");
+    writeFileSync(pinned, JSON.stringify(live));
+    const withRebuttals = {
+      ...priorFindings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+      findings: priorFindings.findings.map((f) => ({ ...f, rebuttal: "answered last round" })),
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(withRebuttals)}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      prior,
+      "--schema",
+      pinned,
+      "--out",
+      out,
+    ]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as {
+      findings: Record<string, unknown>[];
+    };
+    expect(context.findings).toHaveLength(priorFindings.findings.length);
+    expect(context.findings[0]).not.toHaveProperty("rebuttal");
+  });
+
+  it("strips the prior round's rebuttals from the context it carries — a re-raise must supply its own", async () => {
+    const withRebuttals = {
+      ...priorFindings,
+      schema_version: DEFAULT_SCHEMA_VERSION,
+      findings: priorFindings.findings.map((f) => ({ ...f, rebuttal: "answered last round" })),
+      systemic_problems: [
+        {
+          title: "A class",
+          description: "d",
+          severity: "minor",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 1,
+          id: "a-class",
+          rebuttal: "answered last round",
+        },
+      ],
+    };
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(withRebuttals)}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    const context = readFileSync(priorContextPath(out), "utf-8");
+    expect(JSON.parse(context)).toHaveProperty("systemic_problems.0.id", "a-class");
+    expect(context).not.toContain("rebuttal");
+  });
 
   it("delivers a prior review's embedded findings OUT-OF-BAND and reports 'prior-new' when no head SHA is given to compare", async () => {
     const prior = writePrior(
@@ -1302,12 +1424,12 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.findings[1]!.id).toBe(
       synthesizedFindingId("src/b.ts", "Codeless prior finding"),
     );
-    expect(context.schema_version).toBe("0.10.0");
+    expect(context.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
   });
 
   it("a prior stamped with an UNSUPPORTED version is never upcast-laundered — the allowlist still governs the seed", async () => {
     const futurePrior = {
-      schema_version: "0.11.0",
+      schema_version: "0.12.0",
       summary: "Prior review summary.",
       verdict: "changes",
       findings: [
@@ -1559,8 +1681,8 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings;
-    // stripSurfaceFields restores the CURRENT draft version (0.10.0 after the id migration), not the surfaced 0.8.0.
-    expect(context.schema_version).toBe("0.10.0");
+    // stripSurfaceFields restores the CURRENT draft version, not the surfaced 0.8.0.
+    expect(context.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
     expect(context).not.toHaveProperty("convergence");
     expect(context).not.toHaveProperty("round");
     expect(context.findings).toHaveLength(1);
@@ -1588,7 +1710,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     const context = JSON.parse(
       readFileSync(priorContextPath(out), "utf-8"),
     ) as typeof priorFindings & { scope_metastasis?: unknown };
-    expect(context.schema_version).toBe("0.10.0");
+    expect(context.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
     expect(context.scope_metastasis).toEqual(entry);
   });
 
@@ -2096,7 +2218,7 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ) as typeof priorFindings & {
       scope_metastasis?: unknown;
     };
-    expect(context.schema_version).toBe("0.10.0");
+    expect(context.schema_version).toBe(DEFAULT_SCHEMA_VERSION);
     expect(context.scope_metastasis).toEqual({
       decision_prompt: expect.any(String) as string,
       recurring: [{ id: "recurring-a", consecutive_rounds: 3, start_round: 1 }],

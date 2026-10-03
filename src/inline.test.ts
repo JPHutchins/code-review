@@ -300,6 +300,14 @@ index abc..def 100644
     expect(bodyOf({})).not.toContain("Recommended fix:");
   });
 
+  it("renders the reviewer's rebuttal only when the finding carries one", () => {
+    expect(bodyOf({ rebuttal: "The reply measured 3.12; the defect is 3.14-only." })).toContain(
+      "**Rebuttal:** The reply measured 3.12; the defect is 3.14-only.",
+    );
+    expect(bodyOf({})).not.toContain("Rebuttal:");
+    expect(bodyOf({ rebuttal: " \n " })).not.toContain("Rebuttal:");
+  });
+
   it("projects a lowerable patch into a ```suggestion block with the added text", () => {
     const body = bodyOf({ patch: replacePatch("const x = 1;") });
     expect(body).toContain("```suggestion");

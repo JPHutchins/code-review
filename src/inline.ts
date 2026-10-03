@@ -10,7 +10,7 @@ import {
 } from "./surface.js";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import { answeredNoteKey } from "./answered.js";
-import { resolveFindingId } from "./schema.js";
+import { resolveFindingId, hasRebuttal } from "./schema.js";
 import type { Finding, Findings } from "./schema.js";
 import type { InlineComment, InlineResult } from "./types.js";
 
@@ -36,6 +36,7 @@ const renderCommentBody = (
     patchProjection: projectPatch(f.patch, "diff-anchored"),
     severityEmoji,
     formatConfidence,
+    hasRebuttal,
     modelsText,
     jsonUrl: jsonUrl ?? null,
     findingsPointer: pointer,
@@ -95,6 +96,7 @@ export const buildInlineComments = (
           ...(f.recommendation != null
             ? { recommendation: clipText(f.recommendation, BODY_CLIP_CHARS) }
             : {}),
+          ...(hasRebuttal(f) ? { rebuttal: clipText(f.rebuttal ?? "", BODY_CLIP_CHARS) } : {}),
           reasoning: clipText(f.reasoning, BODY_CLIP_CHARS),
           ...(f.patch != null ? { patch: clipText(f.patch, BODY_CLIP_CHARS) } : {}),
         }

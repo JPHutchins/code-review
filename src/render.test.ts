@@ -168,6 +168,41 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
     expect(out).toContain('"No findings" is not evidence of none');
   });
 
+  it("renders a rebuttal on a finding and a systemic problem, and nothing for a blank one", () => {
+    const systemic = {
+      title: "A class",
+      description: "d",
+      severity: "minor" as const,
+      reasoning: "r",
+      confidence: 0.5,
+      likelihood: 1,
+      id: "a-class",
+    };
+    const rebutted = mkFinding({ rebuttal: "The reply measured 3.12." });
+    const withRebuttals = render({
+      findings: mkFindings([rebutted], {
+        systemic_problems: [{ ...systemic, rebuttal: "The class still holds." }],
+      }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [rebutted],
+    });
+    expect(withRebuttals).toContain("**Rebuttal:** The reply measured 3.12.");
+    expect(withRebuttals).toContain("**Rebuttal:** The class still holds.");
+    const blankRebuttal = mkFinding({ rebuttal: " \n " });
+    const blank = render({
+      findings: mkFindings([blankRebuttal], {
+        systemic_problems: [{ ...systemic, rebuttal: "" }],
+      }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [blankRebuttal],
+    });
+    expect(blank).not.toContain("Rebuttal:");
+  });
+
   it("says nothing when the logs were there", () => {
     expect(renderWith({ unverifiedNoLogs: false })).not.toContain("no failing-job logs");
   });

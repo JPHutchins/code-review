@@ -57,8 +57,10 @@ const identity = <A>(decoded: A): A => decoded;
 // made `id` REQUIRED (code → id), so every pre-0.10 minor now decodes through the one tolerant legacy
 // codec and upcasts to the 0.10 shape (code → id, or the synthesized content-derived id when a
 // finding carried none) — a pre-0.10 doc without an id still resolves, and the dropped 0.2/0.3 minors
-// still can't (they lack the required reasoning/confidence). Keeping the older minors live matches
-// their declared version to a supported entry rather than reporting an unknown version.
+// still can't (they lack the required reasoning/confidence). 0.11 only adds the optional `rebuttal`,
+// so a 0.10 document is a valid 0.11 document and both minors resolve through the live file and
+// codec, the way 0.4–0.9 share the frozen legacy file. Keeping the older minors live matches their
+// declared version to a supported entry rather than reporting an unknown version.
 const legacyFindingsCodec = FindingsCodecV09 as unknown as Decoder<unknown, Findings> &
   Encoder<Findings, unknown>;
 const legacyFindingsNormalize = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =>
@@ -68,10 +70,12 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   {
     minor: "0.4",
     defaultVersion: "0.4.0",
-    // The frozen tolerant-in legacy schema, NOT the live 0.10 file: every ajv-gated channel
+    // The frozen tolerant-in legacy schema, NOT the live file: every ajv-gated channel
     // (validate --schema-version, the extraction ladder) dispatches the RAW doc's declared minor
     // through schemaPathFor, so the ajv gate must accept exactly what the tolerant legacy codec
     // accepts — the live file (id required) would reject the legacy docs the upcast promises to read.
+    // One deliberate exception: the codec drops a draft-only `rebuttal` that the frozen file rejects.
+    // A pre-0.10 document never carried one, so only a hybrid doc the rescue exists for meets it.
     schemaFile: "v0.9/findings.schema.json",
     codec: legacyFindingsCodec,
     normalize: legacyFindingsNormalize,
@@ -103,6 +107,14 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
   },
   {
     minor: "0.10",
+    defaultVersion: "0.10.0",
+    schemaFile: "findings.schema.json",
+    codec: FindingsCodec,
+    normalize: identity,
+    latest: false,
+  },
+  {
+    minor: "0.11",
     defaultVersion: DEFAULT_SCHEMA_VERSION,
     schemaFile: "findings.schema.json",
     codec: FindingsCodec,
@@ -179,27 +191,45 @@ export const declaredVersion = (raw: unknown): string | undefined =>
 export const supportedVersions = (kind: SchemaKind): readonly string[] =>
   tableFor(kind).map((entry) => entry.minor);
 
-export const defaultVersion = (kind: SchemaKind): string => {
-  const latest = tableFor(kind).find((entry) => entry.latest);
-  if (!latest) throw new Error(`Registry invariant violated — no latest entry for "${kind}"`);
-  return latest.defaultVersion;
-};
-
 const bundledSchemaPath = (relativePath: string): string =>
   resolvePath(import.meta.dirname, "..", "schema", relativePath);
 
-export const schemaPathFor = (kind: SchemaKind, version?: string): string => {
+const entryFor = <K extends SchemaKind>(kind: K, version?: string): Table<K>[number] => {
   const table = tableFor(kind);
   const entry =
     version === undefined
       ? table.find((v) => v.latest)
       : table.find((v) => v.minor === majorMinor(version));
+  if (!entry && version === undefined) {
+    throw new Error(`Registry invariant violated — no latest entry for "${kind}"`);
+  }
   if (!entry) {
     throw new Error(
       `Unsupported ${kind} schema version "${version ?? ""}" — supported: ${supportedVersions(kind).join(", ")}`,
     );
   }
-  return bundledSchemaPath(entry.schemaFile);
+  return entry;
+};
+
+export const schemaPathFor = (kind: SchemaKind, version?: string): string =>
+  bundledSchemaPath(entryFor(kind, version).schemaFile);
+
+// The version a resolution enforces: the requested minor's entry, or the latest.
+export const versionFor = (kind: SchemaKind, version?: string): string =>
+  entryFor(kind, version).defaultVersion;
+
+export const defaultVersion = (kind: SchemaKind): string => versionFor(kind);
+
+// The version a printed copy of the LIVE file pins for a requested version: the requested entry's,
+// when it is supported and shares the live file; otherwise none, so an unsupported request or a
+// minor served by a frozen legacy file prints unpinned instead of failing or contradicting itself.
+export const livePinFor = (kind: SchemaKind, version?: string): string | undefined => {
+  const table = tableFor(kind);
+  const latest = table.find((v) => v.latest);
+  const entry = version === undefined ? latest : table.find((v) => v.minor === majorMinor(version));
+  return entry !== undefined && entry.schemaFile === latest?.schemaFile
+    ? entry.defaultVersion
+    : undefined;
 };
 
 const resolveFindings = (raw: unknown): Resolution<"findings"> => {
@@ -246,8 +276,9 @@ export const resolve = <K extends SchemaKind>(kind: K, raw: unknown): Resolution
 // blob re-stamped with the CURRENT draft version, or a hybrid doc whose findings carry the pre-0.10
 // `code` spelling) — the legacy codec's upcast value. null for an unsupported-version stamp: the
 // fallback must never revive a version the allowlist refuses (a dropped 0.2/0.3 minor, a future
-// 0.11+/1.x) and re-stamp it 0.10.0. The ONE place this upcast policy lives, shared by every raw-
-// document channel (the seed gate; the marker readers apply the same precedence on their fragments).
+// 0.12+/1.x) and re-stamp it as the current version. The ONE place this upcast policy lives,
+// shared by every raw-document channel (the seed gate; the marker readers apply the same precedence
+// on their fragments).
 export const resolveTolerantFindings = (doc: unknown): Findings | null => {
   const r = resolveFindings(doc);
   if (r.kind === "ok") return r.value;

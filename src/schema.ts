@@ -44,8 +44,8 @@ const SEMVER_SUFFIX =
   "(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?";
 const SCHEMA_VERSION_RE = new RegExp(`^(0|[1-9]\\d*)\\.(\\d+)\\.(\\d+)${SEMVER_SUFFIX}$`);
 
-// The enforcement copy printableSchema injects: the general pattern narrowed to the in-force minor,
-// admitting exactly the stamps (patch, prerelease, build) the registry dispatches to the live entry.
+// The enforcement copy printableSchema injects: the general pattern narrowed to one minor, admitting
+// exactly the stamps (patch, prerelease, build) the registry dispatches to that minor's entry.
 export const anchoredSchemaVersionPattern = (version: string): string =>
   `^${version.split(".").slice(0, 2).join("\\.")}\\.[0-9]+${SEMVER_SUFFIX}$`;
 
@@ -110,6 +110,7 @@ const FindingOptional = t.partial({
   side: SideCodec,
   recommendation: t.string,
   patch: t.string,
+  rebuttal: t.string,
 });
 
 // ONE line-anchor gate shared by BOTH finding shapes — they differ only in their identity field.
@@ -153,6 +154,7 @@ const SystemicOptional = t.partial({
   id: t.string,
   finding_ids: t.array(t.string),
   paths: t.array(t.string),
+  rebuttal: t.string,
 });
 
 const SystemicProblemShape = t.intersection([SystemicRequired, RuleUrlCodec, SystemicOptional]);
@@ -321,6 +323,21 @@ export const RECOVERABLE_OPTIONAL_FIELDS: ReadonlySet<string> = new Set([
   "change_size",
 ]);
 
+// Whether a finding or systemic problem carries a rebuttal: blank text answers nothing. The drop
+// rule and every render site ask this one predicate.
+export const hasRebuttal = (item: { readonly rebuttal?: string }): boolean =>
+  (item.rebuttal ?? "").trim() !== "";
+
+// The prior review the seed hands the next round, minus each rebuttal: a rebuttal answers ONE
+// round's response, so a re-raise must supply its own rather than copy the prior one forward.
+export const withoutRebuttals = (doc: Findings): Findings => ({
+  ...doc,
+  findings: doc.findings.map(({ rebuttal: _rebuttal, ...f }) => f),
+  ...(doc.systemic_problems !== undefined
+    ? { systemic_problems: doc.systemic_problems.map(({ rebuttal: _rebuttal, ...s }) => s) }
+    : {}),
+});
+
 // The content-derived identity a finding WITHOUT an id resolves to: deterministic across rounds (the
 // same path + title always synthesizes the same id), so a pre-id finding re-raised next round keys to
 // the same ledger entry. A systemic problem has no path; its synthesized id keys on the title alone.
@@ -404,7 +421,15 @@ const LegacyRuleCodec = t.partial({
   code_url: UriString,
 });
 
-const FindingShapeV09 = t.intersection([FindingCoreRequired, LegacyRuleCodec, FindingOptional]);
+// The frozen legacy optionals: a pre-0.10 document never carried `rebuttal`, so the tolerant-in
+// legacy route strips it like any other unknown key, agreeing with the frozen v0.9 schema.
+const FindingOptionalV09 = t.partial({
+  side: SideCodec,
+  recommendation: t.string,
+  patch: t.string,
+});
+
+const FindingShapeV09 = t.intersection([FindingCoreRequired, LegacyRuleCodec, FindingOptionalV09]);
 
 // The legacy finding stays tolerant-in on KEYS — no strict-key gate, unlike its 0.10 counterpart —
 // because the legacy route's contract is tolerant-in/strict-out (normalizeV09 rewrites to the strict
@@ -415,6 +440,7 @@ const SystemicV09Optional = t.partial({
   finding_codes: t.array(t.string),
   finding_ids: t.array(t.string),
   paths: t.array(t.string),
+  rebuttal: t.unknown,
 });
 
 const SystemicV09Shape = t.intersection([SystemicRequired, LegacyRuleCodec, SystemicV09Optional]);
@@ -504,7 +530,7 @@ export const normalizeV09 = (doc: t.TypeOf<typeof FindingsCodecV09>): Findings =
       synthesizedFindingId(f.path, f.title),
   }));
   const systemic_problems = doc.systemic_problems?.map(
-    ({ code, id, finding_codes, finding_ids, ...s }) => ({
+    ({ code, id, finding_codes, finding_ids, rebuttal: _rebuttal, ...s }) => ({
       ...s,
       id: resolveRuleId({ id, code, title: s.title }) ?? synthesizedSystemicId(s.title),
       ...(finding_ids !== undefined && finding_ids.length > 0
@@ -702,7 +728,7 @@ export const TestSummaryCodec = t.intersection([
 
 // Used when an adapter's native output omits schema_version; the registry sources its findings
 // defaultVersion from this.
-export const DEFAULT_SCHEMA_VERSION = "0.10.0";
+export const DEFAULT_SCHEMA_VERSION = "0.11.0";
 
 export type Finding = t.TypeOf<typeof FindingCodec>;
 export type SystemicProblem = t.TypeOf<typeof SystemicProblemCodec>;

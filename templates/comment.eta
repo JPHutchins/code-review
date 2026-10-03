@@ -58,6 +58,10 @@
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_ids && s.finding_ids.length > 0) { meta.push('Ties together: ' + s.finding_ids.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
 <%~ s.description %>
+<% if (it.hasRebuttal(s)) { -%>
+
+**Rebuttal:** <%~ s.rebuttal %>
+<% } -%>
 <% if (s.discussionHtml) { -%>
 
 <details><summary>💬 Discussion</summary>
@@ -137,6 +141,10 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% if (f.answeredNote) { -%>
 
 > ↩️ <%~ f.answeredNote %>
+<% } -%>
+<% if (it.hasRebuttal(f)) { -%>
+
+**Rebuttal:** <%~ f.rebuttal %>
 <% } -%>
 <% if (f.recommendation) { -%>
 

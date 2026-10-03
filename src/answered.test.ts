@@ -287,6 +287,29 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(verbatimReRaised).toHaveLength(1);
   });
 
+  it("keeps a re-raise that carries a rebuttal — it answers the prior response, so it is never verbatim", () => {
+    const rebuttal = "The reply measured 3.12; the defect reproduces only on 3.14.";
+    const byId = applyAnswered([mkFinding({ rebuttal })], [entry()]);
+    expect(byId.findings).toHaveLength(1);
+    expect(byId.verbatimReRaised).toHaveLength(0);
+    // The title second chance asks the same predicate: a fresh id, the synthesized entry's claim.
+    const synthesized = entry({ code: synthesizedFindingId("src/foo.ts", "The same claim") });
+    const byTitle = applyAnswered([mkFinding({ id: "fresh-id", rebuttal })], [synthesized]);
+    expect(byTitle.findings).toHaveLength(1);
+    expect(byTitle.verbatimReRaised).toHaveLength(0);
+    const withoutRebuttal = applyAnswered([mkFinding({ id: "fresh-id" })], [synthesized]);
+    expect(withoutRebuttal.findings).toHaveLength(0);
+  });
+
+  it("still drops a verbatim re-raise whose rebuttal is blank", () => {
+    const { findings, verbatimReRaised } = applyAnswered(
+      [mkFinding({ rebuttal: " \n " })],
+      [entry()],
+    );
+    expect(findings).toHaveLength(0);
+    expect(verbatimReRaised).toHaveLength(1);
+  });
+
   it("never drops a CRITICAL verbatim re-raise — it is kept with the annotation", () => {
     const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
       [mkFinding({ severity: "critical" })],

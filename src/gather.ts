@@ -3,6 +3,8 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
+import { harvestResponses } from "./responses.js";
+import { priorIdsFrom } from "./schema.js";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -543,6 +545,21 @@ export const gather = async (
   // reply answered — staged for seed-draft to deliver beside the prior context, so the next-round
   // agent sees what it must not re-raise verbatim. Best-effort like the conversation: a failed fetch
   // yields [] (the agent then relies on the conversation alone).
+  writeFileSync(
+    join(input.outDir, "responses.json"),
+    JSON.stringify(
+      priorFindings === null
+        ? { responses: [], unmatched: [] }
+        : harvestResponses({
+            repo: input.repo,
+            prNumber,
+            botLogin: input.botLogin,
+            priorIds: new Set(priorIdsFrom(priorFindings)),
+            commits,
+            comments: issueComments ?? [],
+          }),
+    ),
+  );
   const answered =
     threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
   writeFileSync(

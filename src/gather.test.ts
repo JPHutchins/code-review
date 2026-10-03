@@ -511,6 +511,100 @@ describe("gather — prior review", () => {
     expect(JSON.parse(outFile("prior_findings.json")) as unknown).toEqual(doc);
   });
 
+  it("stages the implementer's responses to the prior round's ids, from comments and commits", async () => {
+    const doc = {
+      schema_version: "0.11.0",
+      summary: "prior",
+      verdict: "comment",
+      findings: [
+        {
+          id: "known-id",
+          path: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          severity: "minor",
+          title: "t",
+          description: "d",
+          reasoning: "r",
+          confidence: 0.5,
+          likelihood: 1,
+        },
+      ],
+    };
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: compareCommitsMatch,
+        response: ndjson([
+          {
+            sha: "c1",
+            message: "fix\n\nReview-Response: known-id fixed — guarded",
+            author: "Dev",
+            email: null,
+          },
+        ]),
+      },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          {
+            id: 7,
+            body: "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/9/zip -->",
+            user: { login: "github-actions[bot]" },
+          },
+          {
+            id: 8,
+            body: "Review-Response: known-id refuted — measured\nReview-Response: typo-id fixed",
+            user: { login: "dev" },
+            created_at: "2026-10-01T00:00:00Z",
+            author_association: "CONTRIBUTOR",
+          },
+        ]),
+      },
+    ]);
+
+    await gather(mkInput({}), api, mkMockGit([]).git, () => Promise.resolve(JSON.stringify(doc)));
+
+    const staged = JSON.parse(outFile("responses.json")) as {
+      responses: { id: string; disposition: string; channel: string }[];
+      unmatched: { id: string }[];
+    };
+    expect(staged.responses.map((r) => [r.id, r.disposition, r.channel])).toEqual([
+      ["known-id", "refuted", "comment"],
+      ["known-id", "fixed", "commit"],
+    ]);
+    expect(staged.unmatched.map((u) => u.id)).toEqual(["typo-id"]);
+  });
+
+  it("stages no responses when no prior review resolved — there is nothing to answer yet", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          { id: 1, body: "Review-Response: some-id fixed", user: { login: "dev" } },
+        ]),
+      },
+    ]);
+
+    await gather(mkInput({}), api, mkMockGit([]).git);
+
+    expect(JSON.parse(outFile("responses.json")) as unknown).toEqual({
+      responses: [],
+      unmatched: [],
+    });
+  });
+
   it("writes literal null when there is no bot comment", async () => {
     const { api } = mkMockGhApi([
       {

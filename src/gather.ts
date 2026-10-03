@@ -3,7 +3,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
-import { harvestResponses } from "./responses.js";
+import { harvestResponses, RESPONSES_PER_CHANNEL } from "./responses.js";
 import { priorIdsFrom } from "./schema.js";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
@@ -96,7 +96,10 @@ const IssueCommentCodec = t.intersection([
   t.type({
     id: t.number,
     body: t.union([t.string, t.null]),
-    user: t.type({ login: t.string }),
+    user: t.intersection([
+      t.type({ login: t.string }),
+      t.partial({ type: t.union([t.string, t.null]) }),
+    ]),
   }),
   t.partial({
     created_at: t.union([t.string, t.null]),
@@ -177,14 +180,17 @@ const fetchFullDiff = async (
   return gitRun(["diff", `${base}...${headSha}`]);
 };
 
-const CommitCodec = t.type({
-  sha: t.string,
-  message: t.string,
-  author: t.union([t.string, t.null]),
-  email: t.union([t.string, t.null]),
-});
+const CommitCodec = t.intersection([
+  t.type({
+    sha: t.string,
+    message: t.string,
+    author: t.union([t.string, t.null]),
+    email: t.union([t.string, t.null]),
+  }),
+  t.partial({ date: t.union([t.string, t.null]) }),
+]);
 const COMMIT_JQ =
-  ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email}";
+  ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email, date: .commit.committer.date}";
 
 // Commit messages + author identities of every commit in `default...head`. Once the head is checked
 // out, `git log` exposes these to the reviewing agent, so they are an untrusted surface triage must
@@ -222,7 +228,7 @@ const fetchCompareCommits = async (
 // the conversation) on any PR past the first page; the `--jq` projection streams NDJSON parseJsonl
 // reads line by line — the shape post.ts's findBotComment already uses.
 const COMMENT_JQ =
-  ".[] | {id: .id, body: .body, user: {login: .user.login}, created_at: .created_at, author_association: .author_association}";
+  ".[] | {id: .id, body: .body, user: {login: .user.login, type: .user.type}, created_at: .created_at, author_association: .author_association}";
 // The review-comments fetch feeds TWO consumers from one projection: the conversation (human
 // replies, via ReviewCommentCodec) and the answered-findings registry (thread structure + the bot's
 // own comments, via ThreadCommentCodec) — the richer THREAD_COMMENT_JQ shape serves both, the
@@ -541,25 +547,33 @@ export const gather = async (
     join(input.outDir, "prior_findings.json"),
     priorFindings === null ? "null" : JSON.stringify(priorFindings),
   );
+  // The implementer's Review-Response answers to the prior round's ids, staged for the reviewer.
+  const harvest =
+    prior === null
+      ? { file: { responses: [], unmatched: [] }, dropped: 0 }
+      : harvestResponses({
+          repo: input.repo,
+          prNumber,
+          botLogin: input.botLogin,
+          priorIds: new Set(priorIdsFrom(priorFindings)),
+          commits,
+          comments: issueComments ?? [],
+        });
+  writeFileSync(join(input.outDir, "responses.json"), JSON.stringify(harvest.file));
+  if (seedsFromPrior && priorFindings === null) {
+    process.stderr.write(
+      "Note: the prior review's findings did not resolve — every Review-Response line is staged as unmatched\n",
+    );
+  }
+  if (harvest.dropped > 0) {
+    process.stderr.write(
+      `Note: ${String(harvest.dropped)} Review-Response line(s) beyond the newest ${String(RESPONSES_PER_CHANNEL)} per channel were not staged\n`,
+    );
+  }
   // The "already answered" registry (issue #151): the prior inline findings whose threads a human
   // reply answered — staged for seed-draft to deliver beside the prior context, so the next-round
   // agent sees what it must not re-raise verbatim. Best-effort like the conversation: a failed fetch
   // yields [] (the agent then relies on the conversation alone).
-  writeFileSync(
-    join(input.outDir, "responses.json"),
-    JSON.stringify(
-      priorFindings === null
-        ? { responses: [], unmatched: [] }
-        : harvestResponses({
-            repo: input.repo,
-            prNumber,
-            botLogin: input.botLogin,
-            priorIds: new Set(priorIdsFrom(priorFindings)),
-            commits,
-            comments: issueComments ?? [],
-          }),
-    ),
-  );
   const answered =
     threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
   writeFileSync(

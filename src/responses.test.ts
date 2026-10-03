@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  DISPOSITIONS,
   harvestResponses,
   parseResponseLines,
   RESPONSE_REASON_CLIP_CHARS,
@@ -37,27 +38,49 @@ describe("parseResponseLines — the response grammar", () => {
     ]);
   });
 
-  it("ignores a verb outside the vocabulary, and an id that is not id-shaped", () => {
-    expect(parseResponseLines("Review-Response: x-y accepted — fine")).toEqual([]);
-    expect(parseResponseLines("Review-Response: <id> fixed — the template")).toEqual([]);
-    expect(parseResponseLines("Review-Response: src/a.ts fixed")).toEqual([]);
+  it("unwraps an id written the way the sticky displays it, in backticks or quotes", () => {
+    expect(parseResponseLines("Review-Response: `x-y` fixed — done").map((r) => r.id)).toEqual([
+      "x-y",
+    ]);
+    expect(parseResponseLines("Review-Response: 'x-y' fixed").map((r) => r.id)).toEqual(["x-y"]);
   });
 
-  it("never reads a quoted, inline-code, or fenced copy of the grammar as a response", () => {
+  it("ignores a verb outside the vocabulary", () => {
+    expect(parseResponseLines("Review-Response: x-y accepted — fine")).toEqual([]);
+    expect(DISPOSITIONS).toEqual(["fixed", "refuted", "dismissed"]);
+  });
+
+  it("never reads a quoted, inline-code, indented-code, or fenced copy of the grammar as a response", () => {
     const quoting = [
       "> Review-Response: quoted fixed — someone else's line",
       "Write `Review-Response: inline fixed` to answer.",
+      "    Review-Response: indented-code fixed — four spaces is a code block",
       "```",
       "Review-Response: fenced fixed — an example",
+      "~~~",
+      "Review-Response: tilde-inside-backticks fixed — still fenced",
       "```",
-      "~~~",
-      "Review-Response: tilde-fenced fixed",
-      "~~~",
-      "Review-Response: real fixed — after the fences",
+      "````md",
+      "```",
+      "Review-Response: inner-fence fixed — a shorter marker never closes a longer fence",
+      "````",
+      "   Review-Response: real fixed — three spaces is still a paragraph",
     ].join("\n");
     expect(parseResponseLines(quoting)).toEqual([
-      { id: "real", disposition: "fixed", reason: "after the fences" },
+      { id: "real", disposition: "fixed", reason: "three spaces is still a paragraph" },
     ]);
+  });
+
+  it("treats an unclosed fence as running to the end, as CommonMark does", () => {
+    expect(parseResponseLines("```\nReview-Response: x fixed")).toEqual([]);
+  });
+
+  it("splits lines at every line terminator, so a U+2028 never voids a response", () => {
+    expect(
+      parseResponseLines("intro Review-Response: x-y fixed — after a line separator").map(
+        (r) => r.id,
+      ),
+    ).toEqual(["x-y"]);
   });
 
   it("clips a long reason and marks the cut", () => {
@@ -68,17 +91,18 @@ describe("parseResponseLines — the response grammar", () => {
 });
 
 describe("harvestResponses — the implementer's answers to the prior round", () => {
+  const human = { login: "dev", type: "User" };
   const input = (overrides: Partial<HarvestInput> = {}): HarvestInput => ({
     repo: "o/r",
     prNumber: 7,
     botLogin: "github-actions[bot]",
-    priorIds: new Set(["known-id", "a-class"]),
+    priorIds: new Set(["known-id", "a-class", "dotted.id"]),
     commits: [],
     comments: [],
     ...overrides,
   });
 
-  it("keeps responses to ids the prior round reported, with each source's link and author", () => {
+  it("keeps responses to ids the prior round reported, with each source's link, author and time", () => {
     const harvest = harvestResponses(
       input({
         commits: [
@@ -86,20 +110,21 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
             sha: "abc123",
             message: "fix\n\nReview-Response: known-id fixed — guarded",
             author: "Dev",
+            date: "2026-10-02T00:00:00Z",
           },
         ],
         comments: [
           {
             id: 99,
             body: "Review-Response: a-class dismissed — out of scope",
-            user: { login: "maintainer" },
+            user: { login: "maintainer", type: "User" },
             created_at: "2026-10-01T00:00:00Z",
             author_association: "OWNER",
           },
         ],
       }),
     );
-    expect(harvest.responses).toEqual([
+    expect(harvest.file.responses).toEqual([
       {
         id: "a-class",
         disposition: "dismissed",
@@ -118,46 +143,65 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
         source_url: "https://github.com/o/r/commit/abc123",
         author: "Dev",
         author_association: null,
-        created_at: null,
+        created_at: "2026-10-02T00:00:00Z",
       },
     ]);
-    expect(harvest.unmatched).toEqual([]);
-    expect(ResponsesFileCodec.is(harvest)).toBe(true);
+    expect(harvest.file.unmatched).toEqual([]);
+    expect(harvest.dropped).toBe(0);
+    expect(ResponsesFileCodec.is(harvest.file)).toBe(true);
   });
 
-  it("echoes a response to an id the prior round never reported as unmatched, never dropping it silently", () => {
+  it("matches any prior id as written, and echoes only an id-shaped unknown one as unmatched", () => {
     const harvest = harvestResponses(
-      input({ commits: [{ sha: "s", message: "Review-Response: typo-id fixed", author: null }] }),
+      input({
+        commits: [
+          {
+            sha: "s",
+            message: [
+              "Review-Response: dotted.id fixed",
+              "Review-Response: typo-id fixed",
+              "Review-Response: <id> fixed — the sticky's template, copied",
+            ].join("\n"),
+            author: null,
+          },
+        ],
+      }),
     );
-    expect(harvest.responses).toEqual([]);
-    expect(harvest.unmatched).toEqual([
+    expect(harvest.file.responses.map((r) => r.id)).toEqual(["dotted.id"]);
+    expect(harvest.file.unmatched).toEqual([
       { id: "typo-id", channel: "commit", source_url: "https://github.com/o/r/commit/s" },
     ]);
   });
 
-  it("skips the bot's own comments", () => {
+  it("only a human account answers — the pipeline's bot and any other bot are skipped", () => {
     const harvest = harvestResponses(
       input({
         comments: [
           {
             id: 1,
             body: "Review-Response: known-id fixed",
-            user: { login: "github-actions[bot]" },
+            user: { login: "github-actions[bot]", type: "Bot" },
           },
+          {
+            id: 2,
+            body: "Review-Response: known-id fixed",
+            user: { login: "dependabot[bot]", type: "Bot" },
+          },
+          { id: 3, body: "Review-Response: known-id fixed", user: { login: "typeless" } },
         ],
       }),
     );
-    expect(harvest.responses).toEqual([]);
+    expect(harvest.file.responses).toEqual([]);
   });
 
-  it("keeps the newest answers when a channel exceeds the cap — comments by time, commits by order", () => {
+  it("keeps the newest answers when a channel exceeds the cap, and counts what it dropped", () => {
     const many = RESPONSES_PER_CHANNEL + 5;
     const harvest = harvestResponses(
       input({
         comments: Array.from({ length: many }, (_, i) => ({
           id: i,
           body: `Review-Response: known-id fixed — comment ${String(i)}`,
-          user: { login: "dev" },
+          user: human,
           created_at: `2026-10-01T00:00:${String(i).padStart(2, "0")}Z`,
         })),
         commits: Array.from({ length: many }, (_, i) => ({
@@ -167,12 +211,28 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
         })),
       }),
     );
-    const comments = harvest.responses.filter((r) => r.channel === "comment");
-    const commits = harvest.responses.filter((r) => r.channel === "commit");
+    const comments = harvest.file.responses.filter((r) => r.channel === "comment");
+    const commits = harvest.file.responses.filter((r) => r.channel === "commit");
     expect(comments).toHaveLength(RESPONSES_PER_CHANNEL);
     expect(commits).toHaveLength(RESPONSES_PER_CHANNEL);
     expect(comments[0]?.reason).toBe(`comment ${String(many - 1)}`);
     expect(commits[0]?.reason).toBe(`commit ${String(many - 1)}`);
     expect(commits.at(-1)?.reason).toBe(`commit ${String(many - RESPONSES_PER_CHANNEL)}`);
+    expect(harvest.dropped).toBe(10);
+  });
+
+  it("breaks a same-second tie by the newer comment id, so the cap never keeps the older answer", () => {
+    const harvest = harvestResponses(
+      input({
+        comments: Array.from({ length: RESPONSES_PER_CHANNEL + 1 }, (_, i) => ({
+          id: i,
+          body: `Review-Response: known-id fixed — comment ${String(i)}`,
+          user: human,
+          created_at: "2026-10-01T00:00:00Z",
+        })),
+      }),
+    );
+    expect(harvest.file.responses[0]?.reason).toBe(`comment ${String(RESPONSES_PER_CHANNEL)}`);
+    expect(harvest.file.responses.map((r) => r.reason)).not.toContain("comment 0");
   });
 });

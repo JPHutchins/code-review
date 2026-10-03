@@ -546,6 +546,7 @@ describe("gather — prior review", () => {
             message: "fix\n\nReview-Response: known-id fixed — guarded",
             author: "Dev",
             email: null,
+            date: "2026-10-02T00:00:00Z",
           },
         ]),
       },
@@ -560,7 +561,7 @@ describe("gather — prior review", () => {
           {
             id: 8,
             body: "Review-Response: known-id refuted — measured\nReview-Response: typo-id fixed",
-            user: { login: "dev" },
+            user: { login: "dev", type: "User" },
             created_at: "2026-10-01T00:00:00Z",
             author_association: "CONTRIBUTOR",
           },
@@ -579,6 +580,48 @@ describe("gather — prior review", () => {
       ["known-id", "fixed", "commit"],
     ]);
     expect(staged.unmatched.map((u) => u.id)).toEqual(["typo-id"]);
+  });
+
+  it("stages every response as unmatched, and says so, when the prior review exists but did not resolve", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          {
+            id: 7,
+            body: "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/9/zip -->",
+            user: { login: "github-actions[bot]" },
+          },
+          {
+            id: 8,
+            body: "Review-Response: known-id fixed — done",
+            user: { login: "dev", type: "User" },
+          },
+        ]),
+      },
+    ]);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await gather(mkInput({}), api, mkMockGit([]).git, () => Promise.resolve("not json"));
+
+    expect(JSON.parse(outFile("responses.json")) as unknown).toEqual({
+      responses: [],
+      unmatched: [
+        {
+          id: "known-id",
+          channel: "comment",
+          source_url: "https://github.com/owner/repo/pull/42#issuecomment-8",
+        },
+      ],
+    });
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("did not resolve"));
+    stderr.mockRestore();
   });
 
   it("stages no responses when no prior review resolved — there is nothing to answer yet", async () => {

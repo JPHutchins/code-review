@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readRepoFile, allWorkflows } from "./test-util.js";
+import { DISPOSITIONS, RESPONSE_FORM } from "./responses.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -688,5 +689,54 @@ describe("the jailed agents never hold the job token", () => {
         ),
       ).toEqual([]);
     });
+  });
+});
+
+describe("the review dialogue — the reviewer and the triage read the same protocol in both workflows", () => {
+  const scriptOf = (workflowPath: string, stepName: string): string => {
+    const found = runScripts(workflowPath).filter((s) => s.step.endsWith(`→ ${stepName}`));
+    expect(found, `${workflowPath} → ${stepName}`).toHaveLength(1);
+    return found[0]!.script;
+  };
+  const linesWith = (script: string, needle: string): readonly string[] =>
+    script
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.includes(needle));
+
+  it("the responses arm is byte-identical, gated on the harvested file, placed in the full-review branch, and teaches the vocabulary and `rebuttal`", () => {
+    const armOf = (path: string): readonly string[] =>
+      linesWith(scriptOf(path, "Phase 2 — agentic review"), "responses.json");
+    const reusable = armOf(".github/workflows/review-reusable.yaml");
+    const example = armOf("examples/workflows/review.yaml");
+    expect(example).toEqual(reusable);
+    expect(reusable[0]).toBe('if [ -f "$GATHER_DIR/responses.json" ]; then');
+    expect(reusable.some((line) => line.includes("::warning::"))).toBe(true);
+    expect(reusable.some((line) => line.includes("rebuttal"))).toBe(true);
+    expect(reusable.some((line) => line.includes(`disposition ${DISPOSITIONS.join("|")},`))).toBe(
+      true,
+    );
+    for (const path of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      const script = scriptOf(path, "Phase 2 — agentic review");
+      const arm = script.indexOf('if [ -f "$GATHER_DIR/responses.json" ]');
+      const caseOpen = script.lastIndexOf('case "$SEED_MODE" in', arm);
+      expect(caseOpen, path).toBeGreaterThan(-1);
+      expect(script.slice(caseOpen, arm), path).toContain("prior-same|prior-new|empty-had-prior)");
+      expect(arm, path).toBeLessThan(script.indexOf('ROUTE="mechanic"'));
+    }
+  });
+
+  it("the triage names the response form, as the CLI spells it, expected while judging every field, identically in both workflows", () => {
+    const clauseOf = (path: string): readonly string[] =>
+      linesWith(scriptOf(path, "Phase 1 — security triage"), "Review-Response:");
+    const reusable = clauseOf(".github/workflows/review-reusable.yaml");
+    expect(clauseOf("examples/workflows/review.yaml")).toEqual(reusable);
+    expect(reusable).toHaveLength(1);
+    expect(reusable[0]).toContain(`\\\`${RESPONSE_FORM}\\\``);
+    expect(reusable[0]).toContain("its id, disposition and reason are still author text");
+    expect(reusable[0]).not.toContain("judge only");
   });
 });

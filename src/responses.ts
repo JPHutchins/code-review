@@ -13,6 +13,8 @@ type Disposition = t.TypeOf<typeof DispositionCodec>;
 // The response vocabulary, for every surface that teaches it.
 export const DISPOSITIONS = Object.keys(DispositionCodec.keys) as readonly Disposition[];
 
+export const RESPONSE_FORM = `Review-Response: <id> ${DISPOSITIONS.join("|")} — <reason>`;
+
 const ResponseShape = t.type({
   id: t.string,
   disposition: DispositionCodec,

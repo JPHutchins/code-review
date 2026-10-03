@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
+import { RESPONSE_FORM } from "./responses.js";
 import {
   formatConfidence,
   parseConvergenceMarker,
@@ -201,6 +202,57 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       strays: [blankRebuttal],
     });
     expect(blank).not.toContain("Rebuttal:");
+  });
+
+  it("teaches the response line under a review with findings, never on a clean review or a notice", () => {
+    const line = `To answer a finding, put \`${RESPONSE_FORM}\``;
+    const finding = mkFinding({});
+    const withFindings = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+    });
+    expect(withFindings).toContain(line);
+    const clean = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+    expect(clean).not.toContain(line);
+    const notice = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      incomplete: true,
+    });
+    expect(notice).not.toContain(line);
+    const mechanic = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+      route: "mechanic",
+    });
+    expect(mechanic).not.toContain(line);
+    const systemicOnly = render({
+      findings: mkFindings([], {
+        systemic_problems: [
+          {
+            title: "A class",
+            description: "d",
+            severity: "minor",
+            reasoning: "r",
+            confidence: 0.5,
+            likelihood: 1,
+            id: "a-class",
+          },
+        ],
+      }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+    });
+    expect(systemicOnly).toContain(line);
   });
 
   it("says nothing when the logs were there", () => {

@@ -13,11 +13,11 @@ import {
   buildStickyDiscussion,
   findBotComment,
   mentionsOutsideKnown,
-  priorIdsFrom,
   discussionRows,
   STICKY_CHAR_LIMIT,
 } from "./post.js";
 import { fetchThreadComments } from "./answered.js";
+import { priorIdsFrom } from "./schema.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
 import type {
   Convergence,

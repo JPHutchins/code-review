@@ -3,6 +3,7 @@
 
 import * as t from "io-ts";
 import { createHash } from "node:crypto";
+import { asRecord } from "./util.js";
 
 const SeverityCodec = t.union([
   t.literal("critical"),
@@ -72,7 +73,7 @@ const UriString = t.refinement(
 // from the passed members. `members` MUST be exactly the shape's prop-bearing leaves (each shape's
 // own component codecs): an omitted leaf would silently reject that leaf's fields on every decode —
 // the key set cannot drift only if the list cannot.
-const strictExact = <C extends t.HasProps>(
+export const strictExact = <C extends t.HasProps>(
   name: string,
   shape: C,
   members: readonly { props: t.Props }[],
@@ -322,6 +323,37 @@ export const RECOVERABLE_OPTIONAL_FIELDS: ReadonlySet<string> = new Set([
   ...PIPELINE_STAMPED_FIELDS,
   "change_size",
 ]);
+
+// The shape of a finding or systemic id: the pipeline's kebab-case identifiers and the synthesized
+// f-/s- base64url forms. A backticked shell command, path, or URL never matches.
+export const ID_SHAPE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+// The prior findings document's finding + systemic ids — the full departed set the orphan bucket may
+// hold (a departed systemic id orphans exactly like a departed finding id). Tolerant over the
+// resolved shape: a non-document yields no ids, so the bucket fails open to empty.
+export const priorIdsFrom = (doc: unknown): readonly string[] => {
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return [];
+  const rec = doc as Record<string, unknown>;
+  // The id spelling with the LEGACY code fallback — a pre-0.10 prior document (findings with a
+  // code and no id) must still feed the departed set, or its replies pay the resolve and then
+  // render nowhere.
+  const idsOf = (field: string, systemic: boolean): readonly string[] =>
+    (Array.isArray(rec[field]) ? rec[field] : []).flatMap((raw) => {
+      const item = typeof raw === "object" && raw !== null ? asRecord(raw) : null;
+      if (item === null) return [];
+      const title = typeof item["title"] === "string" ? item["title"] : "";
+      const resolved = resolveRuleId({
+        ...(typeof item["id"] === "string" ? { id: item["id"] } : {}),
+        ...(typeof item["code"] === "string" ? { code: item["code"] } : {}),
+        ...(typeof item["path"] === "string" ? { path: item["path"] } : {}),
+        title,
+      });
+      // The upcast's own fallback for a code-less systemic (no path to synthesize from).
+      const id = resolved ?? (systemic && title !== "" ? synthesizedSystemicId(title) : undefined);
+      return id !== undefined ? [id] : [];
+    });
+  return [...idsOf("findings", false), ...idsOf("systemic_problems", true)];
+};
 
 // Whether a finding or systemic problem carries a rebuttal: blank text answers nothing. The drop
 // rule and every render site ask this one predicate.

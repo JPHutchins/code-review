@@ -144,7 +144,7 @@ export const decodeAnsweredEntry = (raw: unknown): StagedAnsweredEntry | null =>
 // can't masquerade as an answer — issue #151 review r1). A MISSING type (null — an unexpected API
 // shape) fails closed to "not human": an uncertain answer must not cause a finding to be dropped
 // (issue #151 review r2).
-const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
+export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
   login !== botLogin && type === "User";
 
 const EXCERPT_LIMIT = 400;

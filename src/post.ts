@@ -67,8 +67,10 @@ import {
   incompleteFindings,
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
+  ID_SHAPE_RE,
+  priorIdsFrom,
 } from "./schema.js";
-import { resolveFindingId, resolveRuleId, synthesizedSystemicId } from "./schema.js";
+import { resolveFindingId } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -624,7 +626,6 @@ export const discussionRows = (
 // could plausibly BE a finding id (the pipeline's ids are kebab-case identifiers and the
 // synthesized f-/s- base64url forms). A backticked shell command, path, or URL never fires it.
 // An id-shaped junk word still fires — the documented necessary-not-sufficient trade-off.
-const ID_SHAPE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 export const mentionsOutsideKnown = (
   reachable: readonly IssueCommentRow[],
@@ -732,33 +733,6 @@ export const buildStickyDiscussion = (
     truncated: Object.fromEntries(truncated),
     orphanedTruncated: Object.fromEntries(orphanedTruncated),
   };
-};
-
-// The prior findings document's finding + systemic ids — the full departed set the orphan bucket may
-// hold (a departed systemic id orphans exactly like a departed finding id). Tolerant over the
-// resolved shape: a non-document yields no ids, so the bucket fails open to empty.
-export const priorIdsFrom = (doc: unknown): readonly string[] => {
-  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return [];
-  const rec = doc as Record<string, unknown>;
-  // The id spelling with the LEGACY code fallback — a pre-0.10 prior document (findings with a
-  // code and no id) must still feed the departed set, or its replies pay the resolve and then
-  // render nowhere.
-  const idsOf = (field: string, systemic: boolean): readonly string[] =>
-    (Array.isArray(rec[field]) ? rec[field] : []).flatMap((raw) => {
-      const item = typeof raw === "object" && raw !== null ? asRecord(raw) : null;
-      if (item === null) return [];
-      const title = typeof item["title"] === "string" ? item["title"] : "";
-      const resolved = resolveRuleId({
-        ...(typeof item["id"] === "string" ? { id: item["id"] } : {}),
-        ...(typeof item["code"] === "string" ? { code: item["code"] } : {}),
-        ...(typeof item["path"] === "string" ? { path: item["path"] } : {}),
-        title,
-      });
-      // The upcast's own fallback for a code-less systemic (no path to synthesize from).
-      const id = resolved ?? (systemic && title !== "" ? synthesizedSystemicId(title) : undefined);
-      return id !== undefined ? [id] : [];
-    });
-  return [...idsOf("findings", false), ...idsOf("systemic_problems", true)];
 };
 
 // Best-effort append to a runner file: a write failure warns with the given label and never fails

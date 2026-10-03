@@ -548,21 +548,21 @@ export const gather = async (
     priorFindings === null ? "null" : JSON.stringify(priorFindings),
   );
   // The implementer's Review-Response answers to the prior round's ids, staged for the reviewer.
-  const harvest =
-    prior === null
-      ? { file: { responses: [], unmatched: [] }, dropped: 0 }
-      : harvestResponses({
-          repo: input.repo,
-          prNumber,
-          botLogin: input.botLogin,
-          priorIds: new Set(priorIdsFrom(priorFindings)),
-          commits,
-          comments: issueComments ?? [],
-        });
+  // Only a round seeded from a full prior review has ids to answer, the same gate as the seed itself.
+  const harvest = seedsFromPrior
+    ? harvestResponses({
+        repo: input.repo,
+        prNumber,
+        botLogin: input.botLogin,
+        priorIds: new Set(priorIdsFrom(priorFindings)),
+        commits,
+        comments: issueComments ?? [],
+      })
+    : { file: { responses: [], unmatched: [] }, dropped: 0 };
   writeFileSync(join(input.outDir, "responses.json"), JSON.stringify(harvest.file));
   if (seedsFromPrior && priorFindings === null) {
     process.stderr.write(
-      "Note: the prior review's findings did not resolve — every Review-Response line is staged as unmatched\n",
+      "Note: the prior review's findings did not resolve — every id-shaped Review-Response line is staged as unmatched\n",
     );
   }
   if (harvest.dropped > 0) {

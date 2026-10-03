@@ -449,7 +449,7 @@ describe("gather — prior review", () => {
   // The other half of the route gate, and the routine case: a CI-fix round following a completed
   // review. The workflow's mechanic branch invokes seed-draft with no --prior-findings at all, so
   // resolving here would download and unzip an artifact nothing is ever handed.
-  it("stages no prior findings when THIS run is a mechanic pass", async () => {
+  it("stages no prior findings and no responses when THIS run is a mechanic pass", async () => {
     const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
@@ -466,6 +466,11 @@ describe("gather — prior review", () => {
             body: "<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/9/zip -->",
             user: { login: "github-actions[bot]" },
           },
+          {
+            id: 8,
+            body: "Review-Response: known-id fixed — done",
+            user: { login: "dev", type: "User" },
+          },
         ]),
       },
     ]);
@@ -478,6 +483,10 @@ describe("gather — prior review", () => {
 
     expect(consulted).toEqual([]);
     expect(outFile("prior_findings.json")).toBe("null");
+    expect(JSON.parse(outFile("responses.json")) as unknown).toEqual({
+      responses: [],
+      unmatched: [],
+    });
   });
 
   it("resolves and stages the prior findings when the prior sticky WAS a full review", async () => {

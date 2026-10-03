@@ -45,6 +45,17 @@ describe("parseResponseLines — the response grammar", () => {
     expect(parseResponseLines("Review-Response: 'x-y' fixed").map((r) => r.id)).toEqual(["x-y"]);
   });
 
+  it("drops the prose punctuation that follows an id", () => {
+    expect(
+      parseResponseLines(
+        ["Review-Response: x-y, fixed", "Review-Response: `a-b`: refuted — measured"].join("\n"),
+      ).map((r) => [r.id, r.disposition]),
+    ).toEqual([
+      ["x-y", "fixed"],
+      ["a-b", "refuted"],
+    ]);
+  });
+
   it("ignores a verb outside the vocabulary", () => {
     expect(parseResponseLines("Review-Response: x-y accepted — fine")).toEqual([]);
     expect(DISPOSITIONS).toEqual(["fixed", "refuted", "dismissed"]);
@@ -73,6 +84,13 @@ describe("parseResponseLines — the response grammar", () => {
 
   it("treats an unclosed fence as running to the end, as CommonMark does", () => {
     expect(parseResponseLines("```\nReview-Response: x fixed")).toEqual([]);
+  });
+
+  it("never opens a backtick fence whose info string holds a backtick, as CommonMark does", () => {
+    expect(
+      parseResponseLines("``` not`a fence\nReview-Response: x fixed").map((r) => r.id),
+    ).toEqual(["x"]);
+    expect(parseResponseLines("~~~ a`tilde fence\nReview-Response: x fixed")).toEqual([]);
   });
 
   it("splits lines at every line terminator, so a U+2028 never voids a response", () => {
@@ -149,6 +167,7 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
     expect(harvest.file.unmatched).toEqual([]);
     expect(harvest.dropped).toBe(0);
     expect(ResponsesFileCodec.is(harvest.file)).toBe(true);
+    expect(ResponsesFileCodec.is({ ...harvest.file, extra: true })).toBe(false);
   });
 
   it("matches any prior id as written, and echoes only an id-shaped unknown one as unmatched", () => {

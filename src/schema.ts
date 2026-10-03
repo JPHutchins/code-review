@@ -73,7 +73,7 @@ const UriString = t.refinement(
 // from the passed members. `members` MUST be exactly the shape's prop-bearing leaves (each shape's
 // own component codecs): an omitted leaf would silently reject that leaf's fields on every decode —
 // the key set cannot drift only if the list cannot.
-const strictExact = <C extends t.HasProps>(
+export const strictExact = <C extends t.HasProps>(
   name: string,
   shape: C,
   members: readonly { props: t.Props }[],

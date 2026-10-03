@@ -50,7 +50,7 @@
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
 <% if (!it.incomplete && it.route !== "mechanic" && (findingsTotal > 0 || it.systemic.length > 0)) { -%>
 
-<sub>To answer a finding, put `Review-Response: <id> fixed|refuted|dismissed — <reason>` in a commit message or a PR conversation comment (not an inline-thread reply); a systemic problem's id, when shown, answers its whole class.</sub>
+<sub>To answer a finding, put `<%~ it.responseForm %>` in a commit message or a PR conversation comment (not an inline-thread reply); a systemic problem's id, when shown, answers its whole class.</sub>
 <% } -%>
 
 <% if (!it.incomplete && it.systemic.length > 0) { -%>

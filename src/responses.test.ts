@@ -4,6 +4,7 @@ import {
   harvestResponses,
   parseResponseLines,
   RESPONSE_REASON_CLIP_CHARS,
+  RESPONSE_FORM,
   RESPONSES_PER_CHANNEL,
   ResponsesFileCodec,
   type HarvestInput,
@@ -59,6 +60,19 @@ describe("parseResponseLines — the response grammar", () => {
   it("ignores a verb outside the vocabulary", () => {
     expect(parseResponseLines("Review-Response: x-y accepted — fine")).toEqual([]);
     expect(DISPOSITIONS).toEqual(["fixed", "refuted", "dismissed"]);
+  });
+
+  it("reads the taught form once its placeholders are filled in, for every verb", () => {
+    expect(RESPONSE_FORM).toBe("Review-Response: <id> fixed|refuted|dismissed — <reason>");
+    expect(
+      DISPOSITIONS.flatMap((verb) =>
+        parseResponseLines(
+          RESPONSE_FORM.replace("<id>", "x-y")
+            .replace(DISPOSITIONS.join("|"), verb)
+            .replace("<reason>", "why"),
+        ),
+      ),
+    ).toEqual(DISPOSITIONS.map((disposition) => ({ id: "x-y", disposition, reason: "why" })));
   });
 
   it("never reads a quoted, inline-code, indented-code, or fenced copy of the grammar as a response", () => {

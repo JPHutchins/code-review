@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
+import { RESPONSE_FORM } from "./responses.js";
 import {
   formatConfidence,
   parseConvergenceMarker,
@@ -204,8 +205,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
   });
 
   it("teaches the response line under a review with findings, never on a clean review or a notice", () => {
-    const line =
-      "To answer a finding, put `Review-Response: <id> fixed|refuted|dismissed — <reason>`";
+    const line = `To answer a finding, put \`${RESPONSE_FORM}\``;
     const finding = mkFinding({});
     const withFindings = render({
       findings: mkFindings([finding]),

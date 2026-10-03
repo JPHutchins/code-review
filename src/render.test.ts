@@ -225,6 +225,34 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       incomplete: true,
     });
     expect(notice).not.toContain(line);
+    const mechanic = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+      route: "mechanic",
+    });
+    expect(mechanic).not.toContain(line);
+    const systemicOnly = render({
+      findings: mkFindings([], {
+        systemic_problems: [
+          {
+            title: "A class",
+            description: "d",
+            severity: "minor",
+            reasoning: "r",
+            confidence: 0.5,
+            likelihood: 1,
+            id: "a-class",
+          },
+        ],
+      }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+    });
+    expect(systemicOnly).toContain(line);
   });
 
   it("says nothing when the logs were there", () => {

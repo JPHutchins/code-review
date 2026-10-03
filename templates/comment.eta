@@ -47,9 +47,10 @@
 <% } -%>
 
 <%~ it.findings.summary %>
-<% if (!it.incomplete && (it.findings.findings.length > 0 || it.systemic.length > 0)) { -%>
+<% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
+<% if (!it.incomplete && it.route !== "mechanic" && (findingsTotal > 0 || it.systemic.length > 0)) { -%>
 
-<sub>To answer a finding, put `Review-Response: <id> fixed|refuted|dismissed — <reason>` in a commit message or a PR comment; a systemic problem's id answers its whole class.</sub>
+<sub>To answer a finding, put `Review-Response: <id> fixed|refuted|dismissed — <reason>` in a commit message or a PR conversation comment (not an inline-thread reply); a systemic problem's id, when shown, answers its whole class.</sub>
 <% } -%>
 
 <% if (!it.incomplete && it.systemic.length > 0) { -%>
@@ -86,7 +87,6 @@
 
 ---
 
-<% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
 <% if (it.unverifiedNoLogs && findingsTotal > 0) { %>
 > [!WARNING]
 > **Unverified — no failing-job logs were available.** This route reads the failing CI job's log to

@@ -703,25 +703,35 @@ describe("the review dialogue — the reviewer and the triage read the same prot
       .map((line) => line.trim())
       .filter((line) => line.includes(needle));
 
-  it("the responses arm is byte-identical, gated on the harvested file, and teaches `rebuttal`", () => {
+  it("the responses arm is byte-identical, gated on the harvested file, placed in the full-review branch, and teaches `rebuttal`", () => {
     const armOf = (path: string): readonly string[] =>
       linesWith(scriptOf(path, "Phase 2 — agentic review"), "responses.json");
     const reusable = armOf(".github/workflows/review-reusable.yaml");
     const example = armOf("examples/workflows/review.yaml");
     expect(example).toEqual(reusable);
-    expect(reusable).toHaveLength(2);
-    expect(reusable[0]).toMatch(/^if \[ -f "\$GATHER_DIR\/responses\.json" \]/);
-    expect(reusable[1]).toContain("rebuttal");
-  });
-
-  it("the triage names the response form as expected in both workflows, judging only its reason", () => {
+    expect(reusable[0]).toBe('if [ -f "$GATHER_DIR/responses.json" ]; then');
+    expect(reusable.some((line) => line.includes("::warning::"))).toBe(true);
+    expect(reusable.some((line) => line.includes("rebuttal"))).toBe(true);
     for (const path of [
       ".github/workflows/review-reusable.yaml",
       "examples/workflows/review.yaml",
     ]) {
-      const clause = linesWith(scriptOf(path, "Phase 1 — security triage"), "Review-Response:");
-      expect(clause, path).toHaveLength(1);
-      expect(clause[0]).toContain("judge only its reason text");
+      const script = scriptOf(path, "Phase 2 — agentic review");
+      const arm = script.indexOf('if [ -f "$GATHER_DIR/responses.json" ]');
+      const caseOpen = script.lastIndexOf('case "$SEED_MODE" in', arm);
+      expect(caseOpen, path).toBeGreaterThan(-1);
+      expect(script.slice(caseOpen, arm), path).toContain("prior-same|prior-new|empty-had-prior)");
+      expect(arm, path).toBeLessThan(script.indexOf('ROUTE="mechanic"'));
     }
+  });
+
+  it("the triage names the response form as expected while judging every field, identically in both workflows", () => {
+    const clauseOf = (path: string): readonly string[] =>
+      linesWith(scriptOf(path, "Phase 1 — security triage"), "Review-Response:");
+    const reusable = clauseOf(".github/workflows/review-reusable.yaml");
+    expect(clauseOf("examples/workflows/review.yaml")).toEqual(reusable);
+    expect(reusable).toHaveLength(1);
+    expect(reusable[0]).toContain("its id, disposition and reason are still author text");
+    expect(reusable[0]).not.toContain("judge only");
   });
 });

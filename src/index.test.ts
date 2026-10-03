@@ -1199,6 +1199,34 @@ describe("cli — validate --explain (issue #45: schema on failure, fix the shap
     expect(stderr).toContain(JSON.stringify(anchoredSchemaVersionPattern("0.10.0")));
   });
 
+  it.each(["0.12.0", "0.9.0"])(
+    "--explain on the bundled live file prints a %s stamp's schema unpinned — never a throw or a contradictory pin",
+    async (stamp) => {
+      const badPath = join(tmpDir, `stamped-${stamp}.json`);
+      writeFileSync(
+        badPath,
+        JSON.stringify({ schema_version: stamp, verdict: "comment", findings: [] }),
+      );
+      const live = resolve(repoRoot, "schema", "findings.schema.json");
+      const { stderr, exitCode } = await runCli([
+        "validate",
+        badPath,
+        "--schema",
+        live,
+        "--explain",
+      ]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("authoritative spec");
+      expect(stderr).not.toContain("Unsupported");
+      const general = (
+        JSON.parse(readFileSync(live, "utf-8")) as {
+          properties: { schema_version: { pattern: string } };
+        }
+      ).properties.schema_version.pattern;
+      expect(stderr).toContain(JSON.stringify(general));
+    },
+  );
+
   it("without --explain, dumps only the errors (no schema)", async () => {
     const badPath = join(tmpDir, "skill-shaped2.json");
     writeFileSync(badPath, JSON.stringify(skillShapedDraft));

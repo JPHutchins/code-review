@@ -438,7 +438,7 @@ export const applyAnswered = (
     // not mis-bind its annotation (the id match wins wherever it exists). The second chance picks
     // the synthesized same-title entry sharing the MOST verbatim claim fields (ties keep registry
     // order), so two codeless same-title answers under different paths cannot mis-bind a kept
-    // re-raise. The chosen entry alone feeds the drop decision, through the isVerbatimReRaise the
+    // re-raise. The chosen entry alone feeds the drop decision, through the isAnsweredDrop the
     // seed's pre-filter also asks (rebuttal rule included), while that pre-filter is existential over
     // the whole registry — so the two sides disagree in one corner (a non-verbatim id match beside a
     // verbatim same-title entry; documented on isAnsweredDrop). Because the scorer picks the entry,

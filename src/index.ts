@@ -83,7 +83,7 @@ import {
   declaredVersion,
   resolveTolerantFindings,
   defaultVersion,
-  versionFor,
+  livePinFor,
 } from "./registry.js";
 import type { SchemaKind } from "./registry.js";
 import { validatePatch } from "./patch.js";
@@ -919,7 +919,7 @@ const liveSchemaPin = (
   requestedVersion: string | undefined,
 ): string | undefined =>
   kind === "findings" && schemaPath === schemaPathFor(kind)
-    ? versionFor(kind, requestedVersion)
+    ? livePinFor(kind, requestedVersion)
     : undefined;
 
 export const printableSchema = (schemaPath: string, pinVersion: string | undefined): string => {

@@ -74,6 +74,8 @@ const findingsTable: readonly VersionEntry<"findings", Findings>[] = [
     // (validate --schema-version, the extraction ladder) dispatches the RAW doc's declared minor
     // through schemaPathFor, so the ajv gate must accept exactly what the tolerant legacy codec
     // accepts — the live file (id required) would reject the legacy docs the upcast promises to read.
+    // One deliberate exception: the codec drops a draft-only `rebuttal` that the frozen file rejects.
+    // A pre-0.10 document never carried one, so only a hybrid doc the rescue exists for meets it.
     schemaFile: "v0.9/findings.schema.json",
     codec: legacyFindingsCodec,
     normalize: legacyFindingsNormalize,
@@ -217,6 +219,18 @@ export const versionFor = (kind: SchemaKind, version?: string): string =>
   entryFor(kind, version).defaultVersion;
 
 export const defaultVersion = (kind: SchemaKind): string => versionFor(kind);
+
+// The version a printed copy of the LIVE file pins for a requested version: the requested entry's,
+// when it is supported and shares the live file; otherwise none, so an unsupported request or a
+// minor served by a frozen legacy file prints unpinned instead of failing or contradicting itself.
+export const livePinFor = (kind: SchemaKind, version?: string): string | undefined => {
+  const table = tableFor(kind);
+  const latest = table.find((v) => v.latest);
+  const entry = version === undefined ? latest : table.find((v) => v.minor === majorMinor(version));
+  return entry !== undefined && entry.schemaFile === latest?.schemaFile
+    ? entry.defaultVersion
+    : undefined;
+};
 
 const resolveFindings = (raw: unknown): Resolution<"findings"> => {
   const version = declaredVersion(raw);

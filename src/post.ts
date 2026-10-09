@@ -1,7 +1,7 @@
 // Ordering invariant: all reads, decodes, and rendering complete before the first API write; then
 // the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
-import { existsSync, readFileSync, appendFileSync } from "node:fs";
+import { readFileSync, appendFileSync } from "node:fs";
 import type { DiscussionLink, InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff, indexDiff, partitionFindings } from "./diff.js";
@@ -70,7 +70,7 @@ import {
   ID_SHAPE_RE,
   priorIdsFrom,
 } from "./schema.js";
-import { resolveFindingId } from "./schema.js";
+import { isSynthesizedFindingId, resolveFindingId } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -93,8 +93,8 @@ import {
 } from "./answered.js";
 import {
   closingResponses,
+  decodeStagedResponses,
   isTrustedResponse,
-  ResponsesFileCodec,
   type Response,
 } from "./responses.js";
 import { asRecord, errMsg, tryParseJson } from "./util.js";
@@ -259,18 +259,29 @@ const loadEnvelope = (path: string): ResultEnvelope | null => {
 };
 
 // Optional enrichment: any failure warns and returns undefined, never aborts the post.
+const readStagedResponses = (path: string): ReturnType<typeof decodeStagedResponses> => {
+  try {
+    const parsed = tryParseJson(readFileSync(path, "utf-8"));
+    return parsed.ok ? decodeStagedResponses(parsed.value) : null;
+  } catch {
+    return null;
+  }
+};
+
 const loadResponses = (path: string): readonly Response[] => {
-  const parsed = existsSync(path)
-    ? tryParseJson(readFileSync(path, "utf-8"))
-    : { ok: false as const };
-  const decoded = parsed.ok ? ResponsesFileCodec.decode(parsed.value) : null;
-  if (decoded === null || decoded._tag === "Left") {
+  const staged = readStagedResponses(path);
+  if (staged === null) {
     process.stderr.write(
       `Warning: the answers at ${path} are missing or unreadable — no finding is treated as answered\n`,
     );
     return [];
   }
-  return decoded.right.responses;
+  if (staged.undecoded > 0) {
+    process.stderr.write(
+      `Warning: ${String(staged.undecoded)} of the answers at ${path} did not decode — they close nothing\n`,
+    );
+  }
+  return staged.responses;
 };
 
 const loadTestReport = (path: string): TestSummary | undefined => {
@@ -1368,12 +1379,16 @@ export const post = async (
   // silently). A re-raise with changed evidence is kept and annotated with the answer's link. Only a
   // full-review prior has findings an answer can name; absent answers mean an empty registry.
   const loadedFindings = findingsResult.findings;
-  const closures =
+  // Only a closure some current finding can match — by id, or a synthesized id's title second
+  // chance — is worth the prior's download.
+  const currentFindingIds = new Set(loadedFindings.findings.map(resolveFindingId));
+  const closures = (
     existingSticky === null || priorIsMechanic || input.responsesPath === undefined
       ? []
       : closingResponses(loadResponses(input.responsesPath), (response) =>
           isTrustedResponse(response, input.repo, input.headRepo),
-        );
+        )
+  ).filter((closure) => currentFindingIds.has(closure.id) || isSynthesizedFindingId(closure.id));
   // The prior document the closures name, resolved only when one exists — and the one resolve the
   // nit stickiness and the discussion gate below reuse.
   const priorForAnswers =
@@ -1425,7 +1440,7 @@ export const post = async (
   // Nit visibility floor (issue #164): split the human-visible findings from the below-floor nits.
   // The blob (`findings`) stays COMPLETE — the machine channel and the next-round seed keep every nit,
   // so a hidden nit reads as already adjudicated and is never re-raised as fresh (a policy-suppressed
-  // nit has no external anchor the way an answered-drop's live GitHub thread does, so it MUST remain in
+  // nit has no external anchor the way an answered drop's closing answer does, so it MUST remain in
   // the blob). Only the HUMAN surfaces filter: no inline comment, no visible stray, a collapsed aside;
   // the severity histogram and the rounds trajectory stay FULL (a nit contributes 0 to the score, and
   // an all-suppressed round must not read as "clean"). Stickiness, one round deep, re-derived from the

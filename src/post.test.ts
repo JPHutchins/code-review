@@ -5167,6 +5167,34 @@ describe("post — answered findings (issue #151)", () => {
     expect(patchedBody(calls())).not.toContain("treated as answered");
   });
 
+  it("decodes the answers row by row — a malformed row closes nothing, the rest still count", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const { readArtifact, responsesPath } = withAnswers(answered);
+    writeFileSync(
+      responsesPath,
+      JSON.stringify({ responses: [{ id: "broken" }, closing()], unmatched: [] }),
+    );
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { api, calls } = mkMockGhApi(mkMocks(priorSticky));
+    await post(mkInput({ route: "full review", responsesPath }), api, readArtifact);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("1 of the answers"));
+    stderr.mockRestore();
+    expect(patchedBody(calls())).toContain("treated as answered");
+  });
+
+  it("pays no prior download for closures no current finding can match", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const { responsesPath } = withAnswers(answered, [closing({ id: "another-finding" })]);
+    const resolves: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      resolves.push(url);
+      return Promise.resolve(null);
+    };
+    const { api } = mkMockGhApi(mkMocks(priorSticky));
+    await post(mkInput({ route: "full review", responsesPath }), api, readArtifact);
+    expect(resolves).toEqual([]);
+  });
+
   it("degrades an absent or unreadable answers file to an empty registry, warned", async () => {
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
     const responsesPath = join(tmpDir, "responses.json");

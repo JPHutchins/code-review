@@ -1,7 +1,6 @@
 // The "already answered" state (issue #151): the deterministic registry of prior findings a
-// maintainer's Review-Response line refuted or dismissed, plus the rule built on it — post() treats a
-// VERBATIM re-raise
-// as closed: identical match (id), identical claim TEXT (title + description + reasoning),
+// maintainer's answer refuted or dismissed, plus the rule built on it — post() treats a VERBATIM
+// re-raise as closed: identical match (id), identical claim TEXT (title + description + reasoning),
 // identical severity, and identical location/fix (path + patch — the line is deliberately excluded,
 // positional drift is not evidence), i.e. no new evidence by definition. A re-raise carrying a
 // non-blank rebuttal answers the prior response, so it is never verbatim. The drop is removed from
@@ -35,14 +34,6 @@ export interface AnsweredEntry {
   readonly answerUrl: string;
   readonly answerAuthor: string | null;
 }
-
-// A reply is "answered" when a HUMAN commented on the thread: neither this pipeline's bot (matched
-// by login) nor any other bot account (matched by the REST user.type, so a CI/dependabot comment
-// can't masquerade as an answer — issue #151 review r1). A MISSING type (null — an unexpected API
-// shape) fails closed to "not human": an uncertain answer must not cause a finding to be dropped
-// (issue #151 review r2).
-export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
-  login !== botLogin && type === "User";
 
 // One entry per closing answer, carrying the claim fields of the prior finding its id names: the
 // verbatim comparison is against what the prior round reported. A closure naming no prior finding has
@@ -152,8 +143,9 @@ const bestTitleMatch = (
   return best;
 };
 
+// A commit's author is a self-declared git name, so it renders inside a code span, never as markdown.
 const byAuthor = (e: AnsweredEntry): string =>
-  e.answerAuthor === null ? "" : ` by ${e.answerAuthor}`;
+  e.answerAuthor === null ? "" : ` by \`${escapeCodeBackticks(e.answerAuthor)}\``;
 
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
 // re-raise of a closed finding: it links the answer and demands the new evidence be named.

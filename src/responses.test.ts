@@ -9,6 +9,7 @@ import {
   ResponsesFileCodec,
   MAINTAINER_ASSOCIATIONS,
   closingResponses,
+  decodeStagedResponses,
   isTrustedResponse,
   type HarvestInput,
   type Response,
@@ -376,5 +377,26 @@ describe("closingResponses — the newest trusted answer per id decides", () => 
       created_at: "2026-10-02T00:00:00Z",
     });
     expect(closingResponses([closed, outsider], maintainer)).toEqual([closed]);
+  });
+});
+
+describe("decodeStagedResponses — row by row", () => {
+  it("keeps every row that decodes and counts the rest", () => {
+    const good = {
+      id: "x-y",
+      disposition: "dismissed",
+      reason: "r",
+      channel: "comment",
+      source_url: "u",
+      author: "alice",
+      author_association: "OWNER",
+      created_at: "2026-10-01T00:00:00Z",
+    };
+    expect(decodeStagedResponses({ responses: [good, { id: 1 }], unmatched: [] })).toEqual({
+      responses: [good],
+      undecoded: 1,
+    });
+    expect(decodeStagedResponses({ unmatched: [] })).toBeNull();
+    expect(decodeStagedResponses("not an object")).toBeNull();
   });
 });

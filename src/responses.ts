@@ -1,6 +1,6 @@
 import * as t from "io-ts";
 import { ID_SHAPE_RE, strictExact } from "./schema.js";
-import { clipText } from "./util.js";
+import { asRecord, clipText } from "./util.js";
 
 export const RESPONSE_REASON_CLIP_CHARS = 300;
 export const RESPONSES_PER_CHANNEL = 25;
@@ -233,9 +233,11 @@ export const closingResponses = (
   responses: readonly Response[],
   isTrusted: (response: Response) => boolean,
 ): readonly Response[] => {
-  const trusted = responses.filter(isTrusted);
-  return [...new Set(trusted.map((response) => response.id))].flatMap((id) => {
-    const answers = trusted.filter((response) => response.id === id);
+  const byId = responses.filter(isTrusted).reduce((groups, response) => {
+    groups.set(response.id, [...(groups.get(response.id) ?? []), response]);
+    return groups;
+  }, new Map<string, readonly Response[]>());
+  return [...byId.values()].flatMap((answers) => {
     if (answers.some((response) => Number.isNaN(answeredInstant(response)))) return [];
     const latest = Math.max(...answers.map(answeredInstant));
     const newest = answers.filter((response) => answeredInstant(response) === latest);
@@ -243,4 +245,18 @@ export const closingResponses = (
       ? newest.slice(0, 1)
       : [];
   });
+};
+
+// The staged answers, decoded row by row: a row that does not decode closes nothing, and the rest
+// still count. null when the file holds no answers array at all.
+export const decodeStagedResponses = (
+  raw: unknown,
+): { readonly responses: readonly Response[]; readonly undecoded: number } | null => {
+  const rows = asRecord(raw)?.["responses"];
+  if (!Array.isArray(rows)) return null;
+  const responses = rows.flatMap((row) => {
+    const decoded = ResponseCodec.decode(row);
+    return decoded._tag === "Right" ? [decoded.right] : [];
+  });
+  return { responses, undecoded: rows.length - responses.length };
 };

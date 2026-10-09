@@ -692,6 +692,19 @@ describe("the jailed agents never hold the job token", () => {
   });
 });
 
+describe("the maintainer roles — one definition for every gate that trusts them", () => {
+  it("the on-comment review trigger admits exactly MAINTAINER_ASSOCIATIONS", () => {
+    for (const path of [
+      ".github/workflows/review-on-comment.yaml",
+      "examples/workflows/review-on-comment.yaml",
+    ]) {
+      expect(readRepoFile(path), path).toContain(
+        `contains(fromJSON('${JSON.stringify(MAINTAINER_ASSOCIATIONS)}'), github.event.comment.author_association)`,
+      );
+    }
+  });
+});
+
 describe("the review dialogue — the reviewer and the triage read the same protocol in both workflows", () => {
   const scriptOf = (workflowPath: string, stepName: string): string => {
     const found = runScripts(workflowPath).filter((s) => s.step.endsWith(`→ ${stepName}`));

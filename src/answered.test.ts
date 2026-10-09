@@ -349,6 +349,14 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
     expect(answeredReRaiseNote([], 0)).toBe("");
   });
 
+  it("renders the answer's author inside a code span — a commit's git name is self-declared", () => {
+    const spoofed = { ...entry, answerAuthor: "[maintainer](https://example.com) @owner" };
+    expect(answeredReRaiseNote([spoofed], 1)).toContain(
+      "by `[maintainer](https://example.com) @owner`",
+    );
+    expect(answeredReRaiseNote([{ ...entry, answerAuthor: null }], 1)).not.toContain(" by ");
+  });
+
   it("names the dropped finding's code and links the prior answer", () => {
     const note = answeredReRaiseNote([entry], 1);
     expect(note).toContain("treated as answered");

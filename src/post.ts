@@ -72,7 +72,7 @@ import {
 } from "./schema.js";
 import { resolveFindingId } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
-import { resolve, supportedVersions } from "./registry.js";
+import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import {
@@ -90,8 +90,14 @@ import {
   answeredNoteKey,
   answeredReRaiseNote,
   answeredRegistryFrom,
-  fetchThreadComments,
+  couldMatch,
 } from "./answered.js";
+import {
+  answersFrom,
+  closingResponses,
+  isTrustedResponse,
+  type AnswerSources,
+} from "./responses.js";
 import { asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
@@ -406,10 +412,10 @@ const postInlineReview = async (
 // errors PROPAGATE — the callers that must not mistake a failed fetch for an absent sticky let the
 // rejection through.
 // The issue-comments endpoint returns NO in_reply_to_id — the field exists only on pull-request
-// REVIEW comments (the answered registry's endpoint), and GitHub's API exposes no issue-comment
+// REVIEW comments, and GitHub's API exposes no issue-comment
 // reply chain at all. The projection therefore carries only the fields the endpoint actually has.
 const ISSUE_COMMENTS_JQ =
-  '.[] | {id, user: (.user.login // "(deleted)"), created_at, html_url, body: (.body // "")}';
+  '.[] | {id, user: (.user.login // "(deleted)"), user_type: (.user.type // null), author_association: (.author_association // null), created_at, html_url, body: (.body // "")}';
 
 interface IssueCommentRow {
   readonly id: number;
@@ -417,7 +423,13 @@ interface IssueCommentRow {
   readonly created: string;
   readonly url: string;
   readonly body: string;
+  // Read for the answers alone, never required: a row without them is still a whole comment.
+  readonly authorType: string | null;
+  readonly association: string | null;
 }
+
+const nullableString = (value: unknown): string | null =>
+  typeof value === "string" ? value : null;
 
 const parseIssueCommentRows = (
   raw: string,
@@ -445,7 +457,15 @@ const parseIssueCommentRows = (
       typeof url === "string" &&
       typeof body === "string"
     ) {
-      rows.push({ id, author, created, url, body });
+      rows.push({
+        id,
+        author,
+        created,
+        url,
+        body,
+        authorType: nullableString(rec?.["user_type"]),
+        association: nullableString(rec?.["author_association"]),
+      });
     } else {
       // A shape failure IS corruption: the ghost-account case this branch once served is now
       // coalesced to "(deleted)" in the projection, so every remaining drop is a field the
@@ -460,6 +480,56 @@ const parseIssueCommentRows = (
     (a, b) => a.created.localeCompare(b.created) || (a.id > b.id ? 1 : a.id < b.id ? -1 : 0),
   );
   return { rows, malformed };
+};
+
+// The author is the GitHub account the commit's author email resolves to, never the self-declared git
+// name; the time is the author date, which a rebase keeps.
+const COMMITS_JQ =
+  ".[] | {sha, message: .commit.message, author: (.author.login // null), date: (.commit.author.date // null)}";
+
+// The PR's commits, read for the answers in their messages. A failed fetch reads no commit answers,
+// and a row that does not decode is counted — named, never a failed post.
+const fetchCommitAnswersSource = async (
+  repo: string,
+  prNumber: number,
+  ghApi: GhApi,
+): Promise<AnswerSources["commits"]> => {
+  try {
+    const raw = await ghApi([
+      `repos/${repo}/pulls/${String(prNumber)}/commits?per_page=100`,
+      "--paginate",
+      "--jq",
+      COMMITS_JQ,
+    ]);
+    const lines = raw.split("\n").filter((line) => line.trim() !== "");
+    const commits = lines.flatMap((line) => {
+      const parsed = tryParseJson(line.trim());
+      const rec = parsed.ok ? asRecord(parsed.value) : null;
+      const sha = rec?.["sha"];
+      const message = rec?.["message"];
+      return typeof sha === "string" && typeof message === "string"
+        ? [
+            {
+              sha,
+              message,
+              author: nullableString(rec?.["author"]),
+              date: nullableString(rec?.["date"]),
+            },
+          ]
+        : [];
+    });
+    if (commits.length < lines.length) {
+      process.stderr.write(
+        `Warning: ${String(lines.length - commits.length)} of the PR's commits did not decode — their answers close nothing\n`,
+      );
+    }
+    return commits;
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not read the PR's commits (${errMsg(err)}) — no commit answer closes a finding this round\n`,
+    );
+    return [];
+  }
 };
 
 const fetchIssueCommentRows = async (
@@ -591,8 +661,8 @@ const escapedIdIndex = (ids: readonly string[]): ReadonlyMap<string, string> => 
 };
 
 // The discussion rows: EVERY comment on the PR, the sticky's own excluded. GitHub's API exposes
-// no reply-chain for issue comments (in_reply_to_id exists only on pull-request REVIEW comments —
-// the answered registry's endpoint), so "replies to the sticky" cannot be derived from any
+// no reply-chain for issue comments (in_reply_to_id exists only on pull-request REVIEW comments),
+// so "replies to the sticky" cannot be derived from any
 // channel; the aside groups the whole comment conversation instead, which serves the same
 // discoverability. Rows are deduped by id, first occurrence wins — gh --paginate fetches pages
 // sequentially, and a comment edited mid-pagination can legitimately appear on two pages; two
@@ -1145,13 +1215,13 @@ export const post = async (
   };
 
   // The leave paths cannot write a note — the preserved sticky still surfaces each dropped finding
-  // and its reply thread — so the one place that names the drops in the run log, shared by every
+  // — so the one place that names the drops in the run log, shared by every
   // post-filter leave site (issue #151 review r5). The count is the TRUE pre-dedup dropped-finding
   // count, never the deduped entry list (issue #151 review r7).
   const logAnsweredDrops = (): void => {
     if (verbatimReRaised.length > 0) {
       process.stderr.write(
-        `${String(droppedCount)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+        `${String(droppedCount)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding\n`,
       );
     }
   };
@@ -1340,26 +1410,61 @@ export const post = async (
     );
     process.exit(0);
   }
-  // The "already answered" state (issue #151): the prior inline findings whose threads a human reply
-  // answered, fetched live (the threads persist on GitHub; no carried marker needed). A verbatim
-  // re-raise of an answered finding — identical title and reasoning, no new evidence by definition —
-  // is treated as closed: dropped from this review's findings, counts, inline comments, and round
-  // signal, and NAMED in the sticky (never silently). A re-raise with changed evidence is kept and
-  // annotated with the prior answer's link. A failed fetch degrades to an empty registry (the review
-  // posts unfiltered).
+  // The "already answered" state (issue #151): the prior findings a maintainer's answer refuted or
+  // dismissed. A verbatim re-raise of one — identical claim, no rebuttal, no new evidence by
+  // definition — is treated as closed: dropped from this review's findings, counts, inline comments,
+  // and round signal, and NAMED in the sticky (never silently). A re-raise with changed evidence is
+  // kept and annotated with the answer's link. The answers are read HERE, through this step's own
+  // token, from every comment and commit on the PR: the sticky names their authors, so they never
+  // come from a file the reviewing agent could have written. Only a full-review prior has findings an
+  // answer can name.
   const loadedFindings = findingsResult.findings;
-  // The answered-thread fetch runs only when a review will actually be filtered — an empty-diff or
-  // corrupt-findings post exits above without paying for the paginated history (issue #151 review
-  // r3), and a FIRST-EVER review (no bot sticky at all, so no bot threads can exist) provably has
-  // an empty registry (issue #151 review r4).
-  // ALWAYS fetch on a filterable post: a missing sticky does not prove an empty thread history (a
-  // maintainer can delete the sticky while the threads remain; pre-sticky reviews leave threads
-  // with no sticky at all), so the round-4 sticky-absence skip — which could silently starve the
-  // registry — is inverted and removed (issue #151 review r7). The empty-diff/corrupt-findings
-  // early exits above still avoid the fetch entirely.
-  const threadComments = await fetchThreadComments(ghApi, input.repo, prNumber);
-  const answeredRegistry =
-    threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
+  const answerable =
+    existingSticky !== null && !priorIsMechanic && loadedFindings.findings.length > 0;
+  // A commit answer's trust is the push access a head branch IN the base repo implies, read from the
+  // PR itself: a fork's head, or a deleted fork's null one, trusts no commit, and its commits go unread.
+  const headInBaseRepo =
+    answerable &&
+    resolution.headRepo !== null &&
+    resolution.headRepo.toLowerCase() === input.repo.toLowerCase();
+  const answers = answerable
+    ? answersFrom({
+        repo: input.repo,
+        prNumber,
+        botLogin: input.botLogin,
+        comments: commentRows.map((row) => ({
+          id: row.id,
+          body: row.body,
+          user: { login: row.author, type: row.authorType },
+          created_at: row.created,
+          author_association: row.association,
+        })),
+        commits: headInBaseRepo ? await fetchCommitAnswersSource(input.repo, prNumber, ghApi) : [],
+      })
+    : { comments: [], commits: [] };
+  // Only a closure some current finding could match is worth the prior's download.
+  const closures = closingResponses([...answers.comments, ...answers.commits], (response) =>
+    isTrustedResponse(response, headInBaseRepo),
+  ).filter((closure) => couldMatch(closure.id, loadedFindings.findings));
+  // The prior document the closures name, resolved only when one exists — and the one resolve the
+  // nit stickiness and the discussion gate below reuse.
+  const priorForAnswers =
+    closures.length > 0 && existingSticky !== null
+      ? { value: await resolvePriorFindings(existingSticky.body, readArtifact) }
+      : null;
+  const answeredPrior =
+    priorForAnswers === null ? null : resolveTolerantFindings(priorForAnswers.value);
+  if (priorForAnswers !== null && answeredPrior === null) {
+    process.stderr.write(
+      `Warning: ${String(closures.length)} maintainer answer(s) close prior findings, but the prior review's findings did not resolve — no re-raise is treated as answered\n`,
+    );
+  }
+  const answeredRegistry = answeredRegistryFrom(closures, answeredPrior);
+  if (answeredPrior !== null && answeredRegistry.length < closures.length) {
+    process.stderr.write(
+      `Warning: ${String(closures.length - answeredRegistry.length)} maintainer answer(s) name no finding the prior review reported — they close nothing this round\n`,
+    );
+  }
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
   const reRaisedNotes = answeredFilter.reRaisedNotes;
   const verbatimReRaised = answeredFilter.verbatimReRaised;
@@ -1397,7 +1502,7 @@ export const post = async (
   // Nit visibility floor (issue #164): split the human-visible findings from the below-floor nits.
   // The blob (`findings`) stays COMPLETE — the machine channel and the next-round seed keep every nit,
   // so a hidden nit reads as already adjudicated and is never re-raised as fresh (a policy-suppressed
-  // nit has no external anchor the way an answered-drop's live GitHub thread does, so it MUST remain in
+  // nit has no external anchor the way an answered drop's closing answer does, so it MUST remain in
   // the blob). Only the HUMAN surfaces filter: no inline comment, no visible stray, a collapsed aside;
   // the severity histogram and the rounds trajectory stay FULL (a nit contributes 0 to the score, and
   // an all-suppressed round must not read as "clean"). Stickiness, one round deep, re-derived from the
@@ -1410,9 +1515,9 @@ export const post = async (
   // yields no keys, so stickiness fails open to visible.
   // Resolved rather than decoded: the prior sticky's marker names the findings artifact (issue #217),
   // so this fetches it — and still reads an embedded blob on a sticky written before that change.
-  // One resolve serves BOTH consumers — the nit stickiness keys and the discussion orphan gate —
-  // and the resolve is a download plus an unzip subprocess on the critical path before the sticky
-  // write, so it is paid only when one of them can use it. The nit keys only ever match a nit; the
+  // One resolve serves every consumer — the answered registry above, the nit stickiness keys, and the
+  // discussion orphan gate — and the resolve is a download plus an unzip subprocess on the critical
+  // path before the sticky write, so it is paid only when one of them can use it. The nit keys only ever match a nit; the
   // orphan bucket is non-empty only when a reply names an id-shaped token this round does not
   // report (with no prior ids the bucket is empty either way, so that gate skips a fetch it could
   // not use, never an output it could change).
@@ -1435,9 +1540,11 @@ export const post = async (
   const broadWantsPrior =
     existingSticky !== null && !priorIsMechanic && mentionsOutsideKnown(reachable, broadCurrentIds);
   const resolvedPrior =
-    existingSticky !== null && (nitWantsPrior || broadWantsPrior)
-      ? await resolvePriorFindings(existingSticky.body, readArtifact)
-      : null;
+    priorForAnswers !== null
+      ? priorForAnswers.value
+      : existingSticky !== null && (nitWantsPrior || broadWantsPrior)
+        ? await resolvePriorFindings(existingSticky.body, readArtifact)
+        : null;
   const priorDocForNits = nitWantsPrior ? resolvedPrior : null;
   const priorSuppressedKeys = new Set(
     priorBelowFloorNits(priorDocForNits, input.nitVisibilityFloor).map((n) =>

@@ -94,10 +94,10 @@ export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl
 //
 // Two thresholds, one valve. The inline template re-renders the SAME fields as prose, so the comment
 // holds the payload AND roughly the payload again — past the SOFT bound the inline renderer clips
-// that prose (marked, never silent) while the marker keeps embedding the WHOLE finding, which is
-// what keeps the answered registry working (issue #233 r1 + r2). Past the HARD bound (the
-// whole-document embed's old EMBED_LIMIT) no embed fits at all, so the marker names the artifact
-// instead — and only THAT band breaks the registry, for a finding pathological enough that no
+// that prose (marked, never silent) while the marker keeps embedding the WHOLE finding, so the
+// thread stays self-contained (issue #233 r1 + r2). Past the HARD bound (the whole-document embed's
+// old EMBED_LIMIT) no embed fits at all, so the marker names the artifact instead — and only THAT
+// band loses the self-contained finding, for a finding pathological enough that no
 // comment could hold it. With no URL there is nothing to name, so the embed stays the only channel.
 // Dedupes the hard-valve warning per finding identity within one process (issue #236 r3).
 const warnedValveFindings = new Set<string>();
@@ -262,6 +262,16 @@ const hasId = (ids: IdCounts | undefined, code: string): boolean =>
 // the escaping rule lives in one place.
 export const escapeCodeBackticks = (code: string): string =>
   code.replace(/`/g, "-").replace(/\r?\n/g, " ");
+
+// A code renders inside backticks and a code_url inside a markdown link: a backtick in the code
+// breaks the span, and a paren/newline in the URL breaks the link (or the blockquote the nit's
+// aside sits in) — issue #233 r2. The newline/backtick handling is escapeCodeBackticks' own.
+// The paren policy has ONE owner: an unbalanced paren truncates GitHub's autolink, so every
+// URL-building surface on the sticky shares this encoding (issue #231 r2).
+export const encodeAutolinkParens = (url: string): string =>
+  url.replace(/\(/g, "%28").replace(/\)/g, "%29");
+
+export const linkSafeUrl = (url: string): string => encodeAutolinkParens(escapeCodeBackticks(url));
 
 // The codes field of a round record, validated and capped: string → positive safe-integer counts only
 // (a count-0 entry means "no findings this round" and is not recorded — every consumer agrees that 0

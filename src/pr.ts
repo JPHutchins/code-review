@@ -9,10 +9,12 @@ interface PrCandidate {
   readonly state: string;
   readonly headRef: string;
   readonly headSha: string;
+  // owner/name of the head branch's repository; null for a deleted fork.
+  readonly headRepo?: string | null;
 }
 
 const CANDIDATE_JQ =
-  ".[] | {number: .number, state: .state, headRef: .head.ref, headSha: .head.sha}";
+  ".[] | {number: .number, state: .state, headRef: .head.ref, headSha: .head.sha, headRepo: (.head.repo.full_name // null)}";
 
 const parseCandidates = (stdout: string): readonly PrCandidate[] =>
   parseJsonl(stdout) as readonly PrCandidate[];
@@ -61,7 +63,7 @@ export const fetchPrCandidates = async (
 export type PrResolution =
   | { readonly kind: "none" }
   | { readonly kind: "not-open"; readonly prNumber: number; readonly state: string }
-  | { readonly kind: "open"; readonly prNumber: number };
+  | { readonly kind: "open"; readonly prNumber: number; readonly headRepo: string | null };
 
 export const resolvePr = (
   candidates: readonly PrCandidate[],
@@ -75,7 +77,7 @@ export const resolvePr = (
   const chosen = scoped.find((c) => c.state === "open") ?? scoped[0] ?? candidates[0];
   if (chosen === undefined) return { kind: "none" };
   return chosen.state === "open"
-    ? { kind: "open", prNumber: chosen.number }
+    ? { kind: "open", prNumber: chosen.number, headRepo: chosen.headRepo ?? null }
     : { kind: "not-open", prNumber: chosen.number, state: chosen.state };
 };
 

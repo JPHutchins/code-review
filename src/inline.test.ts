@@ -59,7 +59,7 @@ index abc..def 100644
 
 describe("buildInlineComments", () => {
   // In the clip band the prose sheds so the comment fits while the marker keeps embedding the
-  // WHOLE finding — the answered registry depends on that (issue #233 r2).
+  // WHOLE finding.
   it("clips the prose in the clip band while the marker embeds the whole finding", () => {
     const inBand = mkFinding({
       path: "src/foo.ts",
@@ -455,9 +455,8 @@ index abc..def 100644
     expect(comments[0]!.body).toContain("<!-- code-review:findings-json;base64 ");
   });
 
-  // The whole-document blob left the sticky (issue #217), but a thread keeps its OWN finding: the
-  // answered registry decodes it to identify the thread, and an answer from round 1 must still close a
-  // verbatim re-raise in round 8 — this round's artifact does not contain round 1's finding.
+  // The whole-document blob left the sticky (issue #217), but a thread keeps its OWN finding, so an
+  // agent reading the thread can decode the finding without this round's artifact.
   it("embeds ONLY its own finding, self-contained across rounds (issues #31, #217)", () => {
     const a = mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, title: "Finding A" });
     const b = mkFinding({ path: "src/foo.ts", start_line: 2, end_line: 2, title: "Finding B" });

@@ -148,8 +148,8 @@ export interface RenderInput {
   // derives it from rounds.slice(0, -1)). Omitted ⇒ derived. Rendered as an advisory one-liner under
   // each such finding (sticky strays + inline comments); never alters severity or verdict.
   readonly sameRootNotes?: Readonly<Record<string, string>>;
-  // Code → "Re-raised; prior answer at <link>" note for KEPT findings whose code matches an
-  // answered prior inline thread but whose evidence changed (issue #151) — the reviewer re-raised
+  // Code → "Re-raised; prior answer at <link>" note for KEPT findings whose id a maintainer's answer
+  // closed but whose evidence changed (issue #151) — the reviewer re-raised
   // with new evidence, so it stays, annotated with the prior answer's link. Omitted/empty ⇒ none.
   readonly answeredNotes?: Readonly<Record<string, string>>;
   // Finding id → replies to the sticky comment that mention that id (issue #246's discussion aside):

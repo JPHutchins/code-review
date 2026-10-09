@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readRepoFile, allWorkflows } from "./test-util.js";
 import { DISPOSITIONS, RESPONSE_FORM } from "./response-grammar.js";
+import { MAINTAINER_ASSOCIATIONS } from "./responses.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -692,6 +693,29 @@ describe("the jailed agents never hold the job token", () => {
   });
 });
 
+describe("the maintainer roles — one definition for every gate that trusts them", () => {
+  it("the conversation note weighs exactly MAINTAINER_ASSOCIATIONS above an outside author", () => {
+    const roles = `an ${MAINTAINER_ASSOCIATIONS.slice(0, -1).join(", ")}, or ${MAINTAINER_ASSOCIATIONS.at(-1) ?? ""} over an outside author`;
+    for (const path of [
+      ".github/workflows/review-reusable.yaml",
+      "examples/workflows/review.yaml",
+    ]) {
+      expect(readRepoFile(path), path).toContain(roles);
+    }
+  });
+
+  it("the on-comment review trigger admits exactly MAINTAINER_ASSOCIATIONS", () => {
+    for (const path of [
+      ".github/workflows/review-on-comment.yaml",
+      "examples/workflows/review-on-comment.yaml",
+    ]) {
+      expect(readRepoFile(path), path).toContain(
+        `contains(fromJSON('${JSON.stringify(MAINTAINER_ASSOCIATIONS)}'), github.event.comment.author_association)`,
+      );
+    }
+  });
+});
+
 describe("the review dialogue — the reviewer and the triage read the same protocol in both workflows", () => {
   const scriptOf = (workflowPath: string, stepName: string): string => {
     const found = runScripts(workflowPath).filter((s) => s.step.endsWith(`→ ${stepName}`));
@@ -718,6 +742,9 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     );
     expect(note).toContain(`\\\`${RESPONSE_FORM.slice(0, RESPONSE_FORM.indexOf(" "))}\\\` line`);
     expect(note).toContain(`(disposition ${DISPOSITIONS.join("|")}, or unstated when`);
+    expect(note).toContain(
+      `(${MAINTAINER_ASSOCIATIONS.slice(0, -1).join(", ")} and ${MAINTAINER_ASSOCIATIONS.at(-1) ?? ""} answers come from the maintainers`,
+    );
     expect(note).toContain("\\`unmatched\\`");
     for (const path of [
       ".github/workflows/review-reusable.yaml",

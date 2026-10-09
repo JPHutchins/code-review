@@ -1,63 +1,21 @@
-// The "already answered" state (issue #151): the deterministic registry of prior inline findings
-// whose threads a human reply answered, plus the rule built on it — post() treats a VERBATIM re-raise
-// as closed: identical match (id), identical claim TEXT (title + description + reasoning),
+// The "already answered" state (issue #151): the deterministic registry of prior findings a
+// maintainer's answer refuted or dismissed, plus the rule built on it — post() treats a VERBATIM
+// re-raise as closed: identical match (id), identical claim TEXT (title + description + reasoning),
 // identical severity, and identical location/fix (path + patch — the line is deliberately excluded,
 // positional drift is not evidence), i.e. no new evidence by definition. A re-raise carrying a
 // non-blank rebuttal answers the prior response, so it is never verbatim. The drop is removed from
 // the surfaced review and NAMED in the sticky; a re-raise with any changed component is kept and
 // annotated with the prior answer's link.
 
-import * as t from "io-ts";
-import { ancestors } from "./comment-chain.js";
-import { escapeCodeBackticks, parseFindingsMarker } from "./surface.js";
-import { parseJsonl } from "./transcript.js";
-import type { GhApi } from "./gh.js";
-import {
-  isSynthesizedFindingId,
-  resolveFindingId,
-  resolveRuleId,
-  synthesizedFindingId,
-  hasRebuttal,
-} from "./schema.js";
-import type { Finding, Severity } from "./schema.js";
-import { errMsg } from "./util.js";
-
-// One flat review comment as REST `pulls/{n}/comments` returns it — enough to rebuild reply threads
-// from `in_reply_to_id` chains (a reply to a reply included) and to decode the bot comment's embedded
-// per-finding marker.
-export interface ThreadComment {
-  readonly id: number;
-  readonly in_reply_to_id: number | null;
-  readonly user_login: string;
-  // "User" | "Bot" — lets the registry exclude replies from OTHER bots (a CI/dependabot comment
-  // is not a human answer), not just this pipeline's own bot login.
-  readonly user_type: string | null;
-  readonly body: string | null;
-  readonly html_url: string;
-  readonly path: string | null;
-  readonly line: number | null;
-  readonly created_at: string | null;
-}
-
-export const THREAD_COMMENT_JQ =
-  ".[] | {id, in_reply_to_id, user_login: .user.login, user_type: .user.type, body, html_url, path, line, created_at}";
-
-export const ThreadCommentCodec = t.type({
-  id: t.number,
-  in_reply_to_id: t.union([t.number, t.null]),
-  user_login: t.string,
-  user_type: t.union([t.string, t.null]),
-  body: t.union([t.string, t.null]),
-  html_url: t.string,
-  path: t.union([t.string, t.null]),
-  line: t.union([t.number, t.null]),
-  created_at: t.union([t.string, t.null]),
-});
+import { escapeCodeBackticks, linkSafeUrl } from "./surface.js";
+import { isSynthesizedFindingId, resolveFindingId, hasRebuttal } from "./schema.js";
+import type { Finding, Findings, Severity } from "./schema.js";
+import type { Response } from "./responses.js";
 
 // The registry entry for one answered finding: the finding's identifying fields (the verbatim-match
-// targets) and the last human reply's link.
+// targets) and the answer that closed it.
 export interface AnsweredEntry {
-  // The answered finding's id; a pre-id marker resolves it the same way the registry's legacy
+  // The answered finding's id; a pre-id prior finding resolves it the same way the registry's legacy
   // upcast does (code → id, else synthesized), so the entry keys to the identical claim next round.
   readonly code: string;
   readonly title: string;
@@ -73,176 +31,41 @@ export interface AnsweredEntry {
   // genuinely new instance changes the claim text.
   readonly path: string;
   readonly patch: string | null;
-  // The LAST human reply's timestamp and id — both READ for the dedup: "most recent answer wins"
-  // keys on the ANSWER time, never the root (review-posting) order, and an equal-timestamp tie
-  // breaks by the reply id (monotonic with creation), not by thread order (issues #151 review r4 +
-  // r7).
-  readonly repliedAt: string | null;
-  readonly replyId: number;
-  readonly replyUrl: string;
-  readonly replyAuthor: string;
+  readonly answerUrl: string;
+  readonly answerAuthor: string | null;
 }
 
-// A reply is "answered" when a HUMAN commented on the thread: neither this pipeline's bot (matched
-// by login) nor any other bot account (matched by the REST user.type, so a CI/dependabot comment
-// can't masquerade as an answer — issue #151 review r1). A MISSING type (null — an unexpected API
-// shape) fails closed to "not human": an uncertain answer must not cause a finding to be dropped
-// (issue #151 review r2).
-export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
-  login !== botLogin && type === "User";
-
-// OUTDATED/minimized threads are deliberately NOT excluded: the pipeline minimizes superseded
-// bot comments at the end of every post, so excluding them would erase the very persistence the
-// feature exists for — an answer from round 1 must still close a verbatim re-raise in round 8
-// (issue #151 review r1 considered and rejected the stale-thread scope).
-
-// The pure thread→registry construction. A thread is anchored on the bot's comment (by login); the
-// root's embedded per-finding marker names the finding. Replies are every non-bot comment whose
-// in_reply_to chain reaches that root. The LAST human reply per thread is recorded (the operative
-// dismissal — issue #151 review r5); when the same
-// code was answered in several threads, the most recent thread wins. Tolerant: an undecodable bot
-// comment (no marker, or a marker that fell to the link form) contributes nothing.
+// One entry per closing answer, carrying the claim fields of the prior finding its id names: the
+// verbatim comparison is against what the prior round reported. A closure naming no prior finding has
+// no claim to compare and makes no entry.
 export const answeredRegistryFrom = (
-  comments: readonly ThreadComment[],
-  botLogin: string,
-): readonly AnsweredEntry[] => {
-  // Order-independent: the REST order (ascending creation) is not a contract, so the reply
-  // selections sort explicitly by (created_at, id) before processing (issue #151 review r2). A
-  // MISSING created_at sorts FIRST (""), so an unknown-time reply is never picked as the
-  // operative LAST answer (issue #151 review r7).
-  const ordered = [...comments].sort(
-    (a, b) =>
-      (a.created_at ?? "").localeCompare(b.created_at ?? "") ||
-      (a.id > b.id ? 1 : a.id < b.id ? -1 : 0),
-  );
-  const byId = new Map<number, ThreadComment>();
-  for (const c of ordered) byId.set(c.id, c);
-
-  // The root of a comment's chain (walk in_reply_to_id up, cycle-safe); null when the chain never
-  // reaches a top-level comment within the fetched set.
-  const rootOf = (c: ThreadComment): ThreadComment | null => {
-    const chain = [
-      ...ancestors(c, (n) =>
-        n.in_reply_to_id === null ? null : (byId.get(n.in_reply_to_id) ?? null),
-      ),
-    ];
-    const root = chain[chain.length - 1];
-    return root !== undefined && root.in_reply_to_id === null ? root : null;
-  };
-
-  // The answered finding of a bot-rooted thread, from the root comment's embedded per-finding marker.
-  const findingOf = (
-    root: ThreadComment,
-  ): {
-    code: string;
-    title: string;
-    description: string;
-    reasoning: string;
-    severity: Severity;
-    path: string;
-    patch: string | null;
-  } | null => {
-    const decoded = parseFindingsMarker(root.body ?? "");
-    const doc =
-      typeof decoded === "object" && decoded !== null
-        ? (decoded as { findings?: unknown }).findings
-        : undefined;
-    const first = Array.isArray(doc) ? (doc[0] as Record<string, unknown> | undefined) : undefined;
-    if (first === undefined) return null;
-    const title = first["title"];
-    const description = first["description"];
-    const reasoning = first["reasoning"];
-    const id = first["id"];
-    const legacyCode = first["code"];
-    const severity = first["severity"];
-    const path = first["path"];
-    const patch = first["patch"];
-    return typeof title === "string" &&
-      typeof description === "string" &&
-      typeof reasoning === "string" &&
-      typeof path === "string" &&
-      (severity === "critical" ||
-        severity === "major" ||
-        severity === "minor" ||
-        severity === "nit")
-      ? {
-          // resolveRuleId: the ONE legacy-spelling precedence the upcast, this reader, and the
-          // below-floor nit reader share — a pre-id marker (or one written before the migration)
-          // carries `code`; a codeless one resolves to the same synthesized id the registry's
-          // legacy upcast derives, so the entry keys to the identical claim on the next round.
-          code:
-            resolveRuleId({
-              id: typeof id === "string" ? id : undefined,
-              code: typeof legacyCode === "string" ? legacyCode : undefined,
-              path,
-              title,
-            }) ?? synthesizedFindingId(path, title),
-          title,
-          description,
-          reasoning,
-          severity,
-          path,
-          patch: typeof patch === "string" ? patch : null,
-        }
-      : null;
-  };
-
-  // Group every comment under its root id; the root's own id keys the group. Iterating the SORTED
-  // array feeds both selections below — the first-human-reply find() and the last-wins dedup both
-  // read group/map insertion order, so the sort must drive that order (issue #151 review r3: the
-  // original fix sorted into `byId` only, leaving the selection loops on the raw API order).
-  const threads = new Map<number, ThreadComment[]>();
-  for (const c of ordered) {
-    const root = rootOf(c);
-    if (root === null) continue;
-    const group = threads.get(root.id);
-    if (group === undefined) threads.set(root.id, [c]);
-    else group.push(c);
-  }
-
-  // One entry per answered bot-rooted thread: the thread must be anchored on the BOT's comment;
-  // the answer recorded is the LAST HUMAN reply in it — the operative dismissal is the most recent
-  // answer, and a thread answered twice must not have its earlier reply win the dedup below (issue
-  // #151 review r5).
-  const entries: AnsweredEntry[] = [];
-  for (const [rootId, group] of threads) {
-    const root = byId.get(rootId);
-    if (root === undefined || root.user_login !== botLogin) continue;
-    const finding = findingOf(root);
-    if (finding === null) continue;
-    const humanReplies = group.filter(
-      (c) => c.id !== root.id && isHuman(c.user_login, c.user_type, botLogin),
-    );
-    const reply = humanReplies[humanReplies.length - 1];
-    if (reply === undefined) continue;
-    entries.push({
-      ...finding,
-      repliedAt: reply.created_at,
-      replyId: reply.id,
-      replyUrl: reply.html_url,
-      replyAuthor: reply.user_login,
-    });
-  }
-  // Dedup by the shared note key, keeping the entry with the MOST RECENT ANSWER — keyed on the
-  // REPLY time, never the root (review-posting) order: an older thread answered later must win over
-  // a newer thread answered earlier (issue #151 review r4). Sort DESCENDING by (repliedAt, replyId)
-  // and keep the first per key — an equal-timestamp tie breaks toward the LATER reply id
-  // (monotonic with creation), not toward any thread order (issue #151 review r7).
-  const byKey = new Map<string, AnsweredEntry>();
-  for (const entry of [...entries].sort(
-    (a, b) => (b.repliedAt ?? "").localeCompare(a.repliedAt ?? "") || b.replyId - a.replyId,
-  )) {
-    const key = answeredNoteKey({ id: entry.code, title: entry.title });
-    if (!byKey.has(key)) byKey.set(key, entry);
-  }
-  return [...byKey.values()];
-};
+  closures: readonly Response[],
+  prior: Findings | null,
+): readonly AnsweredEntry[] =>
+  closures.flatMap((response) => {
+    const finding = prior?.findings.find((f) => resolveFindingId(f) === response.id);
+    return finding === undefined
+      ? []
+      : [
+          {
+            code: response.id,
+            title: finding.title,
+            description: finding.description,
+            reasoning: finding.reasoning,
+            severity: finding.severity,
+            path: finding.path,
+            patch: finding.patch ?? null,
+            answerUrl: response.source_url,
+            answerAuthor: response.author,
+          },
+        ];
+  });
 
 // The id match: 0.10 requires every finding to carry an id, and the legacy upcast gives every pre-id
 // finding one (code → id, or synthesized), so two rounds of the same claim always key to equal ids.
-// An EMPTY id resolves exactly the way the registry builder resolves a marker finding — the two sides
+// An EMPTY id resolves exactly the way the registry builder resolves a prior finding — the two sides
 // share resolveFindingId, so a verbatim re-raise of an empty-id finding still matches the entry its
-// marker synthesized. A TITLE match is the second chance the pre-0.10 "code (or title)" rule gave,
+// prior finding synthesized. A TITLE match is the second chance the pre-0.10 "code (or title)" rule gave,
 // RESTRICTED to entries whose code was synthesized (isSynthesizedFindingId): a codeless claim whose
 // answer pre-dates ids can only recover its annotation when the re-raise is RELOCATED (the
 // synthesized key is path-derived) or carries a fresh agent id — while an unrelated same-title entry
@@ -255,6 +78,11 @@ const matches = (
   f: Finding,
   e: Pick<AnsweredEntry, "code" | "title">,
 ): boolean => e.code === resolvedId || isSynthesizedTitleMatch(f, e);
+
+// Whether an answer naming this id could match any of the findings, before its claim is known: by id,
+// or — a synthesized id only — by the title second chance, which needs the prior's title to decide.
+export const couldMatch = (code: string, findings: readonly Finding[]): boolean =>
+  isSynthesizedFindingId(code) || findings.some((f) => resolveFindingId(f) === code);
 
 // The ONE verbatim claim-field list: the six per-field comparisons consumed by both the full-claim
 // predicate and the title-second-chance scorer. The VerbatimPick type DERIVES from the array, so
@@ -271,11 +99,11 @@ const verbatimFieldEqual = (
 
 // A rebuttal answers the response the prior round's finding received, so a re-raise carrying one is
 // never verbatim, however unchanged its claim fields are.
-export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
+const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
   !hasRebuttal(f) && VERBATIM_FIELDS.every((field) => verbatimFieldEqual(f, e, field));
 
 // Would post's answered-filter DROP this finding?
-export const isAnsweredDrop = (
+const isAnsweredDrop = (
   resolvedId: string,
   f: Finding,
   e: Pick<
@@ -286,15 +114,15 @@ export const isAnsweredDrop = (
 
 // How many of the verbatim claim fields a finding shares with an entry — the title-second-chance
 // scorer: among several synthesized same-title entries (same title, different paths — their
-// synthesized ids differ), the entry sharing the MOST fields is the thread the claim came from, so
+// synthesized ids differ), the entry sharing the MOST fields is the answer the claim came from, so
 // a kept re-raise's annotation link binds it rather than the first same-title entry in registry
 // order.
 const verbatimMatchCount = (f: Finding, e: VerbatimPick): number =>
   VERBATIM_FIELDS.reduce((count, field) => count + (verbatimFieldEqual(f, e, field) ? 1 : 0), 0);
 
-// The ONE note-key contract: a finding's annotation key is its id; an empty id (a pre-id staged row,
-// or a reviewer-supplied empty id) falls back to "title:<title>" so the note still keys to something
-// — written once here, consumed by the registry builder, applyAnswered, and both renderers, so the
+// The ONE note-key contract: a finding's annotation key is its id; an empty id (a pre-id prior
+// finding, or a reviewer-supplied empty id) falls back to "title:<title>" so the note still keys to
+// something — written once here, consumed by applyAnswered and both renderers, so the
 // key can never drift between the writer and the lookups (issue #151 review r2).
 export const answeredNoteKey = (f: { id: string; title: string }): string =>
   f.id !== "" ? f.id : `title:${f.title}`;
@@ -320,11 +148,14 @@ const bestTitleMatch = (
   return best;
 };
 
+// A commit's author is a self-declared git name, so it renders inside a code span, never as markdown.
+const byAuthor = (e: AnsweredEntry): string =>
+  e.answerAuthor === null ? "" : ` by \`${escapeCodeBackticks(e.answerAuthor)}\``;
+
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
-// re-raise; the pipeline cannot judge whether the reply dismissed or acknowledged the finding, so the
-// annotation links it and demands the new evidence be named.
-export const answeredNote = (e: AnsweredEntry): string =>
-  `Re-raised; prior answer at ${e.replyUrl} by ${e.replyAuthor} — cite the new evidence that invalidates it.`;
+// re-raise of a closed finding: it links the answer and demands the new evidence be named.
+const answeredNote = (e: AnsweredEntry): string =>
+  `Re-raised; prior answer at ${linkSafeUrl(e.answerUrl)}${byAuthor(e)} — cite the new evidence that invalidates it.`;
 
 export interface AnsweredFilter {
   readonly findings: readonly Finding[];
@@ -362,7 +193,7 @@ export const applyAnswered = (
   // must become an OWN data key, never a prototype write that silently no-ops the annotation (the
   // same invariant the codebase's other code-keyed maps hold — issue #151 review r1).
   const noteEntries: [string, string][] = [];
-  const droppedByEntry = new Map<number, AnsweredEntry>();
+  const droppedByEntry = new Map<string, AnsweredEntry>();
   const droppedFindingIds: string[] = [];
   let droppedCount = 0;
   for (const f of findings) {
@@ -389,7 +220,7 @@ export const applyAnswered = (
     // included.
     const dropped = isAnsweredDrop(resolvedId, f, entry);
     if (dropped) {
-      droppedByEntry.set(entry.replyId, entry);
+      droppedByEntry.set(entry.code, entry);
       droppedFindingIds.push(resolvedId);
       droppedCount += 1;
     } else {
@@ -416,43 +247,10 @@ export const answeredReRaiseNote = (entries: readonly AnsweredEntry[], count: nu
   const label = (e: AnsweredEntry): string =>
     e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;
   const lines = entries.map(
-    (e) => `> - ${label(e)} — [prior answer](${e.replyUrl}) by ${e.replyAuthor}`,
+    (e) => `> - ${label(e)} — [prior answer](${linkSafeUrl(e.answerUrl)})${byAuthor(e)}`,
   );
   return [
-    `> ↩️ **${String(count)} finding(s) re-raised without new evidence — treated as answered** (each has a human reply on its prior inline thread):`,
+    `> ↩️ **${String(count)} finding(s) re-raised without new evidence — treated as answered** (a maintainer refuted or dismissed each):`,
     ...lines,
   ].join("\n");
-};
-
-// Best-effort fetch of the full review-comment set (bot + human, paginated at the API's max page
-// size so a long-lived PR's history costs the fewest requests — the FULL history is intentional,
-// persistence is the feature: an answer from round 1 must still close a round-8 verbatim re-raise);
-// null on any transport error so a degraded channel degrades to an empty registry — never a failed
-// post.
-export const fetchThreadComments = async (
-  ghApi: GhApi,
-  repo: string,
-  prNumber: number,
-): Promise<readonly ThreadComment[] | null> => {
-  try {
-    const rows = parseJsonl(
-      await ghApi([
-        // per_page rides the QUERY string — a `-f` field would flip `gh api` from GET to POST
-        // and 422 every answered-thread fetch.
-        `repos/${repo}/pulls/${String(prNumber)}/comments?per_page=100`,
-        "--paginate",
-        "--jq",
-        THREAD_COMMENT_JQ,
-      ]),
-    );
-    return rows.flatMap((row) => {
-      const decoded = ThreadCommentCodec.decode(row);
-      return decoded._tag === "Right" ? [decoded.right] : [];
-    });
-  } catch (err) {
-    process.stderr.write(
-      `Warning: could not fetch review threads to detect answered findings (${errMsg(err)}) — no answered-finding state for this post\n`,
-    );
-    return null;
-  }
 };

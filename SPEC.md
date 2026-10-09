@@ -127,8 +127,9 @@ a concrete platform binding is illustrative, not part of the contract (Appendix 
   checking out and running fork code, and never by granting the reviewer network access to fetch them.
   A binding that fetches the change over an API that may truncate MUST detect truncation or fall back
   to a non-truncating source; silently reviewing a partial change is a correctness fault. The prior-review
-  data MAY include the implementer's **answers** to the prior review's findings (each attributed by
-  authenticated author identity, never by what its text claims) — so a re-review can distinguish an
+  data MAY include the implementer's **answers** to the prior review's findings (a comment attributed
+  by its author's account, a commit by the push access its repository implies — never by what the
+  text claims) — so a re-review can distinguish an
   answered finding from a fresh one, verifies each answer as a claim rather than an instruction, and
   is told not to re-raise an answered finding without new evidence.
 
@@ -176,7 +177,8 @@ own decision (the reference commenter's templates are the source of truth for it
 - **Truthful** — it MUST NOT claim a surface or action that did not occur (e.g. asserting inline
   annotations exist when none were posted). A finding that cannot be anchored where it belongs MUST be
   surfaced elsewhere, not silently dropped. The commenter MAY suppress a finding that is a **verbatim
-  re-raise of an answered finding** (identical claim, no new evidence — deterministically comparable),
+  re-raise of a finding a maintainer's answer closed** (identical claim, no new evidence —
+  deterministically comparable; an answer from outside the maintainers never closes one),
   provided the suppression is **named on the surface** with the prior answer's link, never silent; a
   re-raise with changed evidence MUST be kept, annotated with the prior answer's link. A review run
   **superseded** by a newer run on the same branch is informational: the commenter MUST NOT present it

@@ -16,7 +16,6 @@ import {
   discussionRows,
   STICKY_CHAR_LIMIT,
 } from "./post.js";
-import { fetchThreadComments } from "./answered.js";
 import { priorIdsFrom } from "./schema.js";
 import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
 import type {
@@ -172,10 +171,24 @@ const commentRow = (id: number, body: string): string =>
   })}\n`;
 
 // Shared by the sticky-precedence describes: the bot's own prior sticky + the post call surface.
-const mkMocks = (stickyBody: string) => [
+// The PR's answers ride the same surface: extra comment rows beside the sticky, the commits read, and
+// the head repository the PR lookup reports (absent by default, so no commit answer is trusted).
+const mkMocks = (
+  stickyBody: string,
+  answers: {
+    readonly comments?: readonly string[];
+    readonly commits?: string;
+    readonly headRepo?: string;
+  } = {},
+) => [
   {
     match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-    response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    response: `${JSON.stringify({
+      number: 42,
+      state: "open",
+      headRef: "feature-branch",
+      ...(answers.headRepo === undefined ? {} : { headRepo: answers.headRepo }),
+    })}\n`,
   },
   {
     match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -187,24 +200,26 @@ const mkMocks = (stickyBody: string) => [
       a.includes("--paginate"),
     // The shared issue-comment projection (ISSUE_COMMENTS_JQ): the sticky lookup and the discussion
     // aside read the same rows.
-    response: `${JSON.stringify({
-      id: 999,
-      user: "github-actions[bot]",
-      created_at: "2026-09-01T00:00:00Z",
-      html_url: "https://github.com/owner/repo/pull/42#issuecomment-999",
-      body: stickyBody,
-    })}\n`,
+    response: [
+      JSON.stringify({
+        id: 999,
+        user: "github-actions[bot]",
+        created_at: "2026-09-01T00:00:00Z",
+        html_url: "https://github.com/owner/repo/pull/42#issuecomment-999",
+        body: stickyBody,
+      }),
+      ...(answers.comments ?? []),
+    ]
+      .map((row) => `${row}\n`)
+      .join(""),
   },
   {
     match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
     response: "",
   },
-  // The answered-findings thread fetch (issue #151) — empty by default so existing tests exercise
-  // the no-answers path.
   {
-    match: (a: readonly string[]) =>
-      (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) && a.includes("--paginate"),
-    response: "",
+    match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/pulls/42/commits") ?? false,
+    response: answers.commits ?? "",
   },
   { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
 ];
@@ -3125,9 +3140,8 @@ describe("post — --run-url / --json-url threading", () => {
     );
     const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     const commentBody = reviewBody.comments[0]?.body ?? "";
-    // An inline comment keeps its OWN finding as a payload: the answered registry decodes it to
-    // identify the thread, and that must still read in a later round whose artifact no longer contains
-    // it. Only the whole-document blob left the sticky (issue #217).
+    // An inline comment keeps its OWN finding as a payload, readable in a later round whose artifact
+    // no longer contains it. Only the whole-document blob left the sticky (issue #217).
     expect(commentBody.startsWith("<!-- AGENTS: STOP")).toBe(true);
     expect(commentBody).toContain("findings-json;base64");
   });
@@ -4963,43 +4977,45 @@ describe("post — convergence rounds (issue #125)", () => {
 });
 
 describe("post — answered findings (issue #151)", () => {
-  // The full post-call mock surface, with the answered-thread fetch returning the given rows. The
-  // thread mock comes FIRST so it wins over mkMocks' default empty one (first match wins).
-  const withThreads = (threads: string): ReturnType<typeof mkMocks> => [
-    {
-      match: (a: readonly string[]) =>
-        (a[0]?.startsWith("repos/owner/repo/pulls/42/comments") ?? false) &&
-        a.includes("--paginate"),
-      response: threads,
-    },
-    ...mkMocks("<!-- code-review -->\nold"),
-  ];
-
-  const threadRows = (finding: Finding): string =>
-    [
-      JSON.stringify({
-        id: 101,
-        in_reply_to_id: null,
-        user_login: "github-actions[bot]",
-        user_type: "Bot",
-        body: legacyEmbeddedMarker({ schema_version: "0.6.0", findings: [finding] }),
-        html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
-        path: "src/foo.ts",
-        line: 10,
-        created_at: "2026-07-01T00:00:00Z",
-      }),
-      JSON.stringify({
-        id: 102,
-        in_reply_to_id: 101,
-        user_login: "alice",
-        user_type: "User",
-        body: "Measured on the built extension: the claim does not hold.",
-        html_url: "https://github.com/owner/repo/pull/42#discussion_r102",
-        path: "src/foo.ts",
-        line: 10,
-        created_at: "2026-07-01T01:00:00Z",
-      }),
-    ].join("\n");
+  // A completed full-review sticky whose artifact holds the prior round, and the answers on the PR
+  // as post's own reads return them: the answered registry's whole input.
+  const priorSticky = `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://artifacts.example.com/prior.zip -->\nold`;
+  const DISMISSAL =
+    "Review-Response: recurring-a dismissed — Measured on the built extension: the claim does not hold.";
+  const answerRow = (
+    body: string,
+    overrides: { readonly id?: number; readonly association?: string | null } = {},
+  ): string => {
+    const id = overrides.id ?? 555;
+    return JSON.stringify({
+      id,
+      user: "alice",
+      user_type: "User",
+      author_association: overrides.association === undefined ? "OWNER" : overrides.association,
+      created_at: "2026-07-01T01:00:00Z",
+      html_url: `https://github.com/owner/repo/pull/42#issuecomment-${String(id)}`,
+      body,
+    });
+  };
+  const withAnswers = (
+    prior: Finding,
+    comments: readonly string[] = [answerRow(DISMISSAL)],
+    commits = "",
+    headRepo?: string,
+  ): { readonly mocks: ReturnType<typeof mkMocks>; readonly readArtifact: ArtifactReader } => ({
+    mocks: mkMocks(priorSticky, {
+      comments,
+      commits,
+      ...(headRepo === undefined ? {} : { headRepo }),
+    }),
+    readArtifact: () =>
+      Promise.resolve(JSON.stringify({ ...mkFindings([prior]), schema_version: "0.11.0" })),
+  });
+  const answered = mkFinding({
+    id: "recurring-a",
+    title: "The same claim",
+    reasoning: "The same reasoning.",
+  });
 
   const patchedBody = (calls: readonly RecordedCall[]): string =>
     (
@@ -5030,41 +5046,33 @@ describe("post — answered findings (issue #151)", () => {
     return { convergence };
   };
 
-  it("treats a VERBATIM re-raise of an answered finding as closed — dropped from the review, the round counts, and the stop signal, named in the sticky", async () => {
-    const answered = mkFinding({
-      id: "recurring-a",
-      title: "The same claim",
-      reasoning: "The same reasoning.",
-    });
+  it("treats a VERBATIM re-raise of a finding a maintainer dismissed as closed — dropped from the review, the round counts, and the stop signal, named in the sticky", async () => {
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
-    const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
-    await post(mkInput({ route: "full review" }), api);
+    const { mocks, readArtifact } = withAnswers(answered);
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
     const body = patchedBody(calls());
     // The finding itself is gone from the surfaced review…
     expect(body).not.toContain("The same claim");
-    // …but the suppression is named, with the prior answer linked.
+    // …but the suppression is named, with the answer linked.
     expect(body).toContain("treated as answered");
-    expect(body).toContain("discussion_r102");
+    expect(body).toContain("issuecomment-555");
     // The convergence reflects the dismissal: the dropped finding is a minor, so this round scores 0
     // and reads converged — it does not block convergence.
     const blob = stickySignal(calls());
     expect(blob.convergence).toMatchObject({ score: 0, threshold: 1, converged: true });
   });
 
-  it("keeps a re-raise with NEW evidence and annotates it with the prior answer's link — inline and sticky", async () => {
-    const answered = mkFinding({
-      id: "recurring-a",
-      title: "The same claim",
-      reasoning: "The same reasoning.",
-    });
+  it("keeps a re-raise with NEW evidence and annotates it with the answer's link — inline and sticky", async () => {
     const changed = mkFinding({
       id: "recurring-a",
       title: "The same claim",
       reasoning: "NEW evidence: the regression persists on the built 3.14 extension.",
     });
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([changed])));
-    const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
-    await post(mkInlineInput({ route: "full review" }), api);
+    const { mocks, readArtifact } = withAnswers(answered);
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInlineInput({ route: "full review" }), api, readArtifact);
     const body = patchedBody(calls());
     // The finding is in-diff, so it posts inline — the sticky shows the count, never the drop note.
     expect(body).toContain("**Findings:** 🔵 1");
@@ -5077,19 +5085,15 @@ describe("post — answered findings (issue #151)", () => {
     const payload = JSON.parse(review!.stdin!) as ReviewBody;
     expect(payload.comments.some((c) => c.body.includes("The same claim"))).toBe(true);
     expect(payload.comments.some((c) => c.body.includes("Re-raised; prior answer at"))).toBe(true);
-    expect(payload.comments.some((c) => c.body.includes("discussion_r102"))).toBe(true);
+    expect(payload.comments.some((c) => c.body.includes("issuecomment-555"))).toBe(true);
   });
 
   it("never drops a CRITICAL verbatim re-raise — kept with the annotation", async () => {
-    const answered = mkFinding({
-      severity: "critical",
-      id: "recurring-a",
-      title: "The same claim",
-      reasoning: "The same reasoning.",
-    });
-    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
-    const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
-    await post(mkInlineInput({ route: "full review" }), api);
+    const critical = mkFinding({ ...answered, severity: "critical" });
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([critical])));
+    const { mocks, readArtifact } = withAnswers(critical);
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInlineInput({ route: "full review" }), api, readArtifact);
     const body = patchedBody(calls());
     expect(body).toContain("**Findings:** 🔴 1");
     expect(body).not.toContain("treated as answered");
@@ -5103,11 +5107,6 @@ describe("post — answered findings (issue #151)", () => {
   });
 
   it("strips a DROPPED re-raise's code from systemic finding_ids — a 'ties together' list never dangles (issue #151 review r1)", async () => {
-    const answered = mkFinding({
-      id: "recurring-a",
-      title: "The same claim",
-      reasoning: "The same reasoning.",
-    });
     writeFileSync(
       join(tmpDir, "findings.json"),
       JSON.stringify({
@@ -5126,8 +5125,9 @@ describe("post — answered findings (issue #151)", () => {
         ],
       }),
     );
-    const { api, calls } = mkMockGhApi(withThreads(threadRows(answered)));
-    await post(mkInput({ route: "full review" }), api);
+    const { mocks, readArtifact } = withAnswers(answered);
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
     const body = patchedBody(calls());
     // The stripped list used to be observable in the embedded document; that document is the artifact
     // now (issue #217), so the prose is the surface — a dangling code would render as a tie to a
@@ -5152,28 +5152,106 @@ describe("post — answered findings (issue #151)", () => {
     exitSpy.mockRestore();
   });
 
-  it("a failed thread fetch degrades to an empty registry — the review posts unfiltered", async () => {
-    writeFileSync(
-      join(tmpDir, "findings.json"),
-      JSON.stringify(mkFindings([mkFinding({ id: "recurring-a" })])),
+  it("never closes a finding on an answer from outside the maintainers — a NONE commenter, or a fork's commit", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const { mocks, readArtifact } = withAnswers(
+      answered,
+      [answerRow(DISMISSAL, { association: "NONE" })],
+      `${JSON.stringify({
+        sha: "abc123",
+        message: `fix\n\n${DISMISSAL}`,
+        author: "Dev",
+        date: "2026-07-01T01:00:00Z",
+      })}\n`,
     );
-    // Remove the thread-endpoint mock so the fetch actually REJECTS (an unmatched call throws) —
-    // the failure path, not a silently-empty success (issue #151 review r2).
-    const { api, calls } = mkMockGhApi(
-      mkMocks("<!-- code-review -->\nold").filter(
-        (m) => !m.match(["repos/owner/repo/pulls/42/comments", "--paginate"]),
-      ),
-    );
-    await post(mkInlineInput({ route: "full review" }), api);
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
     const body = patchedBody(calls());
     expect(body).not.toContain("treated as answered");
-    // The finding posts normally, prose inline (the sticky's in-diff finding lives in the review).
-    const review = calls().find(
-      (c) => c.args[0] === "repos/owner/repo/pulls/42/reviews" && c.stdin !== undefined,
+    expect(body).toContain("The same claim");
+  });
+
+  it("reads a commit answer only when the PR itself puts its head branch in this repository, never by the workflow's head repo", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const commit = `${JSON.stringify({
+      sha: "abc123",
+      message: `fix\n\n${DISMISSAL}`,
+      author: "Dev",
+      date: "2026-07-01T01:00:00Z",
+    })}\n`;
+    const sameRepo = withAnswers(answered, [], commit, "Owner/Repo");
+    const first = mkMockGhApi(sameRepo.mocks);
+    await post(mkInput({ route: "full review" }), first.api, sameRepo.readArtifact);
+    expect(patchedBody(first.calls())).toContain("treated as answered");
+    expect(patchedBody(first.calls())).toContain("commit/abc123");
+
+    // The chatops path hands post the BASE repo when it cannot resolve a head repo; the PR's own
+    // answer (a deleted fork's null head) still trusts no commit, and the commits are never read.
+    const deletedFork = withAnswers(answered, [], commit);
+    const forked = mkMockGhApi(deletedFork.mocks);
+    await post(
+      mkInput({ route: "full review", headRepo: "owner/repo" }),
+      forked.api,
+      deletedFork.readArtifact,
     );
-    expect(review).toBeDefined();
-    const payload = JSON.parse(review!.stdin!) as ReviewBody;
-    expect(payload.comments.some((c) => c.body.includes("Test finding"))).toBe(true);
+    expect(patchedBody(forked.calls())).not.toContain("treated as answered");
+    expect(forked.calls().some((c) => c.args[0]?.includes("/commits?") ?? false)).toBe(false);
+  });
+
+  it("degrades a failed commits read to comment answers, warned", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const failing = withAnswers(answered, [answerRow(DISMISSAL)], "", "owner/repo");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    // No commits mock, so the read REJECTS (an unmatched call throws): the failure path.
+    const second = mkMockGhApi(
+      failing.mocks.filter((m) => !m.match(["repos/owner/repo/pulls/42/commits?per_page=100"])),
+    );
+    await post(mkInput({ route: "full review" }), second.api, failing.readArtifact);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("could not read the PR's commits"));
+    stderr.mockRestore();
+    expect(patchedBody(second.calls())).toContain("treated as answered");
+  });
+
+  it("resolves the prior once, for the answers and the nit stickiness alike", async () => {
+    const nit = mkFinding({ id: "a-nit", severity: "nit", title: "A nit" });
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered, nit])));
+    const { mocks } = withAnswers(answered);
+    const resolves: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      resolves.push(url);
+      return Promise.resolve(
+        JSON.stringify({ ...mkFindings([answered]), schema_version: "0.11.0" }),
+      );
+    };
+    const { api } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
+    expect(resolves).toHaveLength(1);
+  });
+
+  it("names a prior that does not resolve, and drops nothing", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const { mocks } = withAnswers(answered);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { api, calls } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, () => Promise.resolve(null));
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("did not resolve"));
+    stderr.mockRestore();
+    expect(patchedBody(calls())).not.toContain("treated as answered");
+  });
+
+  it("pays no prior download for closures no current finding can match", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const { mocks } = withAnswers(answered, [
+      answerRow("Review-Response: another-finding dismissed — not this round's"),
+    ]);
+    const resolves: string[] = [];
+    const readArtifact: ArtifactReader = (url) => {
+      resolves.push(url);
+      return Promise.resolve(null);
+    };
+    const { api } = mkMockGhApi(mocks);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
+    expect(resolves).toEqual([]);
   });
 });
 
@@ -5186,6 +5264,8 @@ describe("buildStickyDiscussion — the discussion aside's grouping (issue #246)
     created: "2026-09-01T12:00:00Z",
     url: "https://github.com/owner/repo/pull/1#issuecomment-1",
     body: "plain",
+    authorType: "User",
+    association: null,
     ...overrides,
   });
 
@@ -5295,27 +5375,6 @@ describe("fetchIssueCommentRows — the sticky lookup never mistakes corruption 
     expect(captured).toContain("--paginate");
   });
 
-  it("pins the answered-thread fetch to the same transport contract (query per_page, never a field)", async () => {
-    let captured: readonly string[] = [];
-    const api: GhApi = (args) => {
-      captured = args;
-      return Promise.resolve("");
-    };
-    await fetchThreadComments(api, "owner/repo", 42);
-    expect(
-      captured.some(
-        (a) =>
-          a === "-f" ||
-          a === "--raw-field" ||
-          a === "-F" ||
-          a === "--field" ||
-          a.startsWith("per_page="),
-      ),
-    ).toBe(false);
-    expect(captured[0]).toContain("?per_page=100");
-    expect(captured).toContain("--paginate");
-  });
-
   it("throws when a row fails to decode, so a corrupted history cannot mint a duplicate sticky", async () => {
     const api: GhApi = () =>
       Promise.resolve('{"id": 999, "body": "<!-- code-review -->"}\nnot-json\n');
@@ -5360,6 +5419,8 @@ describe("mentionsOutsideKnown — the orphan-resolve gate", () => {
     created: "2026-09-01T12:00:00Z",
     url: "https://github.com/owner/repo/pull/1#issuecomment-1",
     body: "plain",
+    authorType: "User",
+    association: null,
     ...overrides,
   });
 
@@ -5465,6 +5526,8 @@ describe("buildStickyDiscussion — the r5 disciplines", () => {
     created: "2026-09-01T12:00:00Z",
     url: "https://github.com/owner/repo/pull/1#issuecomment-1",
     body: "plain",
+    authorType: "User",
+    association: null,
     ...overrides,
   });
 
@@ -6038,6 +6101,8 @@ describe("buildStickyDiscussion — the orphan bucket is prior-id-only", () => {
     created: "2026-09-01T12:00:00Z",
     url: "https://github.com/owner/repo/pull/1#issuecomment-1",
     body: "plain",
+    authorType: "User",
+    association: null,
     ...overrides,
   });
 

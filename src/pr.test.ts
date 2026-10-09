@@ -5,13 +5,29 @@ import { fetchPrCandidates, resolvePr } from "./pr.js";
 const sha = (n: number): string => String(n).padStart(40, "0");
 
 describe("resolvePr", () => {
+  it("carries the chosen candidate's head repository, null when the fork is gone", () => {
+    expect(
+      resolvePr(
+        [{ number: 7, state: "open", headRef: "b", headSha: "s", headRepo: "fork/repo" }],
+        "b",
+      ),
+    ).toEqual({ kind: "open", prNumber: 7, headRepo: "fork/repo" });
+    expect(
+      resolvePr([{ number: 7, state: "open", headRef: "b", headSha: "s", headRepo: null }], "b"),
+    ).toEqual({ kind: "open", prNumber: 7, headRepo: null });
+  });
+
   it("returns none for zero candidates", () => {
     expect(resolvePr([], "feature-branch")).toEqual({ kind: "none" });
   });
 
   it("selects a single open candidate regardless of headBranch", () => {
     const candidates = [{ number: 42, state: "open", headRef: "feature-branch", headSha: sha(1) }];
-    expect(resolvePr(candidates, undefined)).toEqual({ kind: "open", prNumber: 42 });
+    expect(resolvePr(candidates, undefined)).toEqual({
+      kind: "open",
+      prNumber: 42,
+      headRepo: null,
+    });
   });
 
   it("reports not-open for a single closed candidate", () => {
@@ -30,7 +46,11 @@ describe("resolvePr", () => {
       { number: 42, state: "open", headRef: "other-branch", headSha: sha(1) },
       { number: 99, state: "open", headRef: "feature-branch", headSha: sha(1) },
     ];
-    expect(resolvePr(candidates, "feature-branch")).toEqual({ kind: "open", prNumber: 99 });
+    expect(resolvePr(candidates, "feature-branch")).toEqual({
+      kind: "open",
+      prNumber: 99,
+      headRepo: null,
+    });
   });
 
   it("falls back to the first candidate when headBranch matches none", () => {
@@ -38,12 +58,20 @@ describe("resolvePr", () => {
       { number: 42, state: "open", headRef: "other-branch", headSha: sha(1) },
       { number: 99, state: "open", headRef: "another-branch", headSha: sha(1) },
     ];
-    expect(resolvePr(candidates, "feature-branch")).toEqual({ kind: "open", prNumber: 42 });
+    expect(resolvePr(candidates, "feature-branch")).toEqual({
+      kind: "open",
+      prNumber: 42,
+      headRepo: null,
+    });
   });
 
   it("selects the single candidate even when its headRef differs from headBranch (disambiguation only engages with >1 candidate)", () => {
     const candidates = [{ number: 42, state: "open", headRef: "other-branch", headSha: sha(1) }];
-    expect(resolvePr(candidates, "feature-branch")).toEqual({ kind: "open", prNumber: 42 });
+    expect(resolvePr(candidates, "feature-branch")).toEqual({
+      kind: "open",
+      prNumber: 42,
+      headRepo: null,
+    });
   });
 
   it("prefers an open candidate over a closed one that shares the head SHA and branch", () => {
@@ -51,7 +79,11 @@ describe("resolvePr", () => {
       { number: 42, state: "closed", headRef: "feature-branch", headSha: sha(1) },
       { number: 99, state: "open", headRef: "feature-branch", headSha: sha(1) },
     ];
-    expect(resolvePr(candidates, "feature-branch")).toEqual({ kind: "open", prNumber: 99 });
+    expect(resolvePr(candidates, "feature-branch")).toEqual({
+      kind: "open",
+      prNumber: 99,
+      headRepo: null,
+    });
   });
 });
 

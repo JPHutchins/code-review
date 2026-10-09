@@ -1,5 +1,4 @@
 import * as t from "io-ts";
-import { isHuman } from "./answered.js";
 import { ID_SHAPE_RE, strictExact } from "./schema.js";
 import { clipText } from "./util.js";
 import {
@@ -12,6 +11,11 @@ export const RESPONSE_REASON_CLIP_CHARS = 300;
 export const RESPONSES_PER_CHANNEL = 25;
 
 const ChannelCodec = t.keyof({ comment: null, commit: null });
+
+// The roles whose answers come from the maintainers, as the reviewer's note names them.
+export const MAINTAINER_ASSOCIATIONS: readonly string[] = ["OWNER", "MEMBER", "COLLABORATOR"];
+
+const CLOSING_DISPOSITIONS: ReadonlySet<ResponseDisposition> = new Set(["refuted", "dismissed"]);
 
 const ResponseShape = t.type({
   id: t.string,
@@ -252,11 +256,17 @@ export const parseResponses = (text: string): readonly ParsedLine[] => {
   });
 };
 
-export interface HarvestInput {
+// A comment answers only when a HUMAN wrote it: neither this pipeline's bot (matched by login) nor
+// any other bot account (matched by the REST user.type, so a CI/dependabot comment can't masquerade
+// as an answer). A MISSING type (null — an unexpected API shape) fails closed to "not human".
+export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
+  login !== botLogin && type === "User";
+
+// Where answers come from: the PR's conversation comments and its commits.
+export interface AnswerSources {
   readonly repo: string;
   readonly prNumber: number;
   readonly botLogin: string;
-  readonly priorIds: ReadonlySet<string>;
   readonly commits: readonly {
     readonly sha: string;
     readonly message: string;
@@ -272,6 +282,10 @@ export interface HarvestInput {
   }[];
 }
 
+export interface HarvestInput extends AnswerSources {
+  readonly priorIds: ReadonlySet<string>;
+}
+
 export interface Harvest {
   readonly file: ResponsesFile;
   // Response lines past a channel's cap: named by the caller, never cut silently.
@@ -280,20 +294,19 @@ export interface Harvest {
 
 // Newest first, with the comment id breaking a same-second tie (GitHub timestamps are second-grained).
 const newestFirst = (
-  a: HarvestInput["comments"][number],
-  b: HarvestInput["comments"][number],
+  a: AnswerSources["comments"][number],
+  b: AnswerSources["comments"][number],
 ): number => {
   const [left, right] = [a.created_at ?? "", b.created_at ?? ""];
   return left < right ? 1 : left > right ? -1 : b.id - a.id;
 };
 
-// Every answer on the PR — a Review-Response line or a verdict-table row — newest first per channel,
-// so a long PR never pushes its recent answers out of the cap. An answer naming an id the prior round
-// reported is a response; any other id-shaped one is echoed as unmatched rather than silently
-// dropped. Only a human account answers:
-// another bot's comment never poses as the implementer.
-export const harvestResponses = (input: HarvestInput): Harvest => {
-  const fromComments: readonly Response[] = [...input.comments]
+// Every answer on the PR — a Review-Response line or a verdict-table row — newest first per channel.
+// Only a human account answers: another bot's comment never poses as the implementer.
+export const answersFrom = (
+  input: AnswerSources,
+): { readonly comments: readonly Response[]; readonly commits: readonly Response[] } => {
+  const comments: readonly Response[] = [...input.comments]
     .filter((comment) => isHuman(comment.user.login, comment.user.type ?? null, input.botLogin))
     .sort(newestFirst)
     .flatMap((comment) =>
@@ -306,7 +319,7 @@ export const harvestResponses = (input: HarvestInput): Harvest => {
         created_at: comment.created_at ?? null,
       })),
     );
-  const fromCommits: readonly Response[] = [...input.commits].reverse().flatMap((commit) =>
+  const commits: readonly Response[] = [...input.commits].reverse().flatMap((commit) =>
     parseResponses(commit.message).map((line) => ({
       ...line,
       channel: "commit" as const,
@@ -316,6 +329,14 @@ export const harvestResponses = (input: HarvestInput): Harvest => {
       created_at: commit.date ?? null,
     })),
   );
+  return { comments, commits };
+};
+
+// The answers staged for the reviewer, newest first per channel so a long PR never pushes its recent
+// answers out of the cap. An answer naming an id the prior round reported is a response; any other
+// id-shaped one is echoed as unmatched rather than silently dropped.
+export const harvestResponses = (input: HarvestInput): Harvest => {
+  const { comments: fromComments, commits: fromCommits } = answersFrom(input);
   const matched = (response: Response): boolean => input.priorIds.has(response.id);
   const echoed = (response: Response): boolean =>
     !matched(response) && ID_SHAPE_RE.test(response.id);
@@ -338,4 +359,42 @@ export const harvestResponses = (input: HarvestInput): Harvest => {
       0,
     ),
   };
+};
+
+// Whether an answer comes from the maintainers: a comment by its author's role on the base repo, a
+// commit by the push access a head branch IN the base repo implies — the caller reads that from the
+// PR itself, so a fork's commit, or one whose head repo could not be read, never does.
+export const isTrustedResponse = (response: Response, headInBaseRepo: boolean): boolean => {
+  switch (response.channel) {
+    case "comment":
+      return MAINTAINER_ASSOCIATIONS.includes(response.author_association ?? "");
+    case "commit":
+      return headInBaseRepo;
+  }
+};
+
+const answeredInstant = (response: Response): number =>
+  response.created_at === null ? Number.NaN : Date.parse(response.created_at);
+
+// The answers that close their ids: per id, the newest trusted answer, when it refutes or dismisses
+// the finding. A `fixed` is a claim the reviewer verifies, never a closure, and a newer one reopens
+// the id; an answer whose time cannot be read cannot be ordered, so its id never closes, and neither
+// does a same-instant tie with a `fixed`.
+export const closingResponses = (
+  responses: readonly Response[],
+  isTrusted: (response: Response) => boolean,
+): readonly Response[] => {
+  const byId = responses.filter(isTrusted).reduce((groups, response) => {
+    const timed = { response, at: answeredInstant(response) };
+    groups.set(response.id, [...(groups.get(response.id) ?? []), timed]);
+    return groups;
+  }, new Map<string, readonly { readonly response: Response; readonly at: number }[]>());
+  return [...byId.values()].flatMap((answers) => {
+    if (answers.some(({ at }) => Number.isNaN(at))) return [];
+    const latest = Math.max(...answers.map(({ at }) => at));
+    const newest = answers.filter(({ at }) => at === latest).map(({ response }) => response);
+    return newest.every((response) => CLOSING_DISPOSITIONS.has(response.disposition))
+      ? [...newest].sort((a, b) => (a.source_url < b.source_url ? -1 : 1)).slice(0, 1)
+      : [];
+  });
 };

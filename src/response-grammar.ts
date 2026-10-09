@@ -19,9 +19,10 @@ export type ResponseDisposition = t.TypeOf<typeof ResponseDispositionCodec>;
 export const RESPONSE_FORM = `Review-Response: <id> ${DISPOSITIONS.join("|")} — <reason>`;
 
 export const RESPONSE_TABLE_HEADER = "| id | disposition | reason |";
+export const RESPONSE_TABLE_DELIMITER = "| --- | --- | --- |";
 
 // What the implementer is told, word for word, on the sticky under every full review with findings.
-export const RESPONSE_TEACHING = `To answer findings, post a PR conversation comment holding a table with the header \`${RESPONSE_TABLE_HEADER}\` and one row per finding id, its disposition exactly one of ${DISPOSITIONS.slice(
+export const RESPONSE_TEACHING = `To answer findings, post a PR conversation comment holding a markdown table — the header \`${RESPONSE_TABLE_HEADER}\`, the delimiter \`${RESPONSE_TABLE_DELIMITER}\`, then one row per finding id, its disposition exactly one of ${DISPOSITIONS.slice(
   0,
   -1,
 )

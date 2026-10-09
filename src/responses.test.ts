@@ -16,6 +16,7 @@ import {
 import {
   DISPOSITIONS,
   RESPONSE_FORM,
+  RESPONSE_TABLE_DELIMITER,
   RESPONSE_TABLE_HEADER,
   RESPONSE_TEACHING,
 } from "./response-grammar.js";
@@ -195,7 +196,7 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
   it("reads the taught table once its rows are filled in, for every disposition, ids bare or quoted", () => {
     const table = [
       RESPONSE_TABLE_HEADER,
-      "| --- | --- | --- |",
+      RESPONSE_TABLE_DELIMITER,
       ...DISPOSITIONS.map((disposition) => `| x-${disposition} (minor) | ${disposition} | why |`),
       "| `a-b` | dismissed | tracked in #12 |",
     ].join("\n");
@@ -208,7 +209,7 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       { id: "a-b", disposition: "dismissed", reason: "tracked in #12" },
     ]);
     expect(RESPONSE_TEACHING).toBe(
-      "To answer findings, post a PR conversation comment holding a table with the header `| id | disposition | reason |` and one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
+      "To answer findings, post a PR conversation comment holding a markdown table — the header `| id | disposition | reason |`, the delimiter `| --- | --- | --- |`, then one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
     );
   });
 
@@ -293,6 +294,17 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       ["c-d", "refuted"],
       ["e-f", "dismissed"],
     ]);
+  });
+
+  it("ends a table at a list item, a heading or a quote, even one holding a pipe; trims a quoted id", () => {
+    const text = [
+      "| id | disposition |",
+      "| --- | --- |",
+      "| ` a-b ` | fixed |",
+      "- `c-d` | dismissed",
+      "| `e-f` | dismissed |",
+    ].join("\n");
+    expect(parseResponseTables(text).map((r) => [r.id, r.disposition])).toEqual([["a-b", "fixed"]]);
   });
 
   it("never reads an id out of the id cell's parenthetical note", () => {
@@ -580,6 +592,13 @@ describe("closingResponses — the newest trusted answer per id decides", () => 
     expect(closingResponses([answer({}), answer({ disposition: "fixed" })], maintainer)).toEqual(
       [],
     );
+  });
+
+  it("lets no unstated answer close or reopen an id — a later verdict-less table row leaves a closure standing", () => {
+    const closed = answer({});
+    const unstated = answer({ disposition: "unstated", created_at: "2026-10-02T00:00:00Z" });
+    expect(closingResponses([closed, unstated], maintainer)).toEqual([closed]);
+    expect(closingResponses([unstated], maintainer)).toEqual([]);
   });
 
   it("ignores an untrusted fixed, so it cannot reopen a maintainer's closure", () => {

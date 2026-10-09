@@ -134,9 +134,11 @@ const splitCells = (row: string): readonly string[] => {
     .map((match) => match[1] ?? "");
 };
 
-// A line of a table: its cells without the outer pipes, or null when it holds no unescaped pipe.
+// A line of a table: its cells without the outer pipes, or null when it holds no unescaped pipe or
+// opens another block (a list item, a heading, a quote) that a pipe inside it cannot make a row.
+const BLOCK_START_RE = /^ {0,3}([-+*]\s|\d+[.)]\s|#{1,6}(\s|$)|>)/;
 const tableRow = (line: string): readonly string[] | null => {
-  if (!/^ {0,3}\S/.test(line)) return null;
+  if (!/^ {0,3}\S/.test(line) || BLOCK_START_RE.test(line)) return null;
   const split = splitCells(line.trim());
   if (split.length < 2) return null;
   const inner = split.slice(line.trim().startsWith("|") ? 1 : 0);
@@ -158,7 +160,7 @@ const columnName = (cell: string): string => plainCell(cell).split(/[\s/]+/)[0] 
 const idsInCell = (cell: string): readonly string[] => {
   const ids = cell.replace(/\([^)]*\)/g, "");
   const quoted = [...ids.matchAll(ID_IN_CELL_RE)]
-    .map((match) => unwrapId(match[1] ?? ""))
+    .map((match) => unwrapId((match[1] ?? "").trim()))
     .filter((id) => id !== "");
   const bare = ids
     .split(",")
@@ -379,16 +381,19 @@ const answeredInstant = (response: Response): number =>
 // The answers that close their ids: per id, the newest trusted answer, when it refutes or dismisses
 // the finding. A `fixed` is a claim the reviewer verifies, never a closure, and a newer one reopens
 // the id; an answer whose time cannot be read cannot be ordered, so its id never closes, and neither
-// does a same-instant tie with a `fixed`.
+// does a same-instant tie with a `fixed`. An unstated answer claims no verdict, so it neither closes
+// an id nor reopens one.
 export const closingResponses = (
   responses: readonly Response[],
   isTrusted: (response: Response) => boolean,
 ): readonly Response[] => {
-  const byId = responses.filter(isTrusted).reduce((groups, response) => {
-    const timed = { response, at: answeredInstant(response) };
-    groups.set(response.id, [...(groups.get(response.id) ?? []), timed]);
-    return groups;
-  }, new Map<string, readonly { readonly response: Response; readonly at: number }[]>());
+  const byId = responses
+    .filter((response) => response.disposition !== "unstated" && isTrusted(response))
+    .reduce((groups, response) => {
+      const timed = { response, at: answeredInstant(response) };
+      groups.set(response.id, [...(groups.get(response.id) ?? []), timed]);
+      return groups;
+    }, new Map<string, readonly { readonly response: Response; readonly at: number }[]>());
   return [...byId.values()].flatMap((answers) => {
     if (answers.some(({ at }) => Number.isNaN(at))) return [];
     const latest = Math.max(...answers.map(({ at }) => at));

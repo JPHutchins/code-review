@@ -79,6 +79,9 @@ describe("parseResponseLines — the response grammar", () => {
     expect(
       parseResponseLines(RESPONSE_FORM.replace("<id>", "x-y").replace("<reason>", "why")),
     ).toEqual([]);
+    expect(parseResponseLines("Review-Response: x-y fixed | refuted | dismissed — why")).toEqual(
+      [],
+    );
   });
 
   it("never reads a quoted, inline-code, indented-code, or fenced copy of the grammar as a response", () => {

@@ -58,7 +58,7 @@ interface ParsedLine {
 // four-space code line is never a response. A verb still followed by the taught `|` alternation is a
 // half-filled copy of the form, not a choice.
 const RESPONSE_LINE_RE =
-  /^ {0,3}review-response:\s*(\S+)\s+([A-Za-z]+)(?![|A-Za-z])[\s—–:-]*(.*)$/i;
+  /^ {0,3}review-response:\s*(\S+)\s+([A-Za-z]+)(?![A-Za-z]|\s*\|)[\s—–:-]*(.*)$/i;
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
 const LINE_BREAK_RE = /\r\n?|\n|\u2028|\u2029/;
 

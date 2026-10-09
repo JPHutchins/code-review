@@ -140,7 +140,8 @@ export const renderStraysSection = (strays: readonly Finding[]): string => {
   if (strays.length === 0) return "";
 
   const items = strays.map(
-    (f) => `- **${f.severity}** · \`${f.path}:${String(f.start_line)}\` — ${f.title}`,
+    (f) =>
+      `- **${f.severity}** · \`${f.path}:${String(f.start_line)}\` — ${f.title}${f.id === "" ? "" : ` · id \`${escapeCodeBackticks(f.id)}\``}`,
   );
 
   return [

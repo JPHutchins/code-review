@@ -204,6 +204,15 @@ describe("renderStraysSection", () => {
     expect(result).toContain("Off-by-one.");
   });
 
+  it("names each stray's id, the token an answer uses, only when there is one", () => {
+    const result = renderStraysSection([
+      mkFinding({ title: "With id.", id: "x-y" }),
+      mkFinding({ title: "Without id.", id: "" }),
+    ]);
+    expect(result).toContain("With id. · id `x-y`");
+    expect(result).toMatch(/Without id\.$/m);
+  });
+
   it("renders multiple stray findings", () => {
     const strays: Finding[] = [
       mkFinding({

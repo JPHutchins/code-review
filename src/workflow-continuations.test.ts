@@ -728,6 +728,7 @@ describe("the review dialogue — the reviewer and the triage read the same prot
       const caseOpen = script.lastIndexOf('case "$SEED_MODE" in', arm);
       expect(caseOpen, path).toBeGreaterThan(-1);
       expect(script.slice(caseOpen, arm), path).toContain("prior-same|prior-new|empty-had-prior)");
+      expect(script.slice(caseOpen, arm), path).not.toContain("esac");
       expect(arm, path).toBeLessThan(script.indexOf('ROUTE="mechanic"'));
     }
   });

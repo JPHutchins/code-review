@@ -718,6 +718,7 @@ export const render = (input: RenderInput): string => {
     ),
     summaryAvailable: input.summaryAvailable ?? false,
     responseForm: RESPONSE_FORM,
+    teachesResponses: isConvergenceRound(route, incomplete),
     shedNote: shedNote(
       input.shedCount ?? 0,
       input.summaryAvailable ?? false,

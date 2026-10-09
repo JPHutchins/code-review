@@ -180,15 +180,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
   });
 
   it("renders a rebuttal on a finding and a systemic problem, and nothing for a blank one", () => {
-    const systemic = {
-      title: "A class",
-      description: "d",
-      severity: "minor" as const,
-      reasoning: "r",
-      confidence: 0.5,
-      likelihood: 1,
-      id: "a-class",
-    };
+    const systemic = mkSystemic({ id: "a-class" });
     const rebutted = mkFinding({ rebuttal: "The reply measured 3.12." });
     const withRebuttals = render({
       findings: mkFindings([rebutted], {
@@ -214,7 +206,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
     expect(blank).not.toContain("Rebuttal:");
   });
 
-  it("teaches the response line under a review with findings, never on a clean review or a notice", () => {
+  it("teaches the response line under a full review with findings, never on a clean review, a notice, a mechanic pass, or an unknown route", () => {
     const line = `To answer a finding, put \`${RESPONSE_FORM}\` in a commit message or a PR conversation comment (not an inline-thread reply); a systemic problem's id, when shown, answers its whole class.`;
     const finding = mkFinding({});
     const withFindings = render({
@@ -223,8 +215,17 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       prices,
       template,
       strays: [finding],
+      route: "full review",
     });
     expect(withFindings).toContain(line);
+    const routeUnknown = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+    });
+    expect(routeUnknown).not.toContain(line);
     const clean = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
     expect(clean).not.toContain(line);
     const notice = render({
@@ -249,6 +250,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       envelope: baseEnvelope,
       prices,
       template,
+      route: "full review",
     });
     expect(systemicOnly).toContain(line);
   });

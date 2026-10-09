@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
+import { RESPONSE_FORM } from "./responses.js";
 import {
   formatConfidence,
   parseConvergenceMarker,
@@ -64,6 +65,16 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   description: "Test description content.",
   reasoning: "Test reasoning content.",
   confidence: 0.7,
+  likelihood: 1,
+  ...overrides,
+});
+
+const mkSystemic = (overrides: Partial<SystemicProblem> = {}): SystemicProblem => ({
+  title: "Retry plumbing is inconsistent",
+  description: "Three spots, three retry policies — the pattern is the problem.",
+  severity: "major",
+  reasoning: "Each touched file implements its own retry policy.",
+  confidence: 0.8,
   likelihood: 1,
   ...overrides,
 });
@@ -169,15 +180,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
   });
 
   it("renders a rebuttal on a finding and a systemic problem, and nothing for a blank one", () => {
-    const systemic = {
-      title: "A class",
-      description: "d",
-      severity: "minor" as const,
-      reasoning: "r",
-      confidence: 0.5,
-      likelihood: 1,
-      id: "a-class",
-    };
+    const systemic = mkSystemic({ id: "a-class" });
     const rebutted = mkFinding({ rebuttal: "The reply measured 3.12." });
     const withRebuttals = render({
       findings: mkFindings([rebutted], {
@@ -201,6 +204,55 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       strays: [blankRebuttal],
     });
     expect(blank).not.toContain("Rebuttal:");
+  });
+
+  it("teaches the response line under a full review with findings, never on a clean review, a notice, a mechanic pass, or an unknown route", () => {
+    const line = `To answer a finding, put \`${RESPONSE_FORM}\` in a commit message or a PR conversation comment (not an inline-thread reply); a systemic problem's id, when shown, answers its whole class.`;
+    const finding = mkFinding({});
+    const withFindings = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+      route: "full review",
+    });
+    expect(withFindings).toContain(line);
+    const routeUnknown = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+    });
+    expect(routeUnknown).not.toContain(line);
+    const clean = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+    expect(clean).not.toContain(line);
+    const notice = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      incomplete: true,
+    });
+    expect(notice).not.toContain(line);
+    const mechanic = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+      route: "mechanic",
+    });
+    expect(mechanic).not.toContain(line);
+    const systemicOnly = render({
+      findings: mkFindings([], { systemic_problems: [mkSystemic({ id: "a-class" })] }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+    });
+    expect(systemicOnly).toContain(line);
   });
 
   it("says nothing when the logs were there", () => {
@@ -866,16 +918,6 @@ describe("render", () => {
   });
 
   describe("systemic problems section (issue #134)", () => {
-    const mkSystemic = (overrides: Partial<SystemicProblem> = {}): SystemicProblem => ({
-      title: "Retry plumbing is inconsistent",
-      description: "Three spots, three retry policies — the pattern is the problem.",
-      severity: "major",
-      reasoning: "Each touched file implements its own retry policy.",
-      confidence: 0.8,
-      likelihood: 1,
-      ...overrides,
-    });
-
     const systemicFindings = (overrides?: Partial<Omit<Findings, "findings">>): Findings =>
       mkFindings([mkFinding({ severity: "major", title: "Anchored finding" })], {
         summary: "The verdict follows from the shape of the change.",

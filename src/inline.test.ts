@@ -204,6 +204,15 @@ describe("renderStraysSection", () => {
     expect(result).toContain("Off-by-one.");
   });
 
+  it("names each stray's id, the token an answer uses, only when there is one", () => {
+    const result = renderStraysSection([
+      mkFinding({ title: "With id.", id: "x-y" }),
+      mkFinding({ title: "Without id.", id: "" }),
+    ]);
+    expect(result).toContain("With id. · id `x-y`");
+    expect(result).toMatch(/Without id\.$/m);
+  });
+
   it("renders multiple stray findings", () => {
     const strays: Finding[] = [
       mkFinding({
@@ -280,11 +289,24 @@ index abc..def 100644
     buildInlineComments(findingAt(overrides), diff, { inlineTemplate: bundledInlineTemplate })
       .comments[0]!.body;
 
-  it("renders a single header line — emoji, severity label, bold title, confidence + likelihood (issues #27, a11y, #164)", () => {
-    const body = bodyOf({ severity: "critical", title: "SQLi", confidence: 0.5, likelihood: 1 });
-    expect(body.startsWith("🔴 Critical: **SQLi** · 0.50 confidence · 1.00 likelihood\n")).toBe(
-      true,
-    );
+  it("renders a single header line — emoji, severity label, bold title, confidence + likelihood, and the id an answer names (issues #27, a11y, #164)", () => {
+    const body = bodyOf({
+      severity: "critical",
+      title: "SQLi",
+      confidence: 0.5,
+      likelihood: 1,
+      id: "sql-injection",
+    });
+    expect(
+      body.startsWith(
+        "🔴 Critical: **SQLi** · 0.50 confidence · 1.00 likelihood · id `sql-injection`\n",
+      ),
+    ).toBe(true);
+  });
+
+  it("names the id only when there is one, escaped for its code span", () => {
+    expect(bodyOf({ title: "SQLi", id: "" }).split("\n")[0]).not.toContain(" · id ");
+    expect(bodyOf({ title: "SQLi", id: "a`b" }).split("\n")[0]).toContain(" · id `a-b`");
   });
 
   it("renders the finding's description", () => {

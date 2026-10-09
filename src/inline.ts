@@ -7,6 +7,7 @@ import {
   INLINE_PROSE_CLIP_THRESHOLD_CHARS,
   projectPatch,
   formatConfidence,
+  escapeCodeBackticks,
 } from "./surface.js";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import { answeredNoteKey } from "./answered.js";
@@ -33,6 +34,7 @@ const renderCommentBody = (
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   eta.renderString(template, {
     ...f,
+    idLabel: escapeCodeBackticks(f.id),
     patchProjection: projectPatch(f.patch, "diff-anchored"),
     severityEmoji,
     formatConfidence,
@@ -138,7 +140,8 @@ export const renderStraysSection = (strays: readonly Finding[]): string => {
   if (strays.length === 0) return "";
 
   const items = strays.map(
-    (f) => `- **${f.severity}** · \`${f.path}:${String(f.start_line)}\` — ${f.title}`,
+    (f) =>
+      `- **${f.severity}** · \`${f.path}:${String(f.start_line)}\` — ${f.title}${f.id === "" ? "" : ` · id \`${escapeCodeBackticks(f.id)}\``}`,
   );
 
   return [

@@ -138,7 +138,7 @@ describe("parseResponseLines — the response grammar", () => {
 });
 
 describe("parseResponseTables — the verdict tables implementers post", () => {
-  it("reads a camas-style table: emoji verdicts, a third action column, several ids in one row", () => {
+  it("reads a camas-style table: an emoji before the verdict, a third action column, several ids in one row, a synonym unstated", () => {
     const table = [
       "| finding | verdict | action |",
       "|---|---|---|",
@@ -148,16 +148,16 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
     ].join("\n");
     expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
       ["batch-predicate-duplicated-drift", "fixed"],
-      ["pathlike-argv-crashes-end-to-end", "fixed"],
-      ["pathlike-directory-spelling-erased", "fixed"],
-      ["widened-argv-contract-undeclared", "fixed"],
+      ["pathlike-argv-crashes-end-to-end", "unstated"],
+      ["pathlike-directory-spelling-erased", "unstated"],
+      ["widened-argv-contract-undeclared", "unstated"],
     ]);
     expect(parseResponseTables(table)[0]?.reason).toBe(
       "✅ fixed — One doctested `is_batch_program(name)` now serves both.",
     );
   });
 
-  it("reads a salix-style table: bold verbs, a deferral to a filed issue, a recorded nit, a refutation", () => {
+  it("reads a salix-style table: a bold taught verdict counts, an untaught one is unstated", () => {
     const table = [
       "| id | disposition |",
       "| --- | --- |",
@@ -168,9 +168,9 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
     ].join("\n");
     expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
       ["parameterless-candidate-skips-diamond-check", "fixed"],
-      ["dict-co-base-copy-drops-items", "dismissed"],
-      ["declared-names-order-sensitive-compare", "dismissed"],
-      ["unchecked-type-in-exception-fastsubclass", "refuted"],
+      ["dict-co-base-copy-drops-items", "unstated"],
+      ["declared-names-order-sensitive-compare", "unstated"],
+      ["unchecked-type-in-exception-fastsubclass", "unstated"],
     ]);
   });
 
@@ -240,11 +240,11 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       ["x-y", "refuted", "measured"],
       ["x-y", "refuted", "measured on 3.14 too"],
       ["x-y", "fixed", ""],
-      ["a-b", "dismissed", "recorded"],
+      ["a-b", "unstated", "recorded"],
     ]);
   });
 
-  it("never guesses a verdict: a negated, rejecting or empty cell is unstated", () => {
+  it("reads a verdict only from a taught word leading the cell, never a guess", () => {
     const table = [
       "| id | verdict |",
       "| --- | --- |",
@@ -254,33 +254,48 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       "| `d` | won't fix |",
       "| `e` | fixed, but not the root cause |",
       "| `f` | **probed, not reached** |",
+      "| `g` | **Dismissed**: tracked in #12 |",
     ].join("\n");
     expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
       ["a", "unstated"],
       ["b", "unstated"],
       ["c", "unstated"],
-      ["d", "dismissed"],
-      ["e", "unstated"],
-      ["f", "refuted"],
+      ["d", "unstated"],
+      ["e", "fixed"],
+      ["f", "unstated"],
+      ["g", "dismissed"],
     ]);
   });
 
-  it("follows GFM's extent: a table runs to a blank line, its dashed rows answer nothing, and a list ends it", () => {
+  it("runs a table while lines hold a pipe: a stray dashed row answers nothing, a list ends it, a legend opens its own", () => {
     const text = [
       "| id | disposition |",
       "| --- | --- |",
       "| `a-b` | fixed |",
       "| --- | --- |",
       "| `c-d` | refuted |",
-      "- a list item is a new block",
-      "| `e-f` | dismissed |",
+      "| verdict | meaning |",
+      "| --- | --- |",
+      "| fixed | the fix landed |",
       "",
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `e-f` | dismissed |",
+      "- a list item is no row",
       "| `g-h` | dismissed |",
     ].join("\n");
     expect(parseResponseTables(text).map((r) => [r.id, r.disposition])).toEqual([
       ["a-b", "fixed"],
       ["c-d", "refuted"],
+      ["e-f", "dismissed"],
     ]);
+  });
+
+  it("never reads an id out of the id cell's parenthetical note", () => {
+    const table = ["| id | disposition |", "| --- | --- |", "| `a-b` (was `x-y`) | fixed |"].join(
+      "\n",
+    );
+    expect(parseResponseTables(table).map((r) => r.id)).toEqual(["a-b"]);
   });
 
   it("names a column by its header's first word", () => {

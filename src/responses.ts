@@ -113,27 +113,12 @@ export const parseResponseLines = (text: string): readonly ParsedLine[] =>
 // A verdict table — the taught form for a PR comment, and the one implementers post unprompted — is
 // read when its header's columns name an id and a disposition. Each backtick-quoted token in a row's
 // id cell is an answer, or each comma-separated bare id when it quotes none; the other cells are its
-// reason, the disposition's own cell included only when it says more than the verdict. The table's
-// extent is GFM's, what the author sees rendered: it runs to a blank line or the start of another
-// block, and every line inside it is a row — a header-shaped or a dashed one included.
+// reason, the disposition's own cell included only when it says more than the verdict. A table is a
+// header row, its delimiter, and the rows after it that hold a pipe; another header and delimiter
+// open a new table.
 const ID_IN_CELL_RE = /`([^`]+)`/g;
-const BLOCK_START_RE = /^ {0,3}([-+*]\s|\d+[.)]\s|#{1,6}(\s|$)|>|<)/;
 const ID_HEADERS: ReadonlySet<string> = new Set(["id", "ids", "finding", "findings"]);
 const DISPOSITION_HEADERS: ReadonlySet<string> = new Set(["disposition", "verdict", "resolution"]);
-
-// The phrases implementers write in a disposition cell, mapped onto the response vocabulary; the
-// earliest one in the cell's first clause decides ("reproduced after merge and filed as #223" is a
-// deferral). A cell naming none, or with a negation anywhere else in that clause ("not fixed",
-// "fixed, but not the cause"), is unstated: a verdict is never read past a doubt.
-const TABLE_VOCABULARY: readonly (readonly [RegExp, ResponseDisposition])[] = [
-  [/\b(refuted|disputed|not reached|not reproduced|false positive|does not hold)\b/i, "refuted"],
-  [
-    /\b(dismissed|recorded|acknowledged|declined|deferred|won't fix|wontfix|out of scope|filed|tracked)\b/i,
-    "dismissed",
-  ],
-  [/\b(fixed|resolved|addressed|moot|removed|done)\b/i, "fixed"],
-];
-const NEGATION_RE = /n't\b|\b(not|never|no|cannot|without)\b/i;
 
 // The cells of a row, split at each pipe no backslash escapes. A cell consumes an escape with the
 // character it escapes, so the scan is linear: no backward search per pipe.
@@ -145,21 +130,19 @@ const splitCells = (row: string): readonly string[] => {
     .map((match) => match[1] ?? "");
 };
 
-const tableCells = (row: string): readonly string[] => {
-  const cells = splitCells(row.trim());
-  const inner = cells.slice(row.trim().startsWith("|") ? 1 : 0);
+// A line of a table: its cells without the outer pipes, or null when it holds no unescaped pipe.
+const tableRow = (line: string): readonly string[] | null => {
+  if (!/^ {0,3}\S/.test(line)) return null;
+  const split = splitCells(line.trim());
+  if (split.length < 2) return null;
+  const inner = split.slice(line.trim().startsWith("|") ? 1 : 0);
   return (
     inner.length > 1 && inner[inner.length - 1]?.trim() === "" ? inner.slice(0, -1) : inner
   ).map((cell) => cell.trim().replace(/\\\|/g, "|"));
 };
 
-const isHeaderRow = (line: string): boolean =>
-  /^ {0,3}\S/.test(line) && splitCells(line).length > 1;
-
-const isDelimiterRow = (line: string): boolean =>
-  isHeaderRow(line) && tableCells(line).every((cell) => /^:?-+:?$/.test(cell));
-
-const continuesTable = (line: string): boolean => line.trim() !== "" && !BLOCK_START_RE.test(line);
+const isDelimiter = (cells: readonly string[] | null): boolean =>
+  cells !== null && cells.every((cell) => /^:?-+:?$/.test(cell));
 
 const plainCell = (cell: string): string => cell.replace(/[*_`]/g, "").trim().toLowerCase();
 
@@ -167,27 +150,28 @@ const plainCell = (cell: string): string => cell.replace(/[*_`]/g, "").trim().to
 // disposition's.
 const columnName = (cell: string): string => plainCell(cell).split(/[\s/]+/)[0] ?? "";
 
+// A parenthetical in the id cell annotates the id ("(minor)", "(was `x-y`)"), never names another.
 const idsInCell = (cell: string): readonly string[] => {
-  const quoted = [...cell.matchAll(ID_IN_CELL_RE)]
+  const ids = cell.replace(/\([^)]*\)/g, "");
+  const quoted = [...ids.matchAll(ID_IN_CELL_RE)]
     .map((match) => unwrapId(match[1] ?? ""))
     .filter((id) => id !== "");
-  const bare = cell
-    .replace(/\([^)]*\)/g, "")
+  const bare = ids
     .split(",")
     .map((piece) => unwrapId(piece.trim()))
     .filter((id) => id !== "");
   return quoted.length > 0 ? quoted : bare.every((id) => /^\S+$/.test(id)) ? bare : [];
 };
 
+// The verdict is the disposition cell's first word, emphasis and emoji aside, when that word is
+// exactly one the sticky teaches. Any other cell — a synonym, a negation, prose — is unstated: its
+// reason still reaches the reviewer, and only a taught word can close a finding.
 const tableDisposition = (cell: string): ResponseDisposition => {
-  const clause = cell.replace(/[*_]/g, "").split(/[.:;—]/)[0] ?? "";
-  const earliest = TABLE_VOCABULARY.flatMap(([phrase, disposition]) => {
-    const match = phrase.exec(clause);
-    return match === null ? [] : [{ at: match.index, length: match[0].length, disposition }];
-  }).sort((a, b) => a.at - b.at)[0];
-  if (earliest === undefined) return "unstated";
-  const rest = clause.slice(0, earliest.at) + clause.slice(earliest.at + earliest.length);
-  return NEGATION_RE.test(rest) ? "unstated" : earliest.disposition;
+  const firstWord =
+    plainCell(cell)
+      .replace(/^[^a-z]+/, "")
+      .split(/[^a-z]/)[0] ?? "";
+  return DispositionCodec.is(firstWord) ? firstWord : "unstated";
 };
 
 interface VerdictColumns {
@@ -211,25 +195,29 @@ const rowAnswers = (cells: readonly string[], columns: VerdictColumns): readonly
   return idsInCell(cells[columns.id] ?? "").map((id) => ({ id, disposition, reason }));
 };
 
-// One pass over the lines: a header row followed by its delimiter opens a table, which runs to a blank
-// line or the start of another block. A dashed row inside it is no answer.
-const tableAnswers = (lines: readonly string[]): readonly ParsedLine[] =>
-  lines.reduce<{
+const namesAColumn = (name: string): boolean =>
+  ID_HEADERS.has(name) || DISPOSITION_HEADERS.has(name);
+
+// One pass over the lines, each split once: a header row followed by its delimiter opens a table,
+// which runs while lines hold a pipe. Inside a table, only a row naming a column opens another; a
+// data row above a stray delimiter stays a row, and the delimiter answers nothing.
+const tableAnswers = (lines: readonly string[]): readonly ParsedLine[] => {
+  const rows = lines.map(tableRow);
+  return rows.reduce<{
     readonly columns: VerdictColumns | null;
     readonly inTable: boolean;
     readonly skipDelimiter: boolean;
     readonly answers: ParsedLine[];
   }>(
-    (state, line, index) => {
+    (state, cells, index) => {
       if (state.skipDelimiter) return { ...state, skipDelimiter: false };
-      if (state.inTable && continuesTable(line)) {
-        if (state.columns !== null && !isDelimiterRow(line)) {
-          state.answers.push(...rowAnswers(tableCells(line), state.columns));
-        }
-        return state;
-      }
-      if (isHeaderRow(line) && isDelimiterRow(lines[index + 1] ?? "")) {
-        const header = tableCells(line).map(columnName);
+      if (cells === null) return { ...state, inTable: false, columns: null };
+      const opensTable =
+        !isDelimiter(cells) &&
+        isDelimiter(rows[index + 1] ?? null) &&
+        (!state.inTable || cells.map(columnName).some(namesAColumn));
+      if (opensTable) {
+        const header = cells.map(columnName);
         const id = header.findIndex((name) => ID_HEADERS.has(name));
         const disposition = header.findIndex((name) => DISPOSITION_HEADERS.has(name));
         return {
@@ -239,10 +227,14 @@ const tableAnswers = (lines: readonly string[]): readonly ParsedLine[] =>
           columns: id < 0 || disposition < 0 ? null : { id, disposition },
         };
       }
-      return { ...state, inTable: false, columns: null };
+      if (state.inTable && state.columns !== null && !isDelimiter(cells)) {
+        state.answers.push(...rowAnswers(cells, state.columns));
+      }
+      return isDelimiter(rows[index + 1] ?? null) ? { ...state, skipDelimiter: true } : state;
     },
     { columns: null, inTable: false, skipDelimiter: false, answers: [] },
   ).answers;
+};
 
 export const parseResponseTables = (text: string): readonly ParsedLine[] =>
   tableAnswers(unfencedLines(text));

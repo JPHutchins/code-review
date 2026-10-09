@@ -307,6 +307,13 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
     expect(parseResponseTables(text).map((r) => [r.id, r.disposition])).toEqual([["a-b", "fixed"]]);
   });
 
+  it("strips an id cell's parentheticals in linear time, however many are left open", () => {
+    const row = `| ${"(".repeat(65536)}a-b | fixed |`;
+    const started = performance.now();
+    parseResponseTables(["| id | disposition |", "| --- | --- |", row].join("\n"));
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
   it("never reads an id out of the id cell's parenthetical note", () => {
     const table = ["| id | disposition |", "| --- | --- |", "| `a-b` (was `x-y`) | fixed |"].join(
       "\n",

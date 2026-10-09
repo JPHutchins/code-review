@@ -158,7 +158,7 @@ const columnName = (cell: string): string => plainCell(cell).split(/[\s/]+/)[0] 
 
 // A parenthetical in the id cell annotates the id ("(minor)", "(was `x-y`)"), never names another.
 const idsInCell = (cell: string): readonly string[] => {
-  const ids = cell.replace(/\([^)]*\)/g, "");
+  const ids = cell.replace(/\([^()]*\)/g, "");
   const quoted = [...ids.matchAll(ID_IN_CELL_RE)]
     .map((match) => unwrapId((match[1] ?? "").trim()))
     .filter((id) => id !== "");

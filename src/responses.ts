@@ -109,6 +109,85 @@ export const parseResponseLines = (text: string): readonly ParsedLine[] =>
       : [];
   });
 
+// A verdict table — the per-round answer implementers post unprompted — is read when its header
+// names an id column and a disposition column. Each backtick-quoted token in a row's id cell is an
+// answer, and every other cell is its reason.
+const TABLE_ROW_RE = /^ {0,3}\|/;
+const TABLE_DELIMITER_RE = /^ {0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const ID_IN_CELL_RE = /`([^`]+)`/g;
+const ID_HEADERS: ReadonlySet<string> = new Set(["id", "ids", "finding", "findings"]);
+const DISPOSITION_HEADERS: ReadonlySet<string> = new Set([
+  "disposition",
+  "verdict",
+  "resolution",
+  "status",
+  "answer",
+  "response",
+]);
+
+// The phrases implementers write in a disposition cell, mapped onto the response vocabulary; the
+// earliest one in the cell's first clause decides ("reproduced after merge and filed as #223" is a
+// deferral). A cell naming none describes the change made, so it reads as fixed: a claim the reviewer
+// verifies, never a closure.
+const TABLE_VOCABULARY: readonly (readonly [RegExp, Disposition])[] = [
+  [/\b(refuted|disputed|not reached|not reproduced|false positive|does not hold)\b/i, "refuted"],
+  [
+    /\b(dismissed|recorded|acknowledged|declined|deferred|won't fix|wontfix|out of scope|filed|tracked)\b/i,
+    "dismissed",
+  ],
+  [/\b(fixed|resolved|addressed|moot|removed|done)\b/i, "fixed"],
+];
+
+const tableCells = (row: string): readonly string[] =>
+  row
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim());
+
+const headerName = (cell: string): string => cell.replace(/[*_`]/g, "").trim().toLowerCase();
+
+const tableDisposition = (cell: string): Disposition => {
+  const clause = cell.replace(/[*_]/g, "").split(/[.:;—]/)[0] ?? "";
+  const earliest = TABLE_VOCABULARY.flatMap(([phrase, disposition]) => {
+    const match = phrase.exec(clause);
+    return match === null ? [] : [{ at: match.index, disposition }];
+  }).sort((a, b) => a.at - b.at)[0];
+  return earliest?.disposition ?? "fixed";
+};
+
+export const parseResponseTables = (text: string): readonly ParsedLine[] => {
+  const lines = unfencedLines(text);
+  return lines.flatMap((line, index) => {
+    if (!TABLE_ROW_RE.test(line) || !TABLE_DELIMITER_RE.test(lines[index + 1] ?? "")) return [];
+    const header = tableCells(line).map(headerName);
+    const idColumn = header.findIndex((name) => ID_HEADERS.has(name));
+    const dispositionColumn = header.findIndex((name) => DISPOSITION_HEADERS.has(name));
+    if (idColumn < 0 || dispositionColumn < 0) return [];
+    const body = lines.slice(index + 2);
+    const end = body.findIndex((row) => !TABLE_ROW_RE.test(row));
+    return (end < 0 ? body : body.slice(0, end)).flatMap((row) => {
+      const cells = tableCells(row);
+      const disposition = tableDisposition(cells[dispositionColumn] ?? "");
+      const reason = clipText(
+        cells.filter((_, column) => column !== idColumn).join(" — "),
+        RESPONSE_REASON_CLIP_CHARS,
+      );
+      return [...(cells[idColumn] ?? "").matchAll(ID_IN_CELL_RE)].flatMap((match) => {
+        const id = unwrapId(match[1] ?? "");
+        return id === "" ? [] : [{ id, disposition, reason }];
+      });
+    });
+  });
+};
+
+// Every answer in a text, a Review-Response line before a table row for the same id.
+export const parseResponses = (text: string): readonly ParsedLine[] =>
+  [...parseResponseLines(text), ...parseResponseTables(text)].filter(
+    (answer, index, answers) => answers.findIndex((other) => other.id === answer.id) === index,
+  );
+
 export interface HarvestInput {
   readonly repo: string;
   readonly prNumber: number;
@@ -144,16 +223,17 @@ const newestFirst = (
   return left < right ? 1 : left > right ? -1 : b.id - a.id;
 };
 
-// Every response line on the PR, newest first per channel, so a long PR never pushes its recent
-// answers out of the cap. A line naming an id the prior round reported is a response; any other
-// id-shaped line is echoed as unmatched rather than silently dropped. Only a human account answers:
+// Every answer on the PR — a Review-Response line or a verdict-table row — newest first per channel,
+// so a long PR never pushes its recent answers out of the cap. An answer naming an id the prior round
+// reported is a response; any other id-shaped one is echoed as unmatched rather than silently
+// dropped. Only a human account answers:
 // another bot's comment never poses as the implementer.
 export const harvestResponses = (input: HarvestInput): Harvest => {
   const fromComments: readonly Response[] = [...input.comments]
     .filter((comment) => isHuman(comment.user.login, comment.user.type ?? null, input.botLogin))
     .sort(newestFirst)
     .flatMap((comment) =>
-      parseResponseLines(comment.body ?? "").map((line) => ({
+      parseResponses(comment.body ?? "").map((line) => ({
         ...line,
         channel: "comment" as const,
         source_url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}#issuecomment-${String(comment.id)}`,
@@ -163,7 +243,7 @@ export const harvestResponses = (input: HarvestInput): Harvest => {
       })),
     );
   const fromCommits: readonly Response[] = [...input.commits].reverse().flatMap((commit) =>
-    parseResponseLines(commit.message).map((line) => ({
+    parseResponses(commit.message).map((line) => ({
       ...line,
       channel: "commit" as const,
       source_url: `https://github.com/${input.repo}/commit/${commit.sha}`,

@@ -3,6 +3,8 @@ import {
   DISPOSITIONS,
   harvestResponses,
   parseResponseLines,
+  parseResponseTables,
+  parseResponses,
   RESPONSE_REASON_CLIP_CHARS,
   RESPONSE_FORM,
   RESPONSES_PER_CHANNEL,
@@ -128,6 +130,90 @@ describe("parseResponseLines — the response grammar", () => {
     const [line] = parseResponseLines(`Review-Response: x refuted ${"r".repeat(1000)}`);
     expect(line?.reason.startsWith("r".repeat(RESPONSE_REASON_CLIP_CHARS))).toBe(true);
     expect(line?.reason).toContain("[truncated]");
+  });
+});
+
+describe("parseResponseTables — the verdict tables implementers post", () => {
+  it("reads a camas-style table: emoji verdicts, a third action column, several ids in one row", () => {
+    const table = [
+      "| finding | verdict | action |",
+      "|---|---|---|",
+      "| `batch-predicate-duplicated-drift` | ✅ fixed | One doctested `is_batch_program(name)` now serves both. |",
+      "| `pathlike-argv-crashes-end-to-end`, `pathlike-directory-spelling-erased` | ✅ resolved by removal | `Task.cmd` is `tuple[str, ...]`. |",
+      "| `widened-argv-contract-undeclared` (nit) | ✅ moot | The path-like claim is gone. |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["batch-predicate-duplicated-drift", "fixed"],
+      ["pathlike-argv-crashes-end-to-end", "fixed"],
+      ["pathlike-directory-spelling-erased", "fixed"],
+      ["widened-argv-contract-undeclared", "fixed"],
+    ]);
+    expect(parseResponseTables(table)[0]?.reason).toBe(
+      "✅ fixed — One doctested `is_batch_program(name)` now serves both.",
+    );
+  });
+
+  it("reads a salix-style table: bold verbs, a deferral to a filed issue, a recorded nit, a refutation", () => {
+    const table = [
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `parameterless-candidate-skips-diamond-check` (major) | **fixed by widening this PR**, which now closes #229. |",
+      "| `dict-co-base-copy-drops-items` (minor, re-raised) | **reproduced after merge** and filed as #223. A struct segfaults. |",
+      "| `declared-names-order-sensitive-compare` (hidden nit) | recorded. A delegate that reorders the annotations is refused. |",
+      '| `unchecked-type-in-exception-fastsubclass` (minor) | **probed, not reached**. `META("C", (5,), {})` is refused first. |',
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["parameterless-candidate-skips-diamond-check", "fixed"],
+      ["dict-co-base-copy-drops-items", "dismissed"],
+      ["declared-names-order-sensitive-compare", "dismissed"],
+      ["unchecked-type-in-exception-fastsubclass", "refuted"],
+    ]);
+  });
+
+  it("reads a jphfmt-style table: a resolution that names no verb is a fix, a systemic id answers too, a title-only row names nothing", () => {
+    const table = [
+      "| finding | resolution |",
+      "| --- | --- |",
+      "| `scope-directives-cr-line-split` | `scope_directives` splits a lone `\\r` as the lexer does. |",
+      "| hidden blank-class nit | `starts_logical_line` reads past blank pieces. |",
+      "| systemic `line-splice-rule-multiply-spelled` | One snippet table runs through all three readings. |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["scope-directives-cr-line-split", "fixed"],
+      ["line-splice-rule-multiply-spelled", "fixed"],
+    ]);
+  });
+
+  it("ignores a table without an id and a disposition column, and a fenced copy of one", () => {
+    const unrelated = [
+      "| shape | stock | main | now |",
+      "| --- | --- | --- | --- |",
+      "| ClassVar removes `a` | fields `[w, p]` | slot shadowed | refused |",
+    ].join("\n");
+    const fenced = [
+      "```",
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `x-y` | dismissed |",
+      "```",
+    ].join("\n");
+    expect(parseResponseTables(unrelated)).toEqual([]);
+    expect(parseResponseTables(fenced)).toEqual([]);
+  });
+
+  it("reads a line and a table together, the line winning an id they both answer", () => {
+    const text = [
+      "Review-Response: x-y refuted — measured",
+      "",
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `x-y` | fixed |",
+      "| `a-b` | recorded |",
+    ].join("\n");
+    expect(parseResponses(text).map((r) => [r.id, r.disposition])).toEqual([
+      ["x-y", "refuted"],
+      ["a-b", "dismissed"],
+    ]);
   });
 });
 

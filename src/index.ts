@@ -24,7 +24,6 @@ import {
   isSeedSentinel,
   SEED_SENTINEL,
   priorContextPath,
-  priorAnswersPath,
   priorSuppressedPath,
   lastValidPath,
   costAxisDisengagedPath,
@@ -32,7 +31,6 @@ import {
   DEFAULT_RESERVE,
   DEADLINE_ENV,
 } from "./budget.js";
-import { decodeAnsweredEntry, isAnsweredDrop, type StagedAnsweredEntry } from "./answered.js";
 import { validateAgainstSchema, unsafeUnwrap } from "./validate.js";
 import { formatUtc } from "./format.js";
 import {
@@ -44,7 +42,6 @@ import {
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
   anchoredSchemaVersionPattern,
-  resolveFindingId,
   withoutRebuttals,
 } from "./schema.js";
 import type { Triage, Finding, Findings, PriceMap } from "./schema.js";
@@ -1035,11 +1032,6 @@ const seedDraftCmd = defineCommand({
       description:
         "Path to the gather-staged prior findings document (prior_findings.json). gather resolves it — from the sticky's embedded blob, or by fetching the artifact the marker names — because gather holds the repo token and this step deliberately does not: it runs the jailed agent over untrusted PR code. Absent or null falls back to decoding an embedded blob out of --prior, which needs no token",
     },
-    "prior-answers": {
-      type: "string",
-      description:
-        "Path to the gather-staged answered-findings registry (answered.json) — the prior inline findings whose threads a human reply answered (issue #151). Delivered out-of-band to the .prior-answers sidecar beside the prior context so the next-round agent sees the already-answered state; best-effort, never fails the seed",
-    },
     "nit-visibility-floor": {
       type: "string",
       description:
@@ -1151,35 +1143,6 @@ const seedDraftCmd = defineCommand({
         : stripSurfaceFields(
             isSurfaceStampedDoc(parsedPrior) ? parsedPrior : withoutScopeMetastasis(parsedPrior),
           );
-    // The answered registry decoded ONCE, up front: the seed's pre-filter below and the sidecar
-    // write at the end both consume it (issue #233 r2). null = no usable registry (the flag absent,
-    // or the staged file malformed — the old contract: a malformed file warns and writes NO
-    // sidecar, issue #151).
-    const answeredRegistry = ((): readonly StagedAnsweredEntry[] | null => {
-      if (!args["prior-answers"]) return null;
-      try {
-        const raw = JSON.parse(readFileSync(resolve(args["prior-answers"]), "utf-8")) as unknown;
-        if (!Array.isArray(raw)) throw new Error("expected an array");
-        const decoded = raw.flatMap((row) => {
-          const entry = decodeAnsweredEntry(row);
-          return entry === null ? [] : [entry];
-        });
-        // A dropped row is a gap in the answered state, not a silent no-op: the agent would read
-        // "no answers" for a thread that WAS answered (issue #151 review r1).
-        if (decoded.length < raw.length) {
-          process.stderr.write(
-            `Warning: ${String(raw.length - decoded.length)} of ${String(raw.length)} answered-registry row(s) failed to decode — the seed's answered state is incomplete\n`,
-          );
-        }
-        return decoded;
-      } catch (err) {
-        process.stderr.write(
-          `Warning: could not read the answered-findings registry ${args["prior-answers"]} (${errMsg(err)}) — no prior-answers sidecar\n`,
-        );
-        return null;
-      }
-    })();
-
     // The agent-facing scope_metastasis entry is derivable from the carried convergence trajectory —
     // the same computation post() ran when it stamped it — so the seed re-attaches it: the next-round agent
     // must see the recurrence signal. A legacy blob whose stripped doc still carries the authoritative
@@ -1193,29 +1156,12 @@ const seedDraftCmd = defineCommand({
         Array.isArray(strippedPrior)
       )
         return strippedPrior;
-      // The registry upcast runs FIRST (code → id, or the synthesized id), so the answered pre-filter
-      // below and the scope_metastasis carry both see the 0.10 shape — a raw legacy prior's findings
-      // have no `id`, and the pre-filter can only match an answered entry through one. A doc the
-      // upcast rejects (a malformed carried field) falls through raw: the adorn below and the gate's
-      // barePrior recovery still handle it.
+      // The registry upcast runs FIRST (code → id, or the synthesized id), so the scope_metastasis
+      // carry sees the 0.10 shape. A doc the upcast rejects (a malformed carried field) falls through
+      // raw: the adorn below and the gate's barePrior recovery still handle it.
       const resolved = resolvedPriorValue(strippedPrior);
-      // The artifact holds the agent's PRE-FILTER draft — uploaded before post's answered-filter
-      // dropped verbatim re-raises — so the seed applies the SAME drop via the SAME shared
-      // predicate (isAnsweredDrop, issue #233 r2): a finding the prior round closed as answered is
-      // not open, and showing it as open wastes the next round on a claim post will suppress anyway.
       const doc: Record<string, unknown> =
-        resolved === null
-          ? (strippedPrior as Record<string, unknown>)
-          : {
-              ...resolved,
-              findings:
-                answeredRegistry !== null && answeredRegistry.length > 0
-                  ? resolved.findings.filter((f) => {
-                      const resolvedId = resolveFindingId(f);
-                      return !answeredRegistry.some((e) => isAnsweredDrop(resolvedId, f, e));
-                    })
-                  : resolved.findings,
-            };
+        resolved === null ? (strippedPrior as Record<string, unknown>) : resolved;
       // A carried entry only counts when it VALIDATES as the entry shape — for a draft blob it is
       // already dropped (only a legacy pipeline-stamped blob reaches here with one), and an explicit
       // null, an array, or a malformed object (all possible in a corrupt blob; genuine posts omit the
@@ -1235,18 +1181,6 @@ const seedDraftCmd = defineCommand({
     // sentinel-only seed so the always-exit-0 contract holds. The prior findings are NEVER written
     // into $DRAFT — only the sentinel goes there; the prior travels out-of-band to
     // priorContextPath, which no recovery path reads back (issue #127).
-    // The answered-findings registry (issue #151), delivered beside the prior context: the prior
-    // inline findings whose threads a human reply answered, so the next-round agent knows what it
-    // must not re-raise verbatim. Best-effort and independent of whether the prior findings seeded —
-    // even a prior that never completed (a notice) still has answered threads. A malformed staged
-    // file warns and writes nothing; the workflow references the sidecar as possibly absent.
-    if (answeredRegistry !== null) {
-      writeFileSync(priorAnswersPath(outPath), `${JSON.stringify(answeredRegistry, null, 2)}\n`);
-      process.stderr.write(
-        `Seeded ${priorAnswersPath(outPath)} with ${String(answeredRegistry.length)} answered finding(s) as context\n`,
-      );
-    }
-
     // The prior round's below-visibility-floor nits (issue #164), re-derived from the SAME prior blob
     // the commenter split on — delivered as adjudicated context so the next-round agent does not
     // re-raise them as fresh nits. Best-effort and independent of whether the prior findings seeded:

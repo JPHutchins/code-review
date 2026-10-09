@@ -1346,7 +1346,7 @@ export const post = async (
   // is treated as closed: dropped from this review's findings, counts, inline comments, and round
   // signal, and NAMED in the sticky (never silently). A re-raise with changed evidence is kept and
   // annotated with the prior answer's link. A failed fetch degrades to an empty registry (the review
-  // posts unfiltered); the seed already told the agent what not to re-raise.
+  // posts unfiltered).
   const loadedFindings = findingsResult.findings;
   // The answered-thread fetch runs only when a review will actually be filtered — an empty-diff or
   // corrupt-findings post exits above without paying for the paginated history (issue #151 review

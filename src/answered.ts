@@ -1,7 +1,6 @@
 // The "already answered" state (issue #151): the deterministic registry of prior inline findings
-// whose threads a human reply answered, plus the two rules built on it — the re-review seed surfaces
-// the registry so the next-round agent does not re-raise, and post() treats a VERBATIM re-raise as
-// closed: identical match (id), identical claim TEXT (title + description + reasoning),
+// whose threads a human reply answered, plus the rule built on it — post() treats a VERBATIM re-raise
+// as closed: identical match (id), identical claim TEXT (title + description + reasoning),
 // identical severity, and identical location/fix (path + patch — the line is deliberately excluded,
 // positional drift is not evidence), i.e. no new evidence by definition. A re-raise carrying a
 // non-blank rebuttal answers the prior response, so it is never verbatim. The drop is removed from
@@ -21,7 +20,7 @@ import {
   hasRebuttal,
 } from "./schema.js";
 import type { Finding, Severity } from "./schema.js";
-import { clipText, errMsg } from "./util.js";
+import { errMsg } from "./util.js";
 
 // One flat review comment as REST `pulls/{n}/comments` returns it — enough to rebuild reply threads
 // from `in_reply_to_id` chains (a reply to a reply included) and to decode the bot comment's embedded
@@ -40,14 +39,8 @@ export interface ThreadComment {
   readonly created_at: string | null;
 }
 
-// The jq projection gather and post share. It emits BOTH the flat `user_login`/`user_type` the
-// answered-registry codec reads AND the nested `user: {login}` (+ author_association) the
-// conversation codec reads — one fetch feeds two consumers, and neither may be silently starved by
-// a field rename (issue #151 review r1: the original single-shape projection emptied the
-// conversation's review_comments in production while the mocks, which bypass jq, kept the tests
-// green).
 export const THREAD_COMMENT_JQ =
-  ".[] | {id, in_reply_to_id, user: {login: .user.login}, user_login: .user.login, user_type: .user.type, body, html_url, path, line, created_at, author_association}";
+  ".[] | {id, in_reply_to_id, user_login: .user.login, user_type: .user.type, body, html_url, path, line, created_at}";
 
 export const ThreadCommentCodec = t.type({
   id: t.number,
@@ -62,7 +55,7 @@ export const ThreadCommentCodec = t.type({
 });
 
 // The registry entry for one answered finding: the finding's identifying fields (the verbatim-match
-// targets), the thread link, and the last human reply's link + a clipped excerpt for the seed.
+// targets) and the last human reply's link.
 export interface AnsweredEntry {
   // The answered finding's id; a pre-id marker resolves it the same way the registry's legacy
   // upcast does (code → id, else synthesized), so the entry keys to the identical claim next round.
@@ -86,58 +79,9 @@ export interface AnsweredEntry {
   // r7).
   readonly repliedAt: string | null;
   readonly replyId: number;
-  readonly threadUrl: string;
   readonly replyUrl: string;
   readonly replyAuthor: string;
-  readonly replyExcerpt: string;
 }
-
-// The staged-registry codec (what gather writes to answered.json and seed-draft reads back) — the
-// SNAKE_CASE wire shape, distinct from the camelCase in-process AnsweredEntry; rows that fail decode
-// are dropped like every other untrusted artifact, never fatal.
-export const AnsweredEntryCodec = t.type({
-  code: t.string,
-  title: t.string,
-  description: t.string,
-  reasoning: t.string,
-  severity: t.union([
-    t.literal("critical"),
-    t.literal("major"),
-    t.literal("minor"),
-    t.literal("nit"),
-  ]),
-  path: t.string,
-  patch: t.union([t.string, t.null]),
-  replied_at: t.union([t.string, t.null]),
-  reply_id: t.number,
-  thread_url: t.string,
-  reply_url: t.string,
-  reply_author: t.string,
-  reply_excerpt: t.string,
-});
-
-export type StagedAnsweredEntry = t.TypeOf<typeof AnsweredEntryCodec>;
-
-export const encodeAnsweredEntry = (e: AnsweredEntry): StagedAnsweredEntry => ({
-  code: e.code,
-  title: e.title,
-  description: e.description,
-  reasoning: e.reasoning,
-  severity: e.severity,
-  path: e.path,
-  patch: e.patch,
-  replied_at: e.repliedAt,
-  reply_id: e.replyId,
-  thread_url: e.threadUrl,
-  reply_url: e.replyUrl,
-  reply_author: e.replyAuthor,
-  reply_excerpt: e.replyExcerpt,
-});
-
-export const decodeAnsweredEntry = (raw: unknown): StagedAnsweredEntry | null => {
-  const decoded = AnsweredEntryCodec.decode(raw);
-  return decoded._tag === "Right" ? decoded.right : null;
-};
 
 // A reply is "answered" when a HUMAN commented on the thread: neither this pipeline's bot (matched
 // by login) nor any other bot account (matched by the REST user.type, so a CI/dependabot comment
@@ -146,8 +90,6 @@ export const decodeAnsweredEntry = (raw: unknown): StagedAnsweredEntry | null =>
 // (issue #151 review r2).
 export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
   login !== botLogin && type === "User";
-
-const EXCERPT_LIMIT = 400;
 
 // OUTDATED/minimized threads are deliberately NOT excluded: the pipeline minimizes superseded
 // bot comments at the end of every post, so excluding them would erase the very persistence the
@@ -277,10 +219,8 @@ export const answeredRegistryFrom = (
       ...finding,
       repliedAt: reply.created_at,
       replyId: reply.id,
-      threadUrl: root.html_url,
       replyUrl: reply.html_url,
       replyAuthor: reply.user_login,
-      replyExcerpt: clipText(reply.body ?? "", EXCERPT_LIMIT),
     });
   }
   // Dedup by the shared note key, keeping the entry with the MOST RECENT ANSWER — keyed on the
@@ -316,8 +256,6 @@ const matches = (
   e: Pick<AnsweredEntry, "code" | "title">,
 ): boolean => e.code === resolvedId || isSynthesizedTitleMatch(f, e);
 
-// The full-claim verbatim predicate, extracted from applyAnswered below so the seed's pre-filter
-// (issue #233 r2) can ask the SAME question of the staged registry — one definition, two consumers.
 // The ONE verbatim claim-field list: the six per-field comparisons consumed by both the full-claim
 // predicate and the title-second-chance scorer. The VerbatimPick type DERIVES from the array, so
 // adding a claim field is a single edit the compiler verifies — the type and the runtime list can
@@ -336,12 +274,7 @@ const verbatimFieldEqual = (
 export const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
   !hasRebuttal(f) && VERBATIM_FIELDS.every((field) => verbatimFieldEqual(f, e, field));
 
-// Would post's answered-filter DROP this finding? applyAnswered below and the seed's pre-filter
-// both ask this (issue #233 r2), so "answered" can never mean two things across the pipeline. e is
-// the staged wire shape too: every field the predicate reads shares its name across both types.
-// The one known corner where the two consumers disagree: a finding that id-matches a NON-verbatim
-// entry while a verbatim (6/6) synthesized same-title entry sits beside it — post keeps it (only
-// the chosen entry feeds the drop), the seed's existential scan drops it (see applyAnswered).
+// Would post's answered-filter DROP this finding?
 export const isAnsweredDrop = (
   resolvedId: string,
   f: Finding,
@@ -412,7 +345,7 @@ export interface AnsweredFilter {
   readonly droppedCount: number;
 }
 
-// The deterministic backstop beneath the seed guidance: an answered finding re-raised VERBATIM
+// The deterministic backstop: an answered finding re-raised VERBATIM
 // (identical title, description, and reasoning — no new evidence by definition) is treated as closed
 // and dropped from this review, so the round's counts and stop signal reflect the dismissal. The
 // claim TEXT is the evidence: a change to any of title/description/reasoning, or to the severity,
@@ -438,11 +371,8 @@ export const applyAnswered = (
     // not mis-bind its annotation (the id match wins wherever it exists). The second chance picks
     // the synthesized same-title entry sharing the MOST verbatim claim fields (ties keep registry
     // order), so two codeless same-title answers under different paths cannot mis-bind a kept
-    // re-raise. The chosen entry alone feeds the drop decision, through the isAnsweredDrop the
-    // seed's pre-filter also asks (rebuttal rule included), while that pre-filter is existential over
-    // the whole registry — so the two sides disagree in one corner (a non-verbatim id match beside a
-    // verbatim same-title entry; documented on isAnsweredDrop). Because the scorer picks the entry,
-    // it changes suppression, not just annotation.
+    // re-raise. The chosen entry alone feeds the drop decision, through isAnsweredDrop (rebuttal rule
+    // included). Because the scorer picks the entry, it changes suppression, not just annotation.
     const resolvedId = resolveFindingId(f);
     const idMatch = registry.find((e) => e.code === resolvedId);
     const titleMatch = idMatch === undefined ? bestTitleMatch(f, registry) : undefined;
@@ -455,8 +385,8 @@ export const applyAnswered = (
     // (path, patch) — a re-raise relocated to another file or proposing a different fix carries
     // something new. The line is deliberately excluded: positional drift (a rebase moving the same
     // claim) is not evidence (issue #151 review r3). patch is normalized (undefined → null) so an
-    // absent patch on both sides compares equal. Both paths ask isAnsweredDrop, the predicate the
-    // seed's pre-filter shares, rebuttal rule included.
+    // absent patch on both sides compares equal. Both paths ask isAnsweredDrop, rebuttal rule
+    // included.
     const dropped = isAnsweredDrop(resolvedId, f, entry);
     if (dropped) {
       droppedByEntry.set(entry.replyId, entry);

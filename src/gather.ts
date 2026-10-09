@@ -181,10 +181,12 @@ const CommitCodec = t.intersection([
     author: t.union([t.string, t.null]),
     email: t.union([t.string, t.null]),
   }),
-  t.partial({ date: t.union([t.string, t.null]) }),
+  t.partial({ date: t.union([t.string, t.null]), login: t.union([t.string, t.null]) }),
 ]);
+// `author` is the git name the triage must vet; `login` is the GitHub account the author's email
+// resolves to, which an answer is attributed by.
 const COMMIT_JQ =
-  ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email, date: .commit.committer.date}";
+  ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email, date: .commit.author.date, login: (.author.login // null)}";
 
 // Commit messages + author identities of every commit in `default...head`. Once the head is checked
 // out, `git log` exposes these to the reviewing agent, so they are an untrusted surface triage must
@@ -545,7 +547,7 @@ export const gather = async (
         prNumber,
         botLogin: input.botLogin,
         priorIds: new Set(priorIdsFrom(priorFindings)),
-        commits,
+        commits: commits.map((commit) => ({ ...commit, author: commit.login ?? null })),
         comments: issueComments ?? [],
       })
     : { file: { responses: [], unmatched: [] }, dropped: 0 };

@@ -7,7 +7,11 @@ import {
   RESPONSE_FORM,
   RESPONSES_PER_CHANNEL,
   ResponsesFileCodec,
+  MAINTAINER_ASSOCIATIONS,
+  closingResponses,
+  isTrustedResponse,
   type HarvestInput,
+  type Response,
 } from "./responses.js";
 
 describe("parseResponseLines — the response grammar", () => {
@@ -276,5 +280,99 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
     );
     expect(harvest.file.responses[0]?.reason).toBe(`comment ${String(RESPONSES_PER_CHANNEL)}`);
     expect(harvest.file.responses.map((r) => r.reason)).not.toContain("comment 0");
+  });
+});
+
+describe("isTrustedResponse — only a maintainer's answer can close a finding", () => {
+  const answer = (overrides: Partial<Response>): Response => ({
+    id: "x-y",
+    disposition: "dismissed",
+    reason: "tracked in #12",
+    channel: "comment",
+    source_url: "https://github.com/o/r/pull/1#issuecomment-1",
+    author: "alice",
+    author_association: "OWNER",
+    created_at: "2026-10-01T00:00:00Z",
+    ...overrides,
+  });
+
+  it("trusts a comment by its author's role, and only the maintainer roles", () => {
+    expect(
+      MAINTAINER_ASSOCIATIONS.map((role) =>
+        isTrustedResponse(answer({ author_association: role }), false),
+      ),
+    ).toEqual([true, true, true]);
+    expect(
+      ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", null].map((role) =>
+        isTrustedResponse(answer({ author_association: role }), true),
+      ),
+    ).toEqual([false, false, false, false, false]);
+  });
+
+  it("trusts a commit only when the PR's head branch is in the base repo", () => {
+    const commit = answer({ channel: "commit", author_association: null });
+    expect(isTrustedResponse(commit, true)).toBe(true);
+    expect(isTrustedResponse(commit, false)).toBe(false);
+  });
+});
+
+describe("closingResponses — the newest trusted answer per id decides", () => {
+  const answer = (overrides: Partial<Response>): Response => ({
+    id: "x-y",
+    disposition: "dismissed",
+    reason: "tracked in #12",
+    channel: "comment",
+    source_url: "https://github.com/o/r/pull/1#issuecomment-1",
+    author: "alice",
+    author_association: "OWNER",
+    created_at: "2026-10-01T00:00:00Z",
+    ...overrides,
+  });
+  const maintainer = (response: Response): boolean => response.author_association === "OWNER";
+
+  it("closes an id its newest trusted answer refutes or dismisses, never one it calls fixed", () => {
+    expect(
+      closingResponses(
+        [
+          answer({ id: "a", disposition: "refuted" }),
+          answer({ id: "b", disposition: "dismissed" }),
+          answer({ id: "c", disposition: "fixed" }),
+        ],
+        maintainer,
+      ).map((r) => r.id),
+    ).toEqual(["a", "b"]);
+  });
+
+  it("lets a newer fixed reopen an id, and a newer dismissal close it again", () => {
+    const dismissed = answer({ created_at: "2026-10-01T00:00:00Z" });
+    const reopened = answer({ disposition: "fixed", created_at: "2026-10-01T01:00:00Z" });
+    expect(closingResponses([dismissed, reopened], maintainer)).toEqual([]);
+    const closedAgain = answer({ created_at: "2026-10-01T03:00:00Z", source_url: "u2" });
+    expect(closingResponses([dismissed, reopened, closedAgain], maintainer)).toEqual([closedAgain]);
+  });
+
+  it("orders answers by instant, not by spelling, so a timezone offset cannot reorder them", () => {
+    const dismissed = answer({ created_at: "2026-10-01T01:30:00Z" });
+    const earlierFixed = answer({ disposition: "fixed", created_at: "2026-10-01T02:00:00+01:00" });
+    expect(closingResponses([earlierFixed, dismissed], maintainer)).toEqual([dismissed]);
+  });
+
+  it("never closes an id on an untrusted answer, an unreadable time, or a same-instant tie with fixed", () => {
+    expect(closingResponses([answer({ author_association: "NONE" })], maintainer)).toEqual([]);
+    expect(closingResponses([answer({ created_at: null })], maintainer)).toEqual([]);
+    expect(closingResponses([answer({ created_at: "not a time" })], maintainer)).toEqual([]);
+    expect(closingResponses([answer({}), answer({ disposition: "fixed" })], maintainer)).toEqual(
+      [],
+    );
+  });
+
+  it("ignores an untrusted fixed, so it cannot reopen a maintainer's closure", () => {
+    const closed = answer({});
+    const outsider = answer({
+      disposition: "fixed",
+      author_association: "NONE",
+      created_at: "2026-10-02T00:00:00Z",
+    });
+    expect(closingResponses([closed, outsider], maintainer)).toEqual([closed]);
   });
 });

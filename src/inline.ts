@@ -85,8 +85,7 @@ export const buildInlineComments = (
   const comments: InlineComment[] = inDiff.map((f) => {
     const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";
     // In the clip band the prose sheds so the comment fits — the marker still embeds the WHOLE
-    // finding, which is what keeps the answered registry decoding the thread (issue #233 r2). The
-    // clip is clipText's marked truncation, never silent.
+    // finding. The clip is clipText's marked truncation, never silent.
     const clipProse =
       fullFindings !== undefined &&
       findingPayload(f, fullFindings.schema_version).length > INLINE_PROSE_CLIP_THRESHOLD_CHARS;

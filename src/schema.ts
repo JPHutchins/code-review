@@ -387,14 +387,15 @@ export const synthesizedSystemicId = (title: string): string => synthesizedId([t
 export const isSynthesizedFindingId = (id: string): boolean => /^f-[A-Za-z0-9_-]{12}$/.test(id);
 
 // The ONE resolution a finding's id goes through: an explicit id wins, and an empty one resolves to
-// the same synthesized id the legacy upcast derives — shared by the answered-registry builder and the
-// answered match, so the two sides can never disagree on what an empty id means.
+// the same synthesized id the legacy upcast derives — shared by the answered-registry builder, which
+// reads the prior finding, and the answered match, so the two sides can never disagree on what an
+// empty id means.
 export const resolveFindingId = (f: { id: string; path: string; title: string }): string =>
   f.id !== "" ? f.id : synthesizedFindingId(f.path, f.title);
 
 // The ONE legacy-spelling precedence for a RAW record (id → code → synthesized when a path exists):
-// shared by the legacy upcast, the answered-registry marker reader, and the below-floor nit reader,
-// so the three raw-document sites can never drift on which spelling wins. undefined only when the
+// shared by the legacy upcast and the below-floor nit reader, so the raw-document sites can never
+// drift on which spelling wins. undefined only when the
 // record carries no usable spelling AND no path to synthesize from (a systemic's shape).
 export const resolveRuleId = (rec: {
   readonly id?: string;

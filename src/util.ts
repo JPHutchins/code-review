@@ -49,8 +49,7 @@ export const addModelUsage = (prior: ModelUsageEntry, entry: ModelUsageEntry): M
 export type ParseResult = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
 
 // Clip a body to `max` chars without splitting a code point (a lone high surrogate at the cut is
-// dropped so the kept prefix stays well-formed UTF-16). Shared by gather's conversation bodies and
-// the answered-registry reply excerpts.
+// dropped so the kept prefix stays well-formed UTF-16).
 export const clipText = (body: string, max: number): string => {
   if (body.length <= max) return body;
   const cut = body.slice(0, max);

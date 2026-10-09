@@ -1,6 +1,6 @@
 import * as t from "io-ts";
 import { ID_SHAPE_RE, strictExact } from "./schema.js";
-import { asRecord, clipText } from "./util.js";
+import { clipText } from "./util.js";
 
 export const RESPONSE_REASON_CLIP_CHARS = 300;
 export const RESPONSES_PER_CHANNEL = 25;
@@ -119,11 +119,11 @@ export const parseResponseLines = (text: string): readonly ParsedLine[] =>
 export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
   login !== botLogin && type === "User";
 
-export interface HarvestInput {
+// Where answers come from: the PR's conversation comments and its commits.
+export interface AnswerSources {
   readonly repo: string;
   readonly prNumber: number;
   readonly botLogin: string;
-  readonly priorIds: ReadonlySet<string>;
   readonly commits: readonly {
     readonly sha: string;
     readonly message: string;
@@ -139,6 +139,10 @@ export interface HarvestInput {
   }[];
 }
 
+export interface HarvestInput extends AnswerSources {
+  readonly priorIds: ReadonlySet<string>;
+}
+
 export interface Harvest {
   readonly file: ResponsesFile;
   // Response lines past a channel's cap: named by the caller, never cut silently.
@@ -147,19 +151,19 @@ export interface Harvest {
 
 // Newest first, with the comment id breaking a same-second tie (GitHub timestamps are second-grained).
 const newestFirst = (
-  a: HarvestInput["comments"][number],
-  b: HarvestInput["comments"][number],
+  a: AnswerSources["comments"][number],
+  b: AnswerSources["comments"][number],
 ): number => {
   const [left, right] = [a.created_at ?? "", b.created_at ?? ""];
   return left < right ? 1 : left > right ? -1 : b.id - a.id;
 };
 
-// Every response line on the PR, newest first per channel, so a long PR never pushes its recent
-// answers out of the cap. A line naming an id the prior round reported is a response; any other
-// id-shaped line is echoed as unmatched rather than silently dropped. Only a human account answers:
-// another bot's comment never poses as the implementer.
-export const harvestResponses = (input: HarvestInput): Harvest => {
-  const fromComments: readonly Response[] = [...input.comments]
+// Every answer on the PR, newest first per channel. Only a human account answers: another bot's
+// comment never poses as the implementer.
+export const answersFrom = (
+  input: AnswerSources,
+): { readonly comments: readonly Response[]; readonly commits: readonly Response[] } => {
+  const comments: readonly Response[] = [...input.comments]
     .filter((comment) => isHuman(comment.user.login, comment.user.type ?? null, input.botLogin))
     .sort(newestFirst)
     .flatMap((comment) =>
@@ -172,7 +176,7 @@ export const harvestResponses = (input: HarvestInput): Harvest => {
         created_at: comment.created_at ?? null,
       })),
     );
-  const fromCommits: readonly Response[] = [...input.commits].reverse().flatMap((commit) =>
+  const commits: readonly Response[] = [...input.commits].reverse().flatMap((commit) =>
     parseResponseLines(commit.message).map((line) => ({
       ...line,
       channel: "commit" as const,
@@ -182,6 +186,14 @@ export const harvestResponses = (input: HarvestInput): Harvest => {
       created_at: commit.date ?? null,
     })),
   );
+  return { comments, commits };
+};
+
+// The answers staged for the reviewer, newest first per channel so a long PR never pushes its recent
+// answers out of the cap. An answer naming an id the prior round reported is a response; any other
+// id-shaped one is echoed as unmatched rather than silently dropped.
+export const harvestResponses = (input: HarvestInput): Harvest => {
+  const { comments: fromComments, commits: fromCommits } = answersFrom(input);
   const matched = (response: Response): boolean => input.priorIds.has(response.id);
   const echoed = (response: Response): boolean =>
     !matched(response) && ID_SHAPE_RE.test(response.id);
@@ -242,21 +254,7 @@ export const closingResponses = (
     const latest = Math.max(...answers.map(answeredInstant));
     const newest = answers.filter((response) => answeredInstant(response) === latest);
     return newest.every((response) => CLOSING_DISPOSITIONS.has(response.disposition))
-      ? newest.slice(0, 1)
+      ? [...newest].sort((a, b) => a.source_url.localeCompare(b.source_url)).slice(0, 1)
       : [];
   });
-};
-
-// The staged answers, decoded row by row: a row that does not decode closes nothing, and the rest
-// still count. null when the file holds no answers array at all.
-export const decodeStagedResponses = (
-  raw: unknown,
-): { readonly responses: readonly Response[]; readonly undecoded: number } | null => {
-  const rows = asRecord(raw)?.["responses"];
-  if (!Array.isArray(rows)) return null;
-  const responses = rows.flatMap((row) => {
-    const decoded = ResponseCodec.decode(row);
-    return decoded._tag === "Right" ? [decoded.right] : [];
-  });
-  return { responses, undecoded: rows.length - responses.length };
 };

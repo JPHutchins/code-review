@@ -189,15 +189,6 @@ describe("workflow capability probes (issue #233 r2)", () => {
     expect(runProbe("post_accepts", postFn, postHelp, "nit-visibility-floor")).toBe("yes");
   });
 
-  // Pinned to its own version like the alpha.52 and alpha.53 pairs: the release that ships the harvest
-  // is the first whose post accepts the answers.
-  it("reports the published alpha.64 post as lacking --responses (it predates the harvest)", () => {
-    const postFn = sites.find((s) => s.name === "post_accepts")!.fn;
-    const postHelp64 = readRepoFile("test/fixtures/published-help/post-alpha.64.txt");
-    expect(postHelp64).toContain("code-review post v0.1.0-alpha.64");
-    expect(runProbe("post_accepts", postFn, postHelp64, "responses")).toBe("no");
-  });
-
   // The real fixtures are backtick-quoted, so they exercise only that branch of the pattern — this
   // pins the PLAIN alternative the workflow comment says exists for older published renderings, so
   // neither branch can rot silently (issue #238 r2).
@@ -243,7 +234,6 @@ describe("workflow capability probes (issue #233 r2)", () => {
       expect(gateOf(postCapture!, 'POST_HELP="$(NO_COLOR=1')).toContain("$NIT_VISIBILITY_FLOOR");
       expect(gateOf(postCapture!, 'POST_HELP="$(NO_COLOR=1')).toContain("$REVIEW_ROUTE");
       expect(gateOf(postCapture!, 'POST_HELP="$(NO_COLOR=1')).toContain("findings/cloc-diff.txt");
-      expect(gateOf(postCapture!, 'POST_HELP="$(NO_COLOR=1')).toContain("findings/responses.json");
       // $INLINE gates the reusable's --inline pass (a caller input); the example copy passes no
       // inline flag, so its gate intentionally omits the term (documented at its capture site).
       if (text.includes("$INLINE")) {

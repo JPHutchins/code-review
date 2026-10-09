@@ -7,7 +7,7 @@
 // the surfaced review and NAMED in the sticky; a re-raise with any changed component is kept and
 // annotated with the prior answer's link.
 
-import { escapeCodeBackticks } from "./surface.js";
+import { escapeCodeBackticks, linkSafeUrl } from "./surface.js";
 import { isSynthesizedFindingId, resolveFindingId, hasRebuttal } from "./schema.js";
 import type { Finding, Findings, Severity } from "./schema.js";
 import type { Response } from "./responses.js";
@@ -150,7 +150,7 @@ const byAuthor = (e: AnsweredEntry): string =>
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
 // re-raise of a closed finding: it links the answer and demands the new evidence be named.
 const answeredNote = (e: AnsweredEntry): string =>
-  `Re-raised; prior answer at ${e.answerUrl}${byAuthor(e)} — cite the new evidence that invalidates it.`;
+  `Re-raised; prior answer at ${linkSafeUrl(e.answerUrl)}${byAuthor(e)} — cite the new evidence that invalidates it.`;
 
 export interface AnsweredFilter {
   readonly findings: readonly Finding[];
@@ -242,7 +242,7 @@ export const answeredReRaiseNote = (entries: readonly AnsweredEntry[], count: nu
   const label = (e: AnsweredEntry): string =>
     e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;
   const lines = entries.map(
-    (e) => `> - ${label(e)} — [prior answer](${e.answerUrl})${byAuthor(e)}`,
+    (e) => `> - ${label(e)} — [prior answer](${linkSafeUrl(e.answerUrl)})${byAuthor(e)}`,
   );
   return [
     `> ↩️ **${String(count)} finding(s) re-raised without new evidence — treated as answered** (a maintainer refuted or dismissed each):`,

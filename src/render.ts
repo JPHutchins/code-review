@@ -18,8 +18,10 @@ import {
   computeSameRootNotes,
   metastasisNote,
   findingsMarkerPair,
+  encodeAutolinkParens,
   escapeCodeBackticks,
   escapeFence,
+  linkSafeUrl,
   lineRange,
   DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
@@ -29,16 +31,6 @@ import type { PatchProjection } from "./surface.js";
 
 // pipes break markdown table columns.
 const escapePipes = (text: string): string => text.replace(/\|/g, "\\|");
-
-// A code renders inside backticks and a code_url inside a markdown link: a backtick in the code
-// breaks the span, and a paren/newline in the URL breaks the link (or the blockquote the nit's
-// aside sits in) — issue #233 r2. The newline/backtick handling is escapeCodeBackticks' own.
-// The paren policy has ONE owner: an unbalanced paren truncates GitHub's autolink, so every
-// URL-building surface on the sticky shares this encoding (issue #231 r2).
-const encodeAutolinkParens = (url: string): string =>
-  url.replace(/\(/g, "%28").replace(/\)/g, "%29");
-
-const linkSafeUrl = (url: string): string => encodeAutolinkParens(escapeCodeBackticks(url));
 
 // The shed note, built ONCE here — the template renders it verbatim and post's withShedNote
 // appends the same string when a caller template drops it, so the refuge ladder and the wording

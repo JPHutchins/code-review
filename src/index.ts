@@ -1875,11 +1875,6 @@ const postCmd = defineCommand({
       description:
         "URL to the machine-readable findings JSON artifact, pointed at from the sticky and each inline comment",
     },
-    responses: {
-      type: "string",
-      description:
-        "Path to gather's harvested Review-Response answers (responses.json). A maintainer's refutation or dismissal closes the finding it names, so a verbatim re-raise of it is dropped and named in the sticky",
-    },
     "convergence-threshold": {
       type: "string",
       description: CONVERGENCE_THRESHOLD_DESCRIPTION,
@@ -1930,7 +1925,6 @@ const postCmd = defineCommand({
       clocDiffPath: args["cloc-diff"],
       runUrl: args["run-url"],
       jsonUrl: args["json-url"],
-      responsesPath: args.responses,
       convergenceThreshold: parseConvergenceThreshold(args["convergence-threshold"]),
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       inline: args.inline,

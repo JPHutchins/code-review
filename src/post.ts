@@ -92,10 +92,10 @@ import {
   answeredRegistryFrom,
 } from "./answered.js";
 import {
+  answersFrom,
   closingResponses,
-  decodeStagedResponses,
   isTrustedResponse,
-  type Response,
+  type AnswerSources,
 } from "./responses.js";
 import { asRecord, errMsg, tryParseJson } from "./util.js";
 
@@ -135,8 +135,6 @@ export interface PostInput {
   readonly unverifiedNoLogs?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
-  // gather's harvested Review-Response answers (responses.json): the answered registry's source.
-  readonly responsesPath?: string;
   // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
   readonly convergenceThreshold?: number;
   // The nit visibility floor (issue #164): nits below confidence × likelihood are hidden from humans.
@@ -259,31 +257,6 @@ const loadEnvelope = (path: string): ResultEnvelope | null => {
 };
 
 // Optional enrichment: any failure warns and returns undefined, never aborts the post.
-const readStagedResponses = (path: string): ReturnType<typeof decodeStagedResponses> => {
-  try {
-    const parsed = tryParseJson(readFileSync(path, "utf-8"));
-    return parsed.ok ? decodeStagedResponses(parsed.value) : null;
-  } catch {
-    return null;
-  }
-};
-
-const loadResponses = (path: string): readonly Response[] => {
-  const staged = readStagedResponses(path);
-  if (staged === null) {
-    process.stderr.write(
-      `Warning: the answers at ${path} are missing or unreadable — no finding is treated as answered\n`,
-    );
-    return [];
-  }
-  if (staged.undecoded > 0) {
-    process.stderr.write(
-      `Warning: ${String(staged.undecoded)} of the answers at ${path} did not decode — they close nothing\n`,
-    );
-  }
-  return staged.responses;
-};
-
 const loadTestReport = (path: string): TestSummary | undefined => {
   let raw: unknown;
   try {
@@ -441,7 +414,7 @@ const postInlineReview = async (
 // REVIEW comments (the answered registry's endpoint), and GitHub's API exposes no issue-comment
 // reply chain at all. The projection therefore carries only the fields the endpoint actually has.
 const ISSUE_COMMENTS_JQ =
-  '.[] | {id, user: (.user.login // "(deleted)"), created_at, html_url, body: (.body // "")}';
+  '.[] | {id, user: (.user.login // "(deleted)"), user_type: (.user.type // null), author_association: (.author_association // null), created_at, html_url, body: (.body // "")}';
 
 interface IssueCommentRow {
   readonly id: number;
@@ -449,7 +422,13 @@ interface IssueCommentRow {
   readonly created: string;
   readonly url: string;
   readonly body: string;
+  // Read for the answers alone, never required: a row without them is still a whole comment.
+  readonly authorType: string | null;
+  readonly association: string | null;
 }
+
+const nullableString = (value: unknown): string | null =>
+  typeof value === "string" ? value : null;
 
 const parseIssueCommentRows = (
   raw: string,
@@ -477,7 +456,15 @@ const parseIssueCommentRows = (
       typeof url === "string" &&
       typeof body === "string"
     ) {
-      rows.push({ id, author, created, url, body });
+      rows.push({
+        id,
+        author,
+        created,
+        url,
+        body,
+        authorType: nullableString(rec?.["user_type"]),
+        association: nullableString(rec?.["author_association"]),
+      });
     } else {
       // A shape failure IS corruption: the ghost-account case this branch once served is now
       // coalesced to "(deleted)" in the projection, so every remaining drop is a field the
@@ -492,6 +479,47 @@ const parseIssueCommentRows = (
     (a, b) => a.created.localeCompare(b.created) || (a.id > b.id ? 1 : a.id < b.id ? -1 : 0),
   );
   return { rows, malformed };
+};
+
+const COMMITS_JQ =
+  ".[] | {sha, message: .commit.message, author: (.commit.author.name // null), date: (.commit.committer.date // null)}";
+
+// The PR's commits, read for the answers in their messages. A failed fetch reads no commit answers,
+// named, never a failed post.
+const fetchCommitAnswersSource = async (
+  repo: string,
+  prNumber: number,
+  ghApi: GhApi,
+): Promise<AnswerSources["commits"]> => {
+  try {
+    const raw = await ghApi([
+      `repos/${repo}/pulls/${String(prNumber)}/commits?per_page=100`,
+      "--paginate",
+      "--jq",
+      COMMITS_JQ,
+    ]);
+    return raw.split("\n").flatMap((line) => {
+      const parsed = tryParseJson(line.trim());
+      const rec = parsed.ok ? asRecord(parsed.value) : null;
+      const sha = rec?.["sha"];
+      const message = rec?.["message"];
+      return typeof sha === "string" && typeof message === "string"
+        ? [
+            {
+              sha,
+              message,
+              author: nullableString(rec?.["author"]),
+              date: nullableString(rec?.["date"]),
+            },
+          ]
+        : [];
+    });
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not read the PR's commits (${errMsg(err)}) — no commit answer closes a finding this round\n`,
+    );
+    return [];
+  }
 };
 
 const fetchIssueCommentRows = async (
@@ -1177,13 +1205,13 @@ export const post = async (
   };
 
   // The leave paths cannot write a note — the preserved sticky still surfaces each dropped finding
-  // and its reply thread — so the one place that names the drops in the run log, shared by every
+  // — so the one place that names the drops in the run log, shared by every
   // post-filter leave site (issue #151 review r5). The count is the TRUE pre-dedup dropped-finding
   // count, never the deduped entry list (issue #151 review r7).
   const logAnsweredDrops = (): void => {
     if (verbatimReRaised.length > 0) {
       process.stderr.write(
-        `${String(droppedCount)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding and its prior reply\n`,
+        `${String(droppedCount)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding\n`,
       );
     }
   };
@@ -1372,22 +1400,37 @@ export const post = async (
     );
     process.exit(0);
   }
-  // The "already answered" state (issue #151): the prior findings a maintainer's Review-Response line
-  // refuted or dismissed, from the answers gather harvested. A verbatim re-raise of one — identical
-  // claim, no rebuttal, no new evidence by definition — is treated as closed: dropped from this
-  // review's findings, counts, inline comments, and round signal, and NAMED in the sticky (never
-  // silently). A re-raise with changed evidence is kept and annotated with the answer's link. Only a
-  // full-review prior has findings an answer can name; absent answers mean an empty registry.
+  // The "already answered" state (issue #151): the prior findings a maintainer's answer refuted or
+  // dismissed. A verbatim re-raise of one — identical claim, no rebuttal, no new evidence by
+  // definition — is treated as closed: dropped from this review's findings, counts, inline comments,
+  // and round signal, and NAMED in the sticky (never silently). A re-raise with changed evidence is
+  // kept and annotated with the answer's link. The answers are read HERE, through this step's own
+  // token, from every comment and commit on the PR: the sticky names their authors, so they never
+  // come from a file the reviewing agent could have written. Only a full-review prior has findings an
+  // answer can name.
   const loadedFindings = findingsResult.findings;
+  const answerable =
+    existingSticky !== null && !priorIsMechanic && loadedFindings.findings.length > 0;
+  const answers = answerable
+    ? answersFrom({
+        repo: input.repo,
+        prNumber,
+        botLogin: input.botLogin,
+        comments: commentRows.map((row) => ({
+          id: row.id,
+          body: row.body,
+          user: { login: row.author, type: row.authorType },
+          created_at: row.created,
+          author_association: row.association,
+        })),
+        commits: await fetchCommitAnswersSource(input.repo, prNumber, ghApi),
+      })
+    : { comments: [], commits: [] };
   // Only a closure some current finding can match — by id, or a synthesized id's title second
   // chance — is worth the prior's download.
   const currentFindingIds = new Set(loadedFindings.findings.map(resolveFindingId));
-  const closures = (
-    existingSticky === null || priorIsMechanic || input.responsesPath === undefined
-      ? []
-      : closingResponses(loadResponses(input.responsesPath), (response) =>
-          isTrustedResponse(response, input.repo, input.headRepo),
-        )
+  const closures = closingResponses([...answers.comments, ...answers.commits], (response) =>
+    isTrustedResponse(response, input.repo, input.headRepo),
   ).filter((closure) => currentFindingIds.has(closure.id) || isSynthesizedFindingId(closure.id));
   // The prior document the closures name, resolved only when one exists — and the one resolve the
   // nit stickiness and the discussion gate below reuse.

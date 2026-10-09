@@ -263,6 +263,16 @@ const hasId = (ids: IdCounts | undefined, code: string): boolean =>
 export const escapeCodeBackticks = (code: string): string =>
   code.replace(/`/g, "-").replace(/\r?\n/g, " ");
 
+// A code renders inside backticks and a code_url inside a markdown link: a backtick in the code
+// breaks the span, and a paren/newline in the URL breaks the link (or the blockquote the nit's
+// aside sits in) — issue #233 r2. The newline/backtick handling is escapeCodeBackticks' own.
+// The paren policy has ONE owner: an unbalanced paren truncates GitHub's autolink, so every
+// URL-building surface on the sticky shares this encoding (issue #231 r2).
+export const encodeAutolinkParens = (url: string): string =>
+  url.replace(/\(/g, "%28").replace(/\)/g, "%29");
+
+export const linkSafeUrl = (url: string): string => encodeAutolinkParens(escapeCodeBackticks(url));
+
 // The codes field of a round record, validated and capped: string → positive safe-integer counts only
 // (a count-0 entry means "no findings this round" and is not recorded — every consumer agrees that 0
 // is absence), kept sorted by preferredKeys first (a dual-spelling round's current ids keys, so a

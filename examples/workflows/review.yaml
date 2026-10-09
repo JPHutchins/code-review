@@ -952,14 +952,6 @@ jobs:
             if [ -f "$f" ]; then cp "$f" "$FINDINGS_DIR/"; fi
           done
 
-          # The implementer's harvested answers ride the artifact to the comment job, whose post closes
-          # the findings a maintainer refuted or dismissed. The agent could rewrite this file, but a
-          # forged closure only drops findings the agent itself wrote. Absent under a CLI that predates
-          # the harvest.
-          if [ -n "${GATHER_DIR:-}" ] && [ -f "$GATHER_DIR/responses.json" ]; then
-            cp "$GATHER_DIR/responses.json" "$FINDINGS_DIR/"
-          fi
-
           echo "has_findings=true" >> "$GITHUB_OUTPUT"
 
       # retention-days requests the platform max for public repos, but a repo/org-level retention
@@ -1114,7 +1106,7 @@ jobs:
           # probe treats the flags as unknown (issue #236 r3).
           POST_HELP=""
           POST_HELP_OK=0
-          if [ -f findings/cloc-diff.txt ] || [ -f findings/responses.json ] || [ "$REVIEW_ROUTE" = "mechanic" ] || [ "$INLINE" = "true" ] || [ -n "$NIT_VISIBILITY_FLOOR" ]; then
+          if [ -f findings/cloc-diff.txt ] || [ "$REVIEW_ROUTE" = "mechanic" ] || [ "$INLINE" = "true" ] || [ -n "$NIT_VISIBILITY_FLOOR" ]; then
             POST_HELP="$(NO_COLOR=1 code-review post --help 2>/dev/null || true)"
             if [ -n "$POST_HELP" ]; then
               POST_HELP_OK=1
@@ -1168,17 +1160,6 @@ jobs:
             fi
           fi
 
-          # The answered registry's source: a maintainer's Review-Response refutation or dismissal
-          # closes the finding it names, so post drops a verbatim re-raise of it and names the drop.
-          RESPONSES_ARGS=()
-          if [ -f findings/responses.json ]; then
-            if post_accepts responses; then
-              RESPONSES_ARGS=(--responses findings/responses.json)
-            elif [ "$POST_HELP_OK" = "1" ]; then
-              echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) predates --responses; no finding is treated as answered"
-            fi
-          fi
-
           POST_RC=0
           code-review post findings/findings.json \
             --head-sha "$HEAD_SHA" \
@@ -1192,7 +1173,6 @@ jobs:
             "${CLOC_ARGS[@]}" \
             "${JSON_URL_ARGS[@]}" \
             "${PRICES_ARGS[@]}" \
-            "${RESPONSES_ARGS[@]}" \
             "${UNVERIFIED_ARGS[@]}" || POST_RC=$?
           # SINGLE writer for the posted key, and the guard runs on BOTH exit cells: the CLI writes
           # posted=true on EVERY sticky landing (the main path, the notice paths, and the

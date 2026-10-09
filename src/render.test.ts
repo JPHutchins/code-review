@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
-import { RESPONSE_FORM } from "./responses.js";
+import { RESPONSE_TEACHING } from "./response-grammar.js";
 import {
   formatConfidence,
   parseConvergenceMarker,
@@ -207,7 +207,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
   });
 
   it("teaches the response line under a full review with findings, never on a clean review, a notice, a mechanic pass, or an unknown route", () => {
-    const line = `To answer a finding, put \`${RESPONSE_FORM}\` in a commit message or a PR conversation comment (not an inline-thread reply); a systemic problem's id, when shown, answers its whole class.`;
+    const line = `<sub>${RESPONSE_TEACHING}</sub>`;
     const finding = mkFinding({});
     const withFindings = render({
       findings: mkFindings([finding]),

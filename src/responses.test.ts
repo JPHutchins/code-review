@@ -1,16 +1,20 @@
 import { describe, it, expect } from "vitest";
 import {
-  DISPOSITIONS,
   harvestResponses,
   parseResponseLines,
   parseResponseTables,
   parseResponses,
   RESPONSE_REASON_CLIP_CHARS,
-  RESPONSE_FORM,
   RESPONSES_PER_CHANNEL,
   ResponsesFileCodec,
   type HarvestInput,
 } from "./responses.js";
+import {
+  DISPOSITIONS,
+  RESPONSE_FORM,
+  RESPONSE_TABLE_HEADER,
+  RESPONSE_TEACHING,
+} from "./response-grammar.js";
 
 describe("parseResponseLines — the response grammar", () => {
   it("reads the id, the disposition and the reason, whatever separator follows the verb", () => {
@@ -182,6 +186,25 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       ["scope-directives-cr-line-split", "fixed"],
       ["line-splice-rule-multiply-spelled", "fixed"],
     ]);
+  });
+
+  it("reads the taught table once its rows are filled in, for every disposition, ids bare or quoted", () => {
+    const table = [
+      RESPONSE_TABLE_HEADER,
+      "| --- | --- | --- |",
+      ...DISPOSITIONS.map((disposition) => `| x-${disposition} (minor) | ${disposition} | why |`),
+      "| `a-b` | dismissed | tracked in #12 |",
+    ].join("\n");
+    expect(parseResponseTables(table)).toEqual([
+      ...DISPOSITIONS.map((disposition) => ({
+        id: `x-${disposition}`,
+        disposition,
+        reason: "why",
+      })),
+      { id: "a-b", disposition: "dismissed", reason: "tracked in #12" },
+    ]);
+    expect(RESPONSE_TEACHING).toContain(RESPONSE_TABLE_HEADER);
+    expect(RESPONSE_TEACHING).toContain(RESPONSE_FORM);
   });
 
   it("ignores a table without an id and a disposition column, and a fenced copy of one", () => {

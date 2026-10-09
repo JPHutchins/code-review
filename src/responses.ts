@@ -2,18 +2,12 @@ import * as t from "io-ts";
 import { isHuman } from "./answered.js";
 import { ID_SHAPE_RE, strictExact } from "./schema.js";
 import { clipText } from "./util.js";
+import { DispositionCodec, type Disposition } from "./response-grammar.js";
 
 export const RESPONSE_REASON_CLIP_CHARS = 300;
 export const RESPONSES_PER_CHANNEL = 25;
 
-const DispositionCodec = t.keyof({ fixed: null, refuted: null, dismissed: null });
 const ChannelCodec = t.keyof({ comment: null, commit: null });
-type Disposition = t.TypeOf<typeof DispositionCodec>;
-
-// The response vocabulary, for every surface that teaches it.
-export const DISPOSITIONS = Object.keys(DispositionCodec.keys) as readonly Disposition[];
-
-export const RESPONSE_FORM = `Review-Response: <id> ${DISPOSITIONS.join("|")} — <reason>`;
 
 const ResponseShape = t.type({
   id: t.string,
@@ -109,9 +103,10 @@ export const parseResponseLines = (text: string): readonly ParsedLine[] =>
       : [];
   });
 
-// A verdict table — the per-round answer implementers post unprompted — is read when its header
-// names an id column and a disposition column. Each backtick-quoted token in a row's id cell is an
-// answer, and every other cell is its reason.
+// A verdict table — the taught form for a PR comment, and the one implementers post unprompted — is
+// read when its header names an id column and a disposition column. Each backtick-quoted token in a
+// row's id cell is an answer, or the cell's one bare id when it quotes none; the other cells are its
+// reason, the disposition's own cell included only when it says more than the verdict.
 const TABLE_ROW_RE = /^ {0,3}\|/;
 const TABLE_DELIMITER_RE = /^ {0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const ID_IN_CELL_RE = /`([^`]+)`/g;
@@ -148,6 +143,12 @@ const tableCells = (row: string): readonly string[] =>
 
 const headerName = (cell: string): string => cell.replace(/[*_`]/g, "").trim().toLowerCase();
 
+const idsInCell = (cell: string): readonly string[] => {
+  const quoted = [...cell.matchAll(ID_IN_CELL_RE)].map((match) => unwrapId(match[1] ?? ""));
+  const bare = unwrapId(cell.replace(/\([^)]*\)/g, "").trim());
+  return quoted.length > 0 ? quoted : ID_SHAPE_RE.test(bare) ? [bare] : [];
+};
+
 const tableDisposition = (cell: string): Disposition => {
   const clause = cell.replace(/[*_]/g, "").split(/[.:;—]/)[0] ?? "";
   const earliest = TABLE_VOCABULARY.flatMap(([phrase, disposition]) => {
@@ -169,15 +170,20 @@ export const parseResponseTables = (text: string): readonly ParsedLine[] => {
     const end = body.findIndex((row) => !TABLE_ROW_RE.test(row));
     return (end < 0 ? body : body.slice(0, end)).flatMap((row) => {
       const cells = tableCells(row);
-      const disposition = tableDisposition(cells[dispositionColumn] ?? "");
+      const dispositionCell = cells[dispositionColumn] ?? "";
+      const disposition = tableDisposition(dispositionCell);
+      const verdictOnly = DispositionCodec.is(headerName(dispositionCell));
       const reason = clipText(
-        cells.filter((_, column) => column !== idColumn).join(" — "),
+        cells
+          .filter(
+            (_, column) => column !== idColumn && !(verdictOnly && column === dispositionColumn),
+          )
+          .join(" — "),
         RESPONSE_REASON_CLIP_CHARS,
       );
-      return [...(cells[idColumn] ?? "").matchAll(ID_IN_CELL_RE)].flatMap((match) => {
-        const id = unwrapId(match[1] ?? "");
-        return id === "" ? [] : [{ id, disposition, reason }];
-      });
+      return idsInCell(cells[idColumn] ?? "")
+        .filter((id) => id !== "")
+        .map((id) => ({ id, disposition, reason }));
     });
   });
 };

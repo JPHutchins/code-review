@@ -1,17 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { legacyEmbeddedMarker } from "./test-util.js";
-import {
-  answeredRegistryFrom,
-  applyAnswered,
-  answeredReRaiseNote,
-  fetchThreadComments,
-  THREAD_COMMENT_JQ,
-  ThreadCommentCodec,
-} from "./answered.js";
-import type { AnsweredEntry, ThreadComment } from "./answered.js";
+import { answeredRegistryFrom, applyAnswered, answeredReRaiseNote } from "./answered.js";
+import type { AnsweredEntry } from "./answered.js";
 import { synthesizedFindingId } from "./schema.js";
-import type { Finding } from "./schema.js";
-import type { GhApi } from "./gh.js";
+import type { Finding, Findings } from "./schema.js";
+import type { Response } from "./responses.js";
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
   path: "src/foo.ts",
@@ -27,194 +19,57 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   ...overrides,
 });
 
-const botComment = (id: number, finding: Finding): ThreadComment => ({
-  id,
-  in_reply_to_id: null,
-  user_login: "github-actions[bot]",
-  user_type: "Bot",
-  // Each inline comment embeds its own finding via the per-finding marker (findingPointer).
-  body: legacyEmbeddedMarker({ schema_version: "0.6.0", findings: [finding] }),
-  html_url: `https://github.com/owner/repo/pull/1#discussion_r${String(id)}`,
-  path: "src/foo.ts",
-  line: 10,
-  created_at: "2026-07-01T00:00:00Z",
-});
-
-const reply = (
-  id: number,
-  to: number,
-  author: string,
-  body = "Measured on 3.14: the claim does not hold — matrix green.",
-): ThreadComment => ({
-  id,
-  in_reply_to_id: to,
-  user_login: author,
-  user_type: "User",
-  body,
-  html_url: `https://github.com/owner/repo/pull/1#discussion_r${String(id)}`,
-  path: "src/foo.ts",
-  line: 10,
+const mkResponse = (overrides: Partial<Response>): Response => ({
+  id: "recurring-a",
+  disposition: "refuted",
+  reason: "Measured: the claim does not hold.",
+  channel: "comment",
+  source_url: "https://github.com/owner/repo/pull/1#issuecomment-2",
+  author: "alice",
+  author_association: "OWNER",
   created_at: "2026-07-01T01:00:00Z",
+  ...overrides,
 });
 
-const humanTopLevel = (id: number): ThreadComment => ({
-  ...reply(id, 9999, "alice"),
-  in_reply_to_id: null,
+const mkPrior = (findings: readonly Finding[]): Findings => ({
+  schema_version: "0.11.0",
+  summary: "The prior round.",
+  verdict: "comment",
+  findings: [...findings],
 });
 
-describe("answeredRegistryFrom — the 'already answered' state (issue #151)", () => {
-  it("records a human reply on the bot's thread, decoding the finding from the embedded marker", () => {
-    const finding = mkFinding({});
-    const registry = answeredRegistryFrom(
-      [botComment(1, finding), reply(2, 1, "alice")],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(1);
-    const entry = registry[0]!;
-    expect(entry.code).toBe("recurring-a");
-    expect(entry.title).toBe("The same claim");
-    expect(entry.reasoning).toBe("The same reasoning.");
-    expect(entry.replyUrl).toContain("discussion_r2");
-    expect(entry.replyAuthor).toBe("alice");
+describe("answeredRegistryFrom — a closing answer, against the prior finding it names", () => {
+  it("carries the prior finding's claim fields and the answer's link and author", () => {
+    const prior = mkFinding({ patch: "diff --git a/src/foo.ts b/src/foo.ts" });
+    expect(answeredRegistryFrom([mkResponse({})], mkPrior([prior]))).toEqual([
+      {
+        code: "recurring-a",
+        title: prior.title,
+        description: prior.description,
+        reasoning: prior.reasoning,
+        severity: prior.severity,
+        path: prior.path,
+        patch: "diff --git a/src/foo.ts b/src/foo.ts",
+        answerUrl: "https://github.com/owner/repo/pull/1#issuecomment-2",
+        answerAuthor: "alice",
+      },
+    ]);
   });
 
-  it("follows a reply-to-reply chain — the human answering a human's reply on a bot thread counts, and the LAST human reply is the recorded answer (issue #151 review r5)", () => {
-    const finding = mkFinding({});
-    const registry = answeredRegistryFrom(
-      [botComment(1, finding), reply(2, 1, "alice"), reply(3, 2, "bob")],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(1);
-    expect(registry[0]!.replyUrl).toContain("discussion_r3");
+  it("makes no entry for a closure naming no prior finding, or when the prior did not resolve", () => {
+    expect(
+      answeredRegistryFrom([mkResponse({ id: "unknown-id" })], mkPrior([mkFinding({})])),
+    ).toEqual([]);
+    expect(answeredRegistryFrom([mkResponse({})], null)).toEqual([]);
   });
 
-  it("ignores a bot thread with no human reply, a human's own top-level comment, and the bot replying to itself", () => {
-    const finding = mkFinding({});
-    const registry = answeredRegistryFrom(
-      [
-        botComment(1, finding),
-        reply(2, 1, "github-actions[bot]"),
-        humanTopLevel(3),
-        botComment(4, finding),
-      ],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(0);
-  });
-
-  it("excludes a reply from ANOTHER bot account (user.type Bot) — a CI/dependabot comment is not a human answer (issue #151 review r1)", () => {
-    const finding = mkFinding({});
-    const dependabot: ThreadComment = { ...reply(2, 1, "dependabot[bot]"), user_type: "Bot" };
-    const registry = answeredRegistryFrom(
-      [botComment(1, finding), dependabot],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(0);
-    // The same thread WITH a human reply is answered.
-    const withHuman = answeredRegistryFrom(
-      [botComment(1, finding), dependabot, reply(3, 1, "alice")],
-      "github-actions[bot]",
-    );
-    expect(withHuman).toHaveLength(1);
-  });
-
-  it("skips a thread whose bot comment carries no decodable finding marker", () => {
-    const undecodable: ThreadComment = { ...botComment(1, mkFinding({})), body: "no marker here" };
-    const registry = answeredRegistryFrom(
-      [undecodable, reply(2, 1, "alice")],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(0);
-  });
-
-  it("keeps the MOST RECENT answer when the same code was answered in several threads", () => {
-    const finding = mkFinding({});
-    const registry = answeredRegistryFrom(
-      [botComment(1, finding), reply(2, 1, "alice"), botComment(3, finding), reply(4, 3, "bob")],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(1);
-    expect(registry[0]!.replyUrl).toContain("discussion_r4");
-  });
-
-  it("dedups by ANSWER time, not root order — an older thread answered LATER wins over a newer thread answered earlier (issue #151 review r4)", () => {
-    const finding = mkFinding({});
-    // Thread A: root posted first (id 1), answered LAST (reply 4 at 03:00).
-    // Thread B: root posted later (id 2), answered EARLIER (reply 3 at 02:00).
-    const registry = answeredRegistryFrom(
-      [
-        botComment(1, finding),
-        botComment(2, finding),
-        { ...reply(3, 2, "alice"), created_at: "2026-07-01T02:00:00Z" },
-        { ...reply(4, 1, "bob"), created_at: "2026-07-01T03:00:00Z" },
-      ],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(1);
-    expect(registry[0]!.replyUrl).toContain("discussion_r4");
-    expect(registry[0]!.repliedAt).toBe("2026-07-01T03:00:00Z");
-  });
-
-  it("an equal-timestamp tie breaks by REPLY id, not thread order — the later reply wins regardless of which thread it is in (issue #151 review r7)", () => {
-    const finding = mkFinding({});
-    const registry = answeredRegistryFrom(
-      [
-        botComment(1, finding),
-        botComment(2, finding),
-        { ...reply(3, 2, "alice"), created_at: "2026-07-01T02:00:00Z" },
-        { ...reply(4, 1, "bob"), created_at: "2026-07-01T02:00:00Z" },
-      ],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(1);
-    expect(registry[0]!.replyId).toBe(4);
-    expect(registry[0]!.replyUrl).toContain("discussion_r4");
-  });
-
-  it("a NULL created_at reply never becomes the operative last answer — unknown-time replies sort first, so the last human reply is always a timed one (issue #151 review r7)", () => {
-    const finding = mkFinding({});
-    const registry = answeredRegistryFrom(
-      [
-        botComment(1, finding),
-        { ...reply(2, 1, "alice"), created_at: null },
-        { ...reply(3, 1, "bob"), created_at: "2026-07-01T02:00:00Z" },
-      ],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(1);
-    expect(registry[0]!.replyId).toBe(3);
-    expect(registry[0]!.repliedAt).toBe("2026-07-01T02:00:00Z");
-  });
-
-  it("resolves a pre-id marker finding to its synthesized id — the same key the legacy upcast derives", () => {
-    const finding = mkFinding({ id: undefined });
-    const longReply = reply(2, 1, "alice", "x".repeat(500));
-    const registry = answeredRegistryFrom(
-      [botComment(1, finding), longReply],
-      "github-actions[bot]",
-    );
-    expect(registry).toHaveLength(1);
-    expect(registry[0]!.code).toBe(synthesizedFindingId("src/foo.ts", "The same claim"));
-  });
-});
-
-describe("the thread fetch — its jq projection and its codec are one shape (issue #151 review r1)", () => {
-  it("projects exactly the fields ThreadCommentCodec decodes", () => {
-    const projected = THREAD_COMMENT_JQ.slice(
-      THREAD_COMMENT_JQ.indexOf("{") + 1,
-      THREAD_COMMENT_JQ.lastIndexOf("}"),
-    )
-      .split(",")
-      .map((field) => field.split(":")[0]!.trim());
-    expect([...projected].sort()).toEqual(Object.keys(ThreadCommentCodec.props).sort());
-  });
-
-  it("builds the registry from rows in the projected shape", async () => {
-    const rows = [botComment(1, mkFinding({})), reply(2, 1, "alice", "Measured: does not hold.")];
-    const api: GhApi = () => Promise.resolve(rows.map((row) => JSON.stringify(row)).join("\n"));
-    const fetched = await fetchThreadComments(api, "owner/repo", 1);
-    expect(fetched).toEqual(rows);
-    expect(answeredRegistryFrom(fetched ?? [], "github-actions[bot]")).toHaveLength(1);
+  it("names a pre-id prior finding by its synthesized id, the id the harvest matched", () => {
+    const id = synthesizedFindingId("src/foo.ts", "The same claim");
+    expect(
+      answeredRegistryFrom([mkResponse({ id })], mkPrior([mkFinding({ id: "" })])).map(
+        (e) => e.code,
+      ),
+    ).toEqual([id]);
   });
 });
 
@@ -227,10 +82,8 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     severity: "minor",
     path: "src/foo.ts",
     patch: null,
-    repliedAt: "2026-07-01T01:00:00Z",
-    replyId: 2,
-    replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
-    replyAuthor: "alice",
+    answerUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
+    answerAuthor: "alice",
     ...overrides,
   });
 
@@ -276,21 +129,6 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     const noPatch = applyAnswered([mkFinding({})], [entry()]);
     expect(noPatch.findings).toHaveLength(0);
     expect(noPatch.verbatimReRaised).toHaveLength(1);
-  });
-
-  it("selection is ORDER-INDEPENDENT — a shuffled comment list yields the same first-reply and most-recent-wins (issue #151 review r3)", () => {
-    const finding = mkFinding({});
-    const sorted = [
-      botComment(1, finding),
-      reply(2, 1, "alice"),
-      botComment(3, finding),
-      reply(4, 3, "bob"),
-    ];
-    const shuffled = [sorted[3]!, sorted[0]!, sorted[2]!, sorted[1]!];
-    const a = answeredRegistryFrom(sorted, "github-actions[bot]");
-    const b = answeredRegistryFrom(shuffled, "github-actions[bot]");
-    expect(a).toEqual(b);
-    expect(a[0]!.replyUrl).toContain("discussion_r4");
   });
 
   it("dedups the dropped entries by code — two findings sharing one dropped code name the answer once (issue #151 review r2)", () => {
@@ -411,8 +249,7 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
   it("the ID match wins over a title-matched synthesized entry — an unrelated same-title answer never mis-binds the annotation", () => {
     const unrelated = entry({
       code: synthesizedFindingId("src/elsewhere.ts", "The same claim"),
-      replyId: 5,
-      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r5",
+      answerUrl: "https://github.com/owner/repo/pull/1#discussion_r5",
     });
     // The id-matched entry comes AFTER the unrelated title match in the registry order.
     const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
@@ -421,7 +258,7 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     );
     expect(findings).toHaveLength(0);
     expect(verbatimReRaised).toHaveLength(1);
-    expect(verbatimReRaised[0]!.replyUrl).toContain("discussion_r2");
+    expect(verbatimReRaised[0]!.answerUrl).toContain("discussion_r2");
     expect(reRaisedNotes).toEqual({});
   });
 
@@ -432,13 +269,11 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     const first = entry({
       code: synthesizedFindingId("src/elsewhere.ts", "The same claim"),
       description: "A different description.",
-      replyId: 5,
-      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r5",
+      answerUrl: "https://github.com/owner/repo/pull/1#discussion_r5",
     });
     const second = entry({
       code: synthesizedFindingId("src/foo.ts", "The same claim"),
-      replyId: 6,
-      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r6",
+      answerUrl: "https://github.com/owner/repo/pull/1#discussion_r6",
     });
     const { findings, verbatimReRaised, reRaisedNotes } = applyAnswered(
       [mkFinding({ id: "fresh-agent-id", reasoning: "NEW evidence." })],
@@ -449,20 +284,16 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     expect(reRaisedNotes["fresh-agent-id"]).toContain("discussion_r6");
   });
 
-  it("equal-scored synthesized same-title entries keep the registry order — any replyId-based tie-break fails it", () => {
-    // Two codeless same-title answers under DIFFERENT paths (the registry-reachable tie: the
-    // builder dedupes by code, so a real tie is two entries scoring 5/6 against the finding's
-    // third path). Equal replyIds, so ONLY the strict-> first-wins registry order breaks the tie —
-    // a replyId-keyed tie-break would pick the second entry and fail the assertion.
+  it("equal-scored synthesized same-title entries keep the registry order", () => {
+    // Two codeless same-title answers under DIFFERENT paths, each scoring 5/6 against the finding's
+    // third path: ONLY the strict-> first-wins registry order breaks the tie.
     const first = entry({
       code: synthesizedFindingId("src/bar.ts", "The same claim"),
-      replyId: 7,
-      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r7",
+      answerUrl: "https://github.com/owner/repo/pull/1#discussion_r7",
     });
     const second = entry({
       code: synthesizedFindingId("src/baz.ts", "The same claim"),
-      replyId: 7,
-      replyUrl: "https://github.com/owner/repo/pull/1#discussion_r8",
+      answerUrl: "https://github.com/owner/repo/pull/1#discussion_r8",
     });
     const { reRaisedNotes } = applyAnswered(
       [mkFinding({ id: "fresh-agent-id", path: "src/other.ts", reasoning: "NEW evidence." })],
@@ -510,10 +341,8 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
     severity: "minor",
     path: "src/foo.ts",
     patch: null,
-    repliedAt: "2026-07-01T01:00:00Z",
-    replyId: 2,
-    replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
-    replyAuthor: "alice",
+    answerUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
+    answerAuthor: "alice",
   };
 
   it("is empty when nothing was dropped", () => {

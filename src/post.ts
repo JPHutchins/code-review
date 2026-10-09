@@ -1,7 +1,7 @@
 // Ordering invariant: all reads, decodes, and rendering complete before the first API write; then
 // the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
-import { readFileSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync } from "node:fs";
 import type { DiscussionLink, InlineComment, InlineDisposition, RenderInput } from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff, indexDiff, partitionFindings } from "./diff.js";
@@ -72,7 +72,7 @@ import {
 } from "./schema.js";
 import { resolveFindingId } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
-import { resolve, supportedVersions } from "./registry.js";
+import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import {
@@ -90,8 +90,13 @@ import {
   answeredNoteKey,
   answeredReRaiseNote,
   answeredRegistryFrom,
-  fetchThreadComments,
 } from "./answered.js";
+import {
+  closingResponses,
+  isTrustedResponse,
+  ResponsesFileCodec,
+  type Response,
+} from "./responses.js";
 import { asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
@@ -130,6 +135,8 @@ export interface PostInput {
   readonly unverifiedNoLogs?: boolean;
   // Findings-json marker's fallback across surfaces when the embedded form is too large.
   readonly jsonUrl?: string;
+  // gather's harvested Review-Response answers (responses.json): the answered registry's source.
+  readonly responsesPath?: string;
   // Advisory convergence tolerance passed through to render(); omitted ⇒ the render default.
   readonly convergenceThreshold?: number;
   // The nit visibility floor (issue #164): nits below confidence × likelihood are hidden from humans.
@@ -252,6 +259,20 @@ const loadEnvelope = (path: string): ResultEnvelope | null => {
 };
 
 // Optional enrichment: any failure warns and returns undefined, never aborts the post.
+const loadResponses = (path: string): readonly Response[] => {
+  const parsed = existsSync(path)
+    ? tryParseJson(readFileSync(path, "utf-8"))
+    : { ok: false as const };
+  const decoded = parsed.ok ? ResponsesFileCodec.decode(parsed.value) : null;
+  if (decoded === null || decoded._tag === "Left") {
+    process.stderr.write(
+      `Warning: the answers at ${path} are missing or unreadable — no finding is treated as answered\n`,
+    );
+    return [];
+  }
+  return decoded.right.responses;
+};
+
 const loadTestReport = (path: string): TestSummary | undefined => {
   let raw: unknown;
   try {
@@ -1340,26 +1361,33 @@ export const post = async (
     );
     process.exit(0);
   }
-  // The "already answered" state (issue #151): the prior inline findings whose threads a human reply
-  // answered, fetched live (the threads persist on GitHub; no carried marker needed). A verbatim
-  // re-raise of an answered finding — identical title and reasoning, no new evidence by definition —
-  // is treated as closed: dropped from this review's findings, counts, inline comments, and round
-  // signal, and NAMED in the sticky (never silently). A re-raise with changed evidence is kept and
-  // annotated with the prior answer's link. A failed fetch degrades to an empty registry (the review
-  // posts unfiltered).
+  // The "already answered" state (issue #151): the prior findings a maintainer's Review-Response line
+  // refuted or dismissed, from the answers gather harvested. A verbatim re-raise of one — identical
+  // claim, no rebuttal, no new evidence by definition — is treated as closed: dropped from this
+  // review's findings, counts, inline comments, and round signal, and NAMED in the sticky (never
+  // silently). A re-raise with changed evidence is kept and annotated with the answer's link. Only a
+  // full-review prior has findings an answer can name; absent answers mean an empty registry.
   const loadedFindings = findingsResult.findings;
-  // The answered-thread fetch runs only when a review will actually be filtered — an empty-diff or
-  // corrupt-findings post exits above without paying for the paginated history (issue #151 review
-  // r3), and a FIRST-EVER review (no bot sticky at all, so no bot threads can exist) provably has
-  // an empty registry (issue #151 review r4).
-  // ALWAYS fetch on a filterable post: a missing sticky does not prove an empty thread history (a
-  // maintainer can delete the sticky while the threads remain; pre-sticky reviews leave threads
-  // with no sticky at all), so the round-4 sticky-absence skip — which could silently starve the
-  // registry — is inverted and removed (issue #151 review r7). The empty-diff/corrupt-findings
-  // early exits above still avoid the fetch entirely.
-  const threadComments = await fetchThreadComments(ghApi, input.repo, prNumber);
-  const answeredRegistry =
-    threadComments === null ? [] : answeredRegistryFrom(threadComments, input.botLogin);
+  const closures =
+    existingSticky === null || priorIsMechanic || input.responsesPath === undefined
+      ? []
+      : closingResponses(loadResponses(input.responsesPath), (response) =>
+          isTrustedResponse(response, input.repo, input.headRepo),
+        );
+  // The prior document the closures name, resolved only when one exists — and the one resolve the
+  // nit stickiness and the discussion gate below reuse.
+  const priorForAnswers =
+    closures.length > 0 && existingSticky !== null
+      ? { value: await resolvePriorFindings(existingSticky.body, readArtifact) }
+      : null;
+  const answeredPrior =
+    priorForAnswers === null ? null : resolveTolerantFindings(priorForAnswers.value);
+  if (priorForAnswers !== null && answeredPrior === null) {
+    process.stderr.write(
+      `Warning: ${String(closures.length)} maintainer answer(s) close prior findings, but the prior review's findings did not resolve — no re-raise is treated as answered\n`,
+    );
+  }
+  const answeredRegistry = answeredRegistryFrom(closures, answeredPrior);
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
   const reRaisedNotes = answeredFilter.reRaisedNotes;
   const verbatimReRaised = answeredFilter.verbatimReRaised;
@@ -1410,9 +1438,9 @@ export const post = async (
   // yields no keys, so stickiness fails open to visible.
   // Resolved rather than decoded: the prior sticky's marker names the findings artifact (issue #217),
   // so this fetches it — and still reads an embedded blob on a sticky written before that change.
-  // One resolve serves BOTH consumers — the nit stickiness keys and the discussion orphan gate —
-  // and the resolve is a download plus an unzip subprocess on the critical path before the sticky
-  // write, so it is paid only when one of them can use it. The nit keys only ever match a nit; the
+  // One resolve serves every consumer — the answered registry above, the nit stickiness keys, and the
+  // discussion orphan gate — and the resolve is a download plus an unzip subprocess on the critical
+  // path before the sticky write, so it is paid only when one of them can use it. The nit keys only ever match a nit; the
   // orphan bucket is non-empty only when a reply names an id-shaped token this round does not
   // report (with no prior ids the bucket is empty either way, so that gate skips a fetch it could
   // not use, never an output it could change).
@@ -1435,9 +1463,11 @@ export const post = async (
   const broadWantsPrior =
     existingSticky !== null && !priorIsMechanic && mentionsOutsideKnown(reachable, broadCurrentIds);
   const resolvedPrior =
-    existingSticky !== null && (nitWantsPrior || broadWantsPrior)
-      ? await resolvePriorFindings(existingSticky.body, readArtifact)
-      : null;
+    priorForAnswers !== null
+      ? priorForAnswers.value
+      : existingSticky !== null && (nitWantsPrior || broadWantsPrior)
+        ? await resolvePriorFindings(existingSticky.body, readArtifact)
+        : null;
   const priorDocForNits = nitWantsPrior ? resolvedPrior : null;
   const priorSuppressedKeys = new Set(
     priorBelowFloorNits(priorDocForNits, input.nitVisibilityFloor).map((n) =>

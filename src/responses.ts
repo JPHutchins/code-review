@@ -1,5 +1,4 @@
 import * as t from "io-ts";
-import { isHuman } from "./answered.js";
 import { ID_SHAPE_RE, strictExact } from "./schema.js";
 import { clipText } from "./util.js";
 
@@ -12,6 +11,11 @@ type Disposition = t.TypeOf<typeof DispositionCodec>;
 
 // The response vocabulary, for every surface that teaches it.
 export const DISPOSITIONS = Object.keys(DispositionCodec.keys) as readonly Disposition[];
+
+// The roles whose answers come from the maintainers, as the reviewer's note names them.
+export const MAINTAINER_ASSOCIATIONS: readonly string[] = ["OWNER", "MEMBER", "COLLABORATOR"];
+
+const CLOSING_DISPOSITIONS: ReadonlySet<Disposition> = new Set(["refuted", "dismissed"]);
 
 export const RESPONSE_FORM = `Review-Response: <id> ${DISPOSITIONS.join("|")} — <reason>`;
 
@@ -109,6 +113,12 @@ export const parseResponseLines = (text: string): readonly ParsedLine[] =>
       : [];
   });
 
+// A comment answers only when a HUMAN wrote it: neither this pipeline's bot (matched by login) nor
+// any other bot account (matched by the REST user.type, so a CI/dependabot comment can't masquerade
+// as an answer). A MISSING type (null — an unexpected API shape) fails closed to "not human".
+export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
+  login !== botLogin && type === "User";
+
 export interface HarvestInput {
   readonly repo: string;
   readonly prNumber: number;
@@ -194,4 +204,43 @@ export const harvestResponses = (input: HarvestInput): Harvest => {
       0,
     ),
   };
+};
+
+// Whether an answer comes from the maintainers: a comment by its author's role on the base repo, a
+// commit by the push access a branch of the base repo implies. A fork's commit, or a head repo the
+// caller could not name, never does.
+export const isTrustedResponse = (
+  response: Response,
+  repo: string,
+  headRepo: string | undefined,
+): boolean => {
+  switch (response.channel) {
+    case "comment":
+      return MAINTAINER_ASSOCIATIONS.includes(response.author_association ?? "");
+    case "commit":
+      return headRepo !== undefined && headRepo.toLowerCase() === repo.toLowerCase();
+  }
+};
+
+const answeredInstant = (response: Response): number =>
+  response.created_at === null ? Number.NaN : Date.parse(response.created_at);
+
+// The answers that close their ids: per id, the newest trusted answer, when it refutes or dismisses
+// the finding. A `fixed` is a claim the reviewer verifies, never a closure, and a newer one reopens
+// the id; an answer whose time cannot be read cannot be ordered, so its id never closes, and neither
+// does a same-instant tie with a `fixed`.
+export const closingResponses = (
+  responses: readonly Response[],
+  isTrusted: (response: Response) => boolean,
+): readonly Response[] => {
+  const trusted = responses.filter(isTrusted);
+  return [...new Set(trusted.map((response) => response.id))].flatMap((id) => {
+    const answers = trusted.filter((response) => response.id === id);
+    if (answers.some((response) => Number.isNaN(answeredInstant(response)))) return [];
+    const latest = Math.max(...answers.map(answeredInstant));
+    const newest = answers.filter((response) => answeredInstant(response) === latest);
+    return newest.every((response) => CLOSING_DISPOSITIONS.has(response.disposition))
+      ? newest.slice(0, 1)
+      : [];
+  });
 };

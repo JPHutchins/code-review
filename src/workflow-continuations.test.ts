@@ -713,9 +713,12 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     expect(reusable[0]).toBe('if [ -f "$GATHER_DIR/responses.json" ]; then');
     expect(reusable.some((line) => line.includes("::warning::"))).toBe(true);
     expect(reusable.some((line) => line.includes("rebuttal"))).toBe(true);
-    expect(reusable.some((line) => line.includes(`disposition ${DISPOSITIONS.join("|")},`))).toBe(
-      true,
+    const note = reusable.find((line) =>
+      line.startsWith('SEED_NOTE="${SEED_NOTE} The author answered'),
     );
+    expect(note).toContain(`\\\`${RESPONSE_FORM.slice(0, RESPONSE_FORM.indexOf(" "))}\\\` line`);
+    expect(note).toContain(`(disposition ${DISPOSITIONS.join("|")})`);
+    expect(note).toContain("\\`unmatched\\`");
     for (const path of [
       ".github/workflows/review-reusable.yaml",
       "examples/workflows/review.yaml",

@@ -75,6 +75,12 @@ describe("parseResponseLines — the response grammar", () => {
     ).toEqual(DISPOSITIONS.map((disposition) => ({ id: "x-y", disposition, reason: "why" })));
   });
 
+  it("never reads a half-filled form, its alternation left in place, as the first verb", () => {
+    expect(
+      parseResponseLines(RESPONSE_FORM.replace("<id>", "x-y").replace("<reason>", "why")),
+    ).toEqual([]);
+  });
+
   it("never reads a quoted, inline-code, indented-code, or fenced copy of the grammar as a response", () => {
     const quoting = [
       "> Review-Response: quoted fixed — someone else's line",

@@ -1,7 +1,7 @@
 <% if (it.findingsPointer) { -%>
 <%~ it.findingsPointer %>
 <% } -%>
-<%= it.severityEmoji(it.severity) %> <%= it.severity.charAt(0).toUpperCase() + it.severity.slice(1) %>: **<%= it.title %>** · <%= it.formatConfidence(it.confidence) %> confidence · <%= it.formatConfidence(it.likelihood) %> likelihood · id `<%~ it.idLabel %>`
+<%= it.severityEmoji(it.severity) %> <%= it.severity.charAt(0).toUpperCase() + it.severity.slice(1) %>: **<%= it.title %>** · <%= it.formatConfidence(it.confidence) %> confidence · <%= it.formatConfidence(it.likelihood) %> likelihood<% if (it.idLabel) { %> · id `<%~ it.idLabel %>`<% } %>
 
 <%~ it.description %>
 <% if (it.sameRootNote) { -%>

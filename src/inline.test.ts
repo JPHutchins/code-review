@@ -295,6 +295,11 @@ index abc..def 100644
     ).toBe(true);
   });
 
+  it("names the id only when there is one, escaped for its code span", () => {
+    expect(bodyOf({ title: "SQLi", id: "" }).split("\n")[0]).not.toContain(" · id ");
+    expect(bodyOf({ title: "SQLi", id: "a`b" }).split("\n")[0]).toContain(" · id `a-b`");
+  });
+
   it("renders the finding's description", () => {
     expect(bodyOf({ description: "The `file` may be undefined." })).toContain(
       "The `file` may be undefined.",

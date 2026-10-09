@@ -69,6 +69,16 @@ const mkFinding = (overrides: Partial<Finding>): Finding => ({
   ...overrides,
 });
 
+const mkSystemic = (overrides: Partial<SystemicProblem> = {}): SystemicProblem => ({
+  title: "Retry plumbing is inconsistent",
+  description: "Three spots, three retry policies — the pattern is the problem.",
+  severity: "major",
+  reasoning: "Each touched file implements its own retry policy.",
+  confidence: 0.8,
+  likelihood: 1,
+  ...overrides,
+});
+
 const mkFindings = (
   findings: Finding[],
   overrides?: Partial<Omit<Findings, "findings">>,
@@ -205,7 +215,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
   });
 
   it("teaches the response line under a review with findings, never on a clean review or a notice", () => {
-    const line = `To answer a finding, put \`${RESPONSE_FORM}\``;
+    const line = `To answer a finding, put \`${RESPONSE_FORM}\` in a commit message or a PR conversation comment (not an inline-thread reply); a systemic problem's id, when shown, answers its whole class.`;
     const finding = mkFinding({});
     const withFindings = render({
       findings: mkFindings([finding]),
@@ -235,19 +245,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
     });
     expect(mechanic).not.toContain(line);
     const systemicOnly = render({
-      findings: mkFindings([], {
-        systemic_problems: [
-          {
-            title: "A class",
-            description: "d",
-            severity: "minor",
-            reasoning: "r",
-            confidence: 0.5,
-            likelihood: 1,
-            id: "a-class",
-          },
-        ],
-      }),
+      findings: mkFindings([], { systemic_problems: [mkSystemic({ id: "a-class" })] }),
       envelope: baseEnvelope,
       prices,
       template,
@@ -918,16 +916,6 @@ describe("render", () => {
   });
 
   describe("systemic problems section (issue #134)", () => {
-    const mkSystemic = (overrides: Partial<SystemicProblem> = {}): SystemicProblem => ({
-      title: "Retry plumbing is inconsistent",
-      description: "Three spots, three retry policies — the pattern is the problem.",
-      severity: "major",
-      reasoning: "Each touched file implements its own retry policy.",
-      confidence: 0.8,
-      likelihood: 1,
-      ...overrides,
-    });
-
     const systemicFindings = (overrides?: Partial<Omit<Findings, "findings">>): Findings =>
       mkFindings([mkFinding({ severity: "major", title: "Anchored finding" })], {
         summary: "The verdict follows from the shape of the change.",

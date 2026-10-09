@@ -219,18 +219,14 @@ export const harvestResponses = (input: HarvestInput): Harvest => {
 };
 
 // Whether an answer comes from the maintainers: a comment by its author's role on the base repo, a
-// commit by the push access a branch of the base repo implies. A fork's commit, or a head repo the
-// caller could not name, never does.
-export const isTrustedResponse = (
-  response: Response,
-  repo: string,
-  headRepo: string | undefined,
-): boolean => {
+// commit by the push access a head branch IN the base repo implies — the caller reads that from the
+// PR itself, so a fork's commit, or one whose head repo could not be read, never does.
+export const isTrustedResponse = (response: Response, headInBaseRepo: boolean): boolean => {
   switch (response.channel) {
     case "comment":
       return MAINTAINER_ASSOCIATIONS.includes(response.author_association ?? "");
     case "commit":
-      return headRepo !== undefined && headRepo.toLowerCase() === repo.toLowerCase();
+      return headInBaseRepo;
   }
 };
 
@@ -246,13 +242,14 @@ export const closingResponses = (
   isTrusted: (response: Response) => boolean,
 ): readonly Response[] => {
   const byId = responses.filter(isTrusted).reduce((groups, response) => {
-    groups.set(response.id, [...(groups.get(response.id) ?? []), response]);
+    const timed = { response, at: answeredInstant(response) };
+    groups.set(response.id, [...(groups.get(response.id) ?? []), timed]);
     return groups;
-  }, new Map<string, readonly Response[]>());
+  }, new Map<string, readonly { readonly response: Response; readonly at: number }[]>());
   return [...byId.values()].flatMap((answers) => {
-    if (answers.some((response) => Number.isNaN(answeredInstant(response)))) return [];
-    const latest = Math.max(...answers.map(answeredInstant));
-    const newest = answers.filter((response) => answeredInstant(response) === latest);
+    if (answers.some(({ at }) => Number.isNaN(at))) return [];
+    const latest = Math.max(...answers.map(({ at }) => at));
+    const newest = answers.filter(({ at }) => at === latest).map(({ response }) => response);
     return newest.every((response) => CLOSING_DISPOSITIONS.has(response.disposition))
       ? [...newest].sort((a, b) => a.source_url.localeCompare(b.source_url)).slice(0, 1)
       : [];

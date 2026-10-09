@@ -79,6 +79,11 @@ const matches = (
   e: Pick<AnsweredEntry, "code" | "title">,
 ): boolean => e.code === resolvedId || isSynthesizedTitleMatch(f, e);
 
+// Whether an answer naming this id could match any of the findings, before its claim is known: by id,
+// or — a synthesized id only — by the title second chance, which needs the prior's title to decide.
+export const couldMatch = (code: string, findings: readonly Finding[]): boolean =>
+  isSynthesizedFindingId(code) || findings.some((f) => resolveFindingId(f) === code);
+
 // The ONE verbatim claim-field list: the six per-field comparisons consumed by both the full-claim
 // predicate and the title-second-chance scorer. The VerbatimPick type DERIVES from the array, so
 // adding a claim field is a single edit the compiler verifies — the type and the runtime list can

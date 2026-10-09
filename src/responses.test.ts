@@ -299,22 +299,20 @@ describe("isTrustedResponse — only a maintainer's answer can close a finding",
   it("trusts a comment by its author's role, and only the maintainer roles", () => {
     expect(
       MAINTAINER_ASSOCIATIONS.map((role) =>
-        isTrustedResponse(answer({ author_association: role }), "o/r", "o/r"),
+        isTrustedResponse(answer({ author_association: role }), false),
       ),
     ).toEqual([true, true, true]);
     expect(
       ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", null].map((role) =>
-        isTrustedResponse(answer({ author_association: role }), "o/r", "o/r"),
+        isTrustedResponse(answer({ author_association: role }), true),
       ),
     ).toEqual([false, false, false, false, false]);
   });
 
-  it("trusts a commit only from a branch of the base repo, never a fork's or an unnamed head repo's", () => {
+  it("trusts a commit only when the PR's head branch is in the base repo", () => {
     const commit = answer({ channel: "commit", author_association: null });
-    expect(isTrustedResponse(commit, "o/r", "o/r")).toBe(true);
-    expect(isTrustedResponse(commit, "o/r", "O/R")).toBe(true);
-    expect(isTrustedResponse(commit, "o/r", "fork/r")).toBe(false);
-    expect(isTrustedResponse(commit, "o/r", undefined)).toBe(false);
+    expect(isTrustedResponse(commit, true)).toBe(true);
+    expect(isTrustedResponse(commit, false)).toBe(false);
   });
 });
 

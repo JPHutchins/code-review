@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { answeredRegistryFrom, applyAnswered, answeredReRaiseNote } from "./answered.js";
+import {
+  answeredRegistryFrom,
+  applyAnswered,
+  answeredReRaiseNote,
+  couldMatch,
+} from "./answered.js";
 import type { AnsweredEntry } from "./answered.js";
 import { synthesizedFindingId } from "./schema.js";
 import type { Finding, Findings } from "./schema.js";
@@ -70,6 +75,34 @@ describe("answeredRegistryFrom — a closing answer, against the prior finding i
         (e) => e.code,
       ),
     ).toEqual([id]);
+  });
+});
+
+describe("couldMatch — the download gate asks the matcher's own question", () => {
+  it("admits an id a finding carries, and a synthesized id whose title second chance needs the prior", () => {
+    const findings = [mkFinding({ id: "recurring-a" })];
+    expect(couldMatch("recurring-a", findings)).toBe(true);
+    expect(couldMatch("another-id", findings)).toBe(false);
+    expect(couldMatch(synthesizedFindingId("src/elsewhere.ts", "The same claim"), findings)).toBe(
+      true,
+    );
+  });
+
+  it("agrees with applyAnswered: an entry couldMatch rejects is never matched", () => {
+    const findings = [mkFinding({ id: "recurring-a" })];
+    const entry: AnsweredEntry = {
+      code: "another-id",
+      title: "The same claim",
+      description: "The same description.",
+      reasoning: "The same reasoning.",
+      severity: "minor",
+      path: "src/foo.ts",
+      patch: null,
+      answerUrl: "u",
+      answerAuthor: null,
+    };
+    expect(couldMatch(entry.code, findings)).toBe(false);
+    expect(applyAnswered(findings, [entry]).verbatimReRaised).toEqual([]);
   });
 });
 

@@ -184,7 +184,7 @@ const CommitCodec = t.intersection([
   t.partial({ date: t.union([t.string, t.null]) }),
 ]);
 const COMMIT_JQ =
-  ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email, date: .commit.committer.date}";
+  ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email, date: .commit.author.date}";
 
 // Commit messages + author identities of every commit in `default...head`. Once the head is checked
 // out, `git log` exposes these to the reviewing agent, so they are an untrusted surface triage must

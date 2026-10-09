@@ -198,6 +198,12 @@ const mkMocks = (stickyBody: string) => [
     match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
     response: "",
   },
+  // The PR's head repository, read for a commit answer's trust — unreadable by default, so no commit
+  // answer is trusted and the commits are never read.
+  {
+    match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("--jq"),
+    response: "",
+  },
   // The PR's commits, read for their answers — none by default.
   {
     match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/pulls/42/commits") ?? false,
@@ -4984,8 +4990,13 @@ describe("post — answered findings (issue #151)", () => {
     prior: Finding,
     answers: readonly string[] = [answerRow(DISMISSAL)],
     commits = "",
+    headRepo = "",
   ): { readonly mocks: ReturnType<typeof mkMocks>; readonly readArtifact: ArtifactReader } => ({
     mocks: [
+      {
+        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("--jq"),
+        response: headRepo,
+      },
       {
         match: (a: readonly string[]) =>
           (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
@@ -5156,13 +5167,13 @@ describe("post — answered findings (issue #151)", () => {
       })}\n`,
     );
     const { api, calls } = mkMockGhApi(mocks);
-    await post(mkInput({ route: "full review", headRepo: "fork/repo" }), api, readArtifact);
+    await post(mkInput({ route: "full review" }), api, readArtifact);
     const body = patchedBody(calls());
     expect(body).not.toContain("treated as answered");
     expect(body).toContain("The same claim");
   });
 
-  it("reads a commit answer only from a branch of this repository, and a failed commits read degrades to comment answers, warned", async () => {
+  it("reads a commit answer only when the PR itself puts its head branch in this repository, never by the workflow's head repo", async () => {
     writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
     const commit = `${JSON.stringify({
       sha: "abc123",
@@ -5170,17 +5181,28 @@ describe("post — answered findings (issue #151)", () => {
       author: "Dev",
       date: "2026-07-01T01:00:00Z",
     })}\n`;
-    const sameRepo = withAnswers(answered, [], commit);
+    const sameRepo = withAnswers(answered, [], commit, "Owner/Repo");
     const first = mkMockGhApi(sameRepo.mocks);
-    await post(
-      mkInput({ route: "full review", headRepo: "owner/repo" }),
-      first.api,
-      sameRepo.readArtifact,
-    );
+    await post(mkInput({ route: "full review" }), first.api, sameRepo.readArtifact);
     expect(patchedBody(first.calls())).toContain("treated as answered");
     expect(patchedBody(first.calls())).toContain("commit/abc123");
 
-    const failing = withAnswers(answered);
+    // The chatops path hands post the BASE repo when it cannot resolve a head repo; the PR's own
+    // answer (a deleted fork's null head) still trusts no commit, and the commits are never read.
+    const deletedFork = withAnswers(answered, [], commit, "");
+    const forked = mkMockGhApi(deletedFork.mocks);
+    await post(
+      mkInput({ route: "full review", headRepo: "owner/repo" }),
+      forked.api,
+      deletedFork.readArtifact,
+    );
+    expect(patchedBody(forked.calls())).not.toContain("treated as answered");
+    expect(forked.calls().some((c) => c.args[0]?.includes("/commits?") ?? false)).toBe(false);
+  });
+
+  it("degrades a failed commits read to comment answers, warned", async () => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(mkFindings([answered])));
+    const failing = withAnswers(answered, [answerRow(DISMISSAL)], "", "owner/repo");
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     // No commits mock, so the read REJECTS (an unmatched call throws): the failure path.
     const second = mkMockGhApi(

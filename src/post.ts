@@ -70,7 +70,7 @@ import {
   ID_SHAPE_RE,
   priorIdsFrom,
 } from "./schema.js";
-import { isSynthesizedFindingId, resolveFindingId } from "./schema.js";
+import { resolveFindingId } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -90,6 +90,7 @@ import {
   answeredNoteKey,
   answeredReRaiseNote,
   answeredRegistryFrom,
+  couldMatch,
 } from "./answered.js";
 import {
   answersFrom,
@@ -481,11 +482,34 @@ const parseIssueCommentRows = (
   return { rows, malformed };
 };
 
+// The author is the GitHub account the commit's author email resolves to, never the self-declared git
+// name; the time is the author date, which a rebase keeps.
 const COMMITS_JQ =
-  ".[] | {sha, message: .commit.message, author: (.commit.author.name // null), date: (.commit.committer.date // null)}";
+  ".[] | {sha, message: .commit.message, author: (.author.login // null), date: (.commit.author.date // null)}";
+
+// Whether the PR's head branch lives in the base repository: the push access a commit answer's trust
+// rests on, read from the PR itself. A fork's head, a deleted fork's null one, or a failed read trusts
+// no commit.
+const fetchHeadInBaseRepo = async (
+  repo: string,
+  prNumber: number,
+  ghApi: GhApi,
+): Promise<boolean> => {
+  try {
+    const headRepo = (
+      await ghApi([`repos/${repo}/pulls/${String(prNumber)}`, "--jq", '.head.repo.full_name // ""'])
+    ).trim();
+    return headRepo !== "" && headRepo.toLowerCase() === repo.toLowerCase();
+  } catch (err) {
+    process.stderr.write(
+      `Warning: could not read the PR's head repository (${errMsg(err)}) — no commit answer closes a finding this round\n`,
+    );
+    return false;
+  }
+};
 
 // The PR's commits, read for the answers in their messages. A failed fetch reads no commit answers,
-// named, never a failed post.
+// and a row that does not decode is counted — named, never a failed post.
 const fetchCommitAnswersSource = async (
   repo: string,
   prNumber: number,
@@ -498,7 +522,8 @@ const fetchCommitAnswersSource = async (
       "--jq",
       COMMITS_JQ,
     ]);
-    return raw.split("\n").flatMap((line) => {
+    const lines = raw.split("\n").filter((line) => line.trim() !== "");
+    const commits = lines.flatMap((line) => {
       const parsed = tryParseJson(line.trim());
       const rec = parsed.ok ? asRecord(parsed.value) : null;
       const sha = rec?.["sha"];
@@ -514,6 +539,12 @@ const fetchCommitAnswersSource = async (
           ]
         : [];
     });
+    if (commits.length < lines.length) {
+      process.stderr.write(
+        `Warning: ${String(lines.length - commits.length)} of the PR's commits did not decode — their answers close nothing\n`,
+      );
+    }
+    return commits;
   } catch (err) {
     process.stderr.write(
       `Warning: could not read the PR's commits (${errMsg(err)}) — no commit answer closes a finding this round\n`,
@@ -1411,6 +1442,7 @@ export const post = async (
   const loadedFindings = findingsResult.findings;
   const answerable =
     existingSticky !== null && !priorIsMechanic && loadedFindings.findings.length > 0;
+  const headInBaseRepo = answerable && (await fetchHeadInBaseRepo(input.repo, prNumber, ghApi));
   const answers = answerable
     ? answersFrom({
         repo: input.repo,
@@ -1423,15 +1455,13 @@ export const post = async (
           created_at: row.created,
           author_association: row.association,
         })),
-        commits: await fetchCommitAnswersSource(input.repo, prNumber, ghApi),
+        commits: headInBaseRepo ? await fetchCommitAnswersSource(input.repo, prNumber, ghApi) : [],
       })
     : { comments: [], commits: [] };
-  // Only a closure some current finding can match — by id, or a synthesized id's title second
-  // chance — is worth the prior's download.
-  const currentFindingIds = new Set(loadedFindings.findings.map(resolveFindingId));
+  // Only a closure some current finding could match is worth the prior's download.
   const closures = closingResponses([...answers.comments, ...answers.commits], (response) =>
-    isTrustedResponse(response, input.repo, input.headRepo),
-  ).filter((closure) => currentFindingIds.has(closure.id) || isSynthesizedFindingId(closure.id));
+    isTrustedResponse(response, headInBaseRepo),
+  ).filter((closure) => couldMatch(closure.id, loadedFindings.findings));
   // The prior document the closures name, resolved only when one exists — and the one resolve the
   // nit stickiness and the discussion gate below reuse.
   const priorForAnswers =

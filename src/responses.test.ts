@@ -203,8 +203,9 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       })),
       { id: "a-b", disposition: "dismissed", reason: "tracked in #12" },
     ]);
-    expect(RESPONSE_TEACHING).toContain(RESPONSE_TABLE_HEADER);
-    expect(RESPONSE_TEACHING).toContain(RESPONSE_FORM);
+    expect(RESPONSE_TEACHING).toBe(
+      "To answer findings, post a PR conversation comment holding a table with the header `| id | disposition | reason |` and one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
+    );
   });
 
   it("ignores a table without an id and a disposition column, and a fenced copy of one", () => {
@@ -224,9 +225,10 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
     expect(parseResponseTables(fenced)).toEqual([]);
   });
 
-  it("keeps a correction: a line and a table row with different verdicts for one id are both answers", () => {
+  it("keeps a correction — a changed verdict or an edited reason — and collapses only an exact repeat", () => {
     const text = [
       "Review-Response: x-y refuted — measured",
+      "Review-Response: x-y refuted — measured on 3.14 too",
       "",
       "| id | disposition |",
       "| --- | --- |",
@@ -234,10 +236,11 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       "| `x-y` | fixed |",
       "| `a-b` | recorded |",
     ].join("\n");
-    expect(parseResponses(text).map((r) => [r.id, r.disposition])).toEqual([
-      ["x-y", "refuted"],
-      ["x-y", "fixed"],
-      ["a-b", "dismissed"],
+    expect(parseResponses(text).map((r) => [r.id, r.disposition, r.reason])).toEqual([
+      ["x-y", "refuted", "measured"],
+      ["x-y", "refuted", "measured on 3.14 too"],
+      ["x-y", "fixed", ""],
+      ["a-b", "dismissed", "recorded"],
     ]);
   });
 
@@ -249,25 +252,53 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       "| `b` | rejected |",
       "| `c` |  |",
       "| `d` | won't fix |",
+      "| `e` | fixed, but not the root cause |",
+      "| `f` | **probed, not reached** |",
     ].join("\n");
     expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
       ["a", "unstated"],
       ["b", "unstated"],
       ["c", "unstated"],
       ["d", "dismissed"],
+      ["e", "unstated"],
+      ["f", "refuted"],
     ]);
   });
 
-  it("ends a table at the next table's header, so an adjacent legend table yields no phantom answers", () => {
+  it("follows GFM's extent: a table runs to a blank line, its dashed rows answer nothing, and a list ends it", () => {
     const text = [
       "| id | disposition |",
       "| --- | --- |",
       "| `a-b` | fixed |",
-      "| verdict | meaning |",
       "| --- | --- |",
-      "| fixed | the fix landed |",
+      "| `c-d` | refuted |",
+      "- a list item is a new block",
+      "| `e-f` | dismissed |",
+      "",
+      "| `g-h` | dismissed |",
     ].join("\n");
-    expect(parseResponseTables(text).map((r) => r.id)).toEqual(["a-b"]);
+    expect(parseResponseTables(text).map((r) => [r.id, r.disposition])).toEqual([
+      ["a-b", "fixed"],
+      ["c-d", "refuted"],
+    ]);
+  });
+
+  it("names a column by its header's first word", () => {
+    const table = [
+      "| Finding ID | Verdict / action |",
+      "| --- | --- |",
+      "| `a-b` | dismissed |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["a-b", "dismissed"],
+    ]);
+  });
+
+  it("splits a hostile row in linear time", () => {
+    const row = `| ${"\\|".repeat(32768)} | dismissed |`;
+    const started = performance.now();
+    parseResponseTables(["| id | disposition |", "| --- | --- |", row].join("\n"));
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it("reads only a verdict table: a status table is not one", () => {
@@ -290,9 +321,9 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
     ]);
   });
 
-  it("scans repeated headers in linear time", () => {
-    const pair = ["| id | disposition |", "| --- | --- |"];
-    const text = Array.from({ length: 20000 }, () => pair)
+  it("scans many tables in linear time", () => {
+    const table = ["| id | disposition |", "| --- | --- |", ""];
+    const text = Array.from({ length: 20000 }, () => table)
       .flat()
       .join("\n");
     const started = performance.now();

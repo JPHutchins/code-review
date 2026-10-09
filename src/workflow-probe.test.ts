@@ -109,7 +109,6 @@ describe("workflow capability probes (issue #233 r2)", () => {
     // column itself (issue #238 r2).
     expect(seedHelp).toMatch(/^\s+`--prior`\s+/m);
     expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-findings")).toBe("no");
-    expect(runProbe("seed_accepts", seedFn, seedHelp, "prior-answers")).toBe("yes");
     expect(runProbe("seed_accepts", seedFn, seedHelp, "nit-visibility-floor")).toBe("yes");
   });
 

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { GhApi } from "./gh.js";
 import type { GatherInput, GitRun } from "./gather.js";
 import { gather, renderOutputs } from "./gather.js";
-import { AGENTS_STOP_DIRECTIVE } from "./surface.js";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
 
@@ -1322,9 +1321,11 @@ describe("gather — commit-message triage surface", () => {
   });
 });
 
-describe("gather — answered-findings registry (issue #151)", () => {
-  const withThreadRows = (rows: string) =>
-    mkMockGhApi([
+describe("gather — the review-comments projection", () => {
+  it("decodes rows in the shape REVIEW_COMMENT_JQ emits, so the conversation keeps each reply's author_association, and stages no answered registry (issue #151 review r1)", async () => {
+    // The mocks bypass jq, so a fixture in the API shape cannot prove the projection satisfies the
+    // codec: these rows are exactly what the projection emits.
+    const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
         response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
@@ -1332,132 +1333,21 @@ describe("gather — answered-findings registry (issue #151)", () => {
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
       { match: commentsMatch(42), response: "" },
-      { match: reviewCommentsMatch(42), response: rows },
+      {
+        match: reviewCommentsMatch(42),
+        response: ndjson([
+          {
+            body: "Measured: the claim does not hold.",
+            user: { login: "alice" },
+            created_at: "2026-07-01T01:00:00Z",
+            author_association: "OWNER",
+            path: "src/foo.ts",
+            line: 42,
+          },
+        ]),
+      },
       { match: reviewsMatch(42), response: "" },
     ]);
-
-  const answered = (): readonly unknown[] => JSON.parse(outFile("answered.json")) as unknown[];
-
-  it("stages the answered registry: the prior bot inline finding whose thread a human reply answered", async () => {
-    const botBody = `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${Buffer.from(
-      JSON.stringify({
-        schema_version: "0.6.0",
-        findings: [
-          {
-            path: "src/foo.ts",
-            start_line: 42,
-            end_line: 42,
-            severity: "minor",
-            title: "The same claim",
-            description: "d",
-            reasoning: "The same reasoning.",
-            confidence: 0.8,
-            id: "recurring-a",
-          },
-        ],
-      }),
-      "utf-8",
-    ).toString("base64")} -->`;
-    const { api } = withThreadRows(
-      ndjson([
-        {
-          id: 101,
-          in_reply_to_id: null,
-          user_login: "github-actions[bot]",
-          user_type: "Bot",
-          body: botBody,
-          html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
-          path: "src/foo.ts",
-          line: 42,
-          created_at: "2026-07-01T00:00:00Z",
-        },
-        {
-          id: 102,
-          in_reply_to_id: 101,
-          user_login: "alice",
-          user_type: "User",
-          body: "Measured: the claim does not hold.",
-          html_url: "https://github.com/owner/repo/pull/42#discussion_r102",
-          path: "src/foo.ts",
-          line: 42,
-          created_at: "2026-07-01T01:00:00Z",
-        },
-      ]),
-    );
-    await gather(mkInput({}), api, mkMockGit([]).git);
-    expect(answered()).toEqual([
-      {
-        code: "recurring-a",
-        title: "The same claim",
-        description: "d",
-        reasoning: "The same reasoning.",
-        severity: "minor",
-        path: "src/foo.ts",
-        patch: null,
-        replied_at: "2026-07-01T01:00:00Z",
-        reply_id: 102,
-        thread_url: "https://github.com/owner/repo/pull/42#discussion_r101",
-        reply_url: "https://github.com/owner/repo/pull/42#discussion_r102",
-        reply_author: "alice",
-        reply_excerpt: "Measured: the claim does not hold.",
-      },
-    ]);
-  });
-
-  it("serves BOTH consumers from the JQ-shaped rows — the conversation's review_comments survive the shared projection (issue #151 review r1)", async () => {
-    // The mocks bypass jq, so a fixture in the API shape cannot prove the projection satisfies the
-    // consumers. Feed the rows exactly as THREAD_COMMENT_JQ emits them (flat user_login/user_type +
-    // nested user + author_association): the conversation codec must still decode them (with
-    // author_association intact — the review prompt weighs claims by it) AND the registry must.
-    const botBody = `${AGENTS_STOP_DIRECTIVE}\n<!-- code-review:findings-json;base64 ${Buffer.from(
-      JSON.stringify({
-        schema_version: "0.6.0",
-        findings: [
-          {
-            path: "src/foo.ts",
-            start_line: 42,
-            end_line: 42,
-            severity: "minor",
-            title: "The same claim",
-            description: "d",
-            reasoning: "The same reasoning.",
-            confidence: 0.8,
-            id: "recurring-a",
-          },
-        ],
-      }),
-      "utf-8",
-    ).toString("base64")} -->`;
-    const { api } = withThreadRows(
-      ndjson([
-        {
-          id: 101,
-          in_reply_to_id: null,
-          user: { login: "github-actions[bot]" },
-          user_login: "github-actions[bot]",
-          user_type: "Bot",
-          body: botBody,
-          html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
-          path: "src/foo.ts",
-          line: 42,
-          created_at: "2026-07-01T00:00:00Z",
-          author_association: "NONE",
-        },
-        {
-          id: 102,
-          in_reply_to_id: 101,
-          user: { login: "alice" },
-          user_login: "alice",
-          user_type: "User",
-          body: "Measured: the claim does not hold.",
-          html_url: "https://github.com/owner/repo/pull/42#discussion_r102",
-          path: "src/foo.ts",
-          line: 42,
-          created_at: "2026-07-01T01:00:00Z",
-          author_association: "OWNER",
-        },
-      ]),
-    );
     await gather(mkInput({}), api, mkMockGit([]).git);
     const conversation = JSON.parse(outFile("pr_conversation.json")) as {
       review_comments: readonly {
@@ -1472,43 +1362,7 @@ describe("gather — answered-findings registry (issue #151)", () => {
       author_association: "OWNER",
       body: "Measured: the claim does not hold.",
     });
-    expect(answered()).toHaveLength(1);
-  });
-
-  it("stages an empty registry when the threads hold no answered finding (no replies, or no bot threads)", async () => {
-    const { api } = withThreadRows(
-      ndjson([
-        {
-          id: 101,
-          in_reply_to_id: null,
-          user_login: "github-actions[bot]",
-          user_type: "Bot",
-          body: "just prose, no marker",
-          html_url: "https://github.com/owner/repo/pull/42#discussion_r101",
-          path: "src/foo.ts",
-          line: 42,
-          created_at: "2026-07-01T00:00:00Z",
-        },
-      ]),
-    );
-    await gather(mkInput({}), api, mkMockGit([]).git);
-    expect(answered()).toEqual([]);
-  });
-
-  it("stages an empty registry when the thread fetch fails — the review then relies on the conversation alone", async () => {
-    const { api } = mkMockGhApi([
-      {
-        match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-      },
-      { match: metaMatch(42), response: mkMeta() },
-      { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "" },
-      { match: reviewCommentsMatch(42), response: new Error("network down") },
-      { match: reviewsMatch(42), response: "" },
-    ]);
-    await gather(mkInput({}), api, mkMockGit([]).git);
-    expect(answered()).toEqual([]);
+    expect(hasOutFile("answered.json")).toBe(false);
   });
 });
 

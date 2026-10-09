@@ -202,17 +202,9 @@ export const sidecarPath = (draftPath: string, postfix: string): string => {
 // deliverable (only $DRAFT, its last-valid snapshot, and the native envelope are read back).
 export const priorContextPath = (draftPath: string): string => sidecarPath(draftPath, ".prior");
 
-// The prior review's "already answered" registry (issue #151) — the prior inline findings whose
-// threads a human reply answered — delivered beside the prior context so the next-round agent sees
-// what it must not re-raise verbatim. Like $PRIOR_CONTEXT, it is read-only context, never a
-// deliverable.
-export const priorAnswersPath = (draftPath: string): string =>
-  sidecarPath(draftPath, ".prior-answers");
-
 // The prior review's below-visibility-floor nits (issue #164) — the nits the last round shelved
 // below the noise floor — delivered beside the prior context so the next-round agent knows not to
-// re-raise them as fresh nits. Like $PRIOR_CONTEXT/$PRIOR_ANSWERS, read-only context, never a
-// deliverable.
+// re-raise them as fresh nits. Like $PRIOR_CONTEXT, read-only context, never a deliverable.
 export const priorSuppressedPath = (draftPath: string): string =>
   sidecarPath(draftPath, ".prior-suppressed");
 

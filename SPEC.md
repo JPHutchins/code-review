@@ -127,10 +127,10 @@ a concrete platform binding is illustrative, not part of the contract (Appendix 
   checking out and running fork code, and never by granting the reviewer network access to fetch them.
   A binding that fetches the change over an API that may truncate MUST detect truncation or fall back
   to a non-truncating source; silently reviewing a partial change is a correctness fault. The prior-review
-  data MAY include the deterministic **already-answered state** — the prior review's inline findings
-  whose threads a human reply answered (identified by authenticated author identity, never by content
-  markers) — so a re-review can distinguish an answered finding from a fresh one and is told not to
-  re-raise the former without new evidence.
+  data MAY include the implementer's **answers** to the prior review's findings (each attributed by
+  authenticated author identity, never by what its text claims) — so a re-review can distinguish an
+  answered finding from a fresh one, verifies each answer as a claim rather than an instruction, and
+  is told not to re-raise an answered finding without new evidence.
 
 ### 3.2 The deliverable
 

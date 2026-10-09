@@ -1321,51 +1321,6 @@ describe("gather — commit-message triage surface", () => {
   });
 });
 
-describe("gather — the review-comments projection", () => {
-  it("decodes rows in the shape REVIEW_COMMENT_JQ emits, so the conversation keeps each reply's author_association, and stages no answered registry (issue #151 review r1)", async () => {
-    // The mocks bypass jq, so a fixture in the API shape cannot prove the projection satisfies the
-    // codec: these rows are exactly what the projection emits.
-    const { api } = mkMockGhApi([
-      {
-        match: candidatesMatch,
-        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
-      },
-      { match: metaMatch(42), response: mkMeta() },
-      { match: diffMatch(42), response: sampleDiff },
-      { match: commentsMatch(42), response: "" },
-      {
-        match: reviewCommentsMatch(42),
-        response: ndjson([
-          {
-            body: "Measured: the claim does not hold.",
-            user: { login: "alice" },
-            created_at: "2026-07-01T01:00:00Z",
-            author_association: "OWNER",
-            path: "src/foo.ts",
-            line: 42,
-          },
-        ]),
-      },
-      { match: reviewsMatch(42), response: "" },
-    ]);
-    await gather(mkInput({}), api, mkMockGit([]).git);
-    const conversation = JSON.parse(outFile("pr_conversation.json")) as {
-      review_comments: readonly {
-        readonly author: string;
-        readonly author_association: string | null;
-        readonly body: string;
-      }[];
-    };
-    expect(conversation.review_comments).toHaveLength(1);
-    expect(conversation.review_comments[0]).toMatchObject({
-      author: "alice",
-      author_association: "OWNER",
-      body: "Measured: the claim does not hold.",
-    });
-    expect(hasOutFile("answered.json")).toBe(false);
-  });
-});
-
 // The two halves are each tested in isolation — gather writes prior_findings.json (above), seed-draft
 // reads --prior-findings (index.test.ts) — but nothing asserted the FILE the one writes is the FILE
 // the other reads. This runs the REAL gather and the REAL seed-draft back to back over one temp dir,

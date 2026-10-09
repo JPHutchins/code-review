@@ -20,7 +20,7 @@ import {
   hasRebuttal,
 } from "./schema.js";
 import type { Finding, Severity } from "./schema.js";
-import { clipText, errMsg } from "./util.js";
+import { errMsg } from "./util.js";
 
 // One flat review comment as REST `pulls/{n}/comments` returns it — enough to rebuild reply threads
 // from `in_reply_to_id` chains (a reply to a reply included) and to decode the bot comment's embedded
@@ -55,7 +55,7 @@ export const ThreadCommentCodec = t.type({
 });
 
 // The registry entry for one answered finding: the finding's identifying fields (the verbatim-match
-// targets), the thread link, and the last human reply's link + a clipped excerpt for the seed.
+// targets) and the last human reply's link.
 export interface AnsweredEntry {
   // The answered finding's id; a pre-id marker resolves it the same way the registry's legacy
   // upcast does (code → id, else synthesized), so the entry keys to the identical claim next round.
@@ -79,10 +79,8 @@ export interface AnsweredEntry {
   // r7).
   readonly repliedAt: string | null;
   readonly replyId: number;
-  readonly threadUrl: string;
   readonly replyUrl: string;
   readonly replyAuthor: string;
-  readonly replyExcerpt: string;
 }
 
 // A reply is "answered" when a HUMAN commented on the thread: neither this pipeline's bot (matched
@@ -92,8 +90,6 @@ export interface AnsweredEntry {
 // (issue #151 review r2).
 export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
   login !== botLogin && type === "User";
-
-const EXCERPT_LIMIT = 400;
 
 // OUTDATED/minimized threads are deliberately NOT excluded: the pipeline minimizes superseded
 // bot comments at the end of every post, so excluding them would erase the very persistence the
@@ -223,10 +219,8 @@ export const answeredRegistryFrom = (
       ...finding,
       repliedAt: reply.created_at,
       replyId: reply.id,
-      threadUrl: root.html_url,
       replyUrl: reply.html_url,
       replyAuthor: reply.user_login,
-      replyExcerpt: clipText(reply.body ?? "", EXCERPT_LIMIT),
     });
   }
   // Dedup by the shared note key, keeping the entry with the MOST RECENT ANSWER — keyed on the
@@ -351,7 +345,7 @@ export interface AnsweredFilter {
   readonly droppedCount: number;
 }
 
-// The deterministic backstop beneath the seed guidance: an answered finding re-raised VERBATIM
+// The deterministic backstop: an answered finding re-raised VERBATIM
 // (identical title, description, and reasoning — no new evidence by definition) is treated as closed
 // and dropped from this review, so the round's counts and stop signal reflect the dismissal. The
 // claim TEXT is the evidence: a change to any of title/description/reasoning, or to the severity,

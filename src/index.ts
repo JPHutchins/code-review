@@ -1161,7 +1161,7 @@ const seedDraftCmd = defineCommand({
       // raw: the adorn below and the gate's barePrior recovery still handle it.
       const resolved = resolvedPriorValue(strippedPrior);
       const doc: Record<string, unknown> =
-        resolved === null ? (strippedPrior as Record<string, unknown>) : { ...resolved };
+        resolved === null ? (strippedPrior as Record<string, unknown>) : resolved;
       // A carried entry only counts when it VALIDATES as the entry shape — for a draft blob it is
       // already dropped (only a legacy pipeline-stamped blob reaches here with one), and an explicit
       // null, an array, or a malformed object (all possible in a corrupt blob; genuine posts omit the

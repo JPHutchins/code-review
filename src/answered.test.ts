@@ -1,9 +1,17 @@
 import { describe, it, expect } from "vitest";
 import { legacyEmbeddedMarker } from "./test-util.js";
-import { answeredRegistryFrom, applyAnswered, answeredReRaiseNote } from "./answered.js";
+import {
+  answeredRegistryFrom,
+  applyAnswered,
+  answeredReRaiseNote,
+  fetchThreadComments,
+  THREAD_COMMENT_JQ,
+  ThreadCommentCodec,
+} from "./answered.js";
 import type { AnsweredEntry, ThreadComment } from "./answered.js";
 import { synthesizedFindingId } from "./schema.js";
 import type { Finding } from "./schema.js";
+import type { GhApi } from "./gh.js";
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
   path: "src/foo.ts",
@@ -67,7 +75,6 @@ describe("answeredRegistryFrom — the 'already answered' state (issue #151)", (
     expect(entry.title).toBe("The same claim");
     expect(entry.reasoning).toBe("The same reasoning.");
     expect(entry.replyUrl).toContain("discussion_r2");
-    expect(entry.threadUrl).toContain("discussion_r1");
     expect(entry.replyAuthor).toBe("alice");
   });
 
@@ -179,7 +186,7 @@ describe("answeredRegistryFrom — the 'already answered' state (issue #151)", (
     expect(registry[0]!.repliedAt).toBe("2026-07-01T02:00:00Z");
   });
 
-  it("resolves a pre-id marker finding to its synthesized id — the same key the legacy upcast derives — and clips the reply excerpt", () => {
+  it("resolves a pre-id marker finding to its synthesized id — the same key the legacy upcast derives", () => {
     const finding = mkFinding({ id: undefined });
     const longReply = reply(2, 1, "alice", "x".repeat(500));
     const registry = answeredRegistryFrom(
@@ -188,7 +195,26 @@ describe("answeredRegistryFrom — the 'already answered' state (issue #151)", (
     );
     expect(registry).toHaveLength(1);
     expect(registry[0]!.code).toBe(synthesizedFindingId("src/foo.ts", "The same claim"));
-    expect(registry[0]!.replyExcerpt).toContain("… [truncated]");
+  });
+});
+
+describe("the thread fetch — its jq projection and its codec are one shape (issue #151 review r1)", () => {
+  it("projects exactly the fields ThreadCommentCodec decodes", () => {
+    const projected = THREAD_COMMENT_JQ.slice(
+      THREAD_COMMENT_JQ.indexOf("{") + 1,
+      THREAD_COMMENT_JQ.lastIndexOf("}"),
+    )
+      .split(",")
+      .map((field) => field.split(":")[0]!.trim());
+    expect([...projected].sort()).toEqual(Object.keys(ThreadCommentCodec.props).sort());
+  });
+
+  it("builds the registry from rows in the projected shape", async () => {
+    const rows = [botComment(1, mkFinding({})), reply(2, 1, "alice", "Measured: does not hold.")];
+    const api: GhApi = () => Promise.resolve(rows.map((row) => JSON.stringify(row)).join("\n"));
+    const fetched = await fetchThreadComments(api, "owner/repo", 1);
+    expect(fetched).toEqual(rows);
+    expect(answeredRegistryFrom(fetched ?? [], "github-actions[bot]")).toHaveLength(1);
   });
 });
 
@@ -203,10 +229,8 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
     patch: null,
     repliedAt: "2026-07-01T01:00:00Z",
     replyId: 2,
-    threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",
-    replyExcerpt: "Measured: does not hold.",
     ...overrides,
   });
 
@@ -488,10 +512,8 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
     patch: null,
     repliedAt: "2026-07-01T01:00:00Z",
     replyId: 2,
-    threadUrl: "https://github.com/owner/repo/pull/1#discussion_r1",
     replyUrl: "https://github.com/owner/repo/pull/1#discussion_r2",
     replyAuthor: "alice",
-    replyExcerpt: "Measured: does not hold.",
   };
 
   it("is empty when nothing was dropped", () => {

@@ -214,10 +214,8 @@ describe("findingsPointer — one form, always the artifact link (issue #217)", 
     expect(JSON.stringify(huge).length).toBeGreaterThan(40000);
   });
 
-  // The one payload that still travels in a comment, and deliberately: the answered registry
-  // identifies a thread by decoding the finding out of its root comment, and an answer given in round
-  // 1 must still close a verbatim re-raise in round 8 — a link to THIS round's artifact cannot do that,
-  // because round 1's finding is not in it.
+  // The one payload that still travels in a comment, and deliberately: a thread stays
+  // self-contained, its finding readable in a later round whose artifact no longer holds it.
   it("keeps a per-finding payload on an inline comment, self-contained across rounds", () => {
     const marker = findingPointer(findings.findings[0]!, findings.schema_version);
 
@@ -258,8 +256,7 @@ describe("findingPointer — the inline payload's size valve (issue #217 review 
   });
 
   // The hard valve sits at the whole-document embed's old EMBED_LIMIT: in the band between the two
-  // thresholds the inline renderer clips the prose while the payload keeps embedding — which is
-  // what keeps the answered registry decoding the thread (issue #233 r2).
+  // thresholds the inline renderer clips the prose while the payload keeps embedding (issue #233 r2).
   it("embeds through the clip band, leaving only the hard valve to the link form", () => {
     const inBand = { ...findings.findings[0]!, description: "x".repeat(25_000) };
 

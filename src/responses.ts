@@ -251,7 +251,7 @@ export const closingResponses = (
     const latest = Math.max(...answers.map(({ at }) => at));
     const newest = answers.filter(({ at }) => at === latest).map(({ response }) => response);
     return newest.every((response) => CLOSING_DISPOSITIONS.has(response.disposition))
-      ? [...newest].sort((a, b) => a.source_url.localeCompare(b.source_url)).slice(0, 1)
+      ? [...newest].sort((a, b) => (a.source_url < b.source_url ? -1 : 1)).slice(0, 1)
       : [];
   });
 };

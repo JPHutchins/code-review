@@ -171,10 +171,24 @@ const commentRow = (id: number, body: string): string =>
   })}\n`;
 
 // Shared by the sticky-precedence describes: the bot's own prior sticky + the post call surface.
-const mkMocks = (stickyBody: string) => [
+// The PR's answers ride the same surface: extra comment rows beside the sticky, the commits read, and
+// the head repository the PR lookup reports (absent by default, so no commit answer is trusted).
+const mkMocks = (
+  stickyBody: string,
+  answers: {
+    readonly comments?: readonly string[];
+    readonly commits?: string;
+    readonly headRepo?: string;
+  } = {},
+) => [
   {
     match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
-    response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    response: `${JSON.stringify({
+      number: 42,
+      state: "open",
+      headRef: "feature-branch",
+      ...(answers.headRepo === undefined ? {} : { headRepo: answers.headRepo }),
+    })}\n`,
   },
   {
     match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
@@ -186,28 +200,26 @@ const mkMocks = (stickyBody: string) => [
       a.includes("--paginate"),
     // The shared issue-comment projection (ISSUE_COMMENTS_JQ): the sticky lookup and the discussion
     // aside read the same rows.
-    response: `${JSON.stringify({
-      id: 999,
-      user: "github-actions[bot]",
-      created_at: "2026-09-01T00:00:00Z",
-      html_url: "https://github.com/owner/repo/pull/42#issuecomment-999",
-      body: stickyBody,
-    })}\n`,
+    response: [
+      JSON.stringify({
+        id: 999,
+        user: "github-actions[bot]",
+        created_at: "2026-09-01T00:00:00Z",
+        html_url: "https://github.com/owner/repo/pull/42#issuecomment-999",
+        body: stickyBody,
+      }),
+      ...(answers.comments ?? []),
+    ]
+      .map((row) => `${row}\n`)
+      .join(""),
   },
   {
     match: (a: readonly string[]) => a[0] === "repos/owner/repo/issues/comments/999",
     response: "",
   },
-  // The PR's head repository, read for a commit answer's trust — unreadable by default, so no commit
-  // answer is trusted and the commits are never read.
-  {
-    match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("--jq"),
-    response: "",
-  },
-  // The PR's commits, read for their answers — none by default.
   {
     match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/pulls/42/commits") ?? false,
-    response: "",
+    response: answers.commits ?? "",
   },
   { match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42/reviews", response: "" },
 ];
@@ -3128,9 +3140,8 @@ describe("post — --run-url / --json-url threading", () => {
     );
     const reviewBody = JSON.parse(reviewCall!.stdin!) as ReviewBody;
     const commentBody = reviewBody.comments[0]?.body ?? "";
-    // An inline comment keeps its OWN finding as a payload: the answered registry decodes it to
-    // identify the thread, and that must still read in a later round whose artifact no longer contains
-    // it. Only the whole-document blob left the sticky (issue #217).
+    // An inline comment keeps its OWN finding as a payload, readable in a later round whose artifact
+    // no longer contains it. Only the whole-document blob left the sticky (issue #217).
     expect(commentBody.startsWith("<!-- AGENTS: STOP")).toBe(true);
     expect(commentBody).toContain("findings-json;base64");
   });
@@ -4988,28 +4999,15 @@ describe("post — answered findings (issue #151)", () => {
   };
   const withAnswers = (
     prior: Finding,
-    answers: readonly string[] = [answerRow(DISMISSAL)],
+    comments: readonly string[] = [answerRow(DISMISSAL)],
     commits = "",
-    headRepo = "",
+    headRepo?: string,
   ): { readonly mocks: ReturnType<typeof mkMocks>; readonly readArtifact: ArtifactReader } => ({
-    mocks: [
-      {
-        match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("--jq"),
-        response: headRepo,
-      },
-      {
-        match: (a: readonly string[]) =>
-          (a[0]?.startsWith("repos/owner/repo/issues/42/comments") ?? false) &&
-          a.includes("--paginate"),
-        response: [commentRow(999, priorSticky), ...answers.map((row) => `${row}\n`)].join(""),
-      },
-      {
-        match: (a: readonly string[]) =>
-          a[0]?.startsWith("repos/owner/repo/pulls/42/commits") ?? false,
-        response: commits,
-      },
-      ...mkMocks(priorSticky),
-    ],
+    mocks: mkMocks(priorSticky, {
+      comments,
+      commits,
+      ...(headRepo === undefined ? {} : { headRepo }),
+    }),
     readArtifact: () =>
       Promise.resolve(JSON.stringify({ ...mkFindings([prior]), schema_version: "0.11.0" })),
   });
@@ -5189,7 +5187,7 @@ describe("post — answered findings (issue #151)", () => {
 
     // The chatops path hands post the BASE repo when it cannot resolve a head repo; the PR's own
     // answer (a deleted fork's null head) still trusts no commit, and the commits are never read.
-    const deletedFork = withAnswers(answered, [], commit, "");
+    const deletedFork = withAnswers(answered, [], commit);
     const forked = mkMockGhApi(deletedFork.mocks);
     await post(
       mkInput({ route: "full review", headRepo: "owner/repo" }),

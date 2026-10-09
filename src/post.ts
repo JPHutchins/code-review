@@ -412,7 +412,7 @@ const postInlineReview = async (
 // errors PROPAGATE — the callers that must not mistake a failed fetch for an absent sticky let the
 // rejection through.
 // The issue-comments endpoint returns NO in_reply_to_id — the field exists only on pull-request
-// REVIEW comments (the answered registry's endpoint), and GitHub's API exposes no issue-comment
+// REVIEW comments, and GitHub's API exposes no issue-comment
 // reply chain at all. The projection therefore carries only the fields the endpoint actually has.
 const ISSUE_COMMENTS_JQ =
   '.[] | {id, user: (.user.login // "(deleted)"), user_type: (.user.type // null), author_association: (.author_association // null), created_at, html_url, body: (.body // "")}';
@@ -486,27 +486,6 @@ const parseIssueCommentRows = (
 // name; the time is the author date, which a rebase keeps.
 const COMMITS_JQ =
   ".[] | {sha, message: .commit.message, author: (.author.login // null), date: (.commit.author.date // null)}";
-
-// Whether the PR's head branch lives in the base repository: the push access a commit answer's trust
-// rests on, read from the PR itself. A fork's head, a deleted fork's null one, or a failed read trusts
-// no commit.
-const fetchHeadInBaseRepo = async (
-  repo: string,
-  prNumber: number,
-  ghApi: GhApi,
-): Promise<boolean> => {
-  try {
-    const headRepo = (
-      await ghApi([`repos/${repo}/pulls/${String(prNumber)}`, "--jq", '.head.repo.full_name // ""'])
-    ).trim();
-    return headRepo !== "" && headRepo.toLowerCase() === repo.toLowerCase();
-  } catch (err) {
-    process.stderr.write(
-      `Warning: could not read the PR's head repository (${errMsg(err)}) — no commit answer closes a finding this round\n`,
-    );
-    return false;
-  }
-};
 
 // The PR's commits, read for the answers in their messages. A failed fetch reads no commit answers,
 // and a row that does not decode is counted — named, never a failed post.
@@ -682,8 +661,8 @@ const escapedIdIndex = (ids: readonly string[]): ReadonlyMap<string, string> => 
 };
 
 // The discussion rows: EVERY comment on the PR, the sticky's own excluded. GitHub's API exposes
-// no reply-chain for issue comments (in_reply_to_id exists only on pull-request REVIEW comments —
-// the answered registry's endpoint), so "replies to the sticky" cannot be derived from any
+// no reply-chain for issue comments (in_reply_to_id exists only on pull-request REVIEW comments),
+// so "replies to the sticky" cannot be derived from any
 // channel; the aside groups the whole comment conversation instead, which serves the same
 // discoverability. Rows are deduped by id, first occurrence wins — gh --paginate fetches pages
 // sequentially, and a comment edited mid-pagination can legitimately appear on two pages; two
@@ -1442,7 +1421,12 @@ export const post = async (
   const loadedFindings = findingsResult.findings;
   const answerable =
     existingSticky !== null && !priorIsMechanic && loadedFindings.findings.length > 0;
-  const headInBaseRepo = answerable && (await fetchHeadInBaseRepo(input.repo, prNumber, ghApi));
+  // A commit answer's trust is the push access a head branch IN the base repo implies, read from the
+  // PR itself: a fork's head, or a deleted fork's null one, trusts no commit, and its commits go unread.
+  const headInBaseRepo =
+    answerable &&
+    resolution.headRepo !== null &&
+    resolution.headRepo.toLowerCase() === input.repo.toLowerCase();
   const answers = answerable
     ? answersFrom({
         repo: input.repo,
@@ -1476,6 +1460,11 @@ export const post = async (
     );
   }
   const answeredRegistry = answeredRegistryFrom(closures, answeredPrior);
+  if (answeredPrior !== null && answeredRegistry.length < closures.length) {
+    process.stderr.write(
+      `Warning: ${String(closures.length - answeredRegistry.length)} maintainer answer(s) name no finding the prior review reported — they close nothing this round\n`,
+    );
+  }
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
   const reRaisedNotes = answeredFilter.reRaisedNotes;
   const verbatimReRaised = answeredFilter.verbatimReRaised;

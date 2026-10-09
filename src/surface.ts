@@ -94,10 +94,10 @@ export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl
 //
 // Two thresholds, one valve. The inline template re-renders the SAME fields as prose, so the comment
 // holds the payload AND roughly the payload again — past the SOFT bound the inline renderer clips
-// that prose (marked, never silent) while the marker keeps embedding the WHOLE finding, which is
-// what keeps the answered registry working (issue #233 r1 + r2). Past the HARD bound (the
-// whole-document embed's old EMBED_LIMIT) no embed fits at all, so the marker names the artifact
-// instead — and only THAT band breaks the registry, for a finding pathological enough that no
+// that prose (marked, never silent) while the marker keeps embedding the WHOLE finding, so the
+// thread stays self-contained (issue #233 r1 + r2). Past the HARD bound (the whole-document embed's
+// old EMBED_LIMIT) no embed fits at all, so the marker names the artifact instead — and only THAT
+// band loses the self-contained finding, for a finding pathological enough that no
 // comment could hold it. With no URL there is nothing to name, so the embed stays the only channel.
 // Dedupes the hard-valve warning per finding identity within one process (issue #236 r3).
 const warnedValveFindings = new Set<string>();

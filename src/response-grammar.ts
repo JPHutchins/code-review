@@ -6,6 +6,16 @@ export type Disposition = t.TypeOf<typeof DispositionCodec>;
 // The response vocabulary, for every surface that teaches it.
 export const DISPOSITIONS = Object.keys(DispositionCodec.keys) as readonly Disposition[];
 
+// What a harvested answer records: the taught vocabulary, or `unstated` when a table row answers in
+// words that name no verdict — never a guess, and never a closure.
+export const ResponseDispositionCodec = t.keyof({
+  fixed: null,
+  refuted: null,
+  dismissed: null,
+  unstated: null,
+});
+export type ResponseDisposition = t.TypeOf<typeof ResponseDispositionCodec>;
+
 export const RESPONSE_FORM = `Review-Response: <id> ${DISPOSITIONS.join("|")} — <reason>`;
 
 export const RESPONSE_TABLE_HEADER = "| id | disposition | reason |";

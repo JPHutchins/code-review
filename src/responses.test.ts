@@ -174,7 +174,7 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
     ]);
   });
 
-  it("reads a jphfmt-style table: a resolution that names no verb is a fix, a systemic id answers too, a title-only row names nothing", () => {
+  it("reads a jphfmt-style table: a resolution that names no verdict is unstated, a systemic id answers too, a title-only row names nothing", () => {
     const table = [
       "| finding | resolution |",
       "| --- | --- |",
@@ -183,8 +183,8 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       "| systemic `line-splice-rule-multiply-spelled` | One snippet table runs through all three readings. |",
     ].join("\n");
     expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
-      ["scope-directives-cr-line-split", "fixed"],
-      ["line-splice-rule-multiply-spelled", "fixed"],
+      ["scope-directives-cr-line-split", "unstated"],
+      ["line-splice-rule-multiply-spelled", "unstated"],
     ]);
   });
 
@@ -224,19 +224,80 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
     expect(parseResponseTables(fenced)).toEqual([]);
   });
 
-  it("reads a line and a table together, the line winning an id they both answer", () => {
+  it("keeps a correction: a line and a table row with different verdicts for one id are both answers", () => {
     const text = [
       "Review-Response: x-y refuted — measured",
       "",
       "| id | disposition |",
       "| --- | --- |",
       "| `x-y` | fixed |",
+      "| `x-y` | fixed |",
       "| `a-b` | recorded |",
     ].join("\n");
     expect(parseResponses(text).map((r) => [r.id, r.disposition])).toEqual([
       ["x-y", "refuted"],
+      ["x-y", "fixed"],
       ["a-b", "dismissed"],
     ]);
+  });
+
+  it("never guesses a verdict: a negated, rejecting or empty cell is unstated", () => {
+    const table = [
+      "| id | verdict |",
+      "| --- | --- |",
+      "| `a` | not fixed — the patch was reverted |",
+      "| `b` | rejected |",
+      "| `c` |  |",
+      "| `d` | won't fix |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["a", "unstated"],
+      ["b", "unstated"],
+      ["c", "unstated"],
+      ["d", "dismissed"],
+    ]);
+  });
+
+  it("ends a table at the next table's header, so an adjacent legend table yields no phantom answers", () => {
+    const text = [
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `a-b` | fixed |",
+      "| verdict | meaning |",
+      "| --- | --- |",
+      "| fixed | the fix landed |",
+    ].join("\n");
+    expect(parseResponseTables(text).map((r) => r.id)).toEqual(["a-b"]);
+  });
+
+  it("reads only a verdict table: a status table is not one", () => {
+    expect(
+      parseResponseTables(["| id | status |", "| --- | --- |", "| `a-b` | open |"].join("\n")),
+    ).toEqual([]);
+  });
+
+  it("reads bare dotted and comma-listed ids, escaped pipes, and rows without outer pipes", () => {
+    const table = [
+      "id | disposition | reason",
+      "--- | --- | ---",
+      "dotted.id | dismissed | the `a \\| b` form is intended",
+      "a-b, c-d | refuted |  |",
+    ].join("\n");
+    expect(parseResponseTables(table)).toEqual([
+      { id: "dotted.id", disposition: "dismissed", reason: "the `a | b` form is intended" },
+      { id: "a-b", disposition: "refuted", reason: "" },
+      { id: "c-d", disposition: "refuted", reason: "" },
+    ]);
+  });
+
+  it("scans repeated headers in linear time", () => {
+    const pair = ["| id | disposition |", "| --- | --- |"];
+    const text = Array.from({ length: 20000 }, () => pair)
+      .flat()
+      .join("\n");
+    const started = performance.now();
+    expect(parseResponseTables(text)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 });
 

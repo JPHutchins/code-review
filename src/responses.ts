@@ -2,7 +2,11 @@ import * as t from "io-ts";
 import { isHuman } from "./answered.js";
 import { ID_SHAPE_RE, strictExact } from "./schema.js";
 import { clipText } from "./util.js";
-import { DispositionCodec, type Disposition } from "./response-grammar.js";
+import {
+  DispositionCodec,
+  ResponseDispositionCodec,
+  type ResponseDisposition,
+} from "./response-grammar.js";
 
 export const RESPONSE_REASON_CLIP_CHARS = 300;
 export const RESPONSES_PER_CHANNEL = 25;
@@ -11,7 +15,7 @@ const ChannelCodec = t.keyof({ comment: null, commit: null });
 
 const ResponseShape = t.type({
   id: t.string,
-  disposition: DispositionCodec,
+  disposition: ResponseDispositionCodec,
   reason: t.string,
   channel: ChannelCodec,
   source_url: t.string,
@@ -43,7 +47,7 @@ export type ResponsesFile = t.TypeOf<typeof ResponsesFileCodec>;
 
 interface ParsedLine {
   readonly id: string;
-  readonly disposition: Disposition;
+  readonly disposition: ResponseDisposition;
   readonly reason: string;
 }
 
@@ -105,26 +109,19 @@ export const parseResponseLines = (text: string): readonly ParsedLine[] =>
 
 // A verdict table — the taught form for a PR comment, and the one implementers post unprompted — is
 // read when its header names an id column and a disposition column. Each backtick-quoted token in a
-// row's id cell is an answer, or the cell's one bare id when it quotes none; the other cells are its
-// reason, the disposition's own cell included only when it says more than the verdict.
-const TABLE_ROW_RE = /^ {0,3}\|/;
-const TABLE_DELIMITER_RE = /^ {0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+// row's id cell is an answer, or each comma-separated bare id when it quotes none; the other cells
+// are its reason, the disposition's own cell included only when it says more than the verdict. A
+// table ends at a line that is no row, or at the next table's header.
 const ID_IN_CELL_RE = /`([^`]+)`/g;
+const UNESCAPED_PIPE_RE = /(?<=(?:^|[^\\])(?:\\\\)*)\|/;
+const TRAILING_PIPE_RE = /(?<=(?:^|[^\\])(?:\\\\)*)\|$/;
 const ID_HEADERS: ReadonlySet<string> = new Set(["id", "ids", "finding", "findings"]);
-const DISPOSITION_HEADERS: ReadonlySet<string> = new Set([
-  "disposition",
-  "verdict",
-  "resolution",
-  "status",
-  "answer",
-  "response",
-]);
+const DISPOSITION_HEADERS: ReadonlySet<string> = new Set(["disposition", "verdict", "resolution"]);
 
 // The phrases implementers write in a disposition cell, mapped onto the response vocabulary; the
 // earliest one in the cell's first clause decides ("reproduced after merge and filed as #223" is a
-// deferral). A cell naming none describes the change made, so it reads as fixed: a claim the reviewer
-// verifies, never a closure.
-const TABLE_VOCABULARY: readonly (readonly [RegExp, Disposition])[] = [
+// deferral). A cell naming none, or negating the one it names ("not fixed"), is unstated.
+const TABLE_VOCABULARY: readonly (readonly [RegExp, ResponseDisposition])[] = [
   [/\b(refuted|disputed|not reached|not reproduced|false positive|does not hold)\b/i, "refuted"],
   [
     /\b(dismissed|recorded|acknowledged|declined|deferred|won't fix|wontfix|out of scope|filed|tracked)\b/i,
@@ -132,66 +129,107 @@ const TABLE_VOCABULARY: readonly (readonly [RegExp, Disposition])[] = [
   ],
   [/\b(fixed|resolved|addressed|moot|removed|done)\b/i, "fixed"],
 ];
+const NEGATED_RE = /\b(not|never|no|isn't|wasn't|cannot|can't)\s+(\S+\s+){0,2}$/i;
 
-const tableCells = (row: string): readonly string[] =>
-  row
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split(/(?<!\\)\|/)
-    .map((cell) => cell.trim());
-
-const headerName = (cell: string): string => cell.replace(/[*_`]/g, "").trim().toLowerCase();
-
-const idsInCell = (cell: string): readonly string[] => {
-  const quoted = [...cell.matchAll(ID_IN_CELL_RE)].map((match) => unwrapId(match[1] ?? ""));
-  const bare = unwrapId(cell.replace(/\([^)]*\)/g, "").trim());
-  return quoted.length > 0 ? quoted : ID_SHAPE_RE.test(bare) ? [bare] : [];
+const tableCells = (row: string): readonly string[] => {
+  const trimmed = row.trim();
+  return trimmed
+    .split(UNESCAPED_PIPE_RE)
+    .slice(trimmed.startsWith("|") ? 1 : 0, TRAILING_PIPE_RE.test(trimmed) ? -1 : undefined)
+    .map((cell) => cell.trim().replace(/\\\|/g, "|"));
 };
 
-const tableDisposition = (cell: string): Disposition => {
+const isTableRow = (line: string): boolean =>
+  /^ {0,3}\S/.test(line) && UNESCAPED_PIPE_RE.test(line);
+
+const isDelimiterRow = (line: string): boolean =>
+  isTableRow(line) && tableCells(line).every((cell) => /^:?-+:?$/.test(cell));
+
+const plainCell = (cell: string): string => cell.replace(/[*_`]/g, "").trim().toLowerCase();
+
+const idsInCell = (cell: string): readonly string[] => {
+  const quoted = [...cell.matchAll(ID_IN_CELL_RE)]
+    .map((match) => unwrapId(match[1] ?? ""))
+    .filter((id) => id !== "");
+  const bare = cell
+    .replace(/\([^)]*\)/g, "")
+    .split(",")
+    .map((piece) => unwrapId(piece.trim()));
+  return quoted.length > 0 ? quoted : bare.every((id) => /^\S+$/.test(id)) ? bare : [];
+};
+
+const tableDisposition = (cell: string): ResponseDisposition => {
   const clause = cell.replace(/[*_]/g, "").split(/[.:;—]/)[0] ?? "";
   const earliest = TABLE_VOCABULARY.flatMap(([phrase, disposition]) => {
     const match = phrase.exec(clause);
     return match === null ? [] : [{ at: match.index, disposition }];
   }).sort((a, b) => a.at - b.at)[0];
-  return earliest?.disposition ?? "fixed";
+  return earliest === undefined || NEGATED_RE.test(clause.slice(0, earliest.at))
+    ? "unstated"
+    : earliest.disposition;
 };
 
+interface VerdictColumns {
+  readonly id: number;
+  readonly disposition: number;
+}
+
+const rowAnswers = (cells: readonly string[], columns: VerdictColumns): readonly ParsedLine[] => {
+  const dispositionCell = cells[columns.disposition] ?? "";
+  const disposition = tableDisposition(dispositionCell);
+  const verdictOnly = DispositionCodec.is(plainCell(dispositionCell));
+  const reason = clipText(
+    cells
+      .filter(
+        (cell, column) =>
+          cell !== "" && column !== columns.id && !(verdictOnly && column === columns.disposition),
+      )
+      .join(" — "),
+    RESPONSE_REASON_CLIP_CHARS,
+  );
+  return idsInCell(cells[columns.id] ?? "").map((id) => ({ id, disposition, reason }));
+};
+
+// One pass: a header row followed by its delimiter opens a table, whose rows run until a line that
+// is no row or until the next table's header.
 export const parseResponseTables = (text: string): readonly ParsedLine[] => {
   const lines = unfencedLines(text);
-  return lines.flatMap((line, index) => {
-    if (!TABLE_ROW_RE.test(line) || !TABLE_DELIMITER_RE.test(lines[index + 1] ?? "")) return [];
-    const header = tableCells(line).map(headerName);
-    const idColumn = header.findIndex((name) => ID_HEADERS.has(name));
-    const dispositionColumn = header.findIndex((name) => DISPOSITION_HEADERS.has(name));
-    if (idColumn < 0 || dispositionColumn < 0) return [];
-    const body = lines.slice(index + 2);
-    const end = body.findIndex((row) => !TABLE_ROW_RE.test(row));
-    return (end < 0 ? body : body.slice(0, end)).flatMap((row) => {
-      const cells = tableCells(row);
-      const dispositionCell = cells[dispositionColumn] ?? "";
-      const disposition = tableDisposition(dispositionCell);
-      const verdictOnly = DispositionCodec.is(headerName(dispositionCell));
-      const reason = clipText(
-        cells
-          .filter(
-            (_, column) => column !== idColumn && !(verdictOnly && column === dispositionColumn),
-          )
-          .join(" — "),
-        RESPONSE_REASON_CLIP_CHARS,
-      );
-      return idsInCell(cells[idColumn] ?? "")
-        .filter((id) => id !== "")
-        .map((id) => ({ id, disposition, reason }));
-    });
-  });
+  return lines.reduce<{
+    readonly columns: VerdictColumns | null;
+    readonly inTable: boolean;
+    readonly skipDelimiter: boolean;
+    readonly answers: ParsedLine[];
+  }>(
+    (state, line, index) => {
+      if (state.skipDelimiter) return { ...state, skipDelimiter: false };
+      if (isTableRow(line) && isDelimiterRow(lines[index + 1] ?? "")) {
+        const header = tableCells(line).map(plainCell);
+        const id = header.findIndex((name) => ID_HEADERS.has(name));
+        const disposition = header.findIndex((name) => DISPOSITION_HEADERS.has(name));
+        return {
+          ...state,
+          inTable: true,
+          skipDelimiter: true,
+          columns: id < 0 || disposition < 0 ? null : { id, disposition },
+        };
+      }
+      if (!state.inTable || !isTableRow(line)) return { ...state, inTable: false, columns: null };
+      if (state.columns !== null)
+        state.answers.push(...rowAnswers(tableCells(line), state.columns));
+      return state;
+    },
+    { columns: null, inTable: false, skipDelimiter: false, answers: [] },
+  ).answers;
 };
 
-// Every answer in a text, a Review-Response line before a table row for the same id.
+// Every answer in a text, lines then tables. An answer repeated with the same verdict counts once;
+// one that differs is kept, so a correction is never lost.
 export const parseResponses = (text: string): readonly ParsedLine[] =>
   [...parseResponseLines(text), ...parseResponseTables(text)].filter(
-    (answer, index, answers) => answers.findIndex((other) => other.id === answer.id) === index,
+    (answer, index, answers) =>
+      answers.findIndex(
+        (other) => other.id === answer.id && other.disposition === answer.disposition,
+      ) === index,
   );
 
 export interface HarvestInput {

@@ -101,6 +101,7 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% }) -%>
 <% } -%>
 <% } -%>
+
 ---
 
 <% if (it.unverifiedNoLogs && findingsTotal > 0) { %>

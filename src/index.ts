@@ -1893,6 +1893,11 @@ const postCmd = defineCommand({
       description:
         "Mark the review unverified: the fast-fix route ran with no failing-job logs staged, so its findings came from the diff alone. The caller decides this — the logs are staged in the review job, not here",
     },
+    "without-dialogue": {
+      type: "boolean",
+      description:
+        "Turn the review dialogue off: read no maintainer answers, so none closes, contests or rules on a finding, and carry the sticky's dialogue state untouched",
+    },
   },
   run: async ({ args }) => {
     const priceResolution = resolvePrices(args.prices);
@@ -1929,6 +1934,7 @@ const postCmd = defineCommand({
       nitVisibilityFloor: parseNitVisibilityFloor(args["nit-visibility-floor"]),
       inline: args.inline,
       unverifiedNoLogs: args["unverified-no-logs"],
+      withoutDialogue: args["without-dialogue"],
       postedAt: formatUtc(new Date()),
       pricedAt: new Date(),
     });

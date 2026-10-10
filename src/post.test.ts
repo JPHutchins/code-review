@@ -5483,6 +5483,31 @@ describe("post — answered findings (issue #151)", () => {
       );
     });
 
+    it("reads no answer, applies no ruling, and carries the dialogue state untouched when the dialogue is off", async () => {
+      const contested: DialogueEntry = { ...entry, state: "contested" };
+      const overruled: DialogueEntry = { ...entry, id: "other-id", state: "overruled" };
+      const sticky = stickyWith([contested, overruled]);
+      writeFileSync(
+        join(tmpDir, "findings.json"),
+        JSON.stringify({
+          ...mkFindings([argued, mkFinding({ ...argued, id: "other-id", path: "src/bar.ts" })]),
+          schema_version: "0.11.0",
+        }),
+      );
+      const { api, calls } = mkMockGhApi(
+        mkMocks(sticky, { comments: [answerRow(DISMISSAL)], commits: "" }),
+      );
+      await post(mkInput({ route: "full review", withoutDialogue: true }), api, () =>
+        Promise.resolve(JSON.stringify({ ...mkFindings([argued]), schema_version: "0.11.0" })),
+      );
+      const body = patchedBody(calls());
+      expect(body).not.toContain("treated as answered");
+      expect(body).not.toContain("### ⚖️ Contested");
+      expect(body).toContain("The same claim");
+      expect(body).not.toContain("closed for good");
+      expect(body).toContain(dialogueMarker([contested, overruled]));
+    });
+
     it("carries the dialogue state through a notice", async () => {
       const sticky = stickyWith([entry]);
       const { api, calls } = mkMockGhApi([

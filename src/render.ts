@@ -884,6 +884,7 @@ export const render = (input: RenderInput): string => {
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",
     contested: contestedBudget.kept,
     unfinished: shownUnfinished(input.findings, isFullReviewRound),
+    unfinishedCount: unfinished.length,
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

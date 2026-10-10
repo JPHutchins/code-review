@@ -8,6 +8,7 @@ import {
   projectPatch,
   formatConfidence,
   escapeCodeBackticks,
+  noteFor,
 } from "./surface.js";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
 import { answeredNoteKey } from "./answered.js";
@@ -76,11 +77,6 @@ export const buildInlineComments = (
   const { inDiff, strays } = context.partition ?? partitionFindings(findings, indexDiff(diff));
   const eta = new Eta({ autoTrim: false });
   const modelsText = formatModels(models);
-
-  const noteFor = (notes: Readonly<Record<string, string>> | undefined, key: string): string =>
-    notes !== undefined && Object.prototype.hasOwnProperty.call(notes, key)
-      ? (notes[key] ?? "")
-      : "";
 
   const comments: InlineComment[] = inDiff.map((f) => {
     const pointer = fullFindings ? findingPointer(f, fullFindings.schema_version, jsonUrl) : "";

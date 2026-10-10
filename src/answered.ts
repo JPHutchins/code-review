@@ -135,8 +135,18 @@ const verbatimFieldEqual = (
 
 // A rebuttal answers the response the prior round's finding received, so a re-raise carrying one is
 // never verbatim, however unchanged its claim fields are.
-const isVerbatimReRaise = (f: Finding, e: VerbatimPick): boolean =>
-  !hasRebuttal(f) && VERBATIM_FIELDS.every((field) => verbatimFieldEqual(f, e, field));
+const isVerbatimReRaise = <Field extends string>(
+  item: { readonly rebuttal?: string },
+  fields: readonly Field[],
+  fieldEqual: (field: Field) => boolean,
+): boolean => !hasRebuttal(item) && fields.every(fieldEqual);
+
+// The one drop rule both channels apply to a matched re-raise: verbatim, and never a critical.
+const isVerbatimNonCritical = <Field extends string>(
+  item: { readonly rebuttal?: string; readonly severity: Severity },
+  fields: readonly Field[],
+  fieldEqual: (field: Field) => boolean,
+): boolean => isVerbatimReRaise(item, fields, fieldEqual) && item.severity !== "critical";
 
 // Would post's answered-filter DROP this finding?
 const isAnsweredDrop = (
@@ -146,7 +156,9 @@ const isAnsweredDrop = (
     AnsweredEntry,
     "code" | "title" | "description" | "reasoning" | "severity" | "path" | "patch"
   >,
-): boolean => matches(resolvedId, f, e) && isVerbatimReRaise(f, e) && f.severity !== "critical";
+): boolean =>
+  matches(resolvedId, f, e) &&
+  isVerbatimNonCritical(f, VERBATIM_FIELDS, (field) => verbatimFieldEqual(f, e, field));
 
 // How many of the verbatim claim fields a finding shares with an entry — the title-second-chance
 // scorer: among several synthesized same-title entries (same title, different paths — their
@@ -299,16 +311,18 @@ const systemicVerdict = (
   systemic: SystemicProblem,
   registry: readonly AnsweredSystemicEntry[],
 ): SystemicVerdict => {
-  const entry = registry.find((e) => e.code === resolveSystemicId(systemic));
+  const resolvedId = resolveSystemicId(systemic);
+  const entry = registry.find((e) => e.code === resolvedId);
   return entry === undefined
     ? { kind: "unanswered", systemic }
     : {
-        kind:
-          !hasRebuttal(systemic) &&
-          systemic.severity !== "critical" &&
-          CLAIM_FIELDS.every((field) => systemic[field] === entry[field])
-            ? "dropped"
-            : "annotated",
+        kind: isVerbatimNonCritical(
+          systemic,
+          CLAIM_FIELDS,
+          (field) => systemic[field] === entry[field],
+        )
+          ? "dropped"
+          : "annotated",
         systemic,
         entry,
       };
@@ -353,7 +367,7 @@ export const answeredReRaiseNote = (
     (e) => `> - ${label(e)} — [prior answer](${linkSafeUrl(e.answerUrl)})${byAuthor(e)}`,
   );
   return [
-    `> ↩️ **${String(count)} finding(s) re-raised without new evidence — treated as answered** (a maintainer refuted or dismissed each):`,
+    `> ↩️ **${String(count)} re-raise(s) without new evidence — treated as answered** (a maintainer refuted or dismissed each):`,
     ...lines,
   ].join("\n");
 };

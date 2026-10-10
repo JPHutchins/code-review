@@ -482,7 +482,7 @@ describe("applyAnsweredSystemic — a closed systemic id, re-raised", () => {
 describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => {
   it("counts the TRUE pre-dedup dropped findings while the lines stay deduped by key (issues #151 review r5 + r7)", () => {
     const note = answeredReRaiseNote([entry], 3);
-    expect(note).toContain("**3 finding(s) re-raised");
+    expect(note).toContain("**3 re-raise(s)");
     // The deduped lines still list the single entry once.
     expect(note.match(/prior answer/g)).toHaveLength(1);
   });

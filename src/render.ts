@@ -23,6 +23,7 @@ import {
   escapeFence,
   linkSafeUrl,
   lineRange,
+  noteFor,
   DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
 import { answeredNoteKey, answeredSystemicNoteKey } from "./answered.js";
@@ -259,14 +260,6 @@ type StrayView = Finding & {
   readonly discussionHtml?: string;
 };
 
-const answeredNoteFor = (
-  answeredNotes: Readonly<Record<string, string>> | undefined,
-  key: string,
-): string =>
-  answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
-    ? (answeredNotes[key] ?? "")
-    : "";
-
 // The per-stray "re-raised; prior answer" note, resolved HERE from the RAW finding's key — the
 // title is sanitized for rendering (escapePipes) but the note key was built from the raw title, so
 // a template-side lookup against the sanitized title would miss on a pipe/backtick title (issue
@@ -300,7 +293,7 @@ const sanitizeFinding = (
     rangeLabel: lineRange(f.start_line, f.end_line, "–"),
     ...(permalink !== undefined ? { permalink, permalinkAnchored: anchored } : {}),
     patchProjection: projectPatch(f.patch, "comment-body"),
-    answeredNote: answeredNoteFor(answeredNotes, key),
+    answeredNote: noteFor(answeredNotes, key),
     discussion:
       discussionByFinding !== undefined &&
       Object.prototype.hasOwnProperty.call(discussionByFinding, f.id)
@@ -414,7 +407,7 @@ const sanitizeSystemic = (
 } => ({
   ...s,
   title: escapePipes(s.title),
-  answeredNote: answeredNoteFor(answeredNotes, answeredSystemicNoteKey(s)),
+  answeredNote: noteFor(answeredNotes, answeredSystemicNoteKey(s)),
   discussion,
   ...(discussionTruncated !== undefined ? { discussionTruncated } : {}),
   discussionHtml:

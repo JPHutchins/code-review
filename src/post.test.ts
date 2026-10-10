@@ -25,6 +25,7 @@ import type {
   PriceMap,
   Finding,
   ModelUsageEntry,
+  SystemicProblem,
   TestSummary,
 } from "./schema.js";
 import type { ArtifactReader } from "./artifact.js";
@@ -5136,16 +5137,16 @@ describe("post — answered findings (issue #151)", () => {
   });
 
   describe("a systemic problem closes by its id", () => {
-    const systemic = {
-      id: "retry-plumbing",
+    const idLess: SystemicProblem = {
       title: "Retry plumbing is inconsistent",
       description: "Each caller retries with its own policy.",
-      severity: "minor" as const,
+      severity: "minor",
       reasoning: "Three call sites, three policies.",
       confidence: 0.8,
       likelihood: 1,
     };
-    const systemicOnly = (current: typeof systemic): Findings => ({
+    const systemic = { ...idLess, id: "retry-plumbing" };
+    const systemicOnly = (current: SystemicProblem): Findings => ({
       ...mkFindings([]),
       schema_version: "0.11.0",
       systemic_problems: [current],
@@ -5196,6 +5197,27 @@ describe("post — answered findings (issue #151)", () => {
       expect(body).toContain(changed.description);
       expect(body).toContain("Re-raised; prior answer at");
       expect(body).not.toContain("treated as answered");
+    });
+
+    it("closes an id-less systemic by its synthesized id, answered in a commit", async () => {
+      const code = synthesizedSystemicId(idLess.title);
+      writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(systemicOnly(idLess)));
+      const commit = `${JSON.stringify({
+        sha: "abc123",
+        message: `fix\n\nReview-Response: ${code} dismissed — Each policy matches its endpoint's contract.`,
+        author: "Dev",
+        date: "2026-07-01T01:00:00Z",
+      })}\n`;
+      const { api, calls } = mkMockGhApi(
+        mkMocks(priorSticky, { comments: [], commits: commit, headRepo: "owner/repo" }),
+      );
+      await post(mkInput({ route: "full review" }), api, () =>
+        Promise.resolve(JSON.stringify(systemicOnly(idLess))),
+      );
+      const body = patchedBody(calls());
+      expect(body).not.toContain(idLess.description);
+      expect(body).toContain(code);
+      expect(body).toContain("commit/abc123");
     });
   });
 

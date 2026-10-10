@@ -83,6 +83,13 @@ const decodeBase64Json = (b64: string): unknown => {
   }
 };
 
+// A per-item note from an id-keyed map: own keys only, so a "__proto__" id reads no prototype.
+export const noteFor = (
+  notes: Readonly<Record<string, string>> | undefined,
+  key: string,
+): string =>
+  notes !== undefined && Object.prototype.hasOwnProperty.call(notes, key) ? (notes[key] ?? "") : "";
+
 export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl);
 
 // Per-finding counterpart, and the ONE place a payload still travels in a comment: an inline thread

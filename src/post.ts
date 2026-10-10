@@ -1223,7 +1223,7 @@ export const post = async (
   const logAnsweredDrops = (): void => {
     if (droppedCount > 0) {
       process.stderr.write(
-        `${String(droppedCount)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding\n`,
+        `${String(droppedCount)} verbatim re-raise(s) of answered findings or systemic problems were treated as answered — the preserved sticky shows each one\n`,
       );
     }
   };
@@ -1465,11 +1465,10 @@ export const post = async (
   }
   const answeredRegistry = answeredRegistryFrom(closures, answeredPrior);
   const answeredSystemicRegistry = answeredSystemicRegistryFrom(closures, answeredPrior);
-  const unboundClosureCount = closures.filter(
-    (closure) =>
-      ![...answeredRegistry, ...answeredSystemicRegistry].some((e) => e.code === closure.id),
-  ).length;
-  if (answeredPrior !== null && unboundClosureCount > 0) {
+  const boundIds = new Set([...answeredRegistry, ...answeredSystemicRegistry].map((e) => e.code));
+  const unboundClosureCount =
+    answeredPrior === null ? 0 : closures.filter((closure) => !boundIds.has(closure.id)).length;
+  if (unboundClosureCount > 0) {
     process.stderr.write(
       `Warning: ${String(unboundClosureCount)} maintainer answer(s) name nothing the prior review reported — they close nothing this round\n`,
     );
@@ -1586,7 +1585,9 @@ export const post = async (
       [...verbatimReRaised, ...answeredSystemicFilter.verbatimReRaised],
       droppedCount,
     ) +
-    (droppedCount > 0 && findings.findings.length === 0
+    (droppedCount > 0 &&
+    findings.findings.length === 0 &&
+    (findings.systemic_problems ?? []).length === 0
       ? "\n> _The stop signal reflects the kept findings — this round carries none._"
       : "");
 

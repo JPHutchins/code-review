@@ -207,7 +207,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
   });
 
   it("teaches the response line under a full review with findings, never on a clean review, a notice, a mechanic pass, or an unknown route", () => {
-    const line = `<sub>${RESPONSE_TEACHING}</sub>`;
+    const line = RESPONSE_TEACHING;
     const finding = mkFinding({});
     const withFindings = render({
       findings: mkFindings([finding]),
@@ -253,6 +253,58 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       route: "full review",
     });
     expect(systemicOnly).toContain(line);
+  });
+
+  it("puts the answer form and the systemic problems under ## Findings, ahead of the findings, for a reader that starts there", () => {
+    const finding = mkFinding({});
+    const sticky = render({
+      findings: mkFindings([finding], { systemic_problems: [mkSystemic({ id: "a-class" })] }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+      route: "full review",
+    });
+    const fromFindings = sticky.slice(sticky.indexOf("\n## Findings"));
+    expect(sticky.indexOf("\n## Findings")).toBeGreaterThan(sticky.indexOf("A test summary."));
+    const order = [
+      fromFindings.indexOf(RESPONSE_TEACHING),
+      fromFindings.indexOf("\n### 🔗 Systemic problems"),
+      fromFindings.indexOf("\n#### "),
+      fromFindings.indexOf("\n### 🔵 (minor)"),
+    ];
+    expect(order.every((at) => at > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(sticky).not.toContain("\n## 🔗 Systemic problems");
+  });
+
+  it("keeps the separator after the answer instructions a rule, never text inside their block", () => {
+    const finding = mkFinding({});
+    const sticky = render({
+      findings: mkFindings([finding]),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+      route: "full review",
+    });
+    expect(sticky).toContain("</details>\n\n---\n");
+  });
+
+  it("opens ## Findings even when every finding was posted inline", () => {
+    const finding = mkFinding({});
+    const sticky = render({
+      findings: mkFindings([finding], { systemic_problems: [mkSystemic({ id: "a-class" })] }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+      inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
+    });
+    const heading = sticky.indexOf("\n## Findings\n");
+    expect(heading).toBeGreaterThan(-1);
+    expect(sticky.indexOf(RESPONSE_TEACHING)).toBeGreaterThan(heading);
+    expect(sticky.indexOf("\n### 🔗 Systemic problems")).toBeGreaterThan(heading);
   });
 
   it("says nothing when the logs were there", () => {
@@ -935,10 +987,10 @@ describe("render", () => {
       });
       const result = render({ findings, envelope: baseEnvelope, prices, template });
 
-      expect(result).toContain("## 🔗 Systemic problems");
+      expect(result).toContain("\n### 🔗 Systemic problems\n");
       // Systemic likelihood is scored as a constant 1 (this PR's calibration), so it carries no
       // per-item information and is NOT surfaced on the systemic header; findings keep both.
-      expect(result).toContain("### 🟠 (major) Retry plumbing is inconsistent");
+      expect(result).toContain("\n#### 🟠 (major) Retry plumbing is inconsistent");
       expect(result).toContain("confidence 0.80");
       expect(result).not.toContain("Retry plumbing is inconsistent · confidence 0.80 · likelihood");
       expect(result).toContain("Three spots, three retry policies — the pattern is the problem.");
@@ -960,7 +1012,7 @@ describe("render", () => {
     it("omits the meta line when the item carries neither paths nor finding_ids", () => {
       const findings = systemicFindings({ systemic_problems: [mkSystemic()] });
       const result = render({ findings, envelope: baseEnvelope, prices, template });
-      expect(result).toContain("### 🟠 (major) Retry plumbing is inconsistent");
+      expect(result).toContain("\n#### 🟠 (major) Retry plumbing is inconsistent");
       expect(result).not.toContain("_Affects:");
       expect(result).not.toContain("Ties together:");
     });
@@ -1021,7 +1073,7 @@ describe("render", () => {
         ],
       });
       const result = render({ findings, envelope: baseEnvelope, prices, template });
-      expect(result).toContain("## 🔗 Systemic problems");
+      expect(result).toContain("\n### 🔗 Systemic problems\n");
       expect(result).not.toContain("clean review");
     });
 
@@ -2780,7 +2832,7 @@ describe("discussion aside — the per-finding linked list (issue #246)", () => 
         ],
       },
     });
-    expect(out).toContain("### 🟠 (major) Retry plumbing is inconsistent");
+    expect(out).toContain("\n#### 🟠 (major) Retry plumbing is inconsistent");
     expect(out).toContain(
       "- [alice · 2026-09-01](https://github.com/owner/repo/pull/1#issuecomment-2)",
     );

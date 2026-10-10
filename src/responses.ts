@@ -56,8 +56,8 @@ interface ParsedLine {
 }
 
 // `Review-Response: <id> <disposition> — <reason>`, the key case-insensitive like a git trailer.
-// Indented at most three spaces, as a markdown paragraph is: a `>` quote, an inline-code copy, or a
-// four-space code line is never a response. A verb still followed by the taught `|` alternation is a
+// Indented at most three spaces, as a markdown paragraph is: a `>` quote, the form mentioned inline
+// in prose, or a four-space code line is never a response. A verb still followed by the taught `|` alternation is a
 // half-filled copy of the form, not a choice.
 const RESPONSE_LINE_RE =
   /^ {0,3}review-response:\s*(\S+)\s+([A-Za-z]+)(?![A-Za-z]|\s*\|)[\s—–:-]*(.*)$/i;

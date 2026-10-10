@@ -48,17 +48,33 @@
 
 <%~ it.findings.summary %>
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
+<% if (it.strays.length > 0 || (!it.incomplete && (findingsTotal > 0 || it.systemic.length > 0))) { -%>
+
+## <% if (it.strays.length === 0) { %>Findings<% } else if (it.inlineDisposition && (it.inlineDisposition.kind === 'disabled' || it.inlineDisposition.kind === 'whole-document')) { %>Findings<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
+<% if (it.strays.length > 0) { %>
+<% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>
+<% if (it.shedCount === 0) { %>
+_Every finding is listed below — the inline review could not be built because the result envelope was missing._
+<% } -%>
+<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'whole-document') { %>
+_Every finding from this run<% if (it.inlineDisposition.inlineCount > 0) { %>, including the <%= it.inlineDisposition.inlineCount %> posted as inline comment<%= it.inlineDisposition.inlineCount === 1 ? '' : 's' %> on the diff<% } %><% if (it.inlineDisposition.rejectedCount > 0) { %>; <%= it.inlineDisposition.rejectedCount %> could not be anchored (GitHub rejected the position)<% } %>._
+<% } else if (it.unanchoredCount && it.unanchoredCount > 0) { %>
+_<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> below couldn't be posted as inline comment<%= it.unanchoredCount === 1 ? '' : 's' %> (GitHub rejected the position)<% if (it.strays.length > it.unanchoredCount) { %>; the rest are outside the diff<% } %>._
+<% } %>
+<% } %>
 <% if (it.teachesResponses && (findingsTotal > 0 || it.systemic.length > 0)) { -%>
 
-<sub><%~ it.responseTeaching %></sub>
-<% } -%>
+<details><summary>How to answer these findings</summary>
 
+<%~ it.responseTeaching %>
+</details>
+<% } -%>
 <% if (!it.incomplete && it.systemic.length > 0) { -%>
 
-## 🔗 Systemic problems
+### 🔗 Systemic problems
 
 <% it.systemic.forEach(function(s) { -%>
-### <%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <%= s.title %>
+#### <%= it.severityEmoji(s.severity) %> (<%= s.severity %>) <%= s.title %>
 <sub>confidence <%= it.formatConfidence(s.confidence) %><% if (s.id) { %> · id <% if (s.code_url) { %>[`<%~ s.id %>`](<%~ s.code_url %>)<% } else { %>`<%~ s.id %>`<% } %><% } %></sub>
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_ids && s.finding_ids.length > 0) { meta.push('Ties together: ' + s.finding_ids.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
@@ -83,6 +99,7 @@
 >
 > </details>
 <% }) -%>
+<% } -%>
 <% } -%>
 
 ---
@@ -118,16 +135,6 @@
 <% } %>
 
 <% if (it.strays.length > 0) { %>
-## <% if (it.inlineDisposition && (it.inlineDisposition.kind === 'disabled' || it.inlineDisposition.kind === 'whole-document')) { %>Findings<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
-<% if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>
-<% if (it.shedCount === 0) { %>
-_Every finding is listed below — the inline review could not be built because the result envelope was missing._
-<% } -%>
-<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'whole-document') { %>
-_Every finding from this run<% if (it.inlineDisposition.inlineCount > 0) { %>, including the <%= it.inlineDisposition.inlineCount %> posted as inline comment<%= it.inlineDisposition.inlineCount === 1 ? '' : 's' %> on the diff<% } %><% if (it.inlineDisposition.rejectedCount > 0) { %>; <%= it.inlineDisposition.rejectedCount %> could not be anchored (GitHub rejected the position)<% } %>._
-<% } else if (it.unanchoredCount && it.unanchoredCount > 0) { %>
-_<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> below couldn't be posted as inline comment<%= it.unanchoredCount === 1 ? '' : 's' %> (GitHub rejected the position)<% if (it.strays.length > it.unanchoredCount) { %>; the rest are outside the diff<% } %>._
-<% } %>
 
 <% it.strays.forEach(function(f) { -%>
 ### <%= it.severityEmoji(f.severity) %> (<%= f.severity %>) `<%= f.path %>:<%= f.rangeLabel %><% if (f.side) { %> (<%= f.side %>)<% } %>` — <%= f.title %>

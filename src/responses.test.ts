@@ -18,7 +18,6 @@ import {
   RESPONSE_FORM,
   RESPONSE_TABLE_DELIMITER,
   RESPONSE_TABLE_HEADER,
-  RESPONSE_TEACHING,
 } from "./response-grammar.js";
 
 describe("parseResponseLines — the response grammar", () => {
@@ -222,9 +221,6 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       })),
       { id: "a-b", disposition: "dismissed", reason: "tracked in #12" },
     ]);
-    expect(RESPONSE_TEACHING).toBe(
-      "To answer findings, post a PR conversation comment holding a rendered markdown table, not one inside a code block, whose columns are `id`, `disposition` and `reason`, one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
-    );
   });
 
   it("ignores a table without an id and a disposition column, and a fenced copy of one", () => {

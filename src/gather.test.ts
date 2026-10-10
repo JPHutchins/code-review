@@ -521,7 +521,7 @@ describe("gather — prior review", () => {
     expect(JSON.parse(outFile("prior_findings.json")) as unknown).toEqual(doc);
   });
 
-  it("stages the ids the maintainers hold, read from the prior sticky's dialogue state", async () => {
+  it("stages the claims the maintainers hold, read from the prior sticky's dialogue state, and matches answers naming them", async () => {
     const doc = { schema_version: "0.9.0", summary: "prior", verdict: "comment", findings: [] };
     const held = (id: string, state: DialogueEntry["state"]): DialogueEntry => ({
       id,
@@ -553,19 +553,36 @@ describe("gather — prior review", () => {
             )}`,
             user: { login: "github-actions[bot]" },
           },
+          {
+            id: 8,
+            body: "Review-Response: stands upheld — The reviewer is right.",
+            user: { login: "maintainer", type: "User" },
+            created_at: "2026-10-02T00:00:00Z",
+            author_association: "OWNER",
+          },
         ]),
       },
     ]);
 
     await gather(mkInput({}), api, mkMockGit([]).git, () => Promise.resolve(JSON.stringify(doc)));
 
-    expect(JSON.parse(outFile("responses.json")) as unknown).toEqual({
-      responses: [],
-      unmatched: [],
-      contested: ["argued"],
-      upheld: ["stands"],
-      overruled: ["ruled"],
+    const claim = (id: string): object => ({
+      id,
+      title: "t",
+      severity: "major",
+      since: "2026-10-01T00:00:00Z",
     });
+    const staged = JSON.parse(outFile("responses.json")) as {
+      responses: { id: string; disposition: string }[];
+      unmatched: unknown[];
+    };
+    expect(staged).toMatchObject({
+      unmatched: [],
+      contested: [claim("argued")],
+      upheld: [claim("stands")],
+      overruled: [claim("ruled")],
+    });
+    expect(staged.responses.map((r) => [r.id, r.disposition])).toEqual([["stands", "upheld"]]);
   });
 
   it("stages the implementer's responses to the prior round's ids, from comments and commits", async () => {

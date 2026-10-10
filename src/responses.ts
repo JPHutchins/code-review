@@ -1,5 +1,5 @@
 import * as t from "io-ts";
-import { ID_SHAPE_RE, strictExact } from "./schema.js";
+import { ID_SHAPE_RE, SeverityCodec, strictExact } from "./schema.js";
 import { clipText } from "./util.js";
 import {
   isAnswerWord,
@@ -43,12 +43,20 @@ const ResponsesFileAnswers = t.type({
   responses: t.array(ResponseCodec),
   unmatched: t.array(UnmatchedResponseCodec),
 });
+const HeldClaimShape = t.type({
+  id: t.string,
+  title: t.string,
+  severity: SeverityCodec,
+  since: t.string,
+});
+const HeldClaimCodec = strictExact("HeldClaim", HeldClaimShape, [HeldClaimShape]);
+
 // The ids the maintainers hold: contested ones await a ruling, upheld ones stand until fixed, and
 // overruled ones are closed for good.
 const ResponsesFileDialogue = t.partial({
-  contested: t.array(t.string),
-  upheld: t.array(t.string),
-  overruled: t.array(t.string),
+  contested: t.array(HeldClaimCodec),
+  upheld: t.array(HeldClaimCodec),
+  overruled: t.array(HeldClaimCodec),
 });
 const ResponsesFileShape = t.intersection([ResponsesFileAnswers, ResponsesFileDialogue]);
 export const ResponsesFileCodec = strictExact("ResponsesFile", ResponsesFileShape, [

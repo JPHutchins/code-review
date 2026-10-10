@@ -539,6 +539,13 @@ export const gather = async (
     join(input.outDir, "prior_findings.json"),
     priorFindings === null ? "null" : JSON.stringify(priorFindings),
   );
+  // The ids the maintainers hold past a rebuttal, from the prior sticky's dialogue state. Each is a
+  // known id even when the prior round did not raise it, so an answer naming one is matched, never
+  // echoed as unmatched; and each carries its claim's title and severity, which the prior document
+  // may not.
+  const held = (seedsFromPrior ? parseDialogueMarker(prior.body).entries : []).filter(
+    (entry) => entry.state !== "rebutted",
+  );
   // The implementer's Review-Response answers to the prior round's ids, staged for the reviewer.
   // Only a round seeded from a full prior review has ids to answer, the same gate as the seed itself.
   const harvest = seedsFromPrior
@@ -546,22 +553,21 @@ export const gather = async (
         repo: input.repo,
         prNumber,
         botLogin: input.botLogin,
-        priorIds: new Set(priorIdsFrom(priorFindings)),
+        priorIds: new Set([...priorIdsFrom(priorFindings), ...held.map((entry) => entry.id)]),
         commits: commits.map((commit) => ({ ...commit, author: commit.login ?? null })),
         comments: issueComments ?? [],
       })
     : { file: { responses: [], unmatched: [] }, dropped: 0 };
-  const priorDialogue = seedsFromPrior ? parseDialogueMarker(prior.body).entries : [];
   writeFileSync(
     join(input.outDir, "responses.json"),
     JSON.stringify({
       ...harvest.file,
       ...Object.fromEntries(
         (["contested", "upheld", "overruled"] as const).flatMap((state) => {
-          const ids = priorDialogue
+          const claims = held
             .filter((entry) => entry.state === state)
-            .map((entry) => entry.id);
-          return ids.length > 0 ? [[state, ids]] : [];
+            .map(({ id, title, severity, at }) => ({ id, title, severity, since: at }));
+          return claims.length > 0 ? [[state, claims]] : [];
         }),
       ),
     }),

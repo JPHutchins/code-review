@@ -746,6 +746,12 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     );
     expect(note).toContain("\\`contested\\`");
     expect(note).toContain("\\`upheld\\`");
+    expect(note).toContain("\\`since\\`");
+    expect(
+      reusable.some((line) =>
+        ["contested", "upheld", "overruled"].every((list) => line.includes(`(.${list} // [])`)),
+      ),
+    ).toBe(true);
     expect(note).toContain("\\`overruled\\`");
     expect(note).toContain(
       `(${MAINTAINER_ASSOCIATIONS.slice(0, -1).join(", ")} and ${MAINTAINER_ASSOCIATIONS.at(-1) ?? ""} answers come from the maintainers`,

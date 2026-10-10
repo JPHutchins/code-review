@@ -101,7 +101,7 @@ const advanceEntry = (
 ): readonly DialogueEntry[] => {
   if (answers.fixed.has(entry.id)) return [];
   const refreshed =
-    item !== undefined && (entry.state === "contested" || item.rebutted)
+    item !== undefined && (entry.state === "contested" || entry.state === "upheld" || item.rebutted)
       ? { ...entry, title: item.title, severity: item.severity }
       : entry;
   const closure = answers.closures.get(entry.id);
@@ -144,7 +144,7 @@ const advanceEntry = (
 // older answer would close it, and `overruled` closes it. An id the reviewer re-raised with a
 // rebuttal against a trusted closing answer opens as rebutted. Every entry links the newest answer
 // that moved it, and a newer opposite ruling re-settles a ruled one. A re-raise the dialogue keeps —
-// a contested one, or one carrying a rebuttal — refreshes its title and severity. The cap trims only
+// a contested or upheld one, or one carrying a rebuttal — refreshes its title and severity. The cap trims only
 // rebutted entries: a contested or ruled one holds a maintainer's answer the PR still owes.
 export const advanceDialogue = (
   prior: readonly DialogueEntry[],

@@ -3,8 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
-import { DISPOSITIONS, RESPONSE_TABLE_EXAMPLE, RESPONSE_TEACHING } from "./response-grammar.js";
-import { parseResponseTables } from "./responses.js";
+import { RESPONSE_TEACHING } from "./response-grammar.js";
 import {
   formatConfidence,
   parseConvergenceMarker,
@@ -208,7 +207,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
   });
 
   it("teaches the response line under a full review with findings, never on a clean review, a notice, a mechanic pass, or an unknown route", () => {
-    const line = `<sub>${RESPONSE_TEACHING}</sub>\n\n\`\`\`markdown\n${RESPONSE_TABLE_EXAMPLE}\n\`\`\``;
+    const line = `<sub>${RESPONSE_TEACHING}</sub>`;
     const finding = mkFinding({});
     const withFindings = render({
       findings: mkFindings([finding]),
@@ -254,33 +253,6 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       route: "full review",
     });
     expect(systemicOnly).toContain(line);
-  });
-
-  it("shows a table an implementer can copy from the sticky, fill in, and have read back for every verdict", () => {
-    const finding = mkFinding({});
-    const sticky = render({
-      findings: mkFindings([finding]),
-      envelope: baseEnvelope,
-      prices,
-      template,
-      strays: [finding],
-      route: "full review",
-    });
-    const copied = /```markdown\n([\s\S]*?)\n```/.exec(sticky)?.[1] ?? "";
-    const [header, delimiter, example] = copied.split("\n");
-    const filled = [
-      header,
-      delimiter,
-      ...DISPOSITIONS.map((disposition) =>
-        (example ?? "")
-          .replace("<id>", `x-${disposition}`)
-          .replace("fixed", disposition)
-          .replace("<reason>", "why"),
-      ),
-    ].join("\n");
-    expect(parseResponseTables(filled)).toEqual(
-      DISPOSITIONS.map((disposition) => ({ id: `x-${disposition}`, disposition, reason: "why" })),
-    );
   });
 
   it("says nothing when the logs were there", () => {

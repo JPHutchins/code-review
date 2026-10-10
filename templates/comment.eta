@@ -51,10 +51,6 @@
 <% if (it.teachesResponses && (findingsTotal > 0 || it.systemic.length > 0)) { -%>
 
 <sub><%~ it.responseTeaching %></sub>
-
-```markdown
-<%~ it.responseTable %>
-```
 <% } -%>
 
 <% if (!it.incomplete && it.systemic.length > 0) { -%>

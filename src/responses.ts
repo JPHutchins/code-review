@@ -90,6 +90,13 @@ export const unfencedLines = (text: string): readonly string[] =>
     { fence: null, lines: [] },
   ).lines;
 
+// The lines an answer can sit on: outside fenced code, and with a line that is wholly one code
+// span read as its content — a copy of the form as the sticky displays it, backticks kept, still
+// answers, while prose that only mentions the form inline ("write `Review-Response: …`") does not.
+const WHOLE_LINE_CODE_SPAN_RE = /^ {0,3}`([^`]+)`\s*$/;
+const answerLines = (text: string): readonly string[] =>
+  unfencedLines(text).map((line) => WHOLE_LINE_CODE_SPAN_RE.exec(line)?.[1] ?? line);
+
 // The id token as written, unwrapped from the backticks or quotes the sticky displays it in and from
 // the prose punctuation that may follow it.
 const unwrapId = (token: string): string => token.replace(/^[`"']+|[`"'.,:;]+$/g, "");
@@ -112,7 +119,7 @@ const lineAnswers = (lines: readonly string[]): readonly ParsedLine[] =>
   });
 
 export const parseResponseLines = (text: string): readonly ParsedLine[] =>
-  lineAnswers(unfencedLines(text));
+  lineAnswers(answerLines(text));
 
 // A verdict table — the taught form for a PR comment, and the one implementers post unprompted — is
 // read when its header's columns name an id and a disposition. Each backtick-quoted token in a row's
@@ -243,12 +250,12 @@ const tableAnswers = (lines: readonly string[]): readonly ParsedLine[] => {
 };
 
 export const parseResponseTables = (text: string): readonly ParsedLine[] =>
-  tableAnswers(unfencedLines(text));
+  tableAnswers(answerLines(text));
 
 // Every answer in a text, lines then tables, read from one fence scan. Only an exact repeat — same
 // id, verdict and reason — counts once; a changed verdict or an edited reason is kept.
 export const parseResponses = (text: string): readonly ParsedLine[] => {
-  const lines = unfencedLines(text);
+  const lines = answerLines(text);
   const seen = new Set<string>();
   return [...lineAnswers(lines), ...tableAnswers(lines)].filter((answer) => {
     const key = JSON.stringify([answer.id, answer.disposition, answer.reason]);

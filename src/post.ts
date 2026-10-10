@@ -157,6 +157,9 @@ export interface PostInput {
   // an inline thread is a human-only surface that cannot be revised: a later round can neither update
   // nor resolve it, so stale threads accumulate on the diff (issue #179).
   readonly inline?: boolean;
+  // The review dialogue's off switch: no answer is read, and the sticky's dialogue state is carried
+  // untouched. Omitted ⇒ the dialogue is on.
+  readonly withoutDialogue?: boolean;
   // The fast-fix route ran with no failing-job logs staged (issue #154). Passed as a flag because
   // this runs in the comment job, where the staged logs are not: the review job counted them. It
   // could equally ride the envelope, which `adapt` stamps with route and effort after the agent —
@@ -1451,7 +1454,7 @@ export const post = async (
   // answer can name, or dialogue state an answer can advance.
   const loadedFindings = findingsResult.findings;
   const priorDialogue =
-    existingSticky !== null
+    existingSticky !== null && input.withoutDialogue !== true
       ? parseDialogueMarker(existingSticky.body)
       : { entries: [], undecoded: [], skipped: 0 };
   if (priorDialogue.skipped > 0) {
@@ -1461,6 +1464,7 @@ export const post = async (
   }
   // The dialogue advances only on a completed full-review round; any other post carries it as is.
   const dialogueRound =
+    input.withoutDialogue !== true &&
     envelope !== null &&
     isConvergenceRound(
       effectiveRoute,
@@ -1468,6 +1472,7 @@ export const post = async (
     ) &&
     isReviewVerdict(loadedFindings.verdict);
   const answerable =
+    input.withoutDialogue !== true &&
     existingSticky !== null &&
     !priorIsMechanic &&
     (loadedFindings.findings.length > 0 ||
@@ -1528,7 +1533,9 @@ export const post = async (
               : [{ id, title: s.title, severity: s.severity, rebutted: hasRebuttal(s) }];
           }),
         ])
-      : priorDialogue.entries;
+      : input.withoutDialogue === true
+        ? []
+        : priorDialogue.entries;
   // An upheld id stays open whatever older answer would close it. Only a closure some current finding
   // or systemic problem could match is worth the prior's download.
   const upheldIds = new Set(

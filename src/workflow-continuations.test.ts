@@ -734,7 +734,9 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     const reusable = armOf(".github/workflows/review-reusable.yaml");
     const example = armOf("examples/workflows/review.yaml");
     expect(example).toEqual(reusable);
-    expect(reusable[0]).toBe('if [ -f "$GATHER_DIR/responses.json" ]; then');
+    expect(reusable).toContain(
+      'if [ "$DIALOGUE_OFF" != "1" ] && [ -f "$GATHER_DIR/responses.json" ]; then',
+    );
     expect(reusable.some((line) => line.includes("::warning::"))).toBe(true);
     expect(reusable.some((line) => line.includes("rebuttal"))).toBe(true);
     const note = reusable.find((line) =>
@@ -762,13 +764,32 @@ describe("the review dialogue — the reviewer and the triage read the same prot
       "examples/workflows/review.yaml",
     ]) {
       const script = scriptOf(path, "Phase 2 — agentic review");
-      const arm = script.indexOf('if [ -f "$GATHER_DIR/responses.json" ]');
+      const arm = script.indexOf(
+        'if [ "$DIALOGUE_OFF" != "1" ] && [ -f "$GATHER_DIR/responses.json" ]',
+      );
       const caseOpen = script.lastIndexOf('case "$SEED_MODE" in', arm);
       expect(caseOpen, path).toBeGreaterThan(-1);
       expect(script.slice(caseOpen, arm), path).toContain("prior-same|prior-new|empty-had-prior)");
       expect(script.slice(caseOpen, arm), path).not.toContain("esac");
       expect(arm, path).toBeLessThan(script.indexOf('ROUTE="mechanic"'));
     }
+  });
+
+  it("the reviewer honors the dialogue switch only when the pinned post can, identically in both workflows", () => {
+    const reusable = scriptOf(".github/workflows/review-reusable.yaml", "Phase 2 — agentic review");
+    const example = scriptOf("examples/workflows/review.yaml", "Phase 2 — agentic review");
+    expect(linesWith(example, "DIALOGUE")).toEqual(linesWith(reusable, "DIALOGUE"));
+    const probe = reusable.indexOf('*" --without-dialogue "*');
+    expect(probe).toBeGreaterThan(-1);
+    expect(reusable.indexOf('rm -f "$GATHER_DIR/responses.json"')).toBeGreaterThan(probe);
+  });
+
+  it("the dialogue switch reaches post, probed, identically in both workflows", () => {
+    const reusable = scriptOf(".github/workflows/review-reusable.yaml", "Post the review");
+    const example = scriptOf("examples/workflows/review.yaml", "Post the review");
+    expect(linesWith(example, "DIALOGUE")).toEqual(linesWith(reusable, "DIALOGUE"));
+    expect(reusable).toContain("if post_accepts without-dialogue; then");
+    expect(linesWith(reusable, "DIALOGUE")).toContain('"${DIALOGUE_POST_ARGS[@]}" \\');
   });
 
   it("the triage names the response form, as the CLI spells it, expected while judging every field, identically in both workflows", () => {

@@ -17,7 +17,14 @@ import {
   STICKY_CHAR_LIMIT,
 } from "./post.js";
 import { priorIdsFrom } from "./schema.js";
-import { AGENTS_STOP_DIRECTIVE, convergenceMarker, parseConvergenceMarker } from "./surface.js";
+import {
+  AGENTS_STOP_DIRECTIVE,
+  convergenceMarker,
+  dialogueMarker,
+  parseConvergenceMarker,
+  parseDialogueMarker,
+} from "./surface.js";
+import type { DialogueEntry } from "./dialogue.js";
 import type {
   Convergence,
   Findings,
@@ -3684,6 +3691,32 @@ describe("announce — in-progress sticky", () => {
     );
   });
 
+  it("carries the dialogue state into the placeholder the next post reads", async () => {
+    const entry: DialogueEntry = {
+      id: "recurring-a",
+      state: "contested",
+      answer: "https://github.com/owner/repo/pull/42#issuecomment-556",
+      at: "2026-07-02T01:00:00Z",
+      title: "The same claim",
+      severity: "major",
+    };
+    const existing = ["<!-- code-review -->", "", FINDINGS_MARKER, dialogueMarker([entry])].join(
+      "\n",
+    );
+    const { api, calls } = mkMockGhApi([
+      openPr,
+      { match: commentsMatch, response: commentRow(999, existing) },
+      { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+    ]);
+
+    await announce(mkAnnounceInput(), api);
+
+    const patchCall = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+    const body = (JSON.parse(patchCall!.stdin!) as CommentBody).body;
+    expect(body).toContain("Code review in progress");
+    expect(parseDialogueMarker(body).entries).toEqual([entry]);
+  });
+
   it("PATCHes the existing sticky and carries its findings + reviewed-sha markers forward", async () => {
     const existing = [
       "<!-- code-review -->",
@@ -4984,7 +5017,11 @@ describe("post — answered findings (issue #151)", () => {
     "Review-Response: recurring-a dismissed — Measured on the built extension: the claim does not hold.";
   const answerRow = (
     body: string,
-    overrides: { readonly id?: number; readonly association?: string | null } = {},
+    overrides: {
+      readonly id?: number;
+      readonly association?: string | null;
+      readonly created?: string;
+    } = {},
   ): string => {
     const id = overrides.id ?? 555;
     return JSON.stringify({
@@ -4992,7 +5029,7 @@ describe("post — answered findings (issue #151)", () => {
       user: "alice",
       user_type: "User",
       author_association: overrides.association === undefined ? "OWNER" : overrides.association,
-      created_at: "2026-07-01T01:00:00Z",
+      created_at: overrides.created ?? "2026-07-01T01:00:00Z",
       html_url: `https://github.com/owner/repo/pull/42#issuecomment-${String(id)}`,
       body,
     });
@@ -5218,6 +5255,147 @@ describe("post — answered findings (issue #151)", () => {
       expect(body).not.toContain(idLess.description);
       expect(body).toContain(code);
       expect(body).toContain("commit/abc123");
+    });
+  });
+
+  describe("a contested id is argued under its own section", () => {
+    const argued = mkFinding({
+      id: "recurring-a",
+      title: "The same claim",
+      severity: "major",
+      reasoning: "The same reasoning.",
+    });
+    const entry: DialogueEntry = {
+      id: "recurring-a",
+      state: "rebutted",
+      answer: "https://github.com/owner/repo/pull/42#issuecomment-555",
+      at: "2026-07-01T01:00:00Z",
+      title: "The same claim",
+      severity: "major",
+    };
+    const stickyWith = (entries: readonly DialogueEntry[]): string =>
+      `${priorSticky}\n${dialogueMarker(entries)}`;
+    const answerAgain = answerRow(
+      "Review-Response: recurring-a refuted — Measured again on the built extension.",
+      { id: 556, created: "2026-07-02T01:00:00Z" },
+    );
+    const run = async (
+      sticky: string,
+      current: Findings,
+      comments: readonly string[],
+    ): Promise<readonly RecordedCall[]> => {
+      writeFileSync(
+        join(tmpDir, "findings.json"),
+        JSON.stringify({ ...current, schema_version: "0.11.0" }),
+      );
+      const { api, calls } = mkMockGhApi(mkMocks(sticky, { comments, commits: "" }));
+      await post(mkInput({ route: "full review" }), api, () =>
+        Promise.resolve(JSON.stringify({ ...mkFindings([argued]), schema_version: "0.11.0" })),
+      );
+      return calls();
+    };
+
+    it("contests a rebutted id a maintainer answers again — out of Findings, under Contested, weighing 0.51", async () => {
+      const rebutting = mkFinding({
+        ...argued,
+        rebuttal: "The measurement skipped the cold path.",
+      });
+      const calls = await run(stickyWith([entry]), mkFindings([rebutting]), [
+        answerRow(DISMISSAL),
+        answerAgain,
+      ]);
+      const body = patchedBody(calls);
+      const contestedAt = body.indexOf("### ⚖️ Contested");
+      expect(body.indexOf("\n## Findings")).toBeGreaterThanOrEqual(0);
+      expect(contestedAt).toBeGreaterThan(body.indexOf("\n## Findings"));
+      expect(body.slice(contestedAt)).toContain("The same claim");
+      expect(body.slice(contestedAt)).toContain("`src/foo.ts:10`");
+      expect(body).toContain("The measurement skipped the cold path.");
+      expect(body).toContain("issuecomment-556");
+      expect(body).not.toContain("**Findings:**");
+      expect(body).toMatch(/\*\*Convergence\*\*[^\n]*· 1 contested/);
+      expect(stickySignal(calls).convergence).toMatchObject({ score: 0.51, converged: true });
+      expect(parseDialogueMarker(body).entries).toEqual([
+        {
+          ...entry,
+          state: "contested",
+          answer: "https://github.com/owner/repo/pull/42#issuecomment-556",
+          at: "2026-07-02T01:00:00Z",
+        },
+      ]);
+    });
+
+    it("opens a rebutted entry when the reviewer rebuts a maintainer's closing answer", async () => {
+      const rebutting = mkFinding({
+        ...argued,
+        rebuttal: "The measurement skipped the cold path.",
+      });
+      const calls = await run(priorSticky, mkFindings([rebutting]), [answerRow(DISMISSAL)]);
+      const body = patchedBody(calls);
+      expect(parseDialogueMarker(body).entries).toEqual([entry]);
+      expect(body).not.toContain("### ⚖️ Contested");
+      expect(body).toContain("Re-raised; prior answer at");
+    });
+
+    it("keeps weighing a contested id the reviewer no longer raises", async () => {
+      const contested: DialogueEntry = { ...entry, state: "contested" };
+      const calls = await run(stickyWith([contested]), mkFindings([]), [answerRow(DISMISSAL)]);
+      expect(stickySignal(calls).convergence).toMatchObject({ score: 0.51 });
+      expect(patchedBody(calls)).toContain("### ⚖️ Contested");
+    });
+
+    it("keeps the replies naming a contested id under its section", async () => {
+      const contested: DialogueEntry = { ...entry, state: "contested" };
+      const reply = answerRow("Still not convinced about `recurring-a` on the cold path.", {
+        id: 600,
+        association: "NONE",
+        created: "2026-07-05T01:00:00Z",
+      });
+      const calls = await run(stickyWith([contested]), mkFindings([]), [
+        answerRow(DISMISSAL),
+        reply,
+      ]);
+      const body = patchedBody(calls);
+      expect(body.slice(body.indexOf("### ⚖️ Contested"))).toContain("issuecomment-600");
+    });
+
+    it("lists a verbatim re-raise of a contested id under Contested, never as treated as answered", async () => {
+      const contested: DialogueEntry = { ...entry, state: "contested" };
+      const calls = await run(stickyWith([contested]), mkFindings([argued]), [
+        answerRow(DISMISSAL),
+      ]);
+      const body = patchedBody(calls);
+      expect(body).not.toContain("treated as answered");
+      expect(body.slice(body.indexOf("### ⚖️ Contested"))).toContain("The same reasoning.");
+    });
+
+    it("clears the entry when a maintainer says the id is fixed", async () => {
+      const contested: DialogueEntry = { ...entry, state: "contested" };
+      const fixedNow = answerRow("Review-Response: recurring-a fixed — Rewrote the cold path.", {
+        id: 557,
+        created: "2026-07-03T01:00:00Z",
+      });
+      const calls = await run(stickyWith([contested]), mkFindings([]), [fixedNow]);
+      const body = patchedBody(calls);
+      expect(body).not.toContain("code-review:dialogue");
+      expect(body).not.toContain("### ⚖️ Contested");
+    });
+
+    it("carries the dialogue state through a notice", async () => {
+      const sticky = stickyWith([entry]);
+      const { api, calls } = mkMockGhApi([
+        {
+          match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
+          response: "",
+        },
+        ...mkMocks(sticky, { comments: [], commits: "" }),
+      ]);
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw new Error("exit");
+      });
+      await expect(post(mkInput({}), api)).rejects.toThrow("exit");
+      exitSpy.mockRestore();
+      expect(parseDialogueMarker(patchedBody(calls())).entries).toEqual([entry]);
     });
   });
 

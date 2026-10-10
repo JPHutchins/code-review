@@ -2,7 +2,13 @@
 // the sticky, then the inline review. A posting failure propagates and exits non-zero (never partial).
 
 import { readFileSync, appendFileSync } from "node:fs";
-import type { DiscussionLink, InlineComment, InlineDisposition, RenderInput } from "./types.js";
+import type {
+  ContestedView,
+  DiscussionLink,
+  InlineComment,
+  InlineDisposition,
+  RenderInput,
+} from "./types.js";
 import { buildInlineComments } from "./inline.js";
 import { isEmptyDiff, indexDiff, partitionFindings } from "./diff.js";
 import {
@@ -20,13 +26,17 @@ import {
   buildConvergence,
   carriedAncestryMarkers,
   carriedConvergence,
+  carriedDialogueMarker,
   carriedFindingsMarker,
   carriedMarkerPointer,
   carryForwardMarkers,
   isFullReviewAncestry,
   computeIdCounts,
   computeSameRootNotes,
+  dialogueMarker,
+  lineRange,
   findingsMarkerPair,
+  parseDialogueMarker,
   inProgressConvergence,
   nextRoundNumber,
   isBelowVisibilityFloor,
@@ -70,7 +80,17 @@ import {
   ID_SHAPE_RE,
   priorIdsFrom,
 } from "./schema.js";
-import { resolveFindingId, withSystemicProblems } from "./schema.js";
+import {
+  findingIdIn,
+  hasRebuttal,
+  resolveFindingId,
+  resolveSystemicId,
+  systemicIdIn,
+  withoutIds,
+  withSystemicProblems,
+} from "./schema.js";
+import type { SystemicProblem } from "./schema.js";
+import { advanceDialogue } from "./dialogue.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -97,8 +117,10 @@ import {
 import {
   answersFrom,
   closingResponses,
+  fixingResponses,
   isTrustedResponse,
   type AnswerSources,
+  type Response,
 } from "./responses.js";
 import { asRecord, errMsg, tryParseJson } from "./util.js";
 
@@ -1185,7 +1207,7 @@ export const post = async (
   // prevent. (The notice paths DO re-emit a carried embedded marker verbatim: their bodies are
   // short, and the pre-#217 blob was size-gated when written.)
   let warnedNoJsonUrl = false;
-  const findingsBlob = (doc: Findings): string => {
+  const findingsPair = (doc: Findings): string => {
     if (input.jsonUrl) return findingsMarkerPair(input.jsonUrl, doc.convergence);
     const carriedLink = existingSticky !== null ? findingsArtifactUrl(existingSticky.body) : null;
     if (carriedLink !== null) {
@@ -1201,6 +1223,9 @@ export const post = async (
     }
     return findingsMarkerPair(undefined, doc.convergence);
   };
+  const carriedDialogue = existingSticky !== null ? carriedDialogueMarker(existingSticky.body) : "";
+  const findingsBlob = (doc: Findings, dialogue: string = carriedDialogue): string =>
+    [findingsPair(doc), dialogue].filter((marker) => marker !== "").join("\n");
   // NOTE: leaveInPlace must NEVER read `verbatimReRaised` — it is also called from the empty-diff
   // and corrupt-findings guards, which run BEFORE the const initializes; a read there throws a
   // TDZ ReferenceError and crashes the post (issue #151 review r4 — a real regression in r3). The
@@ -1362,7 +1387,7 @@ export const post = async (
       // mechanic through the notice, or the next round's orphan gate reads its findings as a
       // departed full review's.
       const provenance = existingSticky !== null ? carriedAncestryMarkers(existingSticky.body) : "";
-      return [carriedMarkerPointer(carried, doc.convergence), provenance]
+      return [carriedMarkerPointer(carried, doc.convergence), carriedDialogue, provenance]
         .filter((p) => p !== "")
         .join("\n\n");
     };
@@ -1419,12 +1444,23 @@ export const post = async (
   // kept and annotated with the answer's link. The answers are read HERE, through this step's own
   // token, from every comment and commit on the PR: the sticky names their authors, so they never
   // come from a file the reviewing agent could have written. Only a full-review prior has findings an
-  // answer can name.
+  // answer can name, or dialogue state an answer can advance.
   const loadedFindings = findingsResult.findings;
+  const priorDialogue =
+    existingSticky !== null
+      ? parseDialogueMarker(existingSticky.body)
+      : { entries: [], skipped: 0 };
+  if (priorDialogue.skipped > 0) {
+    process.stderr.write(
+      `Warning: ${String(priorDialogue.skipped)} entry(ies) of the prior sticky's dialogue state did not decode — skipped\n`,
+    );
+  }
   const answerable =
     existingSticky !== null &&
     !priorIsMechanic &&
-    (loadedFindings.findings.length > 0 || (loadedFindings.systemic_problems ?? []).length > 0);
+    (loadedFindings.findings.length > 0 ||
+      (loadedFindings.systemic_problems ?? []).length > 0 ||
+      priorDialogue.entries.length > 0);
   // A commit answer's trust is the push access a head branch IN the base repo implies, read from the
   // PR itself: a fork's head, or a deleted fork's null one, trusts no commit, and its commits go unread.
   const headInBaseRepo =
@@ -1446,10 +1482,45 @@ export const post = async (
         commits: headInBaseRepo ? await fetchCommitAnswersSource(input.repo, prNumber, ghApi) : [],
       })
     : { comments: [], commits: [] };
+  const allAnswers = [...answers.comments, ...answers.commits];
+  const isTrusted = (response: Response): boolean => isTrustedResponse(response, headInBaseRepo);
+  const allClosures = closingResponses(allAnswers, isTrusted);
   // Only a closure some current finding or systemic problem could match is worth the prior's download.
-  const closures = closingResponses([...answers.comments, ...answers.commits], (response) =>
-    isTrustedResponse(response, headInBaseRepo),
-  ).filter((closure) => couldMatch(closure.id, loadedFindings));
+  const closures = allClosures.filter((closure) => couldMatch(closure.id, loadedFindings));
+  // The dialogue advances only on a completed full-review round; any other post carries it as is.
+  const dialogueRound =
+    envelope !== null &&
+    isConvergenceRound(
+      effectiveRoute,
+      envelope.incomplete === true || isIncompleteFindings(loadedFindings),
+    ) &&
+    isReviewVerdict(loadedFindings.verdict);
+  const dialogue =
+    answerable && dialogueRound
+      ? advanceDialogue(
+          priorDialogue.entries,
+          allClosures,
+          new Set(fixingResponses(allAnswers, isTrusted).map((response) => response.id)),
+          [
+            ...loadedFindings.findings.map((f) => ({
+              id: resolveFindingId(f),
+              title: f.title,
+              severity: f.severity,
+              rebutted: hasRebuttal(f),
+            })),
+            ...(loadedFindings.systemic_problems ?? []).flatMap((s) => {
+              const id = resolveSystemicId(s);
+              return id === undefined
+                ? []
+                : [{ id, title: s.title, severity: s.severity, rebutted: hasRebuttal(s) }];
+            }),
+          ],
+        )
+      : priorDialogue.entries;
+  const contested = dialogueRound ? dialogue.filter((entry) => entry.state === "contested") : [];
+  const contestedIds = new Set(contested.map((entry) => entry.id));
+  const isContestedFinding = findingIdIn(contestedIds);
+  const isContestedSystemic = systemicIdIn(contestedIds);
   // The prior document the closures name, resolved only when one exists — and the one resolve the
   // nit stickiness and the discussion gate below reuse.
   const priorForAnswers =
@@ -1473,11 +1544,44 @@ export const post = async (
       `Warning: ${String(unboundClosureCount)} maintainer answer(s) name nothing the prior review reported — they close nothing this round\n`,
     );
   }
-  const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
+  // A contested item is argued under its own section, so no answer drops or annotates it.
+  const answeredFilter = applyAnswered(
+    loadedFindings.findings.filter((f) => !isContestedFinding(f)),
+    answeredRegistry,
+  );
   const answeredSystemicFilter = applyAnsweredSystemic(
-    loadedFindings.systemic_problems ?? [],
+    (loadedFindings.systemic_problems ?? []).filter((s) => !isContestedSystemic(s)),
     answeredSystemicRegistry,
   );
+  const contestedFindings = loadedFindings.findings.filter(isContestedFinding);
+  const contestedSystemic = (loadedFindings.systemic_problems ?? []).filter(isContestedSystemic);
+  const contestedReRaises = new Map<string, Finding | SystemicProblem>([
+    ...contestedSystemic.map((s) => [resolveSystemicId(s) ?? "", s] as const),
+    ...contestedFindings.map((f) => [resolveFindingId(f), f] as const),
+  ]);
+  const contestedViews: readonly ContestedView[] = contested.map((entry) => {
+    const reRaise = contestedReRaises.get(entry.id);
+    return {
+      id: entry.id,
+      title: entry.title,
+      severity: entry.severity,
+      answerUrl: entry.answer,
+      ...(reRaise === undefined
+        ? {}
+        : {
+            reRaise: {
+              ...("path" in reRaise
+                ? {
+                    location: `${reRaise.path}:${lineRange(reRaise.start_line, reRaise.end_line, "–")}`,
+                  }
+                : {}),
+              description: reRaise.description,
+              reasoning: reRaise.reasoning,
+              ...(hasRebuttal(reRaise) ? { rebuttal: reRaise.rebuttal ?? "" } : {}),
+            },
+          }),
+    };
+  });
   const reRaisedNotes = {
     ...answeredFilter.reRaisedNotes,
     ...answeredSystemicFilter.reRaisedNotes,
@@ -1499,7 +1603,7 @@ export const post = async (
   ]);
   // A dropped code is stripped only when NO KEPT finding still carries it — the drop removed one
   // instance of a mechanism, not the mechanism itself (issue #151 review r2).
-  const keptCodes = new Set(answeredFilter.findings.map((f) => f.id));
+  const keptCodes = new Set([...answeredFilter.findings, ...contestedFindings].map((f) => f.id));
   const trulyDropped = new Set([...droppedIds].filter((c) => !keptCodes.has(c)));
   const systemic =
     trulyDropped.size === 0
@@ -1510,8 +1614,8 @@ export const post = async (
           return codes.length === s.finding_ids.length ? s : { ...s, finding_ids: codes };
         });
   const findings: Findings = {
-    ...withSystemicProblems(loadedFindings, systemic),
-    findings: [...answeredFilter.findings],
+    ...withSystemicProblems(loadedFindings, [...systemic, ...contestedSystemic]),
+    findings: [...answeredFilter.findings, ...contestedFindings],
   };
   // Nit visibility floor (issue #164): split the human-visible findings from the below-floor nits.
   // The blob (`findings`) stays COMPLETE — the machine channel and the next-round seed keep every nit,
@@ -1546,7 +1650,8 @@ export const post = async (
       .map((s) => s.id)
       .filter((id): id is string => id !== undefined && id !== ""),
   ];
-  const roundHasNit = findings.findings.some((f) => f.severity === "nit");
+  const argued = findings.findings.filter((f) => !isContestedFinding(f));
+  const roundHasNit = argued.some((f) => f.severity === "nit");
   const nitWantsPrior =
     roundHasNit &&
     existingSticky !== null &&
@@ -1574,8 +1679,8 @@ export const post = async (
       priorSuppressedKeys.has(resolveFindingId(f)) ||
       priorSuppressedKeys.has(answeredNoteKey(f)) ||
       priorSuppressedKeys.has(`title:${f.title}`));
-  const suppressedNits = findings.findings.filter(isSuppressedNit);
-  const visibleFindings = findings.findings.filter((f) => !isSuppressedNit(f));
+  const suppressedNits = argued.filter(isSuppressedNit);
+  const visibleFindings = argued.filter((f) => !isSuppressedNit(f));
   // The drop note, shared by every surface that renders the filtered findings: the TRUE pre-dedup
   // count (issue #151 review r5), plus — when the drops emptied the round — a line reconciling the
   // draft's verdict with the empty kept counts, so the sticky never reads "changes requested"
@@ -1607,6 +1712,7 @@ export const post = async (
     ...(findings.systemic_problems ?? [])
       .map((s) => s.id)
       .filter((id): id is string => id !== undefined && id !== ""),
+    ...contested.map((entry) => entry.id),
   ];
   // When a reply named an unknown token but the prior document could not be resolved (an expired
   // artifact, a transport failure), the trail loss is named on the surface, never silent. Only
@@ -1795,6 +1901,7 @@ export const post = async (
     nitVisibilityFloor: input.nitVisibilityFloor,
     answeredNotes: reRaisedNotes,
     answeredReRaiseNote: answeredDropNote,
+    contested: contestedViews,
     discussionByFinding,
     orphanedDiscussion,
     orphanedTotal,
@@ -2011,6 +2118,7 @@ export const post = async (
         roundNumber,
         currentCodes,
         input.headSha.slice(0, 12),
+        contested,
       )
     : effectiveRoute === "mechanic"
       ? // A mechanic pass means CI failed — whatever the carried prior says, its own stamp must
@@ -2021,11 +2129,14 @@ export const post = async (
   const stampedFindings = stampConvergence(findings, convergence);
   const currentRoundCount = isRound ? roundNumber : priorRoundCount;
 
-  const findingsMarker = findingsBlob(stampedFindings);
+  const findingsMarker = findingsBlob(
+    stampedFindings,
+    answerable && dialogueRound ? dialogueMarker(dialogue) : carriedDialogue,
+  );
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     ...sharedRenderInput,
-    findings: stampedFindings,
+    findings: withoutIds(stampedFindings, contestedIds),
     envelope,
     incomplete: thisIncomplete,
     sameRootNotes,

@@ -5,7 +5,7 @@ import * as t from "io-ts";
 import { createHash } from "node:crypto";
 import { asRecord } from "./util.js";
 
-const SeverityCodec = t.union([
+export const SeverityCodec = t.union([
   t.literal("critical"),
   t.literal("major"),
   t.literal("minor"),
@@ -413,6 +413,30 @@ export const resolveSystemicId = (s: {
     : s.title !== ""
       ? synthesizedSystemicId(s.title)
       : undefined;
+
+// Whether an item's resolved id is in a set: one predicate for every site that holds items by id.
+export const findingIdIn =
+  (ids: ReadonlySet<string>) =>
+  (f: Finding): boolean =>
+    ids.has(resolveFindingId(f));
+
+export const systemicIdIn =
+  (ids: ReadonlySet<string>) =>
+  (s: SystemicProblem): boolean => {
+    const id = resolveSystemicId(s);
+    return id !== undefined && ids.has(id);
+  };
+
+export const withoutIds = (doc: Findings, ids: ReadonlySet<string>): Findings =>
+  ids.size === 0
+    ? doc
+    : {
+        ...withSystemicProblems(
+          doc,
+          (doc.systemic_problems ?? []).filter((s) => !systemicIdIn(ids)(s)),
+        ),
+        findings: doc.findings.filter((f) => !findingIdIn(ids)(f)),
+      };
 
 // The ONE legacy-spelling precedence for a RAW record (id → code → synthesized when a path exists):
 // shared by the legacy upcast and the below-floor nit reader, so the raw-document sites can never

@@ -90,6 +90,21 @@ export type InlineDisposition =
     }
   | { readonly kind: "disabled" };
 
+// A contested id as the sticky shows it: the claim the reviewer rebutted, the newest maintainer
+// answer, and this round's re-raise when the reviewer made one.
+export interface ContestedView {
+  readonly id: string;
+  readonly title: string;
+  readonly severity: Severity;
+  readonly answerUrl: string;
+  readonly reRaise?: {
+    readonly location?: string;
+    readonly description: string;
+    readonly reasoning: string;
+    readonly rebuttal?: string;
+  };
+}
+
 export interface RenderInput {
   readonly findings: Findings;
   // The comment-size shed (issue #214): how many of the least severe findings the caller dropped
@@ -178,6 +193,7 @@ export interface RenderInput {
   // The sticky note naming findings dropped as verbatim re-raises of answered findings (issue #151):
   // the suppression is never silent. Built by post from the dropped entries; omitted ⇒ no note.
   readonly answeredReRaiseNote?: string;
+  readonly contested?: readonly ContestedView[];
   // The true completed-round count for the trajectory label, when it differs from `rounds.length`
   // (post derives it from the carried signal, which survives corrupt rounds-marker entries that
   // parseRounds filters). Omitted ⇒ the parsed history length.

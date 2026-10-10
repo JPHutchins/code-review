@@ -21,8 +21,16 @@ export const RESPONSE_FORM = `Review-Response: <id> ${DISPOSITIONS.join("|")} â€
 export const RESPONSE_TABLE_HEADER = "| id | disposition | reason |";
 export const RESPONSE_TABLE_DELIMITER = "| --- | --- | --- |";
 
+// The table the sticky shows under its teaching, as a fenced block an implementer copies whole and
+// fills in: the header, the delimiter, and one example row.
+export const RESPONSE_TABLE_EXAMPLE = [
+  RESPONSE_TABLE_HEADER,
+  RESPONSE_TABLE_DELIMITER,
+  `| <id> | ${DISPOSITIONS.at(0) ?? ""} | <reason> |`,
+].join("\n");
+
 // What the implementer is told, word for word, on the sticky under every full review with findings.
-export const RESPONSE_TEACHING = `To answer findings, post a PR conversation comment holding a markdown table â€” the header \`${RESPONSE_TABLE_HEADER}\`, the delimiter \`${RESPONSE_TABLE_DELIMITER}\`, then one row per finding id, its disposition exactly one of ${DISPOSITIONS.slice(
+export const RESPONSE_TEACHING = `To answer findings, post a PR conversation comment holding the table below, one row per finding id, its disposition exactly one of ${DISPOSITIONS.slice(
   0,
   -1,
 )

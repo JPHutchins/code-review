@@ -17,6 +17,7 @@ import {
   DISPOSITIONS,
   RESPONSE_FORM,
   RESPONSE_TABLE_DELIMITER,
+  RESPONSE_TABLE_EXAMPLE,
   RESPONSE_TABLE_HEADER,
   RESPONSE_TEACHING,
 } from "./response-grammar.js";
@@ -209,7 +210,10 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       { id: "a-b", disposition: "dismissed", reason: "tracked in #12" },
     ]);
     expect(RESPONSE_TEACHING).toBe(
-      "To answer findings, post a PR conversation comment holding a markdown table — the header `| id | disposition | reason |`, the delimiter `| --- | --- | --- |`, then one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
+      "To answer findings, post a PR conversation comment holding the table below, one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
+    );
+    expect(RESPONSE_TABLE_EXAMPLE).toBe(
+      "| id | disposition | reason |\n| --- | --- | --- |\n| <id> | fixed | <reason> |",
     );
   });
 

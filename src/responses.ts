@@ -1,27 +1,25 @@
 import * as t from "io-ts";
 import { ID_SHAPE_RE, strictExact } from "./schema.js";
 import { clipText } from "./util.js";
+import {
+  DispositionCodec,
+  ResponseDispositionCodec,
+  type ResponseDisposition,
+} from "./response-grammar.js";
 
 export const RESPONSE_REASON_CLIP_CHARS = 300;
 export const RESPONSES_PER_CHANNEL = 25;
 
-const DispositionCodec = t.keyof({ fixed: null, refuted: null, dismissed: null });
 const ChannelCodec = t.keyof({ comment: null, commit: null });
-type Disposition = t.TypeOf<typeof DispositionCodec>;
-
-// The response vocabulary, for every surface that teaches it.
-export const DISPOSITIONS = Object.keys(DispositionCodec.keys) as readonly Disposition[];
 
 // The roles whose answers come from the maintainers, as the reviewer's note names them.
 export const MAINTAINER_ASSOCIATIONS: readonly string[] = ["OWNER", "MEMBER", "COLLABORATOR"];
 
-const CLOSING_DISPOSITIONS: ReadonlySet<Disposition> = new Set(["refuted", "dismissed"]);
-
-export const RESPONSE_FORM = `Review-Response: <id> ${DISPOSITIONS.join("|")} — <reason>`;
+const CLOSING_DISPOSITIONS: ReadonlySet<ResponseDisposition> = new Set(["refuted", "dismissed"]);
 
 const ResponseShape = t.type({
   id: t.string,
-  disposition: DispositionCodec,
+  disposition: ResponseDispositionCodec,
   reason: t.string,
   channel: ChannelCodec,
   source_url: t.string,
@@ -53,7 +51,7 @@ export type ResponsesFile = t.TypeOf<typeof ResponsesFileCodec>;
 
 interface ParsedLine {
   readonly id: string;
-  readonly disposition: Disposition;
+  readonly disposition: ResponseDisposition;
   readonly reason: string;
 }
 
@@ -97,8 +95,8 @@ export const unfencedLines = (text: string): readonly string[] =>
 const unwrapId = (token: string): string => token.replace(/^[`"']+|[`"'.,:;]+$/g, "");
 
 // Any token parses as an id: whether it has an id's shape is the harvest's rule, not the grammar's.
-export const parseResponseLines = (text: string): readonly ParsedLine[] =>
-  unfencedLines(text).flatMap((line) => {
+const lineAnswers = (lines: readonly string[]): readonly ParsedLine[] =>
+  lines.flatMap((line) => {
     const match = RESPONSE_LINE_RE.exec(line);
     const id = unwrapId(match?.[1] ?? "");
     const disposition = match?.[2]?.toLowerCase();
@@ -112,6 +110,153 @@ export const parseResponseLines = (text: string): readonly ParsedLine[] =>
         ]
       : [];
   });
+
+export const parseResponseLines = (text: string): readonly ParsedLine[] =>
+  lineAnswers(unfencedLines(text));
+
+// A verdict table — the taught form for a PR comment, and the one implementers post unprompted — is
+// read when its header's columns name an id and a disposition. Each backtick-quoted token in a row's
+// id cell is an answer, or each comma-separated bare id when it quotes none; the other cells are its
+// reason, the disposition's own cell included only when it says more than the verdict. A table is a
+// header row, its delimiter, and the rows after it that hold a pipe; another header and delimiter
+// open a new table.
+const ID_IN_CELL_RE = /`([^`]+)`/g;
+const ID_HEADERS: ReadonlySet<string> = new Set(["id", "ids", "finding", "findings"]);
+const DISPOSITION_HEADERS: ReadonlySet<string> = new Set(["disposition", "verdict", "resolution"]);
+
+// The cells of a row, split at each pipe no backslash escapes. A cell consumes an escape with the
+// character it escapes, so the scan is linear: no backward search per pipe.
+const CELL_RE = /((?:\\[\s\S]?|[^\\|])*)(\||$)/g;
+const splitCells = (row: string): readonly string[] => {
+  const cells = [...row.matchAll(CELL_RE)];
+  return cells
+    .slice(0, cells.findIndex((match) => match[2] !== "|") + 1)
+    .map((match) => match[1] ?? "");
+};
+
+// A line of a table: its cells without the outer pipes, or null when it holds no unescaped pipe or
+// opens another block (a list item, a heading, a quote) that a pipe inside it cannot make a row.
+const BLOCK_START_RE = /^ {0,3}([-+*]\s|\d+[.)]\s|#{1,6}(\s|$)|>)/;
+const tableRow = (line: string): readonly string[] | null => {
+  if (!/^ {0,3}\S/.test(line) || BLOCK_START_RE.test(line)) return null;
+  const split = splitCells(line.trim());
+  if (split.length < 2) return null;
+  const inner = split.slice(line.trim().startsWith("|") ? 1 : 0);
+  return (
+    inner.length > 1 && inner[inner.length - 1]?.trim() === "" ? inner.slice(0, -1) : inner
+  ).map((cell) => cell.trim().replace(/\\\|/g, "|"));
+};
+
+const isDelimiter = (cells: readonly string[] | null): boolean =>
+  cells !== null && cells.every((cell) => /^:?-+:?$/.test(cell));
+
+const plainCell = (cell: string): string => cell.replace(/[*_`]/g, "").trim().toLowerCase();
+
+// A header names a column by its first word: "Finding ID" is the id column, "Verdict / action" the
+// disposition's.
+const columnName = (cell: string): string => plainCell(cell).split(/[\s/]+/)[0] ?? "";
+
+// A parenthetical in the id cell annotates the id ("(minor)", "(was `x-y`)"), never names another.
+const idsInCell = (cell: string): readonly string[] => {
+  const ids = cell.replace(/\([^()]*\)/g, "");
+  const quoted = [...ids.matchAll(ID_IN_CELL_RE)]
+    .map((match) => unwrapId((match[1] ?? "").trim()))
+    .filter((id) => id !== "");
+  const bare = ids
+    .split(",")
+    .map((piece) => unwrapId(piece.trim()))
+    .filter((id) => id !== "");
+  return quoted.length > 0 ? quoted : bare.every((id) => /^\S+$/.test(id)) ? bare : [];
+};
+
+// The verdict is the disposition cell's first word, emphasis and emoji aside, when that word is
+// exactly one the sticky teaches. Any other cell — a synonym, a negation, prose — is unstated: its
+// reason still reaches the reviewer, and only a taught word can close a finding.
+const tableDisposition = (cell: string): ResponseDisposition => {
+  const firstWord =
+    plainCell(cell)
+      .replace(/^[^a-z]+/, "")
+      .split(/[^a-z]/)[0] ?? "";
+  return DispositionCodec.is(firstWord) ? firstWord : "unstated";
+};
+
+interface VerdictColumns {
+  readonly id: number;
+  readonly disposition: number;
+}
+
+const rowAnswers = (cells: readonly string[], columns: VerdictColumns): readonly ParsedLine[] => {
+  const dispositionCell = cells[columns.disposition] ?? "";
+  const disposition = tableDisposition(dispositionCell);
+  const verdictOnly = DispositionCodec.is(plainCell(dispositionCell));
+  const reason = clipText(
+    cells
+      .filter(
+        (cell, column) =>
+          cell !== "" && column !== columns.id && !(verdictOnly && column === columns.disposition),
+      )
+      .join(" — "),
+    RESPONSE_REASON_CLIP_CHARS,
+  );
+  return idsInCell(cells[columns.id] ?? "").map((id) => ({ id, disposition, reason }));
+};
+
+const namesAColumn = (name: string): boolean =>
+  ID_HEADERS.has(name) || DISPOSITION_HEADERS.has(name);
+
+// One pass over the lines, each split once: a header row followed by its delimiter opens a table,
+// which runs while lines hold a pipe. Inside a table, only a row naming a column opens another; a
+// data row above a stray delimiter stays a row, and the delimiter answers nothing.
+const tableAnswers = (lines: readonly string[]): readonly ParsedLine[] => {
+  const rows = lines.map(tableRow);
+  return rows.reduce<{
+    readonly columns: VerdictColumns | null;
+    readonly inTable: boolean;
+    readonly skipDelimiter: boolean;
+    readonly answers: ParsedLine[];
+  }>(
+    (state, cells, index) => {
+      if (state.skipDelimiter) return { ...state, skipDelimiter: false };
+      if (cells === null) return { ...state, inTable: false, columns: null };
+      const opensTable =
+        !isDelimiter(cells) &&
+        isDelimiter(rows[index + 1] ?? null) &&
+        (!state.inTable || cells.map(columnName).some(namesAColumn));
+      if (opensTable) {
+        const header = cells.map(columnName);
+        const id = header.findIndex((name) => ID_HEADERS.has(name));
+        const disposition = header.findIndex((name) => DISPOSITION_HEADERS.has(name));
+        return {
+          ...state,
+          inTable: true,
+          skipDelimiter: true,
+          columns: id < 0 || disposition < 0 ? null : { id, disposition },
+        };
+      }
+      if (state.inTable && state.columns !== null && !isDelimiter(cells)) {
+        state.answers.push(...rowAnswers(cells, state.columns));
+      }
+      return isDelimiter(rows[index + 1] ?? null) ? { ...state, skipDelimiter: true } : state;
+    },
+    { columns: null, inTable: false, skipDelimiter: false, answers: [] },
+  ).answers;
+};
+
+export const parseResponseTables = (text: string): readonly ParsedLine[] =>
+  tableAnswers(unfencedLines(text));
+
+// Every answer in a text, lines then tables, read from one fence scan. Only an exact repeat — same
+// id, verdict and reason — counts once; a changed verdict or an edited reason is kept.
+export const parseResponses = (text: string): readonly ParsedLine[] => {
+  const lines = unfencedLines(text);
+  const seen = new Set<string>();
+  return [...lineAnswers(lines), ...tableAnswers(lines)].filter((answer) => {
+    const key = JSON.stringify([answer.id, answer.disposition, answer.reason]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
 
 // A comment answers only when a HUMAN wrote it: neither this pipeline's bot (matched by login) nor
 // any other bot account (matched by the REST user.type, so a CI/dependabot comment can't masquerade
@@ -158,8 +303,8 @@ const newestFirst = (
   return left < right ? 1 : left > right ? -1 : b.id - a.id;
 };
 
-// Every answer on the PR, newest first per channel. Only a human account answers: another bot's
-// comment never poses as the implementer.
+// Every answer on the PR — a Review-Response line or a verdict-table row — newest first per channel.
+// Only a human account answers: another bot's comment never poses as the implementer.
 export const answersFrom = (
   input: AnswerSources,
 ): { readonly comments: readonly Response[]; readonly commits: readonly Response[] } => {
@@ -167,7 +312,7 @@ export const answersFrom = (
     .filter((comment) => isHuman(comment.user.login, comment.user.type ?? null, input.botLogin))
     .sort(newestFirst)
     .flatMap((comment) =>
-      parseResponseLines(comment.body ?? "").map((line) => ({
+      parseResponses(comment.body ?? "").map((line) => ({
         ...line,
         channel: "comment" as const,
         source_url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}#issuecomment-${String(comment.id)}`,
@@ -177,7 +322,7 @@ export const answersFrom = (
       })),
     );
   const commits: readonly Response[] = [...input.commits].reverse().flatMap((commit) =>
-    parseResponseLines(commit.message).map((line) => ({
+    parseResponses(commit.message).map((line) => ({
       ...line,
       channel: "commit" as const,
       source_url: `https://github.com/${input.repo}/commit/${commit.sha}`,
@@ -236,16 +381,19 @@ const answeredInstant = (response: Response): number =>
 // The answers that close their ids: per id, the newest trusted answer, when it refutes or dismisses
 // the finding. A `fixed` is a claim the reviewer verifies, never a closure, and a newer one reopens
 // the id; an answer whose time cannot be read cannot be ordered, so its id never closes, and neither
-// does a same-instant tie with a `fixed`.
+// does a same-instant tie with a `fixed`. An unstated answer claims no verdict, so it neither closes
+// an id nor reopens one.
 export const closingResponses = (
   responses: readonly Response[],
   isTrusted: (response: Response) => boolean,
 ): readonly Response[] => {
-  const byId = responses.filter(isTrusted).reduce((groups, response) => {
-    const timed = { response, at: answeredInstant(response) };
-    groups.set(response.id, [...(groups.get(response.id) ?? []), timed]);
-    return groups;
-  }, new Map<string, readonly { readonly response: Response; readonly at: number }[]>());
+  const byId = responses
+    .filter((response) => response.disposition !== "unstated" && isTrusted(response))
+    .reduce((groups, response) => {
+      const timed = { response, at: answeredInstant(response) };
+      groups.set(response.id, [...(groups.get(response.id) ?? []), timed]);
+      return groups;
+    }, new Map<string, readonly { readonly response: Response; readonly at: number }[]>());
   return [...byId.values()].flatMap((answers) => {
     if (answers.some(({ at }) => Number.isNaN(at))) return [];
     const latest = Math.max(...answers.map(({ at }) => at));

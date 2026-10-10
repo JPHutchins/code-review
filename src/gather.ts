@@ -554,12 +554,12 @@ export const gather = async (
   writeFileSync(join(input.outDir, "responses.json"), JSON.stringify(harvest.file));
   if (seedsFromPrior && priorFindings === null) {
     process.stderr.write(
-      "Note: the prior review's findings did not resolve — every id-shaped Review-Response line is staged as unmatched\n",
+      "Note: the prior review's findings did not resolve — every id-shaped answer is staged as unmatched\n",
     );
   }
   if (harvest.dropped > 0) {
     process.stderr.write(
-      `Note: ${String(harvest.dropped)} Review-Response line(s) beyond the newest ${String(RESPONSES_PER_CHANNEL)} per channel were not staged\n`,
+      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_PER_CHANNEL)} per channel were not staged\n`,
     );
   }
   writeFileSync(

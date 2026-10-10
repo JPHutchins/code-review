@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
-  DISPOSITIONS,
   harvestResponses,
   parseResponseLines,
+  parseResponseTables,
+  parseResponses,
   RESPONSE_REASON_CLIP_CHARS,
-  RESPONSE_FORM,
   RESPONSES_PER_CHANNEL,
   ResponsesFileCodec,
   MAINTAINER_ASSOCIATIONS,
@@ -13,6 +13,13 @@ import {
   type HarvestInput,
   type Response,
 } from "./responses.js";
+import {
+  DISPOSITIONS,
+  RESPONSE_FORM,
+  RESPONSE_TABLE_DELIMITER,
+  RESPONSE_TABLE_HEADER,
+  RESPONSE_TEACHING,
+} from "./response-grammar.js";
 
 describe("parseResponseLines — the response grammar", () => {
   it("reads the id, the disposition and the reason, whatever separator follows the verb", () => {
@@ -132,6 +139,234 @@ describe("parseResponseLines — the response grammar", () => {
     const [line] = parseResponseLines(`Review-Response: x refuted ${"r".repeat(1000)}`);
     expect(line?.reason.startsWith("r".repeat(RESPONSE_REASON_CLIP_CHARS))).toBe(true);
     expect(line?.reason).toContain("[truncated]");
+  });
+});
+
+describe("parseResponseTables — the verdict tables implementers post", () => {
+  it("reads a camas-style table: an emoji before the verdict, a third action column, several ids in one row, a synonym unstated", () => {
+    const table = [
+      "| finding | verdict | action |",
+      "|---|---|---|",
+      "| `batch-predicate-duplicated-drift` | ✅ fixed | One doctested `is_batch_program(name)` now serves both. |",
+      "| `pathlike-argv-crashes-end-to-end`, `pathlike-directory-spelling-erased` | ✅ resolved by removal | `Task.cmd` is `tuple[str, ...]`. |",
+      "| `widened-argv-contract-undeclared` (nit) | ✅ moot | The path-like claim is gone. |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["batch-predicate-duplicated-drift", "fixed"],
+      ["pathlike-argv-crashes-end-to-end", "unstated"],
+      ["pathlike-directory-spelling-erased", "unstated"],
+      ["widened-argv-contract-undeclared", "unstated"],
+    ]);
+    expect(parseResponseTables(table)[0]?.reason).toBe(
+      "✅ fixed — One doctested `is_batch_program(name)` now serves both.",
+    );
+  });
+
+  it("reads a salix-style table: a bold taught verdict counts, an untaught one is unstated", () => {
+    const table = [
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `parameterless-candidate-skips-diamond-check` (major) | **fixed by widening this PR**, which now closes #229. |",
+      "| `dict-co-base-copy-drops-items` (minor, re-raised) | **reproduced after merge** and filed as #223. A struct segfaults. |",
+      "| `declared-names-order-sensitive-compare` (hidden nit) | recorded. A delegate that reorders the annotations is refused. |",
+      '| `unchecked-type-in-exception-fastsubclass` (minor) | **probed, not reached**. `META("C", (5,), {})` is refused first. |',
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["parameterless-candidate-skips-diamond-check", "fixed"],
+      ["dict-co-base-copy-drops-items", "unstated"],
+      ["declared-names-order-sensitive-compare", "unstated"],
+      ["unchecked-type-in-exception-fastsubclass", "unstated"],
+    ]);
+  });
+
+  it("reads a jphfmt-style table: a resolution that names no verdict is unstated, a systemic id answers too, a title-only row names nothing", () => {
+    const table = [
+      "| finding | resolution |",
+      "| --- | --- |",
+      "| `scope-directives-cr-line-split` | `scope_directives` splits a lone `\\r` as the lexer does. |",
+      "| hidden blank-class nit | `starts_logical_line` reads past blank pieces. |",
+      "| systemic `line-splice-rule-multiply-spelled` | One snippet table runs through all three readings. |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["scope-directives-cr-line-split", "unstated"],
+      ["line-splice-rule-multiply-spelled", "unstated"],
+    ]);
+  });
+
+  it("reads the taught table once its rows are filled in, for every disposition, ids bare or quoted", () => {
+    const table = [
+      RESPONSE_TABLE_HEADER,
+      RESPONSE_TABLE_DELIMITER,
+      ...DISPOSITIONS.map((disposition) => `| x-${disposition} (minor) | ${disposition} | why |`),
+      "| `a-b` | dismissed | tracked in #12 |",
+    ].join("\n");
+    expect(parseResponseTables(table)).toEqual([
+      ...DISPOSITIONS.map((disposition) => ({
+        id: `x-${disposition}`,
+        disposition,
+        reason: "why",
+      })),
+      { id: "a-b", disposition: "dismissed", reason: "tracked in #12" },
+    ]);
+    expect(RESPONSE_TEACHING).toBe(
+      "To answer findings, post a PR conversation comment holding a markdown table — the header `| id | disposition | reason |`, the delimiter `| --- | --- | --- |`, then one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
+    );
+  });
+
+  it("ignores a table without an id and a disposition column, and a fenced copy of one", () => {
+    const unrelated = [
+      "| shape | stock | main | now |",
+      "| --- | --- | --- | --- |",
+      "| ClassVar removes `a` | fields `[w, p]` | slot shadowed | refused |",
+    ].join("\n");
+    const fenced = [
+      "```",
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `x-y` | dismissed |",
+      "```",
+    ].join("\n");
+    expect(parseResponseTables(unrelated)).toEqual([]);
+    expect(parseResponseTables(fenced)).toEqual([]);
+  });
+
+  it("keeps a correction — a changed verdict or an edited reason — and collapses only an exact repeat", () => {
+    const text = [
+      "Review-Response: x-y refuted — measured",
+      "Review-Response: x-y refuted — measured on 3.14 too",
+      "",
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `x-y` | fixed |",
+      "| `x-y` | fixed |",
+      "| `a-b` | recorded |",
+    ].join("\n");
+    expect(parseResponses(text).map((r) => [r.id, r.disposition, r.reason])).toEqual([
+      ["x-y", "refuted", "measured"],
+      ["x-y", "refuted", "measured on 3.14 too"],
+      ["x-y", "fixed", ""],
+      ["a-b", "unstated", "recorded"],
+    ]);
+  });
+
+  it("reads a verdict only from a taught word leading the cell, never a guess", () => {
+    const table = [
+      "| id | verdict |",
+      "| --- | --- |",
+      "| `a` | not fixed — the patch was reverted |",
+      "| `b` | rejected |",
+      "| `c` |  |",
+      "| `d` | won't fix |",
+      "| `e` | fixed, but not the root cause |",
+      "| `f` | **probed, not reached** |",
+      "| `g` | **Dismissed**: tracked in #12 |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["a", "unstated"],
+      ["b", "unstated"],
+      ["c", "unstated"],
+      ["d", "unstated"],
+      ["e", "fixed"],
+      ["f", "unstated"],
+      ["g", "dismissed"],
+    ]);
+  });
+
+  it("runs a table while lines hold a pipe: a stray dashed row answers nothing, a list ends it, a legend opens its own", () => {
+    const text = [
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `a-b` | fixed |",
+      "| --- | --- |",
+      "| `c-d` | refuted |",
+      "| verdict | meaning |",
+      "| --- | --- |",
+      "| fixed | the fix landed |",
+      "",
+      "| id | disposition |",
+      "| --- | --- |",
+      "| `e-f` | dismissed |",
+      "- a list item is no row",
+      "| `g-h` | dismissed |",
+    ].join("\n");
+    expect(parseResponseTables(text).map((r) => [r.id, r.disposition])).toEqual([
+      ["a-b", "fixed"],
+      ["c-d", "refuted"],
+      ["e-f", "dismissed"],
+    ]);
+  });
+
+  it("ends a table at a list item, a heading or a quote, even one holding a pipe; trims a quoted id", () => {
+    const text = [
+      "| id | disposition |",
+      "| --- | --- |",
+      "| ` a-b ` | fixed |",
+      "- `c-d` | dismissed",
+      "| `e-f` | dismissed |",
+    ].join("\n");
+    expect(parseResponseTables(text).map((r) => [r.id, r.disposition])).toEqual([["a-b", "fixed"]]);
+  });
+
+  it("strips an id cell's parentheticals in linear time, however many are left open", () => {
+    const row = `| ${"(".repeat(65536)}a-b | fixed |`;
+    const started = performance.now();
+    parseResponseTables(["| id | disposition |", "| --- | --- |", row].join("\n"));
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it("never reads an id out of the id cell's parenthetical note", () => {
+    const table = ["| id | disposition |", "| --- | --- |", "| `a-b` (was `x-y`) | fixed |"].join(
+      "\n",
+    );
+    expect(parseResponseTables(table).map((r) => r.id)).toEqual(["a-b"]);
+  });
+
+  it("names a column by its header's first word", () => {
+    const table = [
+      "| Finding ID | Verdict / action |",
+      "| --- | --- |",
+      "| `a-b` | dismissed |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => [r.id, r.disposition])).toEqual([
+      ["a-b", "dismissed"],
+    ]);
+  });
+
+  it("splits a hostile row in linear time", () => {
+    const row = `| ${"\\|".repeat(32768)} | dismissed |`;
+    const started = performance.now();
+    parseResponseTables(["| id | disposition |", "| --- | --- |", row].join("\n"));
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it("reads only a verdict table: a status table is not one", () => {
+    expect(
+      parseResponseTables(["| id | status |", "| --- | --- |", "| `a-b` | open |"].join("\n")),
+    ).toEqual([]);
+  });
+
+  it("reads bare dotted and comma-listed ids, escaped pipes, and rows without outer pipes", () => {
+    const table = [
+      "id | disposition | reason",
+      "--- | --- | ---",
+      "dotted.id | dismissed | the `a \\| b` form is intended",
+      "a-b, c-d | refuted |  |",
+    ].join("\n");
+    expect(parseResponseTables(table)).toEqual([
+      { id: "dotted.id", disposition: "dismissed", reason: "the `a | b` form is intended" },
+      { id: "a-b", disposition: "refuted", reason: "" },
+      { id: "c-d", disposition: "refuted", reason: "" },
+    ]);
+  });
+
+  it("scans many tables in linear time", () => {
+    const table = ["| id | disposition |", "| --- | --- |", ""];
+    const text = Array.from({ length: 20000 }, () => table)
+      .flat()
+      .join("\n");
+    const started = performance.now();
+    expect(parseResponseTables(text)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 });
 
@@ -364,6 +599,13 @@ describe("closingResponses — the newest trusted answer per id decides", () => 
     expect(closingResponses([answer({}), answer({ disposition: "fixed" })], maintainer)).toEqual(
       [],
     );
+  });
+
+  it("lets no unstated answer close or reopen an id — a later verdict-less table row leaves a closure standing", () => {
+    const closed = answer({});
+    const unstated = answer({ disposition: "unstated", created_at: "2026-10-02T00:00:00Z" });
+    expect(closingResponses([closed, unstated], maintainer)).toEqual([closed]);
+    expect(closingResponses([unstated], maintainer)).toEqual([]);
   });
 
   it("ignores an untrusted fixed, so it cannot reopen a maintainer's closure", () => {

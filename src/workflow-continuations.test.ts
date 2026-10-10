@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readRepoFile, allWorkflows } from "./test-util.js";
-import { DISPOSITIONS, MAINTAINER_ASSOCIATIONS, RESPONSE_FORM } from "./responses.js";
+import { DISPOSITIONS, RESPONSE_FORM } from "./response-grammar.js";
+import { MAINTAINER_ASSOCIATIONS } from "./responses.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -740,7 +741,7 @@ describe("the review dialogue — the reviewer and the triage read the same prot
       line.startsWith('SEED_NOTE="${SEED_NOTE} The author answered'),
     );
     expect(note).toContain(`\\\`${RESPONSE_FORM.slice(0, RESPONSE_FORM.indexOf(" "))}\\\` line`);
-    expect(note).toContain(`(disposition ${DISPOSITIONS.join("|")})`);
+    expect(note).toContain(`(disposition ${DISPOSITIONS.join("|")}, or unstated when`);
     expect(note).toContain(
       `(${MAINTAINER_ASSOCIATIONS.slice(0, -1).join(", ")} and ${MAINTAINER_ASSOCIATIONS.at(-1) ?? ""} answers come from the maintainers`,
     );

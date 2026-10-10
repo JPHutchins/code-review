@@ -40,7 +40,7 @@ import {
   ScopeMetastasisCodec,
   TestSummaryCodec,
   isIncompleteFindings,
-  RECOVERABLE_OPTIONAL_FIELDS,
+  withoutBrokenOptionalFields,
   anchoredSchemaVersionPattern,
   withoutRebuttals,
 } from "./schema.js";
@@ -1222,21 +1222,13 @@ const seedDraftCmd = defineCommand({
                 : schemaPathFor(kind, args["schema-version"]);
               // ALWAYS validate — no short-circuit: a natively-carried 0.8.0 entry must face the
               // in-force schema like any other doc. When that schema (or the codec) rejects the doc
-              // solely because of a RECOVERABLE optional field (scope_metastasis, convergence, or
-              // change_size — a consumer-pinned custom --schema predating one, an older pinned CLI in
-              // the merge-to-release window, or a corrupt blob-carried entry), fall back to the
-              // field-stripped doc: losing those fields beats losing ALL prior context (issue #150
-              // review r2 + #174 + #182 review r2). Shares post's recovery set (SSOT) so the two
-              // recovery sites can never diverge. Covers BOTH gates (ajv + codec) — and both run on
-              // the UPCAST value (resolvedPriorValue), never the raw legacy doc.
-              const barePrior =
-                typeof priorFindings === "object" && !Array.isArray(priorFindings)
-                  ? Object.fromEntries(
-                      Object.entries(priorFindings as Record<string, unknown>).filter(
-                        ([key]) => !RECOVERABLE_OPTIONAL_FIELDS.has(key),
-                      ),
-                    )
-                  : priorFindings;
+              // solely because of a RECOVERABLE optional field (a consumer-pinned custom --schema
+              // predating one, an older pinned CLI in the merge-to-release window, or a corrupt
+              // blob-carried entry), fall back to the doc without the broken ones: losing those fields
+              // beats losing ALL prior context (issue #150 review r2 + #174 + #182 review r2). Shares
+              // post's recovery (SSOT) so the two recovery sites can never diverge. Covers BOTH gates
+              // (ajv + codec) — and both run on the UPCAST value (resolvedPriorValue), never the raw
+              // legacy doc.
               // Rebuttals answer the PRIOR round only, so the carried doc drops them before the
               // gate: a pinned schema predating the field never rejects the whole prior over one.
               const accepts = (doc: unknown): Findings | null => {
@@ -1248,12 +1240,17 @@ const seedDraftCmd = defineCommand({
               const seedDoc =
                 accepts(priorFindings) ??
                 ((): Findings | null => {
-                  const bare = accepts(barePrior);
-                  if (bare === null) return null;
-                  process.stderr.write(
-                    `Note: the in-force schema rejects a carried recoverable field (scope_metastasis/convergence/change_size) — seeding the prior without it (issue #150 review r2 / #182 review r2)\n`,
+                  if (typeof priorFindings !== "object" || Array.isArray(priorFindings))
+                    return null;
+                  const recovered = withoutBrokenOptionalFields(
+                    priorFindings as Readonly<Record<string, unknown>>,
+                    (candidate) => accepts(candidate) !== null,
                   );
-                  return bare;
+                  if (recovered === null) return null;
+                  process.stderr.write(
+                    `Note: the in-force schema rejects a carried recoverable field (${recovered.stripped.join("/")}) — seeding the prior without it (issue #150 review r2 / #182 review r2)\n`,
+                  );
+                  return accepts(recovered.doc);
                 })();
               if (seedDoc === null) return false;
               // Skip a prior that never completed (verdict "error" + no findings — the notice

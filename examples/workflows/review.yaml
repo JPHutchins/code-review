@@ -617,7 +617,7 @@ jobs:
               prior-same)
                 SEED_NOTE=" Your previous review of THIS SAME commit is in $PRIOR_CONTEXT — read it as context; it is read-only and never your deliverable. The code under review has not changed since. Use those findings and systemic_problems to steer your investigation: reconfirm each still holds (correct any that were wrong or imprecise), then spend the remaining budget hunting for NEW issues the earlier pass missed rather than only re-checking old ones." ;;
               prior-new)
-                SEED_NOTE=" Your previous review of an EARLIER commit of this PR is in $PRIOR_CONTEXT — read it as context; it is read-only and never your deliverable. New commits have landed since. Treat those findings and systemic_problems as the prior state: for each, decide whether the new commits ADDRESSED it — drop it if fixed or no longer applicable, keep it if it still holds. Then review the new commits as thoroughly as a first round reviews a whole PR, with the same breadth of angles and probes: a fix is fresh code, and fresh code is where new bugs come from. Re-checking the prior findings, and any answers to them, is the smaller part of this round; never let it use up the budget that hunt needs. Any checks the prior review's \`unfinished\` field lists were never done: do them too. Add new findings freely." ;;
+                SEED_NOTE=" Your previous review of an EARLIER commit of this PR is in $PRIOR_CONTEXT — read it as context; it is read-only and never your deliverable. New commits have landed since. Treat those findings and systemic_problems as the prior state: for each, decide whether the new commits ADDRESSED it — drop it if fixed or no longer applicable, keep it if it still holds. Then review the new commits as thoroughly as a first round reviews a whole PR, with the same breadth of angles and probes: a fix is fresh code, and fresh code is where new bugs come from. Re-checking the prior findings, and any answers to them, is the smaller part of this round; never let it use up the budget that hunt needs. Add new findings freely." ;;
               empty-had-prior)
                 SEED_NOTE=" A previous review of this PR exists but its findings could not be pre-loaded here — do a full, fresh review and treat every finding as new." ;;
               empty)
@@ -629,6 +629,10 @@ jobs:
             if [ -n "$SEED_NOTE" ]; then
               SEED_NOTE="${SEED_NOTE} $DRAFT starts as a NON-REVIEW sentinel — replace it with your own complete review as you go."
             fi
+            case "$SEED_MODE" in
+              prior-same|prior-new)
+                SEED_NOTE="${SEED_NOTE} Any checks the prior review's \`unfinished\` field lists were never done: do them this round." ;;
+            esac
             # The nit visibility floor (issue #164), delivered by seed-draft beside $PRIOR_CONTEXT: the
             # prior round's below-floor nits the commenter hid from humans. They remain in the machine
             # blob (so $PRIOR_CONTEXT already lists them) — this names them as ADJUDICATED so the agent
@@ -800,6 +804,8 @@ jobs:
           UNFINISHED_NOTE=""
           if grep -q '"unfinished"' "$SCHEMA_FILE"; then
             UNFINISHED_NOTE=" Name every check you planned but did not complete — an angle you skipped, a probe the budget cut short, a subagent that stopped early — in the findings document's \`unfinished\` field, one entry each. Leave it out only when every planned check finished: a review that reads complete when it was not is worse than one that says what it skipped."
+          else
+            echo "the pinned code-review CLI (${CODE_REVIEW_VERSION}) has no \`unfinished\` field in its findings schema; this review is not asked to name its unfinished checks"
           fi
 
           # Absolute run deadline, exported so EVERY budget hook — the main agent's and each fan-out

@@ -70,7 +70,22 @@ export interface TerminalNoticeInput {
   readonly findingsDocLinked: boolean;
   readonly thisRunArtifact: boolean;
   readonly modelNames: string;
+  readonly unfinished: readonly string[];
 }
+
+const UNFINISHED_SHOWN = 8;
+const UNFINISHED_CLIP_CHARS = 240;
+
+// The unfinished checks as a comment shows them: one line each, HTML-escaped so no entry can open a
+// comment or a tag, clipped, at most UNFINISHED_SHOWN with the rest counted.
+export const unfinishedLines = (checks: readonly string[]): readonly string[] => [
+  ...checks
+    .slice(0, UNFINISHED_SHOWN)
+    .map((check) => escapeHtml(clipText(check.replace(/\s+/g, " ").trim(), UNFINISHED_CLIP_CHARS))),
+  ...(checks.length > UNFINISHED_SHOWN
+    ? [`… and ${String(checks.length - UNFINISHED_SHOWN)} more`]
+    : []),
+];
 
 export const terminalNotice = (i: TerminalNoticeInput): string =>
   [
@@ -96,6 +111,9 @@ export const terminalNotice = (i: TerminalNoticeInput): string =>
       (i.findingsDocLinked && i.thisRunArtifact
         ? " The machine findings document is linked above."
         : ""),
+    ...(i.unfinished.length > 0
+      ? ["", `> **Unfinished checks:** ${unfinishedLines(i.unfinished).join(" · ")}`]
+      : []),
     "",
     "> [!WARNING]",
     `> **LLM Disclosure** — this review was produced by ${i.modelNames || "unknown model"}.`,
@@ -525,9 +543,7 @@ export const render = (input: RenderInput): string => {
   const isFullReviewRound =
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && trajectory.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
-  const unfinished = (input.findings.unfinished ?? []).map((check) =>
-    check.replace(/\s+/g, " ").trim(),
-  );
+  const unfinished = input.findings.unfinished ?? [];
   const unfinishedSuffix =
     unfinished.length > 0
       ? ` · ${String(unfinished.length)} unfinished check${unfinished.length === 1 ? "" : "s"}`
@@ -760,6 +776,7 @@ export const render = (input: RenderInput): string => {
       input.jsonUrl !== undefined,
     ),
     terminalNotice: terminalNotice({
+      unfinished: isFullReviewRound ? unfinished : [],
       reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
       verdictBadge: verdictBadge(input.findings.verdict),
       route: route ?? undefined,
@@ -853,7 +870,7 @@ export const render = (input: RenderInput): string => {
     answeredNotes: input.answeredNotes ?? {},
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",
     contested: contestedBudget.kept,
-    unfinished,
+    unfinished: unfinishedLines(unfinished),
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

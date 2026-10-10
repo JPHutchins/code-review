@@ -77,6 +77,7 @@ import {
   incompleteFindings,
   isIncompleteFindings,
   RECOVERABLE_OPTIONAL_FIELDS,
+  withoutBrokenOptionalFields,
   ID_SHAPE_RE,
   priorIdsFrom,
 } from "./schema.js";
@@ -248,15 +249,15 @@ const loadFindings = (path: string): FindingsLoadResult => {
     !Array.isArray(raw) &&
     Object.keys(raw).some((k) => RECOVERABLE_OPTIONAL_FIELDS.has(k))
   ) {
-    const stripped = Object.fromEntries(
-      Object.entries(raw).filter(([key]) => !RECOVERABLE_OPTIONAL_FIELDS.has(key)),
+    const recovered = withoutBrokenOptionalFields(
+      raw as Readonly<Record<string, unknown>>,
+      (candidate) => decodeFindings(candidate).kind === "ok",
     );
-    const retry = decodeFindings(stripped);
-    if (retry.kind === "ok") {
+    if (recovered !== null) {
       process.stderr.write(
-        "Warning: the review draft carried an invalid best-effort field (convergence/scope_metastasis/change_size/unfinished) — stripped it and used the rest; the pipeline re-stamps convergence\n",
+        `Warning: the review draft carried an invalid best-effort field (${recovered.stripped.join("/")}) — stripped it and used the rest; the pipeline re-stamps convergence\n`,
       );
-      return retry;
+      return decodeFindings(recovered.doc);
     }
   }
   return first;
@@ -1895,6 +1896,7 @@ export const post = async (
         : []),
       "",
       terminalNotice({
+        unfinished: incomplete ? [] : (loadedFindings.unfinished ?? []),
         reviewedSha: input.headSha,
         verdictBadge: verdictBadge(loadedFindings.verdict),
         route: route ?? undefined,

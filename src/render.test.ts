@@ -989,6 +989,35 @@ describe("render", () => {
       expect(result).toMatch(/\*\*Convergence\*\*[^\n]*2 unfinished checks/);
     });
 
+    it("escapes each entry, caps the list, and counts the rest", () => {
+      const checks = [
+        "<!-- hides the rest -->",
+        ...Array.from({ length: 9 }, (_, n) => `probe ${String(n)}`),
+      ];
+      const result = render({
+        findings: mkFindings([], { unfinished: checks }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      expect(result).not.toContain("<!-- hides the rest -->");
+      expect(result).toContain("&lt;!-- hides the rest --&gt;");
+      expect(result).toContain("… and 2 more");
+      expect(result).toMatch(/\*\*Convergence\*\*[^\n]*10 unfinished checks/);
+    });
+
+    it("shows no list on an incomplete notice", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),
+        envelope: { ...baseEnvelope, incomplete: true },
+        prices,
+        template,
+      });
+      expect(result).not.toContain("the free-threaded probe");
+    });
+
     it("says nothing when every planned check finished", () => {
       const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
       expect(result).not.toContain("unfinished");

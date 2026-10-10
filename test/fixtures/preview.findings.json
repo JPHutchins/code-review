@@ -1,5 +1,6 @@
 {
   "schema_version": "0.11.0",
+  "unfinished": ["the free-threaded build probe — the budget ran out before it started"],
   "change_size": {
     "code": {
       "added": 240,

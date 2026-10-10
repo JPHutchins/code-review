@@ -525,6 +525,10 @@ export const render = (input: RenderInput): string => {
   const isFullReviewRound =
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && trajectory.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
+  const contestedSuffix =
+    (input.contested ?? []).length > 0
+      ? ` · ${String((input.contested ?? []).length)} contested`
+      : "";
 
   // The badge and the trajectory both read the ONE pipeline-stamped `convergence` field (issue #174),
   // whose score is per-finding — reading confidence × likelihood off the findings themselves, not a
@@ -732,7 +736,7 @@ export const render = (input: RenderInput): string => {
       convergenceSummary: !isFullReviewRound
         ? ""
         : convergence
-          ? convergenceBadge(convergence)
+          ? convergenceBadge(convergence) + contestedSuffix
           : "",
       inlinePosted: input.inlineDisposition?.kind === "posted" ? input.inlineDisposition.count : 0,
       runUrl: input.runUrl,
@@ -762,9 +766,9 @@ export const render = (input: RenderInput): string => {
     severityCounts,
     convergenceSummary: !isFullReviewRound
       ? ""
-      : convergence
-        ? convergenceBadge(convergence)
-        : convergenceSummary(input.findings, input.convergenceThreshold),
+      : (convergence
+          ? convergenceBadge(convergence)
+          : convergenceSummary(input.findings, input.convergenceThreshold)) + contestedSuffix,
     strays: discussionBudget.kept,
     orphanedLines: orphanedRender.lines,
     orphanedUnresolvable: input.orphanedUnresolvable === true,
@@ -807,6 +811,15 @@ export const render = (input: RenderInput): string => {
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},
     answeredNotes: input.answeredNotes ?? {},
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",
+    contested: (input.contested ?? []).map((view) => ({
+      ...view,
+      ...(view.reRaise?.location !== undefined
+        ? { reRaise: { ...view.reRaise, location: escapeCodeBackticks(view.reRaise.location) } }
+        : {}),
+      id: escapeCodeBackticks(view.id),
+      title: escapePipes(view.title),
+      answerUrl: linkSafeUrl(view.answerUrl),
+    })),
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

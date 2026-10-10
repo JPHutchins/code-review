@@ -8,7 +8,9 @@ import {
   mergedCountsMaps,
   resolveFindingId,
   resolveRuleId,
+  resolveSystemicId,
   usableCountsMap,
+  withSystemicProblems,
 } from "./schema.js";
 import type {
   ChangeSize,
@@ -22,6 +24,8 @@ import type {
   SystemicProblem,
 } from "./schema.js";
 import type { IdCounts, IdStreak, RoundRecord, SeverityCounts } from "./types.js";
+import { decodeDialogue } from "./dialogue.js";
+import type { DecodedDialogue, DialogueEntry } from "./dialogue.js";
 import { patchToSuggestion } from "./patch.js";
 
 // The recurrence signals (streaks, scope metastasis, same-root) read only a round's mechanism map,
@@ -657,6 +661,33 @@ export const convergenceScore = (doc: Findings, threshold: number): number =>
       ),
   );
 
+// A contested major weighs just over half the default threshold, so one alone never blocks
+// convergence and two do; every other contested severity weighs its floor.
+const CONTESTED_MAJOR = 0.51;
+
+export const contestedWeight = (severity: Severity, threshold: number): number =>
+  severity === "major" ? CONTESTED_MAJOR : convergenceFloor(severity, threshold);
+
+// The score with each contested id's items taken out of the document and its entry's weight in.
+export const dialogueScore = (
+  doc: Findings,
+  contested: readonly Pick<DialogueEntry, "id" | "severity">[],
+  threshold: number,
+): number => {
+  const contestedIds = new Set(contested.map((entry) => entry.id));
+  const argued = {
+    ...withSystemicProblems(
+      doc,
+      (doc.systemic_problems ?? []).filter((s) => !contestedIds.has(resolveSystemicId(s) ?? "")),
+    ),
+    findings: doc.findings.filter((f) => !contestedIds.has(resolveFindingId(f))),
+  };
+  return round2(
+    convergenceScore(argued, threshold) +
+      contested.reduce((sum, entry) => sum + contestedWeight(entry.severity, threshold), 0),
+  );
+};
+
 // The pipeline-stamped convergence field (issue #174): this round's score/threshold/converged plus the
 // per-round trajectory. Prior rounds are carried VERBATIM — their scores are historical snapshots, and
 // recomputing at a changed threshold would rewrite the past — while THIS round is appended with its
@@ -672,8 +703,9 @@ export const buildConvergence = (
   round: number = 1,
   ids: IdCounts = {},
   sha?: string,
+  contested: readonly Pick<DialogueEntry, "id" | "severity">[] = [],
 ): Convergence => {
-  const score = convergenceScore(doc, threshold);
+  const score = dialogueScore(doc, contested, threshold);
   const normalized = normalizeIdCounts(ids, priorRounds[priorRounds.length - 1]?.ids);
   const current: ConvergenceRound = {
     round,
@@ -975,6 +1007,20 @@ export const findingsMarkerPair = (
   return marker === "" ? conv : `${marker}\n${conv}`;
 };
 
+const DIALOGUE_RE = /<!-- code-review:dialogue;base64 ([A-Za-z0-9+/=]+) -->/;
+
+export const dialogueMarker = (entries: readonly DialogueEntry[]): string =>
+  entries.length === 0
+    ? ""
+    : `<!-- code-review:dialogue;base64 ${Buffer.from(JSON.stringify(entries), "utf-8").toString("base64")} -->`;
+
+export const carriedDialogueMarker = (body: string): string => DIALOGUE_RE.exec(body)?.[0] ?? "";
+
+export const parseDialogueMarker = (body: string): DecodedDialogue => {
+  const b64 = DIALOGUE_RE.exec(body)?.[1];
+  return b64 === undefined ? { entries: [], skipped: 0 } : decodeDialogue(decodeBase64Json(b64));
+};
+
 export const parseConvergenceMarker = (body: string): Convergence | null => {
   const b64 = CONVERGENCE_RE.exec(body)?.[1];
   return b64 === undefined ? null : validStampedConvergence(decodeBase64Json(b64));
@@ -1137,10 +1183,19 @@ export const carryForwardMarkers = (body: string): string => {
   // The compact convergence marker (issue #185 review) rides beside the findings link, so the
   // in-progress placeholder must carry it forward too or the trajectory is lost across the swap.
   const convergence = CONVERGENCE_RE.exec(body)?.[0];
+  const dialogue = DIALOGUE_RE.exec(body)?.[0];
   const rounds = ROUNDS_RE.exec(body)?.[0];
   const signal = SIGNAL_RE.exec(body)?.[0];
   const findingsBlock = findings ? `${AGENTS_STOP_DIRECTIVE}\n${findings}` : undefined;
-  return [findingsBlock, reviewedSha, carriedProvenanceMarkers(body), convergence, rounds, signal]
+  return [
+    findingsBlock,
+    reviewedSha,
+    carriedProvenanceMarkers(body),
+    convergence,
+    dialogue,
+    rounds,
+    signal,
+  ]
     .filter((m): m is string => m !== undefined && m !== "")
     .join("\n\n");
 };

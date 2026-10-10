@@ -5,7 +5,7 @@ import * as t from "io-ts";
 import { createHash } from "node:crypto";
 import { asRecord } from "./util.js";
 
-const SeverityCodec = t.union([
+export const SeverityCodec = t.union([
   t.literal("critical"),
   t.literal("major"),
   t.literal("minor"),

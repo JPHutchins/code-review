@@ -393,6 +393,20 @@ const answeredInstant = (response: Response): number =>
 export const closingResponses = (
   responses: readonly Response[],
   isTrusted: (response: Response) => boolean,
+): readonly Response[] => newestTrustedAnswersIn(responses, isTrusted, CLOSING_DISPOSITIONS);
+
+// The answers that reopen their ids: per id, the newest trusted answer, when it says fixed.
+export const fixingResponses = (
+  responses: readonly Response[],
+  isTrusted: (response: Response) => boolean,
+): readonly Response[] => newestTrustedAnswersIn(responses, isTrusted, new Set(["fixed"]));
+
+// Per id, the newest trusted stated answer when every answer at that instant is one of the given
+// dispositions; the lowest source_url breaks a tie among them.
+export const newestTrustedAnswersIn = (
+  responses: readonly Response[],
+  isTrusted: (response: Response) => boolean,
+  dispositions: ReadonlySet<ResponseDisposition>,
 ): readonly Response[] => {
   const byId = responses
     .filter((response) => response.disposition !== "unstated" && isTrusted(response))
@@ -405,7 +419,7 @@ export const closingResponses = (
     if (answers.some(({ at }) => Number.isNaN(at))) return [];
     const latest = Math.max(...answers.map(({ at }) => at));
     const newest = answers.filter(({ at }) => at === latest).map(({ response }) => response);
-    return newest.every((response) => CLOSING_DISPOSITIONS.has(response.disposition))
+    return newest.every((response) => dispositions.has(response.disposition))
       ? [...newest].sort((a, b) => (a.source_url < b.source_url ? -1 : 1)).slice(0, 1)
       : [];
   });

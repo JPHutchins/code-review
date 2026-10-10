@@ -19,6 +19,7 @@ import {
   roundsSummary,
   carriedAncestryMarkers,
   carryForwardMarkers,
+  dialogueMarker,
   isFullReviewAncestry,
   parseMechanicAncestor,
   convergenceScore,
@@ -425,6 +426,20 @@ describe("completed-ancestor marker — the placeholder's completed-review ances
     expect(parseCompletedAncestor("<!-- code-review -->\nplain")).toBe(false);
     // review-complete itself is NOT the ancestor marker — the two are distinct signals.
     expect(parseCompletedAncestor("<!-- review-complete -->")).toBe(false);
+  });
+
+  it("carryForwardMarkers carries the dialogue state into the placeholder", () => {
+    const marker = dialogueMarker([
+      {
+        id: "recurring-a",
+        state: "contested",
+        answer: "https://github.com/o/r/pull/1#issuecomment-2",
+        at: "2026-07-02T01:00:00Z",
+        title: "The same claim",
+        severity: "major",
+      },
+    ]);
+    expect(carryForwardMarkers(`<!-- code-review -->\n${marker}\nx`)).toContain(marker);
   });
 
   it("carryForwardMarkers emits the ancestor marker when the replaced sticky was a completed review — and carries it onward through chained placeholders", () => {

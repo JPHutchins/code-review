@@ -48,7 +48,7 @@
 
 <%~ it.findings.summary %>
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit -%>
-<% if (it.strays.length > 0 || (!it.incomplete && (findingsTotal > 0 || it.systemic.length > 0))) { -%>
+<% if (it.strays.length > 0 || (!it.incomplete && (findingsTotal > 0 || it.systemic.length > 0 || it.contested.length > 0))) { -%>
 
 ## <% if (it.strays.length === 0) { %>Findings<% } else if (it.inlineDisposition && (it.inlineDisposition.kind === 'disabled' || it.inlineDisposition.kind === 'whole-document')) { %>Findings<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
 <% if (it.strays.length > 0) { %>
@@ -62,12 +62,39 @@ _Every finding from this run<% if (it.inlineDisposition.inlineCount > 0) { %>, i
 _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> below couldn't be posted as inline comment<%= it.unanchoredCount === 1 ? '' : 's' %> (GitHub rejected the position)<% if (it.strays.length > it.unanchoredCount) { %>; the rest are outside the diff<% } %>._
 <% } %>
 <% } %>
-<% if (it.teachesResponses && (findingsTotal > 0 || it.systemic.length > 0)) { -%>
+<% if (it.teachesResponses && (findingsTotal > 0 || it.systemic.length > 0 || it.contested.length > 0)) { -%>
 
 <details><summary>How to answer these findings</summary>
 
 <%~ it.responseTeaching %>
 </details>
+<% } -%>
+<% if (!it.incomplete && it.contested.length > 0) { -%>
+
+### ⚖️ Contested
+
+_The reviewer rebutted a maintainer's answer, and a maintainer answered again. Each stays in the score at a fixed weight, whether or not it is raised again, until a maintainer rules._
+
+<% it.contested.forEach(function(k) { -%>
+#### <%= it.severityEmoji(k.severity) %> (<%= k.severity %>) <%= k.title %>
+<sub><% if (k.reRaise && k.reRaise.location) { %>`<%~ k.reRaise.location %>` · <% } %>id `<%~ k.id %>` · [the maintainer's latest answer](<%~ k.answerUrl %>)</sub>
+<% if (k.reRaise) { -%>
+
+<%~ k.reRaise.description %>
+<% if (k.reRaise.rebuttal) { -%>
+
+**Rebuttal:** <%~ k.reRaise.rebuttal %>
+<% } -%>
+
+> <details><summary>Reasoning</summary>
+>
+<% k.reRaise.reasoning.split("\n").forEach(function(rl) { -%>
+> <%= rl %>
+<% }) -%>
+>
+> </details>
+<% } -%>
+<% }) -%>
 <% } -%>
 <% if (!it.incomplete && it.systemic.length > 0) { -%>
 
@@ -120,8 +147,9 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% if (findingsTotal > 0) { %>
 <% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
 **Findings:** <%~ parts.join(' · ') %>
-<% } else if (!it.incomplete && it.systemic.length > 0) { %>
-_No findings beyond the <%= it.systemic.length %> systemic problem<%= it.systemic.length === 1 ? '' : 's' %> above._
+<% } else if (!it.incomplete && (it.systemic.length > 0 || it.contested.length > 0)) { %>
+<% const held = [] %><% if (it.contested.length > 0) { held.push(it.contested.length + ' contested finding' + (it.contested.length === 1 ? '' : 's')) } %><% if (it.systemic.length > 0) { held.push(it.systemic.length + ' systemic problem' + (it.systemic.length === 1 ? '' : 's')) } %>
+_No findings beyond the <%= held.join(' and ') %> above._
 <% } else if (!it.incomplete && !it.answeredReRaiseNote) { %>
 <% if (it.unverifiedNoLogs) { %>_No findings — but no failing-job logs were staged, so this pass could not read the CI failure. "No findings" is not evidence of none._<% } else { %>_No findings — clean review._<% } %>
 <% } %>

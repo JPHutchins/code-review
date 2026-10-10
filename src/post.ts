@@ -110,6 +110,7 @@ import {
   applyAnsweredSystemic,
   answeredNoteKey,
   answeredReRaiseNote,
+  overruledReRaiseNote,
   answeredRegistryFrom,
   answeredSystemicNoteKey,
   answeredSystemicRegistryFrom,
@@ -124,6 +125,7 @@ import {
   type AnswerSources,
   type Response,
 } from "./responses.js";
+import { RulingCodec } from "./response-grammar.js";
 import { asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
@@ -1500,6 +1502,15 @@ export const post = async (
     ),
     isTrusted,
   );
+  const unorderedRulings = allAnswers.filter(
+    (answer) =>
+      RulingCodec.is(answer.disposition) && Number.isNaN(Date.parse(answer.created_at ?? "")),
+  ).length;
+  if (unorderedRulings > 0) {
+    process.stderr.write(
+      `Warning: ${String(unorderedRulings)} maintainer ruling(s) carry no readable time, so they cannot be ordered against the other answers — not applied\n`,
+    );
+  }
   const allClosures = closingResponses(allAnswers, isTrusted);
   const dialogue =
     answerable && dialogueRound
@@ -1556,7 +1567,7 @@ export const post = async (
   // A contested item is argued under its own section, so no answer drops or annotates it. An
   // overruled id's ruling closes it before any answer is weighed.
   const rulings = new Map(
-    (dialogueRound ? dialogue : [])
+    dialogue
       .filter((entry) => entry.state === "overruled")
       .map((entry) => [
         entry.id,
@@ -1727,15 +1738,18 @@ export const post = async (
   // draft's verdict with the empty kept counts, so the sticky never reads "changes requested"
   // beside a converged signal without the explanation (issue #151 review r5).
   const answeredDropNote =
-    answeredReRaiseNote(
-      [
-        ...verbatimReRaised,
-        ...answeredSystemicFilter.verbatimReRaised,
-        ...overruledFilter.verbatimReRaised,
-        ...overruledSystemicFilter.verbatimReRaised,
-      ],
-      droppedCount,
-    ) +
+    [
+      answeredReRaiseNote(
+        [...verbatimReRaised, ...answeredSystemicFilter.verbatimReRaised],
+        answeredFilter.droppedCount + answeredSystemicFilter.droppedCount,
+      ),
+      overruledReRaiseNote(
+        [...overruledFilter.verbatimReRaised, ...overruledSystemicFilter.verbatimReRaised],
+        overruledFilter.droppedCount + overruledSystemicFilter.droppedCount,
+      ),
+    ]
+      .filter((note) => note !== "")
+      .join("\n>\n") +
     (droppedCount > 0 &&
     findings.findings.length === 0 &&
     (findings.systemic_problems ?? []).length === 0

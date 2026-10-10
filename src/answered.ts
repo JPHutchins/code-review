@@ -394,15 +394,27 @@ export const applyOverruled = <Item extends { readonly severity: Severity }>(
 // suppressions); the LINES stay deduped by key (issue #151 review r5). count is REQUIRED — a
 // default would silently reintroduce the understated count for a caller that forgets it (issue
 // #151 review r7).
-export const answeredReRaiseNote = (entries: readonly ClosingAnswer[], count: number): string => {
-  if (entries.length === 0) return "";
-  const label = (e: Pick<AnsweredEntry, "code" | "title">): string =>
-    e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;
-  const lines = entries.map(
-    (e) => `> - ${label(e)} — [prior answer](${linkSafeUrl(e.answerUrl)})${byAuthor(e)}`,
-  );
-  return [
-    `> ↩️ **${String(count)} re-raise(s) without new evidence — treated as answered** (a maintainer's answer closed each):`,
-    ...lines,
-  ].join("\n");
-};
+const closingAnswerLines = (entries: readonly ClosingAnswer[], linkText: string): string[] =>
+  entries.map((e) => {
+    const label =
+      e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;
+    return `> - ${label} — [${linkText}](${linkSafeUrl(e.answerUrl)})${byAuthor(e)}`;
+  });
+
+export const answeredReRaiseNote = (entries: readonly ClosingAnswer[], count: number): string =>
+  entries.length === 0
+    ? ""
+    : [
+        `> ↩️ **${String(count)} re-raise(s) without new evidence — treated as answered** (a maintainer's answer closed each):`,
+        ...closingAnswerLines(entries, "prior answer"),
+      ].join("\n");
+
+// An overruled id drops whatever the re-raise carries, so its note claims the ruling, not the
+// absence of new evidence.
+export const overruledReRaiseNote = (entries: readonly ClosingAnswer[], count: number): string =>
+  entries.length === 0
+    ? ""
+    : [
+        `> ⚖️ **${String(count)} re-raise(s) of an id a maintainer overruled — closed for good**:`,
+        ...closingAnswerLines(entries, "the ruling"),
+      ].join("\n");

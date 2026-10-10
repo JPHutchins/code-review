@@ -6,6 +6,7 @@ import {
   applyAnsweredSystemic,
   applyOverruled,
   answeredReRaiseNote,
+  overruledReRaiseNote,
   answeredSystemicNoteKey,
   couldMatch,
 } from "./answered.js";
@@ -514,6 +515,17 @@ describe("applyOverruled — an overruled id is closed for good", () => {
     expect(result.droppedCount).toBe(0);
     expect(result.reRaisedNotes["recurring-a"]).toContain(ruling.answerUrl);
     expect(result.reRaisedNotes["other"]).toBeUndefined();
+  });
+});
+
+describe("overruledReRaiseNote — a ruling's drop names the ruling", () => {
+  it("never claims the re-raise carried no new evidence", () => {
+    const note = overruledReRaiseNote(
+      [{ code: "recurring-a", title: "t", answerUrl: "https://x/4", answerAuthor: "alice" }],
+      2,
+    );
+    expect(note).toContain("https://x/4");
+    expect(note).not.toContain("without new evidence");
   });
 });
 

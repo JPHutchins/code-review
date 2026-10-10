@@ -121,9 +121,18 @@ const advanceEntry = (
             ? [refreshed]
             : linked(refreshed, closure, isOlder(closure, entry) ? "rebutted" : "contested");
     }
-    case "upheld":
-    case "overruled":
-      return [refreshed];
+    case "upheld": {
+      const overruling = answers.overrulings.get(entry.id);
+      return overruling !== undefined && isNewer(overruling, entry)
+        ? linked(refreshed, overruling, "overruled")
+        : [refreshed];
+    }
+    case "overruled": {
+      const upholding = answers.upholdings.get(entry.id);
+      return upholding !== undefined && isNewer(upholding, entry)
+        ? linked(refreshed, upholding, "upheld")
+        : [refreshed];
+    }
   }
 };
 
@@ -134,9 +143,9 @@ const advanceEntry = (
 // way. A maintainer's ruling settles a contested entry: `upheld` keeps the finding open whatever
 // older answer would close it, and `overruled` closes it. An id the reviewer re-raised with a
 // rebuttal against a trusted closing answer opens as rebutted. Every entry links the newest answer
-// that moved it. A re-raise the dialogue keeps — a contested one, or one carrying a rebuttal —
-// refreshes its title and severity. Under the cap, contested entries come first, then the ruled
-// ones, then rebutted.
+// that moved it, and a newer opposite ruling re-settles a ruled one. A re-raise the dialogue keeps —
+// a contested one, or one carrying a rebuttal — refreshes its title and severity. The cap trims only
+// rebutted entries: a contested or ruled one holds a maintainer's answer the PR still owes.
 export const advanceDialogue = (
   prior: readonly DialogueEntry[],
   answers: DialogueAnswers,
@@ -164,7 +173,11 @@ export const advanceDialogue = (
     ...prior.flatMap((entry) => advanceEntry(entry, answers, currentById.get(entry.id))),
     ...opened,
   ];
-  return (["contested", "overruled", "upheld", "rebutted"] as const)
-    .flatMap((state) => entries.filter((entry) => entry.state === state))
-    .slice(0, DIALOGUE_ENTRY_CAP);
+  const held = entries.filter((entry) => entry.state !== "rebutted");
+  return [
+    ...held,
+    ...entries
+      .filter((entry) => entry.state === "rebutted")
+      .slice(0, Math.max(0, DIALOGUE_ENTRY_CAP - held.length)),
+  ];
 };

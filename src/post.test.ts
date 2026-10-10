@@ -5401,7 +5401,7 @@ describe("post — answered findings (issue #151)", () => {
         ruling,
       ]);
       const body = patchedBody(calls);
-      expect(body).toContain("treated as answered");
+      expect(body).toContain("closed for good");
       expect(body).toContain("issuecomment-558");
       expect(body).not.toContain("### ⚖️ Contested");
       expect(stickySignal(calls).convergence).toMatchObject({ score: 0 });
@@ -5450,7 +5450,7 @@ describe("post — answered findings (issue #151)", () => {
           overruling,
         ]);
         const body = patchedBody(after);
-        expect(body).toContain("treated as answered");
+        expect(body).toContain("closed for good");
         expect(body).toContain("issuecomment-558");
       });
     });

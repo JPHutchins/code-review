@@ -191,6 +191,34 @@ describe("advanceDialogue — one round of the review dialogue", () => {
     expect(advanceDialogue(overruled, answered([later]), [mkItem()])).toEqual(overruled);
   });
 
+  it("re-settles a ruled id on a newer opposite ruling, and only a newer one", () => {
+    const upheld: DialogueEntry = { ...rebutted, state: "upheld", at: "2026-07-04T01:00:00Z" };
+    const overruling = (created_at: string): Response =>
+      mkClosure({ disposition: "overruled", source_url: "https://x/7", created_at });
+    const later = overruling("2026-07-06T01:00:00Z");
+    expect(
+      advanceDialogue([upheld], answered([], { overrulings: new Map([[later.id, later]]) }), []),
+    ).toEqual([{ ...upheld, state: "overruled", answer: later.source_url, at: later.created_at }]);
+    const earlier = overruling("2026-07-03T01:00:00Z");
+    expect(
+      advanceDialogue(
+        [upheld],
+        answered([], { overrulings: new Map([[earlier.id, earlier]]) }),
+        [],
+      ),
+    ).toEqual([upheld]);
+  });
+
+  it("trims only rebutted entries under the cap, never a held one", () => {
+    const held = Array.from({ length: DIALOGUE_ENTRY_CAP + 1 }, (_, n): DialogueEntry => ({
+      ...rebutted,
+      id: `held-${String(n)}`,
+      state: n % 2 === 0 ? "upheld" : "overruled",
+    }));
+    const next = advanceDialogue([...held, rebutted], answered([]), []);
+    expect(next).toEqual(held);
+  });
+
   it("ignores a ruling on an id that is not contested", () => {
     const ruling = mkClosure({ disposition: "overruled" });
     expect(

@@ -7,8 +7,8 @@
 
 import * as t from "io-ts";
 import { isRight } from "fp-ts/lib/Either.js";
-import { findingIdIn, SeverityCodec, systemicIdIn } from "./schema.js";
-import type { Findings, Severity } from "./schema.js";
+import { SeverityCodec } from "./schema.js";
+import type { Severity } from "./schema.js";
 import { newestTrustedAnswersIn } from "./responses.js";
 import type { Response } from "./responses.js";
 import type { ResponseDisposition } from "./response-grammar.js";
@@ -191,33 +191,6 @@ export const advanceDialogue = (
   ];
 };
 
-// A closed claim back under an id no answer names: a finding overlapping a closed prior finding's
-// lines in the same file, or a systemic problem tying together a finding a closed prior one tied.
-export const reMintedNearMisses = (
-  current: Findings,
-  prior: Findings,
-  closedIds: ReadonlySet<string>,
-): number => {
-  const closedFindings = prior.findings.filter(findingIdIn(closedIds));
-  const closedTies = new Set(
-    (prior.systemic_problems ?? [])
-      .filter(systemicIdIn(closedIds))
-      .flatMap((s) => s.finding_ids ?? []),
-  );
-  return (
-    current.findings.filter(
-      (f) =>
-        !findingIdIn(closedIds)(f) &&
-        closedFindings.some(
-          (c) => c.path === f.path && c.start_line <= f.end_line && f.start_line <= c.end_line,
-        ),
-    ).length +
-    (current.systemic_problems ?? []).filter(
-      (s) => !systemicIdIn(closedIds)(s) && (s.finding_ids ?? []).some((id) => closedTies.has(id)),
-    ).length
-  );
-};
-
 export interface DialogueMetrics {
   readonly commentAnswers: number;
   readonly commitAnswers: number;
@@ -226,8 +199,6 @@ export interface DialogueMetrics {
   readonly droppedOverruled: number;
   readonly annotated: number;
   readonly entries: readonly DialogueEntry[];
-  // null when no prior review resolved this round to compare against.
-  readonly nearMisses: number | null;
   readonly systemicUnanswered: number;
 }
 
@@ -244,6 +215,5 @@ export const dialogueMetricsTable = (metrics: DialogueMetrics): string =>
     `| ${DIALOGUE_STATES.join(" · ")} | ${DIALOGUE_STATES.map((state) =>
       String(metrics.entries.filter((entry) => entry.state === state).length),
     ).join(" · ")} |`,
-    `| re-minted near-misses | ${metrics.nearMisses === null ? "—" : String(metrics.nearMisses)} |`,
-    `| systemic problems unanswered | ${String(metrics.systemicUnanswered)} |`,
+    `| systemic problems no trusted answer names | ${String(metrics.systemicUnanswered)} |`,
   ].join("\n");

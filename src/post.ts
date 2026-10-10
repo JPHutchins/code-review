@@ -90,12 +90,7 @@ import {
   withSystemicProblems,
 } from "./schema.js";
 import type { SystemicProblem } from "./schema.js";
-import {
-  advanceDialogue,
-  dialogueAnswers,
-  dialogueMetricsTable,
-  reMintedNearMisses,
-} from "./dialogue.js";
+import { advanceDialogue, dialogueAnswers, dialogueMetricsTable } from "./dialogue.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -1643,11 +1638,9 @@ export const post = async (
     ...overruledSystemicFilter.reRaisedNotes,
   };
   const verbatimReRaised = answeredFilter.verbatimReRaised;
-  const droppedCount =
-    answeredFilter.droppedCount +
-    answeredSystemicFilter.droppedCount +
-    overruledFilter.droppedCount +
-    overruledSystemicFilter.droppedCount;
+  const answeredDropCount = answeredFilter.droppedCount + answeredSystemicFilter.droppedCount;
+  const overruledDropCount = overruledFilter.droppedCount + overruledSystemicFilter.droppedCount;
+  const droppedCount = answeredDropCount + overruledDropCount;
   // Everything downstream (counts, rounds, signal, inline, the embedded blob) reads the FILTERED
   // document — a closed verbatim re-raise is gone from the review, not just from the prose.
   // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
@@ -1751,11 +1744,11 @@ export const post = async (
     [
       answeredReRaiseNote(
         [...verbatimReRaised, ...answeredSystemicFilter.verbatimReRaised],
-        answeredFilter.droppedCount + answeredSystemicFilter.droppedCount,
+        answeredDropCount,
       ),
       overruledReRaiseNote(
         [...overruledFilter.verbatimReRaised, ...overruledSystemicFilter.verbatimReRaised],
-        overruledFilter.droppedCount + overruledSystemicFilter.droppedCount,
+        overruledDropCount,
       ),
     ]
       .filter((note) => note !== "")
@@ -2504,27 +2497,18 @@ export const post = async (
   );
   if (answerable && dialogueRound) {
     appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => {
-      const comparedPrior = resolvedPrior === null ? null : resolveTolerantFindings(resolvedPrior);
-      const answeredIds = new Set(allAnswers.map((answer) => answer.id));
+      const trustedAnswerIds = new Set(allAnswers.filter(isTrusted).map((answer) => answer.id));
       return dialogueMetricsTable({
         commentAnswers: answers.comments.length,
         commitAnswers: answers.commits.length,
         closures: allClosures.length,
-        droppedAnswered: answeredFilter.droppedCount + answeredSystemicFilter.droppedCount,
-        droppedOverruled: overruledFilter.droppedCount + overruledSystemicFilter.droppedCount,
+        droppedAnswered: answeredDropCount,
+        droppedOverruled: overruledDropCount,
         annotated: Object.keys(reRaisedNotes).length,
         entries: dialogue,
-        nearMisses:
-          comparedPrior === null
-            ? null
-            : reMintedNearMisses(
-                loadedFindings,
-                comparedPrior,
-                new Set(allClosures.map((closure) => closure.id)),
-              ),
         systemicUnanswered: (findings.systemic_problems ?? []).filter((s) => {
           const id = resolveSystemicId(s);
-          return id === undefined || !answeredIds.has(id);
+          return id === undefined || !trustedAnswerIds.has(id);
         }).length,
       });
     });

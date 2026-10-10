@@ -85,12 +85,10 @@ const decodeBase64Json = (b64: string): unknown => {
 
 export const findingsPointer = (jsonUrl: string): string => encodeMarker(jsonUrl);
 
-// Per-finding counterpart, and the ONE place a payload still travels in a comment. The answered
-// registry (issue #151) identifies a thread by decoding the finding out of its root comment, and it
-// must keep working across rounds: an answer given in round 1 still closes a verbatim re-raise in
-// round 8. A link cannot do that — this round's artifact does not contain round 1's finding — so the
-// thread carries its own finding, self-contained, exactly as before. It is one finding (~1KB), not the
-// whole document, and only on the opt-in inline surface (issue #217).
+// Per-finding counterpart, and the ONE place a payload still travels in a comment: an inline thread
+// outlives its round, and a later round's artifact does not contain this round's finding, so the
+// thread carries its own finding, self-contained. It is one finding (~1KB), not the whole document,
+// and only on the opt-in inline surface (issue #217).
 //
 // Two thresholds, one valve. The inline template re-renders the SAME fields as prose, so the comment
 // holds the payload AND roughly the payload again — past the SOFT bound the inline renderer clips

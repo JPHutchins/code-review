@@ -1028,7 +1028,6 @@ describe("post — systemic problems (issue #134)", () => {
     );
     expect(stickyCall).toBeDefined();
     const body = JSON.parse(stickyCall!.stdin!) as CommentBody;
-    expect(body.body).toContain("## 🔗 Systemic problems");
     expect(body.body).toContain("Retry plumbing is inconsistent");
     // The systemic array itself now lives in the artifact rather than the comment (issue #217), so what
     // the sticky owes is the prose above and the convergence marker below. The mechanism map is the
@@ -5134,6 +5133,70 @@ describe("post — answered findings (issue #151)", () => {
     // finding the reader cannot see.
     expect(body).toContain("kept-code");
     expect(body).not.toContain("dropped-code");
+  });
+
+  describe("a systemic problem closes by its id", () => {
+    const systemic = {
+      id: "retry-plumbing",
+      title: "Retry plumbing is inconsistent",
+      description: "Each caller retries with its own policy.",
+      severity: "minor" as const,
+      reasoning: "Three call sites, three policies.",
+      confidence: 0.8,
+      likelihood: 1,
+    };
+    const systemicOnly = (current: typeof systemic): Findings => ({
+      ...mkFindings([]),
+      schema_version: "0.11.0",
+      systemic_problems: [current],
+    });
+    const withSystemicAnswer = (): {
+      readonly mocks: ReturnType<typeof mkMocks>;
+      readonly readArtifact: ArtifactReader;
+    } => ({
+      mocks: mkMocks(priorSticky, {
+        comments: [
+          answerRow(
+            "Review-Response: retry-plumbing dismissed — Each policy matches its endpoint's contract.",
+          ),
+        ],
+        commits: "",
+      }),
+      readArtifact: () => Promise.resolve(JSON.stringify(systemicOnly(systemic))),
+    });
+
+    it("drops a verbatim re-raise of a dismissed systemic — named in the sticky, out of the score", async () => {
+      writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(systemicOnly(systemic)));
+      const { mocks, readArtifact } = withSystemicAnswer();
+      const { api, calls } = mkMockGhApi(mocks);
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        await post(mkInput({ route: "full review" }), api, readArtifact);
+        expect(
+          stderrSpy.mock.calls.some(([chunk]) => String(chunk).includes("close nothing")),
+        ).toBe(false);
+      } finally {
+        stderrSpy.mockRestore();
+      }
+      const body = patchedBody(calls());
+      expect(body).not.toContain(systemic.description);
+      expect(body).toContain("`retry-plumbing`");
+      expect(body).toContain("treated as answered");
+      expect(body).toContain("issuecomment-555");
+      expect(stickySignal(calls()).convergence).toMatchObject({ score: 0, converged: true });
+    });
+
+    it("keeps a re-raise whose claim changed, annotated with the prior answer", async () => {
+      const changed = { ...systemic, description: "A fourth caller now retries forever." };
+      writeFileSync(join(tmpDir, "findings.json"), JSON.stringify(systemicOnly(changed)));
+      const { mocks, readArtifact } = withSystemicAnswer();
+      const { api, calls } = mkMockGhApi(mocks);
+      await post(mkInput({ route: "full review" }), api, readArtifact);
+      const body = patchedBody(calls());
+      expect(body).toContain(changed.description);
+      expect(body).toContain("Re-raised; prior answer at");
+      expect(body).not.toContain("treated as answered");
+    });
   });
 
   it("an empty-diff post with a completed sticky LEAVES IN PLACE without crashing — leaveInPlace never reads the late-initialized drop state (issue #151 review r4 TDZ regression)", async () => {

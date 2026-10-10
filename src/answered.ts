@@ -8,8 +8,13 @@
 // annotated with the prior answer's link.
 
 import { escapeCodeBackticks, linkSafeUrl } from "./surface.js";
-import { isSynthesizedFindingId, resolveFindingId, hasRebuttal } from "./schema.js";
-import type { Finding, Findings, Severity } from "./schema.js";
+import {
+  isSynthesizedFindingId,
+  resolveFindingId,
+  resolveSystemicId,
+  hasRebuttal,
+} from "./schema.js";
+import type { Finding, Findings, Severity, SystemicProblem } from "./schema.js";
 import type { Response } from "./responses.js";
 
 // The registry entry for one answered finding: the finding's identifying fields (the verbatim-match
@@ -35,31 +40,55 @@ export interface AnsweredEntry {
   readonly answerAuthor: string | null;
 }
 
-// One entry per closing answer, carrying the claim fields of the prior finding its id names: the
-// verbatim comparison is against what the prior round reported. A closure naming no prior finding has
-// no claim to compare and makes no entry.
+// A systemic problem has no location or fix: its claim is its text and its weight, and it binds by
+// its own id alone — it carries no path to synthesize one from.
+export type AnsweredSystemicEntry = Omit<AnsweredEntry, "path" | "patch">;
+
+// Each closing answer paired with the prior item its id names: the verbatim comparison is against
+// what the prior round reported. A closure naming no prior item has no claim to compare and pairs
+// with nothing.
+const closedPriorItems = <Item>(
+  closures: readonly Response[],
+  items: readonly Item[],
+  idOf: (item: Item) => string | undefined,
+): readonly (readonly [Item, Response])[] =>
+  closures.flatMap((response) => {
+    const item = items.find((candidate) => idOf(candidate) === response.id);
+    return item === undefined ? [] : [[item, response] as const];
+  });
+
+const closedClaim = (
+  item: Pick<SystemicProblem, "title" | "description" | "reasoning" | "severity">,
+  response: Response,
+): AnsweredSystemicEntry => ({
+  code: response.id,
+  title: item.title,
+  description: item.description,
+  reasoning: item.reasoning,
+  severity: item.severity,
+  answerUrl: response.source_url,
+  answerAuthor: response.author,
+});
+
 export const answeredRegistryFrom = (
   closures: readonly Response[],
   prior: Findings | null,
 ): readonly AnsweredEntry[] =>
-  closures.flatMap((response) => {
-    const finding = prior?.findings.find((f) => resolveFindingId(f) === response.id);
-    return finding === undefined
-      ? []
-      : [
-          {
-            code: response.id,
-            title: finding.title,
-            description: finding.description,
-            reasoning: finding.reasoning,
-            severity: finding.severity,
-            path: finding.path,
-            patch: finding.patch ?? null,
-            answerUrl: response.source_url,
-            answerAuthor: response.author,
-          },
-        ];
-  });
+  closedPriorItems(closures, prior?.findings ?? [], resolveFindingId).map(
+    ([finding, response]) => ({
+      ...closedClaim(finding, response),
+      path: finding.path,
+      patch: finding.patch ?? null,
+    }),
+  );
+
+export const answeredSystemicRegistryFrom = (
+  closures: readonly Response[],
+  prior: Findings | null,
+): readonly AnsweredSystemicEntry[] =>
+  closedPriorItems(closures, prior?.systemic_problems ?? [], resolveSystemicId).map(
+    ([systemic, response]) => closedClaim(systemic, response),
+  );
 
 // The id match: 0.10 requires every finding to carry an id, and the legacy upcast gives every pre-id
 // finding one (code → id, or synthesized), so two rounds of the same claim always key to equal ids.
@@ -79,16 +108,23 @@ const matches = (
   e: Pick<AnsweredEntry, "code" | "title">,
 ): boolean => e.code === resolvedId || isSynthesizedTitleMatch(f, e);
 
-// Whether an answer naming this id could match any of the findings, before its claim is known: by id,
-// or — a synthesized id only — by the title second chance, which needs the prior's title to decide.
-export const couldMatch = (code: string, findings: readonly Finding[]): boolean =>
-  isSynthesizedFindingId(code) || findings.some((f) => resolveFindingId(f) === code);
+// Whether an answer naming this id could match any of the findings or systemic problems, before its
+// claim is known: by id, or — a synthesized id only — by the title second chance, which needs the
+// prior's title to decide.
+export const couldMatch = (
+  code: string,
+  doc: Pick<Findings, "findings" | "systemic_problems">,
+): boolean =>
+  isSynthesizedFindingId(code) ||
+  doc.findings.some((f) => resolveFindingId(f) === code) ||
+  (doc.systemic_problems ?? []).some((s) => resolveSystemicId(s) === code);
 
 // The ONE verbatim claim-field list: the six per-field comparisons consumed by both the full-claim
 // predicate and the title-second-chance scorer. The VerbatimPick type DERIVES from the array, so
 // adding a claim field is a single edit the compiler verifies — the type and the runtime list can
 // never diverge (the same one-definition discipline as answeredNoteKey below).
-const VERBATIM_FIELDS = ["title", "description", "reasoning", "severity", "path", "patch"] as const;
+const CLAIM_FIELDS = ["title", "description", "reasoning", "severity"] as const;
+const VERBATIM_FIELDS = [...CLAIM_FIELDS, "path", "patch"] as const;
 type VerbatimPick = Pick<AnsweredEntry, (typeof VERBATIM_FIELDS)[number]>;
 
 const verbatimFieldEqual = (
@@ -148,13 +184,13 @@ const bestTitleMatch = (
   return best;
 };
 
-// A commit's author is a self-declared git name, so it renders inside a code span, never as markdown.
-const byAuthor = (e: AnsweredEntry): string =>
+// The author is a GitHub login or none; a code span keeps whatever it holds inert as markdown.
+const byAuthor = (e: Pick<AnsweredEntry, "answerAuthor">): string =>
   e.answerAuthor === null ? "" : ` by \`${escapeCodeBackticks(e.answerAuthor)}\``;
 
 // The per-finding "re-raised; prior answer at <link>" annotation for a kept (changed-evidence)
 // re-raise of a closed finding: it links the answer and demands the new evidence be named.
-const answeredNote = (e: AnsweredEntry): string =>
+const answeredNote = (e: Pick<AnsweredEntry, "answerUrl" | "answerAuthor">): string =>
   `Re-raised; prior answer at ${linkSafeUrl(e.answerUrl)}${byAuthor(e)} — cite the new evidence that invalidates it.`;
 
 export interface AnsweredFilter {
@@ -237,14 +273,81 @@ export const applyAnswered = (
   };
 };
 
+// A systemic problem's note key, apart from every finding's: an id a new finding shares with an
+// annotated systemic never inherits its note.
+export const answeredSystemicNoteKey = (s: {
+  readonly id?: string;
+  readonly title: string;
+}): string => `systemic:${resolveSystemicId(s) ?? ""}`;
+
+export interface AnsweredSystemicFilter {
+  readonly systemic: readonly SystemicProblem[];
+  readonly reRaisedNotes: Readonly<Record<string, string>>;
+  readonly verbatimReRaised: readonly AnsweredSystemicEntry[];
+  readonly droppedCount: number;
+}
+
+type SystemicVerdict =
+  | { readonly kind: "unanswered"; readonly systemic: SystemicProblem }
+  | {
+      readonly kind: "dropped" | "annotated";
+      readonly systemic: SystemicProblem;
+      readonly entry: AnsweredSystemicEntry;
+    };
+
+const systemicVerdict = (
+  systemic: SystemicProblem,
+  registry: readonly AnsweredSystemicEntry[],
+): SystemicVerdict => {
+  const entry = registry.find((e) => e.code === resolveSystemicId(systemic));
+  return entry === undefined
+    ? { kind: "unanswered", systemic }
+    : {
+        kind:
+          !hasRebuttal(systemic) &&
+          systemic.severity !== "critical" &&
+          CLAIM_FIELDS.every((field) => systemic[field] === entry[field])
+            ? "dropped"
+            : "annotated",
+        systemic,
+        entry,
+      };
+};
+
+// applyAnswered's rule for systemic problems, by id alone: a closed id re-raised with its claim
+// unchanged and no rebuttal is dropped, any other re-raise of it is kept and annotated, and a
+// critical is never dropped.
+export const applyAnsweredSystemic = (
+  systemic: readonly SystemicProblem[],
+  registry: readonly AnsweredSystemicEntry[],
+): AnsweredSystemicFilter => {
+  const verdicts = systemic.map((s) => systemicVerdict(s, registry));
+  const dropped = verdicts.flatMap((v) => (v.kind === "dropped" ? [v.entry] : []));
+  return {
+    systemic: verdicts.flatMap((v) => (v.kind === "dropped" ? [] : [v.systemic])),
+    reRaisedNotes: Object.fromEntries(
+      verdicts.flatMap((v) =>
+        v.kind === "annotated"
+          ? [[answeredSystemicNoteKey(v.systemic), answeredNote(v.entry)] as const]
+          : [],
+      ),
+    ),
+    verbatimReRaised: [...new Map(dropped.map((e) => [e.code, e])).values()],
+    droppedCount: dropped.length,
+  };
+};
+
 // The sticky note naming what was dropped — the suppression is never silent (SPEC §3.3 truthful).
 // The COUNT is the true pre-dedup finding count (several findings sharing one code count as several
 // suppressions); the LINES stay deduped by key (issue #151 review r5). count is REQUIRED — a
 // default would silently reintroduce the understated count for a caller that forgets it (issue
 // #151 review r7).
-export const answeredReRaiseNote = (entries: readonly AnsweredEntry[], count: number): string => {
+export const answeredReRaiseNote = (
+  entries: readonly Pick<AnsweredEntry, "code" | "title" | "answerUrl" | "answerAuthor">[],
+  count: number,
+): string => {
   if (entries.length === 0) return "";
-  const label = (e: AnsweredEntry): string =>
+  const label = (e: Pick<AnsweredEntry, "code" | "title">): string =>
     e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;
   const lines = entries.map(
     (e) => `> - ${label(e)} — [prior answer](${linkSafeUrl(e.answerUrl)})${byAuthor(e)}`,

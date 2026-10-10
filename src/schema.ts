@@ -370,6 +370,15 @@ export const withoutRebuttals = (doc: Findings): Findings => ({
     : {}),
 });
 
+// An empty list leaves the field absent, as a document with no systemic problems is written.
+export const withSystemicProblems = (
+  { systemic_problems: _replaced, ...doc }: Findings,
+  systemic: readonly SystemicProblem[],
+): Findings => ({
+  ...doc,
+  ...(systemic.length > 0 ? { systemic_problems: [...systemic] } : {}),
+});
+
 // The content-derived identity a finding WITHOUT an id resolves to: deterministic across rounds (the
 // same path + title always synthesizes the same id), so a pre-id finding re-raised next round keys to
 // the same ledger entry. A systemic problem has no path; its synthesized id keys on the title alone.
@@ -392,6 +401,18 @@ export const isSynthesizedFindingId = (id: string): boolean => /^f-[A-Za-z0-9_-]
 // empty id means.
 export const resolveFindingId = (f: { id: string; path: string; title: string }): string =>
   f.id !== "" ? f.id : synthesizedFindingId(f.path, f.title);
+
+// A systemic problem's counterpart: with no path to synthesize from, an id-less one resolves by its
+// title alone, as priorIdsFrom resolves it for the harvest.
+export const resolveSystemicId = (s: {
+  readonly id?: string;
+  readonly title: string;
+}): string | undefined =>
+  s.id !== undefined && s.id !== ""
+    ? s.id
+    : s.title !== ""
+      ? synthesizedSystemicId(s.title)
+      : undefined;
 
 // The ONE legacy-spelling precedence for a RAW record (id → code → synthesized when a path exists):
 // shared by the legacy upcast and the below-floor nit reader, so the raw-document sites can never

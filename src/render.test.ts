@@ -4,6 +4,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "./render.js";
 import { RESPONSE_TEACHING } from "./response-grammar.js";
+import { answeredSystemicNoteKey } from "./answered.js";
 import {
   formatConfidence,
   parseConvergenceMarker,
@@ -1075,6 +1076,49 @@ describe("render", () => {
       const result = render({ findings, envelope: baseEnvelope, prices, template });
       expect(result).toContain("\n### 🔗 Systemic problems\n");
       expect(result).not.toContain("clean review");
+    });
+
+    it("says what a systemic-only round holds under its Findings heading", () => {
+      const findings = mkFindings([], { systemic_problems: [mkSystemic()] });
+      const result = render({ findings, envelope: baseEnvelope, prices, template });
+      expect(result.slice(result.indexOf("\n## Findings"))).toContain("1 systemic problem above");
+    });
+
+    it("annotates a kept re-raise of a closed systemic id with its prior answer, and no other", () => {
+      const note =
+        "Re-raised; prior answer at https://github.com/o/r/pull/1#issuecomment-9 — cite the new evidence that invalidates it.";
+      const findings = systemicFindings({
+        systemic_problems: [
+          mkSystemic({ id: "retry-plumbing" }),
+          mkSystemic({ id: "other-class", title: "Another class" }),
+        ],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        answeredNotes: { [answeredSystemicNoteKey(mkSystemic({ id: "retry-plumbing" }))]: note },
+      });
+      expect(result.split(note)).toHaveLength(2);
+      expect(result.indexOf(note)).toBeLessThan(result.indexOf("Another class"));
+    });
+
+    it("never hands a systemic's note to a finding that shares its id", () => {
+      const note = "Re-raised; prior answer at https://github.com/o/r/pull/1#issuecomment-9.";
+      const finding = mkFinding({ id: "retry-plumbing" });
+      const result = render({
+        findings: mkFindings([finding], {
+          systemic_problems: [mkSystemic({ id: "retry-plumbing" })],
+        }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        strays: [finding],
+        answeredNotes: { [answeredSystemicNoteKey(mkSystemic({ id: "retry-plumbing" }))]: note },
+      });
+      expect(result.split(note)).toHaveLength(2);
+      expect(result.indexOf(note)).toBeLessThan(result.indexOf("\n### 🔵 (minor)"));
     });
 
     it("scores systemic severities into the badge — a systemic-only round with a major item reads 'iterating', never 'converged' (issue #134 review)", () => {

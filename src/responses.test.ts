@@ -10,6 +10,7 @@ import {
   MAINTAINER_ASSOCIATIONS,
   closingResponses,
   isTrustedResponse,
+  withRulingsOn,
   type HarvestInput,
   type Response,
 } from "./responses.js";
@@ -18,6 +19,8 @@ import {
   RESPONSE_FORM,
   RESPONSE_TABLE_DELIMITER,
   RESPONSE_TABLE_HEADER,
+  RESPONSE_TEACHING,
+  RULINGS,
 } from "./response-grammar.js";
 
 describe("parseResponseLines — the response grammar", () => {
@@ -626,5 +629,53 @@ describe("closingResponses — the newest trusted answer per id decides", () => 
       created_at: "2026-10-02T00:00:00Z",
     });
     expect(closingResponses([closed, outsider], maintainer)).toEqual([closed]);
+  });
+});
+
+describe("rulings — a maintainer's word on a contested id", () => {
+  const answer = (overrides: Partial<Response>): Response => ({
+    id: "x-y",
+    disposition: "overruled",
+    reason: "The claim holds only for a configuration we do not ship.",
+    channel: "comment",
+    source_url: "https://github.com/o/r/pull/1#issuecomment-1",
+    author: "alice",
+    author_association: "OWNER",
+    created_at: "2026-10-01T00:00:00Z",
+    ...overrides,
+  });
+  const maintainer = (response: Response): boolean => response.author_association === "OWNER";
+
+  it("parses a ruling from a commit line and from a table row", () => {
+    expect(parseResponseLines("Review-Response: x-y overruled — Not shipped.")).toMatchObject([
+      { id: "x-y", disposition: "overruled" },
+    ]);
+    const table = [
+      RESPONSE_TABLE_HEADER,
+      RESPONSE_TABLE_DELIMITER,
+      "| `x-y` | upheld | Agreed. |",
+    ].join("\n");
+    expect(parseResponseTables(table).map((r) => r.disposition)).toEqual(["upheld"]);
+  });
+
+  it("is never part of the answer instructions", () => {
+    expect(RULINGS.some((ruling) => RESPONSE_TEACHING.includes(ruling))).toBe(false);
+    expect(RULINGS.some((ruling) => RESPONSE_FORM.includes(ruling))).toBe(false);
+  });
+
+  it("counts only a maintainer's ruling on a contested id; any other reads as unstated", () => {
+    const contested = new Set(["x-y"]);
+    const rulings = [
+      answer({}),
+      answer({ id: "other", disposition: "upheld" }),
+      answer({ author_association: "NONE" }),
+      answer({ disposition: "refuted" }),
+    ];
+    expect(withRulingsOn(rulings, contested, maintainer).map((r) => r.disposition)).toEqual([
+      "overruled",
+      "unstated",
+      "unstated",
+      "refuted",
+    ]);
   });
 });

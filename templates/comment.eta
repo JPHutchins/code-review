@@ -74,6 +74,10 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 ### ⚖️ Contested
 
 _The reviewer rebutted a maintainer's answer, and a maintainer answered again. Each stays in the score at a fixed weight, whether or not it is raised again, until a maintainer rules._
+<% if (it.teachesResponses) { -%>
+
+<%~ it.rulingTeaching %>
+<% } -%>
 
 <% it.contested.forEach(function(k) { -%>
 #### <%= it.severityEmoji(k.severity) %> (<%= k.severity %>) <%= k.title %>

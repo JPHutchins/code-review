@@ -2,8 +2,9 @@ import * as t from "io-ts";
 import { ID_SHAPE_RE, strictExact } from "./schema.js";
 import { clipText } from "./util.js";
 import {
-  DispositionCodec,
+  isAnswerWord,
   ResponseDispositionCodec,
+  RulingCodec,
   type ResponseDisposition,
 } from "./response-grammar.js";
 
@@ -107,7 +108,7 @@ const lineAnswers = (lines: readonly string[]): readonly ParsedLine[] =>
     const match = RESPONSE_LINE_RE.exec(line);
     const id = unwrapId(match?.[1] ?? "");
     const disposition = match?.[2]?.toLowerCase();
-    return id !== "" && DispositionCodec.is(disposition)
+    return id !== "" && isAnswerWord(disposition)
       ? [
           {
             id,
@@ -184,7 +185,7 @@ const tableDisposition = (cell: string): ResponseDisposition => {
     plainCell(cell)
       .replace(/^[^a-z]+/, "")
       .split(/[^a-z]/)[0] ?? "";
-  return DispositionCodec.is(firstWord) ? firstWord : "unstated";
+  return isAnswerWord(firstWord) ? firstWord : "unstated";
 };
 
 interface VerdictColumns {
@@ -195,7 +196,7 @@ interface VerdictColumns {
 const rowAnswers = (cells: readonly string[], columns: VerdictColumns): readonly ParsedLine[] => {
   const dispositionCell = cells[columns.disposition] ?? "";
   const disposition = tableDisposition(dispositionCell);
-  const verdictOnly = DispositionCodec.is(plainCell(dispositionCell));
+  const verdictOnly = isAnswerWord(plainCell(dispositionCell));
   const reason = clipText(
     cells
       .filter(
@@ -395,11 +396,18 @@ export const closingResponses = (
   isTrusted: (response: Response) => boolean,
 ): readonly Response[] => newestTrustedAnswersIn(responses, isTrusted, CLOSING_DISPOSITIONS);
 
-// The answers that reopen their ids: per id, the newest trusted answer, when it says fixed.
-export const fixingResponses = (
+// A ruling counts only where it is taught: a maintainer's, on an id contested or already ruled.
+// Anywhere else it claims no verdict.
+export const withRulingsOn = (
   responses: readonly Response[],
+  ruledIds: ReadonlySet<string>,
   isTrusted: (response: Response) => boolean,
-): readonly Response[] => newestTrustedAnswersIn(responses, isTrusted, new Set(["fixed"]));
+): readonly Response[] =>
+  responses.map((response) =>
+    RulingCodec.is(response.disposition) && !(ruledIds.has(response.id) && isTrusted(response))
+      ? { ...response, disposition: "unstated" }
+      : response,
+  );
 
 // Per id, the newest trusted stated answer when every answer at that instant is one of the given
 // dispositions; the lowest source_url breaks a tie among them.

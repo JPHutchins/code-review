@@ -4,7 +4,9 @@ import {
   answeredSystemicRegistryFrom,
   applyAnswered,
   applyAnsweredSystemic,
+  applyOverruled,
   answeredReRaiseNote,
+  overruledReRaiseNote,
   answeredSystemicNoteKey,
   couldMatch,
 } from "./answered.js";
@@ -476,6 +478,54 @@ describe("applyAnsweredSystemic — a closed systemic id, re-raised", () => {
     const result = applyAnsweredSystemic([mkSystemic({}), mkSystemic({})], [entry()]);
     expect(result.verbatimReRaised).toHaveLength(1);
     expect(result.droppedCount).toBe(2);
+  });
+});
+
+describe("applyOverruled — an overruled id is closed for good", () => {
+  const ruling = {
+    code: "recurring-a",
+    title: "The same claim",
+    answerUrl: "https://github.com/owner/repo/pull/1#issuecomment-4",
+    answerAuthor: "alice",
+  };
+  const rulings = new Map([[ruling.code, ruling]]);
+
+  it("drops every re-raise of the id, rebuttal or not, naming the ruling once", () => {
+    const result = applyOverruled(
+      [mkFinding({}), mkFinding({ rebuttal: "The ruling missed the cold path." })],
+      rulings,
+      (f) => f.id,
+      (f) => f.id,
+    );
+    expect(result.kept).toEqual([]);
+    expect(result.verbatimReRaised).toEqual([ruling]);
+    expect(result.droppedCount).toBe(2);
+  });
+
+  it("keeps a critical re-raise, linked to the ruling, and leaves other ids alone", () => {
+    const critical = mkFinding({ severity: "critical" });
+    const other = mkFinding({ id: "other" });
+    const result = applyOverruled(
+      [critical, other],
+      rulings,
+      (f) => f.id,
+      (f) => f.id,
+    );
+    expect(result.kept).toEqual([critical, other]);
+    expect(result.droppedCount).toBe(0);
+    expect(result.reRaisedNotes["recurring-a"]).toContain(ruling.answerUrl);
+    expect(result.reRaisedNotes["other"]).toBeUndefined();
+  });
+});
+
+describe("overruledReRaiseNote — a ruling's drop names the ruling", () => {
+  it("never claims the re-raise carried no new evidence", () => {
+    const note = overruledReRaiseNote(
+      [{ code: "recurring-a", title: "t", answerUrl: "https://x/4", answerAuthor: "alice" }],
+      2,
+    );
+    expect(note).toContain("https://x/4");
+    expect(note).not.toContain("without new evidence");
   });
 });
 

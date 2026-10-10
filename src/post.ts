@@ -90,7 +90,7 @@ import {
   withSystemicProblems,
 } from "./schema.js";
 import type { SystemicProblem } from "./schema.js";
-import { advanceDialogue } from "./dialogue.js";
+import { advanceDialogue, dialogueAnswers } from "./dialogue.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -110,18 +110,22 @@ import {
   applyAnsweredSystemic,
   answeredNoteKey,
   answeredReRaiseNote,
+  overruledReRaiseNote,
   answeredRegistryFrom,
+  answeredSystemicNoteKey,
   answeredSystemicRegistryFrom,
+  applyOverruled,
   couldMatch,
 } from "./answered.js";
 import {
   answersFrom,
   closingResponses,
-  fixingResponses,
   isTrustedResponse,
+  withRulingsOn,
   type AnswerSources,
   type Response,
 } from "./responses.js";
+import { RulingCodec } from "./response-grammar.js";
 import { asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
@@ -1449,18 +1453,26 @@ export const post = async (
   const priorDialogue =
     existingSticky !== null
       ? parseDialogueMarker(existingSticky.body)
-      : { entries: [], skipped: 0 };
+      : { entries: [], undecoded: [], skipped: 0 };
   if (priorDialogue.skipped > 0) {
     process.stderr.write(
-      `Warning: ${String(priorDialogue.skipped)} entry(ies) of the prior sticky's dialogue state did not decode — skipped\n`,
+      `Warning: ${String(priorDialogue.skipped)} entry(ies) of the prior sticky's dialogue state did not decode — carried unread\n`,
     );
   }
+  // The dialogue advances only on a completed full-review round; any other post carries it as is.
+  const dialogueRound =
+    envelope !== null &&
+    isConvergenceRound(
+      effectiveRoute,
+      envelope.incomplete === true || isIncompleteFindings(loadedFindings),
+    ) &&
+    isReviewVerdict(loadedFindings.verdict);
   const answerable =
     existingSticky !== null &&
     !priorIsMechanic &&
     (loadedFindings.findings.length > 0 ||
       (loadedFindings.systemic_problems ?? []).length > 0 ||
-      priorDialogue.entries.length > 0);
+      (dialogueRound && priorDialogue.entries.length > 0));
   // A commit answer's trust is the push access a head branch IN the base repo implies, read from the
   // PR itself: a fork's head, or a deleted fork's null one, trusts no commit, and its commits go unread.
   const headInBaseRepo =
@@ -1482,41 +1494,49 @@ export const post = async (
         commits: headInBaseRepo ? await fetchCommitAnswersSource(input.repo, prNumber, ghApi) : [],
       })
     : { comments: [], commits: [] };
-  const allAnswers = [...answers.comments, ...answers.commits];
   const isTrusted = (response: Response): boolean => isTrustedResponse(response, headInBaseRepo);
+  const allAnswers = withRulingsOn(
+    [...answers.comments, ...answers.commits],
+    new Set(
+      priorDialogue.entries.filter((entry) => entry.state !== "rebutted").map((entry) => entry.id),
+    ),
+    isTrusted,
+  );
+  const unorderedRulings = allAnswers.filter(
+    (answer) =>
+      RulingCodec.is(answer.disposition) && Number.isNaN(Date.parse(answer.created_at ?? "")),
+  ).length;
+  if (unorderedRulings > 0) {
+    process.stderr.write(
+      `Warning: ${String(unorderedRulings)} maintainer ruling(s) carry no readable time, so they cannot be ordered against the other answers — not applied\n`,
+    );
+  }
   const allClosures = closingResponses(allAnswers, isTrusted);
-  // Only a closure some current finding or systemic problem could match is worth the prior's download.
-  const closures = allClosures.filter((closure) => couldMatch(closure.id, loadedFindings));
-  // The dialogue advances only on a completed full-review round; any other post carries it as is.
-  const dialogueRound =
-    envelope !== null &&
-    isConvergenceRound(
-      effectiveRoute,
-      envelope.incomplete === true || isIncompleteFindings(loadedFindings),
-    ) &&
-    isReviewVerdict(loadedFindings.verdict);
   const dialogue =
     answerable && dialogueRound
-      ? advanceDialogue(
-          priorDialogue.entries,
-          allClosures,
-          new Set(fixingResponses(allAnswers, isTrusted).map((response) => response.id)),
-          [
-            ...loadedFindings.findings.map((f) => ({
-              id: resolveFindingId(f),
-              title: f.title,
-              severity: f.severity,
-              rebutted: hasRebuttal(f),
-            })),
-            ...(loadedFindings.systemic_problems ?? []).flatMap((s) => {
-              const id = resolveSystemicId(s);
-              return id === undefined
-                ? []
-                : [{ id, title: s.title, severity: s.severity, rebutted: hasRebuttal(s) }];
-            }),
-          ],
-        )
+      ? advanceDialogue(priorDialogue.entries, dialogueAnswers(allAnswers, isTrusted), [
+          ...loadedFindings.findings.map((f) => ({
+            id: resolveFindingId(f),
+            title: f.title,
+            severity: f.severity,
+            rebutted: hasRebuttal(f),
+          })),
+          ...(loadedFindings.systemic_problems ?? []).flatMap((s) => {
+            const id = resolveSystemicId(s);
+            return id === undefined
+              ? []
+              : [{ id, title: s.title, severity: s.severity, rebutted: hasRebuttal(s) }];
+          }),
+        ])
       : priorDialogue.entries;
+  // An upheld id stays open whatever older answer would close it. Only a closure some current finding
+  // or systemic problem could match is worth the prior's download.
+  const upheldIds = new Set(
+    dialogue.filter((entry) => entry.state === "upheld").map((entry) => entry.id),
+  );
+  const closures = allClosures.filter(
+    (closure) => couldMatch(closure.id, loadedFindings) && !upheldIds.has(closure.id),
+  );
   const contested = dialogueRound ? dialogue.filter((entry) => entry.state === "contested") : [];
   const contestedIds = new Set(contested.map((entry) => entry.id));
   const isContestedFinding = findingIdIn(contestedIds);
@@ -1544,13 +1564,37 @@ export const post = async (
       `Warning: ${String(unboundClosureCount)} maintainer answer(s) name nothing the prior review reported — they close nothing this round\n`,
     );
   }
-  // A contested item is argued under its own section, so no answer drops or annotates it.
-  const answeredFilter = applyAnswered(
-    loadedFindings.findings.filter((f) => !isContestedFinding(f)),
-    answeredRegistry,
+  // A contested item is argued under its own section, so no answer drops or annotates it. An
+  // overruled id's ruling closes it before any answer is weighed.
+  const rulings = new Map(
+    dialogue
+      .filter((entry) => entry.state === "overruled")
+      .map((entry) => [
+        entry.id,
+        {
+          code: entry.id,
+          title: entry.title,
+          answerUrl: entry.answer,
+          answerAuthor:
+            allAnswers.find((answer) => answer.source_url === entry.answer)?.author ?? null,
+        },
+      ]),
   );
-  const answeredSystemicFilter = applyAnsweredSystemic(
+  const overruledFilter = applyOverruled(
+    loadedFindings.findings.filter((f) => !isContestedFinding(f)),
+    rulings,
+    resolveFindingId,
+    answeredNoteKey,
+  );
+  const overruledSystemicFilter = applyOverruled(
     (loadedFindings.systemic_problems ?? []).filter((s) => !isContestedSystemic(s)),
+    rulings,
+    resolveSystemicId,
+    answeredSystemicNoteKey,
+  );
+  const answeredFilter = applyAnswered(overruledFilter.kept, answeredRegistry);
+  const answeredSystemicFilter = applyAnsweredSystemic(
+    overruledSystemicFilter.kept,
     answeredSystemicRegistry,
   );
   const contestedFindings = loadedFindings.findings.filter(isContestedFinding);
@@ -1585,9 +1629,15 @@ export const post = async (
   const reRaisedNotes = {
     ...answeredFilter.reRaisedNotes,
     ...answeredSystemicFilter.reRaisedNotes,
+    ...overruledFilter.reRaisedNotes,
+    ...overruledSystemicFilter.reRaisedNotes,
   };
   const verbatimReRaised = answeredFilter.verbatimReRaised;
-  const droppedCount = answeredFilter.droppedCount + answeredSystemicFilter.droppedCount;
+  const droppedCount =
+    answeredFilter.droppedCount +
+    answeredSystemicFilter.droppedCount +
+    overruledFilter.droppedCount +
+    overruledSystemicFilter.droppedCount;
   // Everything downstream (counts, rounds, signal, inline, the embedded blob) reads the FILTERED
   // document — a closed verbatim re-raise is gone from the review, not just from the prose.
   // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
@@ -1598,7 +1648,9 @@ export const post = async (
   // a fresh-id finding keys the entry's synthesized code, but the systemic list names the finding's
   // own id — stripping by entry code alone would dangle it.
   const droppedIds = new Set([
-    ...verbatimReRaised.flatMap((e) => (e.code !== "" ? [e.code] : [])),
+    ...[...verbatimReRaised, ...overruledFilter.verbatimReRaised].flatMap((e) =>
+      e.code !== "" ? [e.code] : [],
+    ),
     ...answeredFilter.droppedFindingIds.filter((id) => id !== ""),
   ]);
   // A dropped code is stripped only when NO KEPT finding still carries it — the drop removed one
@@ -1686,10 +1738,18 @@ export const post = async (
   // draft's verdict with the empty kept counts, so the sticky never reads "changes requested"
   // beside a converged signal without the explanation (issue #151 review r5).
   const answeredDropNote =
-    answeredReRaiseNote(
-      [...verbatimReRaised, ...answeredSystemicFilter.verbatimReRaised],
-      droppedCount,
-    ) +
+    [
+      answeredReRaiseNote(
+        [...verbatimReRaised, ...answeredSystemicFilter.verbatimReRaised],
+        answeredFilter.droppedCount + answeredSystemicFilter.droppedCount,
+      ),
+      overruledReRaiseNote(
+        [...overruledFilter.verbatimReRaised, ...overruledSystemicFilter.verbatimReRaised],
+        overruledFilter.droppedCount + overruledSystemicFilter.droppedCount,
+      ),
+    ]
+      .filter((note) => note !== "")
+      .join("\n>\n") +
     (droppedCount > 0 &&
     findings.findings.length === 0 &&
     (findings.systemic_problems ?? []).length === 0
@@ -2131,7 +2191,9 @@ export const post = async (
 
   const findingsMarker = findingsBlob(
     stampedFindings,
-    answerable && dialogueRound ? dialogueMarker(dialogue) : carriedDialogue,
+    answerable && dialogueRound
+      ? dialogueMarker(dialogue, priorDialogue.undecoded)
+      : carriedDialogue,
   );
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {

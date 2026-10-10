@@ -23,9 +23,10 @@ import {
   escapeFence,
   linkSafeUrl,
   lineRange,
+  noteFor,
   DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
-import { answeredNoteKey } from "./answered.js";
+import { answeredNoteKey, answeredSystemicNoteKey } from "./answered.js";
 import { RESPONSE_FORM, RESPONSE_TEACHING } from "./response-grammar.js";
 import type { PatchProjection } from "./surface.js";
 
@@ -292,10 +293,7 @@ const sanitizeFinding = (
     rangeLabel: lineRange(f.start_line, f.end_line, "–"),
     ...(permalink !== undefined ? { permalink, permalinkAnchored: anchored } : {}),
     patchProjection: projectPatch(f.patch, "comment-body"),
-    answeredNote:
-      answeredNotes !== undefined && Object.prototype.hasOwnProperty.call(answeredNotes, key)
-        ? (answeredNotes[key] ?? "")
-        : "",
+    answeredNote: noteFor(answeredNotes, key),
     discussion:
       discussionByFinding !== undefined &&
       Object.prototype.hasOwnProperty.call(discussionByFinding, f.id)
@@ -398,15 +396,18 @@ const carriedLines = (f: Finding): readonly string[] =>
 // finding_ids render inside backticks too, so they get the same backtick escaping as paths.
 const sanitizeSystemic = (
   s: SystemicProblem,
+  answeredNotes: Readonly<Record<string, string>> | undefined,
   discussion: readonly DiscussionLink[],
   discussionTruncated?: number,
 ): SystemicProblem & {
+  readonly answeredNote: string;
   readonly discussion: readonly DiscussionLink[];
   readonly discussionTruncated?: number;
   readonly discussionHtml: string;
 } => ({
   ...s,
   title: escapePipes(s.title),
+  answeredNote: noteFor(answeredNotes, answeredSystemicNoteKey(s)),
   discussion,
   ...(discussionTruncated !== undefined ? { discussionTruncated } : {}),
   discussionHtml:
@@ -670,6 +671,7 @@ export const render = (input: RenderInput): string => {
     (input.findings.systemic_problems ?? []).map((s) =>
       sanitizeSystemic(
         s,
+        input.answeredNotes,
         s.id !== undefined ? discussionLinksFor(s.id) : [],
         s.id !== undefined ? discussionTruncatedFor(s.id) : undefined,
       ),

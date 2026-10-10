@@ -70,7 +70,7 @@ import {
   ID_SHAPE_RE,
   priorIdsFrom,
 } from "./schema.js";
-import { resolveFindingId } from "./schema.js";
+import { resolveFindingId, withSystemicProblems } from "./schema.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -87,9 +87,11 @@ import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { runIdFromUrl } from "./checkrun.js";
 import {
   applyAnswered,
+  applyAnsweredSystemic,
   answeredNoteKey,
   answeredReRaiseNote,
   answeredRegistryFrom,
+  answeredSystemicRegistryFrom,
   couldMatch,
 } from "./answered.js";
 import {
@@ -1219,9 +1221,9 @@ export const post = async (
   // post-filter leave site (issue #151 review r5). The count is the TRUE pre-dedup dropped-finding
   // count, never the deduped entry list (issue #151 review r7).
   const logAnsweredDrops = (): void => {
-    if (verbatimReRaised.length > 0) {
+    if (droppedCount > 0) {
       process.stderr.write(
-        `${String(droppedCount)} verbatim re-raise(s) of answered findings were treated as answered — the preserved sticky shows each finding\n`,
+        `${String(droppedCount)} verbatim re-raise(s) of answered findings or systemic problems were treated as answered — the preserved sticky shows each one\n`,
       );
     }
   };
@@ -1420,7 +1422,9 @@ export const post = async (
   // answer can name.
   const loadedFindings = findingsResult.findings;
   const answerable =
-    existingSticky !== null && !priorIsMechanic && loadedFindings.findings.length > 0;
+    existingSticky !== null &&
+    !priorIsMechanic &&
+    (loadedFindings.findings.length > 0 || (loadedFindings.systemic_problems ?? []).length > 0);
   // A commit answer's trust is the push access a head branch IN the base repo implies, read from the
   // PR itself: a fork's head, or a deleted fork's null one, trusts no commit, and its commits go unread.
   const headInBaseRepo =
@@ -1442,10 +1446,10 @@ export const post = async (
         commits: headInBaseRepo ? await fetchCommitAnswersSource(input.repo, prNumber, ghApi) : [],
       })
     : { comments: [], commits: [] };
-  // Only a closure some current finding could match is worth the prior's download.
+  // Only a closure some current finding or systemic problem could match is worth the prior's download.
   const closures = closingResponses([...answers.comments, ...answers.commits], (response) =>
     isTrustedResponse(response, headInBaseRepo),
-  ).filter((closure) => couldMatch(closure.id, loadedFindings.findings));
+  ).filter((closure) => couldMatch(closure.id, loadedFindings));
   // The prior document the closures name, resolved only when one exists — and the one resolve the
   // nit stickiness and the discussion gate below reuse.
   const priorForAnswers =
@@ -1460,15 +1464,26 @@ export const post = async (
     );
   }
   const answeredRegistry = answeredRegistryFrom(closures, answeredPrior);
-  if (answeredPrior !== null && answeredRegistry.length < closures.length) {
+  const answeredSystemicRegistry = answeredSystemicRegistryFrom(closures, answeredPrior);
+  const boundIds = new Set([...answeredRegistry, ...answeredSystemicRegistry].map((e) => e.code));
+  const unboundClosureCount =
+    answeredPrior === null ? 0 : closures.filter((closure) => !boundIds.has(closure.id)).length;
+  if (unboundClosureCount > 0) {
     process.stderr.write(
-      `Warning: ${String(closures.length - answeredRegistry.length)} maintainer answer(s) name no finding the prior review reported — they close nothing this round\n`,
+      `Warning: ${String(unboundClosureCount)} maintainer answer(s) name nothing the prior review reported — they close nothing this round\n`,
     );
   }
   const answeredFilter = applyAnswered(loadedFindings.findings, answeredRegistry);
-  const reRaisedNotes = answeredFilter.reRaisedNotes;
+  const answeredSystemicFilter = applyAnsweredSystemic(
+    loadedFindings.systemic_problems ?? [],
+    answeredSystemicRegistry,
+  );
+  const reRaisedNotes = {
+    ...answeredFilter.reRaisedNotes,
+    ...answeredSystemicFilter.reRaisedNotes,
+  };
   const verbatimReRaised = answeredFilter.verbatimReRaised;
-  const droppedCount = answeredFilter.droppedCount;
+  const droppedCount = answeredFilter.droppedCount + answeredSystemicFilter.droppedCount;
   // Everything downstream (counts, rounds, signal, inline, the embedded blob) reads the FILTERED
   // document — a closed verbatim re-raise is gone from the review, not just from the prose.
   // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
@@ -1488,16 +1503,15 @@ export const post = async (
   const trulyDropped = new Set([...droppedIds].filter((c) => !keptCodes.has(c)));
   const systemic =
     trulyDropped.size === 0
-      ? (loadedFindings.systemic_problems ?? [])
-      : (loadedFindings.systemic_problems ?? []).map((s) => {
+      ? answeredSystemicFilter.systemic
+      : answeredSystemicFilter.systemic.map((s) => {
           if (s.finding_ids === undefined) return s;
           const codes = s.finding_ids.filter((c) => !trulyDropped.has(c));
           return codes.length === s.finding_ids.length ? s : { ...s, finding_ids: codes };
         });
   const findings: Findings = {
-    ...loadedFindings,
+    ...withSystemicProblems(loadedFindings, systemic),
     findings: [...answeredFilter.findings],
-    ...(systemic.length > 0 ? { systemic_problems: systemic } : {}),
   };
   // Nit visibility floor (issue #164): split the human-visible findings from the below-floor nits.
   // The blob (`findings`) stays COMPLETE — the machine channel and the next-round seed keep every nit,
@@ -1567,8 +1581,13 @@ export const post = async (
   // draft's verdict with the empty kept counts, so the sticky never reads "changes requested"
   // beside a converged signal without the explanation (issue #151 review r5).
   const answeredDropNote =
-    answeredReRaiseNote(verbatimReRaised, droppedCount) +
-    (verbatimReRaised.length > 0 && findings.findings.length === 0
+    answeredReRaiseNote(
+      [...verbatimReRaised, ...answeredSystemicFilter.verbatimReRaised],
+      droppedCount,
+    ) +
+    (droppedCount > 0 &&
+    findings.findings.length === 0 &&
+    (findings.systemic_problems ?? []).length === 0
       ? "\n> _The stop signal reflects the kept findings — this round carries none._"
       : "");
 

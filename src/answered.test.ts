@@ -1,13 +1,16 @@
 import { describe, it, expect } from "vitest";
 import {
   answeredRegistryFrom,
+  answeredSystemicRegistryFrom,
   applyAnswered,
+  applyAnsweredSystemic,
   answeredReRaiseNote,
+  answeredSystemicNoteKey,
   couldMatch,
 } from "./answered.js";
-import type { AnsweredEntry } from "./answered.js";
-import { synthesizedFindingId } from "./schema.js";
-import type { Finding, Findings } from "./schema.js";
+import type { AnsweredEntry, AnsweredSystemicEntry } from "./answered.js";
+import { synthesizedFindingId, synthesizedSystemicId } from "./schema.js";
+import type { Finding, Findings, SystemicProblem } from "./schema.js";
 import type { Response } from "./responses.js";
 
 const mkFinding = (overrides: Partial<Finding>): Finding => ({
@@ -33,6 +36,17 @@ const mkResponse = (overrides: Partial<Response>): Response => ({
   author: "alice",
   author_association: "OWNER",
   created_at: "2026-07-01T01:00:00Z",
+  ...overrides,
+});
+
+const mkSystemic = (overrides: Partial<SystemicProblem>): SystemicProblem => ({
+  id: "retry-plumbing",
+  title: "Retry plumbing is inconsistent",
+  description: "Each caller retries with its own policy.",
+  severity: "minor",
+  reasoning: "Three call sites, three policies.",
+  confidence: 0.8,
+  likelihood: 1,
   ...overrides,
 });
 
@@ -81,11 +95,21 @@ describe("answeredRegistryFrom — a closing answer, against the prior finding i
 describe("couldMatch — the download gate asks the matcher's own question", () => {
   it("admits an id a finding carries, and a synthesized id whose title second chance needs the prior", () => {
     const findings = [mkFinding({ id: "recurring-a" })];
-    expect(couldMatch("recurring-a", findings)).toBe(true);
-    expect(couldMatch("another-id", findings)).toBe(false);
-    expect(couldMatch(synthesizedFindingId("src/elsewhere.ts", "The same claim"), findings)).toBe(
-      true,
-    );
+    expect(couldMatch("recurring-a", { findings })).toBe(true);
+    expect(couldMatch("another-id", { findings })).toBe(false);
+    expect(
+      couldMatch(synthesizedFindingId("src/elsewhere.ts", "The same claim"), { findings }),
+    ).toBe(true);
+  });
+
+  it("admits a systemic problem's id, and an id-less systemic's synthesized one", () => {
+    const doc = {
+      findings: [],
+      systemic_problems: [mkSystemic({}), mkSystemic({ id: undefined, title: "Untitled class" })],
+    };
+    expect(couldMatch("retry-plumbing", doc)).toBe(true);
+    expect(couldMatch(synthesizedSystemicId("Untitled class"), doc)).toBe(true);
+    expect(couldMatch("another-id", doc)).toBe(false);
   });
 
   it("agrees with applyAnswered: an entry couldMatch rejects is never matched", () => {
@@ -101,7 +125,7 @@ describe("couldMatch — the download gate asks the matcher's own question", () 
       answerUrl: "u",
       answerAuthor: null,
     };
-    expect(couldMatch(entry.code, findings)).toBe(false);
+    expect(couldMatch(entry.code, { findings })).toBe(false);
     expect(applyAnswered(findings, [entry]).verbatimReRaised).toEqual([]);
   });
 });
@@ -358,10 +382,107 @@ describe("applyAnswered — the deterministic re-raise backstop (issue #151)", (
   });
 });
 
+describe("answeredSystemicRegistryFrom — a closing answer, against the prior systemic it names", () => {
+  const prior = (systemic: readonly SystemicProblem[]): Findings => ({
+    ...mkPrior([]),
+    systemic_problems: [...systemic],
+  });
+
+  it("carries the prior systemic's claim fields and the answer's link and author", () => {
+    const systemic = mkSystemic({});
+    expect(
+      answeredSystemicRegistryFrom([mkResponse({ id: "retry-plumbing" })], prior([systemic])),
+    ).toEqual([
+      {
+        code: "retry-plumbing",
+        title: systemic.title,
+        description: systemic.description,
+        reasoning: systemic.reasoning,
+        severity: systemic.severity,
+        answerUrl: "https://github.com/owner/repo/pull/1#issuecomment-2",
+        answerAuthor: "alice",
+      },
+    ]);
+  });
+
+  it("makes no entry for a closure naming a finding, or naming nothing the prior reported", () => {
+    const doc = { ...prior([mkSystemic({})]), findings: [mkFinding({})] };
+    expect(answeredSystemicRegistryFrom([mkResponse({ id: "recurring-a" })], doc)).toEqual([]);
+    expect(answeredSystemicRegistryFrom([mkResponse({ id: "gone" })], doc)).toEqual([]);
+    expect(answeredSystemicRegistryFrom([mkResponse({ id: "retry-plumbing" })], null)).toEqual([]);
+  });
+
+  it("names an id-less prior systemic by its synthesized id, the id the harvest matched", () => {
+    const idLess = mkSystemic({ id: undefined });
+    const code = synthesizedSystemicId(idLess.title);
+    expect(
+      answeredSystemicRegistryFrom([mkResponse({ id: code })], prior([idLess])).map((e) => e.code),
+    ).toEqual([code]);
+  });
+});
+
+describe("applyAnsweredSystemic — a closed systemic id, re-raised", () => {
+  const entry = (overrides: Partial<AnsweredSystemicEntry> = {}): AnsweredSystemicEntry => ({
+    code: "retry-plumbing",
+    title: "Retry plumbing is inconsistent",
+    description: "Each caller retries with its own policy.",
+    severity: "minor",
+    reasoning: "Three call sites, three policies.",
+    answerUrl: "https://github.com/owner/repo/pull/1#issuecomment-9",
+    answerAuthor: "alice",
+    ...overrides,
+  });
+
+  it("drops a verbatim re-raise and names the answer", () => {
+    const result = applyAnsweredSystemic([mkSystemic({})], [entry()]);
+    expect(result.systemic).toEqual([]);
+    expect(result.verbatimReRaised).toEqual([entry()]);
+    expect(result.droppedCount).toBe(1);
+    expect(result.reRaisedNotes).toEqual({});
+  });
+
+  it("drops a verbatim re-raise whose finding_ids and paths moved — neither is part of the claim", () => {
+    const moved = mkSystemic({ finding_ids: ["new-instance"], paths: ["src/elsewhere.ts"] });
+    expect(applyAnsweredSystemic([moved], [entry()]).systemic).toEqual([]);
+  });
+
+  it.each<readonly [string, Partial<SystemicProblem>, Partial<AnsweredSystemicEntry>]>([
+    ["the title", { title: "Retry plumbing is now unbounded" }, {}],
+    ["the description", { description: "A fourth caller retries forever." }, {}],
+    ["the reasoning", { reasoning: "Measured: four call sites." }, {}],
+    ["the severity", { severity: "major" }, {}],
+    ["a rebuttal", { rebuttal: "The dismissal predates the fourth caller." }, {}],
+    ["a critical severity on both sides", { severity: "critical" }, { severity: "critical" }],
+  ])("keeps a re-raise with %s, annotated with the prior answer", (_, current, closed) => {
+    const systemic = mkSystemic(current);
+    const closedAt = entry(closed);
+    const result = applyAnsweredSystemic([systemic], [closedAt]);
+    expect(result.systemic).toEqual([systemic]);
+    expect(result.droppedCount).toBe(0);
+    expect(result.reRaisedNotes[answeredSystemicNoteKey(systemic)]).toContain(closedAt.answerUrl);
+  });
+
+  it("leaves a systemic no answer closed untouched", () => {
+    const other = mkSystemic({ id: "other-class" });
+    expect(applyAnsweredSystemic([other], [entry()])).toEqual({
+      systemic: [other],
+      reRaisedNotes: {},
+      verbatimReRaised: [],
+      droppedCount: 0,
+    });
+  });
+
+  it("names a repeated dropped id once and counts every drop", () => {
+    const result = applyAnsweredSystemic([mkSystemic({}), mkSystemic({})], [entry()]);
+    expect(result.verbatimReRaised).toHaveLength(1);
+    expect(result.droppedCount).toBe(2);
+  });
+});
+
 describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => {
   it("counts the TRUE pre-dedup dropped findings while the lines stay deduped by key (issues #151 review r5 + r7)", () => {
     const note = answeredReRaiseNote([entry], 3);
-    expect(note).toContain("**3 finding(s) re-raised");
+    expect(note).toContain("**3 re-raise(s)");
     // The deduped lines still list the single entry once.
     expect(note.match(/prior answer/g)).toHaveLength(1);
   });
@@ -382,7 +503,7 @@ describe("answeredReRaiseNote — the drop is never silent (issue #151)", () => 
     expect(answeredReRaiseNote([], 0)).toBe("");
   });
 
-  it("renders the answer's author inside a code span — a commit's git name is self-declared", () => {
+  it("renders the answer's author inside a code span — inert as markdown whatever it holds", () => {
     const spoofed = { ...entry, answerAuthor: "[maintainer](https://example.com) @owner" };
     expect(answeredReRaiseNote([spoofed], 1)).toContain(
       "by `[maintainer](https://example.com) @owner`",

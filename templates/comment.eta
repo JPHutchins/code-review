@@ -47,7 +47,7 @@
 <% } -%>
 
 <%~ it.findings.summary %>
-<% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit %>
+<% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit -%>
 <% if (it.strays.length > 0 || (!it.incomplete && (findingsTotal > 0 || it.systemic.length > 0))) { -%>
 
 ## <% if (it.strays.length === 0) { %>Findings<% } else if (it.inlineDisposition && (it.inlineDisposition.kind === 'disabled' || it.inlineDisposition.kind === 'whole-document')) { %>Findings<% } else if (it.inlineDisposition && it.inlineDisposition.kind === 'no-envelope') { %>Findings (no inline review — result envelope lost)<% } else { %><%= (it.unanchoredCount && it.unanchoredCount > 0) ? 'Findings' : 'Findings outside the diff' %><% } %>
@@ -79,6 +79,10 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% const meta = [] %><% if (s.paths && s.paths.length > 0) { meta.push('Affects: ' + s.paths.map(function(p) { return '`' + p + '`' }).join(', ')) } %><% if (s.finding_ids && s.finding_ids.length > 0) { meta.push('Ties together: ' + s.finding_ids.map(function(c) { return '`' + c + '`' }).join(', ')) } %><% if (meta.length > 0) { %>_<%~ meta.join(' · ') %>_<% } %>
 
 <%~ s.description %>
+<% if (s.answeredNote) { -%>
+
+> ↩️ <%~ s.answeredNote %>
+<% } -%>
 <% if (it.hasRebuttal(s)) { -%>
 
 **Rebuttal:** <%~ s.rebuttal %>
@@ -116,7 +120,9 @@ _<%= it.unanchoredCount %> finding<%= it.unanchoredCount === 1 ? '' : 's' %> bel
 <% if (findingsTotal > 0) { %>
 <% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
 **Findings:** <%~ parts.join(' · ') %>
-<% } else if (!it.incomplete && it.systemic.length === 0 && !it.answeredReRaiseNote) { %>
+<% } else if (!it.incomplete && it.systemic.length > 0) { %>
+_No findings beyond the <%= it.systemic.length %> systemic problem<%= it.systemic.length === 1 ? '' : 's' %> above._
+<% } else if (!it.incomplete && !it.answeredReRaiseNote) { %>
 <% if (it.unverifiedNoLogs) { %>_No findings — but no failing-job logs were staged, so this pass could not read the CI failure. "No findings" is not evidence of none._<% } else { %>_No findings — clean review._<% } %>
 <% } %>
 

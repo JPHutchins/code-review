@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { advanceDialogue, decodeDialogue, DIALOGUE_ENTRY_CAP } from "./dialogue.js";
+import {
+  advanceDialogue,
+  decodeDialogue,
+  dialogueMetricsTable,
+  DIALOGUE_ENTRY_CAP,
+} from "./dialogue.js";
 import type { DialogueAnswers, DialogueEntry, DialogueItem } from "./dialogue.js";
 import type { Response } from "./responses.js";
 
@@ -280,5 +285,21 @@ describe("decodeDialogue — each entry decodes alone", () => {
       skipped: 1,
     });
     expect(decodeDialogue(undefined)).toEqual({ entries: [], undecoded: [], skipped: 1 });
+  });
+});
+
+describe("dialogueMetricsTable — the round's dialogue in the run summary", () => {
+  it("counts each state", () => {
+    const table = dialogueMetricsTable({
+      commentAnswers: 3,
+      commitAnswers: 1,
+      closures: 2,
+      droppedAnswered: 1,
+      droppedOverruled: 0,
+      annotated: 1,
+      entries: [rebutted, { ...rebutted, id: "other", state: "contested" }],
+      systemicUnanswered: 1,
+    });
+    expect(table).toContain("1 · 1 · 0 · 0");
   });
 });

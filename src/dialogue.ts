@@ -13,9 +13,16 @@ import { newestTrustedAnswersIn } from "./responses.js";
 import type { Response } from "./responses.js";
 import type { ResponseDisposition } from "./response-grammar.js";
 
+const DialogueStateCodec = t.keyof({
+  rebutted: null,
+  contested: null,
+  upheld: null,
+  overruled: null,
+});
+
 const DialogueEntryCodec = t.type({
   id: t.string,
-  state: t.keyof({ rebutted: null, contested: null, upheld: null, overruled: null }),
+  state: DialogueStateCodec,
   answer: t.string,
   at: t.string,
   title: t.string,
@@ -23,6 +30,8 @@ const DialogueEntryCodec = t.type({
 });
 
 export type DialogueEntry = t.TypeOf<typeof DialogueEntryCodec>;
+type DialogueState = t.TypeOf<typeof DialogueStateCodec>;
+const DIALOGUE_STATES = Object.keys(DialogueStateCodec.keys) as readonly DialogueState[];
 
 export const DIALOGUE_ENTRY_CAP = 32;
 
@@ -181,3 +190,30 @@ export const advanceDialogue = (
       .slice(0, Math.max(0, DIALOGUE_ENTRY_CAP - held.length)),
   ];
 };
+
+export interface DialogueMetrics {
+  readonly commentAnswers: number;
+  readonly commitAnswers: number;
+  readonly closures: number;
+  readonly droppedAnswered: number;
+  readonly droppedOverruled: number;
+  readonly annotated: number;
+  readonly entries: readonly DialogueEntry[];
+  readonly systemicUnanswered: number;
+}
+
+export const dialogueMetricsTable = (metrics: DialogueMetrics): string =>
+  [
+    "### 💬 Review dialogue",
+    "",
+    "| | |",
+    "|---|--:|",
+    `| answers read (comments · commits) | ${String(metrics.commentAnswers)} · ${String(metrics.commitAnswers)} |`,
+    `| trusted closing answers | ${String(metrics.closures)} |`,
+    `| re-raises dropped (answered · overruled) | ${String(metrics.droppedAnswered)} · ${String(metrics.droppedOverruled)} |`,
+    `| re-raises kept and annotated | ${String(metrics.annotated)} |`,
+    `| ${DIALOGUE_STATES.join(" · ")} | ${DIALOGUE_STATES.map((state) =>
+      String(metrics.entries.filter((entry) => entry.state === state).length),
+    ).join(" · ")} |`,
+    `| systemic problems no trusted answer names | ${String(metrics.systemicUnanswered)} |`,
+  ].join("\n");

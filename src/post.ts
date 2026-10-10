@@ -90,7 +90,7 @@ import {
   withSystemicProblems,
 } from "./schema.js";
 import type { SystemicProblem } from "./schema.js";
-import { advanceDialogue, dialogueAnswers } from "./dialogue.js";
+import { advanceDialogue, dialogueAnswers, dialogueMetricsTable } from "./dialogue.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -1533,9 +1533,7 @@ export const post = async (
               : [{ id, title: s.title, severity: s.severity, rebutted: hasRebuttal(s) }];
           }),
         ])
-      : input.withoutDialogue === true
-        ? []
-        : priorDialogue.entries;
+      : priorDialogue.entries;
   // An upheld id stays open whatever older answer would close it. Only a closure some current finding
   // or systemic problem could match is worth the prior's download.
   const upheldIds = new Set(
@@ -1640,11 +1638,9 @@ export const post = async (
     ...overruledSystemicFilter.reRaisedNotes,
   };
   const verbatimReRaised = answeredFilter.verbatimReRaised;
-  const droppedCount =
-    answeredFilter.droppedCount +
-    answeredSystemicFilter.droppedCount +
-    overruledFilter.droppedCount +
-    overruledSystemicFilter.droppedCount;
+  const answeredDropCount = answeredFilter.droppedCount + answeredSystemicFilter.droppedCount;
+  const overruledDropCount = overruledFilter.droppedCount + overruledSystemicFilter.droppedCount;
+  const droppedCount = answeredDropCount + overruledDropCount;
   // Everything downstream (counts, rounds, signal, inline, the embedded blob) reads the FILTERED
   // document — a closed verbatim re-raise is gone from the review, not just from the prose.
   // [...spread] restores the codec's mutable array type. A DROPPED re-raise's code is also
@@ -1748,11 +1744,11 @@ export const post = async (
     [
       answeredReRaiseNote(
         [...verbatimReRaised, ...answeredSystemicFilter.verbatimReRaised],
-        answeredFilter.droppedCount + answeredSystemicFilter.droppedCount,
+        answeredDropCount,
       ),
       overruledReRaiseNote(
         [...overruledFilter.verbatimReRaised, ...overruledSystemicFilter.verbatimReRaised],
-        overruledFilter.droppedCount + overruledSystemicFilter.droppedCount,
+        overruledDropCount,
       ),
     ]
       .filter((note) => note !== "")
@@ -2499,6 +2495,24 @@ export const post = async (
       finalDiscussionOverride,
     ),
   );
+  if (answerable && dialogueRound) {
+    appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => {
+      const trustedAnswerIds = new Set(allAnswers.filter(isTrusted).map((answer) => answer.id));
+      return dialogueMetricsTable({
+        commentAnswers: answers.comments.length,
+        commitAnswers: answers.commits.length,
+        closures: allClosures.length,
+        droppedAnswered: answeredDropCount,
+        droppedOverruled: overruledDropCount,
+        annotated: Object.keys(reRaisedNotes).length,
+        entries: dialogue,
+        systemicUnanswered: (findings.systemic_problems ?? []).filter((s) => {
+          const id = resolveSystemicId(s);
+          return id === undefined || !trustedAnswerIds.has(id);
+        }).length,
+      });
+    });
+  }
 };
 
 export interface AnnounceInput {

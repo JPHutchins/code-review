@@ -95,6 +95,20 @@ describe("parseResponseLines — the response grammar", () => {
     );
   });
 
+  it("reads a copy of the form as the sticky displays it, backticks kept, on a line of its own", () => {
+    const copied = [
+      "`Review-Response: x-y refuted — measured`",
+      "",
+      "`| id | disposition | reason |`",
+      "`| --- | --- | --- |`",
+      "`| a-b | dismissed | tracked in #12 |`",
+    ].join("\n");
+    expect(parseResponses(copied).map((r) => [r.id, r.disposition])).toEqual([
+      ["x-y", "refuted"],
+      ["a-b", "dismissed"],
+    ]);
+  });
+
   it("never reads a quoted, inline-code, indented-code, or fenced copy of the grammar as a response", () => {
     const quoting = [
       "> Review-Response: quoted fixed — someone else's line",
@@ -209,7 +223,7 @@ describe("parseResponseTables — the verdict tables implementers post", () => {
       { id: "a-b", disposition: "dismissed", reason: "tracked in #12" },
     ]);
     expect(RESPONSE_TEACHING).toBe(
-      "To answer findings, post a PR conversation comment holding a markdown table — the header `| id | disposition | reason |`, the delimiter `| --- | --- | --- |`, then one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
+      "To answer findings, post a PR conversation comment holding a rendered markdown table, not one inside a code block, whose columns are `id`, `disposition` and `reason`, one row per finding id, its disposition exactly one of `fixed`, `refuted` or `dismissed`; or put `Review-Response: <id> fixed|refuted|dismissed — <reason>` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.",
     );
   });
 

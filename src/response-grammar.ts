@@ -18,15 +18,20 @@ export type ResponseDisposition = t.TypeOf<typeof ResponseDispositionCodec>;
 
 export const RESPONSE_FORM = `Review-Response: <id> ${DISPOSITIONS.join("|")} — <reason>`;
 
-export const RESPONSE_TABLE_HEADER = "| id | disposition | reason |";
-export const RESPONSE_TABLE_DELIMITER = "| --- | --- | --- |";
+// The answer table's columns, named in the teaching's prose — never shown as bytes to copy — and
+// spelled into the header and delimiter a written answer table carries.
+export const RESPONSE_TABLE_COLUMNS = ["id", "disposition", "reason"] as const;
+export const RESPONSE_TABLE_HEADER = `| ${RESPONSE_TABLE_COLUMNS.join(" | ")} |`;
+export const RESPONSE_TABLE_DELIMITER = `| ${RESPONSE_TABLE_COLUMNS.map(() => "---").join(" | ")} |`;
+
+const listed = (words: readonly string[], conjunction: "and" | "or"): string => {
+  const quoted = words.map((word) => `\`${word}\``);
+  return quoted.length < 2
+    ? quoted.join("")
+    : `${quoted.slice(0, -1).join(", ")} ${conjunction} ${quoted.at(-1) ?? ""}`;
+};
 
 // What the implementer is told, word for word, on the sticky under every full review with findings.
-export const RESPONSE_TEACHING = `To answer findings, post a PR conversation comment holding a markdown table — the header \`${RESPONSE_TABLE_HEADER}\`, the delimiter \`${RESPONSE_TABLE_DELIMITER}\`, then one row per finding id, its disposition exactly one of ${DISPOSITIONS.slice(
-  0,
-  -1,
-)
-  .map((disposition) => `\`${disposition}\``)
-  .join(
-    ", ",
-  )} or \`${DISPOSITIONS.at(-1) ?? ""}\`; or put \`${RESPONSE_FORM}\` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.`;
+// It stands alone: it names the table's columns rather than pointing at a rendered example, so any
+// template that renders it teaches the whole form.
+export const RESPONSE_TEACHING = `To answer findings, post a PR conversation comment holding a rendered markdown table, not one inside a code block, whose columns are ${listed(RESPONSE_TABLE_COLUMNS, "and")}, one row per finding id, its disposition exactly one of ${listed(DISPOSITIONS, "or")}; or put \`${RESPONSE_FORM}\` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.`;

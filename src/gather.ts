@@ -9,7 +9,7 @@ import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { ghArtifactReader, resolvePriorFindings, type ArtifactReader } from "./artifact.js";
-import { isFullReviewAncestry } from "./surface.js";
+import { isFullReviewAncestry, parseDialogueMarker } from "./surface.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { parseJsonl } from "./transcript.js";
 import { annotationSafe, BODY_CLIP_CHARS, clipText, errMsg } from "./util.js";
@@ -539,6 +539,13 @@ export const gather = async (
     join(input.outDir, "prior_findings.json"),
     priorFindings === null ? "null" : JSON.stringify(priorFindings),
   );
+  // The ids the maintainers hold past a rebuttal, from the prior sticky's dialogue state. Each is a
+  // known id even when the prior round did not raise it, so an answer naming one is matched, never
+  // echoed as unmatched; and each carries its claim's title and severity, which the prior document
+  // may not.
+  const held = (seedsFromPrior ? parseDialogueMarker(prior.body).entries : []).filter(
+    (entry) => entry.state !== "rebutted",
+  );
   // The implementer's Review-Response answers to the prior round's ids, staged for the reviewer.
   // Only a round seeded from a full prior review has ids to answer, the same gate as the seed itself.
   const harvest = seedsFromPrior
@@ -546,12 +553,25 @@ export const gather = async (
         repo: input.repo,
         prNumber,
         botLogin: input.botLogin,
-        priorIds: new Set(priorIdsFrom(priorFindings)),
+        priorIds: new Set([...priorIdsFrom(priorFindings), ...held.map((entry) => entry.id)]),
         commits: commits.map((commit) => ({ ...commit, author: commit.login ?? null })),
         comments: issueComments ?? [],
       })
     : { file: { responses: [], unmatched: [] }, dropped: 0 };
-  writeFileSync(join(input.outDir, "responses.json"), JSON.stringify(harvest.file));
+  writeFileSync(
+    join(input.outDir, "responses.json"),
+    JSON.stringify({
+      ...harvest.file,
+      ...Object.fromEntries(
+        (["contested", "upheld", "overruled"] as const).flatMap((state) => {
+          const claims = held
+            .filter((entry) => entry.state === state)
+            .map(({ id, title, severity, at }) => ({ id, title, severity, since: at }));
+          return claims.length > 0 ? [[state, claims]] : [];
+        }),
+      ),
+    }),
+  );
   if (seedsFromPrior && priorFindings === null) {
     process.stderr.write(
       "Note: the prior review's findings did not resolve — every id-shaped answer is staged as unmatched\n",

@@ -209,6 +209,13 @@ describe("advanceDialogue — one round of the review dialogue", () => {
     ).toEqual([upheld]);
   });
 
+  it("refreshes an upheld entry from any re-raise of it", () => {
+    const upheld: DialogueEntry = { ...rebutted, state: "upheld" };
+    expect(
+      advanceDialogue([upheld], answered([]), [mkItem({ severity: "critical", rebutted: false })]),
+    ).toEqual([{ ...upheld, severity: "critical" }]);
+  });
+
   it("trims only rebutted entries under the cap, never a held one", () => {
     const held = Array.from({ length: DIALOGUE_ENTRY_CAP + 1 }, (_, n): DialogueEntry => ({
       ...rebutted,

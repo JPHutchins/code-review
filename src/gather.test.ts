@@ -7,6 +7,8 @@ import type { GatherInput, GitRun } from "./gather.js";
 import { gather, renderOutputs } from "./gather.js";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
+import { dialogueMarker } from "./surface.js";
+import type { DialogueEntry } from "./dialogue.js";
 
 const sampleDiff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
@@ -517,6 +519,70 @@ describe("gather — prior review", () => {
 
     expect(consulted).toEqual(["https://api.github.com/repos/o/r/actions/artifacts/9/zip"]);
     expect(JSON.parse(outFile("prior_findings.json")) as unknown).toEqual(doc);
+  });
+
+  it("stages the claims the maintainers hold, read from the prior sticky's dialogue state, and matches answers naming them", async () => {
+    const doc = { schema_version: "0.9.0", summary: "prior", verdict: "comment", findings: [] };
+    const held = (id: string, state: DialogueEntry["state"]): DialogueEntry => ({
+      id,
+      state,
+      answer: "https://github.com/o/r/pull/42#issuecomment-1",
+      at: "2026-10-01T00:00:00Z",
+      title: "t",
+      severity: "major",
+    });
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          {
+            id: 7,
+            body: `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/9/zip -->\n${dialogueMarker(
+              [
+                held("argued", "contested"),
+                held("stands", "upheld"),
+                held("ruled", "overruled"),
+                held("open", "rebutted"),
+              ],
+            )}`,
+            user: { login: "github-actions[bot]" },
+          },
+          {
+            id: 8,
+            body: "Review-Response: stands upheld — The reviewer is right.",
+            user: { login: "maintainer", type: "User" },
+            created_at: "2026-10-02T00:00:00Z",
+            author_association: "OWNER",
+          },
+        ]),
+      },
+    ]);
+
+    await gather(mkInput({}), api, mkMockGit([]).git, () => Promise.resolve(JSON.stringify(doc)));
+
+    const claim = (id: string): object => ({
+      id,
+      title: "t",
+      severity: "major",
+      since: "2026-10-01T00:00:00Z",
+    });
+    const staged = JSON.parse(outFile("responses.json")) as {
+      responses: { id: string; disposition: string }[];
+      unmatched: unknown[];
+    };
+    expect(staged).toMatchObject({
+      unmatched: [],
+      contested: [claim("argued")],
+      upheld: [claim("stands")],
+      overruled: [claim("ruled")],
+    });
+    expect(staged.responses.map((r) => [r.id, r.disposition])).toEqual([["stands", "upheld"]]);
   });
 
   it("stages the implementer's responses to the prior round's ids, from comments and commits", async () => {

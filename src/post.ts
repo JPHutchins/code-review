@@ -254,7 +254,7 @@ const loadFindings = (path: string): FindingsLoadResult => {
     const retry = decodeFindings(stripped);
     if (retry.kind === "ok") {
       process.stderr.write(
-        "Warning: the review draft carried an invalid best-effort field (convergence/scope_metastasis/change_size) — stripped it and used the rest; the pipeline re-stamps convergence\n",
+        "Warning: the review draft carried an invalid best-effort field (convergence/scope_metastasis/change_size/unfinished) — stripped it and used the rest; the pipeline re-stamps convergence\n",
       );
       return retry;
     }

@@ -525,6 +525,13 @@ export const render = (input: RenderInput): string => {
   const isFullReviewRound =
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && trajectory.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
+  const unfinished = (input.findings.unfinished ?? []).map((check) =>
+    check.replace(/\s+/g, " ").trim(),
+  );
+  const unfinishedSuffix =
+    unfinished.length > 0
+      ? ` · ${String(unfinished.length)} unfinished check${unfinished.length === 1 ? "" : "s"}`
+      : "";
   const contestedSuffix =
     (input.contested ?? []).length > 0
       ? ` · ${String((input.contested ?? []).length)} contested`
@@ -761,7 +768,7 @@ export const render = (input: RenderInput): string => {
       convergenceSummary: !isFullReviewRound
         ? ""
         : convergence
-          ? convergenceBadge(convergence) + contestedSuffix
+          ? convergenceBadge(convergence) + contestedSuffix + unfinishedSuffix
           : "",
       inlinePosted: input.inlineDisposition?.kind === "posted" ? input.inlineDisposition.count : 0,
       runUrl: input.runUrl,
@@ -793,7 +800,9 @@ export const render = (input: RenderInput): string => {
       ? ""
       : (convergence
           ? convergenceBadge(convergence)
-          : convergenceSummary(input.findings, input.convergenceThreshold)) + contestedSuffix,
+          : convergenceSummary(input.findings, input.convergenceThreshold)) +
+        contestedSuffix +
+        unfinishedSuffix,
     strays: discussionBudget.kept,
     orphanedLines: orphanedRender.lines,
     orphanedUnresolvable: input.orphanedUnresolvable === true,
@@ -844,6 +853,7 @@ export const render = (input: RenderInput): string => {
     answeredNotes: input.answeredNotes ?? {},
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",
     contested: contestedBudget.kept,
+    unfinished,
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

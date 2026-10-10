@@ -169,6 +169,7 @@ const findings = {
       { round: 3, score: 0.71, ids: { "recurring-code": 3 }, sha: "abc123def458" },
     ],
   },
+  unfinished: [sentinel("unfinished")],
   change_size: {
     code: { added: 111, removed: 222 },
     tests: { added: 333, removed: 444 },

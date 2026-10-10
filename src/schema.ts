@@ -28,6 +28,8 @@ const LineNumber = t.refinement(
 );
 
 const Confidence = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Confidence");
+
+const NonEmptyString = t.refinement(t.string, (s): s is string => s.length > 0, "NonEmptyString");
 const Likelihood = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Likelihood");
 
 // A convergence score/threshold must be FINITE: io-ts's t.number accepts Infinity/NaN (JSON.parse("1e400")
@@ -306,6 +308,7 @@ export const FindingsCodec = t.exact(
       convergence: ConvergenceCodec,
       // Agent-written best-effort (issue #182); see ChangeSizeCodec.
       change_size: ChangeSizeCodec,
+      unfinished: t.array(NonEmptyString),
     }),
   ]),
 );
@@ -322,6 +325,7 @@ export const PIPELINE_STAMPED_FIELDS: ReadonlySet<string> = new Set([
 export const RECOVERABLE_OPTIONAL_FIELDS: ReadonlySet<string> = new Set([
   ...PIPELINE_STAMPED_FIELDS,
   "change_size",
+  "unfinished",
 ]);
 
 // The shape of a finding or systemic id: the pipeline's kebab-case identifiers and the synthesized

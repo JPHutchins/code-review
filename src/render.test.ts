@@ -970,6 +970,31 @@ describe("render", () => {
     });
   });
 
+  describe("unfinished checks", () => {
+    it("names each unfinished check under the summary and counts them beside the badge", () => {
+      const findings = mkFindings([], {
+        unfinished: ["the free-threaded probe", "the pickle-bypass probe"],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      const summaryAt = result.indexOf("A test summary.");
+      expect(result.indexOf("the free-threaded probe")).toBeGreaterThan(summaryAt);
+      expect(result).toContain("the pickle-bypass probe");
+      expect(result).toMatch(/\*\*Convergence\*\*[^\n]*2 unfinished checks/);
+    });
+
+    it("says nothing when every planned check finished", () => {
+      const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("unfinished");
+    });
+  });
+
   describe("systemic problems section (issue #134)", () => {
     const systemicFindings = (overrides?: Partial<Omit<Findings, "findings">>): Findings =>
       mkFindings([mkFinding({ severity: "major", title: "Anchored finding" })], {

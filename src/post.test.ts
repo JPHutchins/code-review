@@ -25,6 +25,7 @@ import {
   parseDialogueMarker,
 } from "./surface.js";
 import type { DialogueEntry } from "./dialogue.js";
+import { RULING_TEACHING } from "./response-grammar.js";
 import type {
   Convergence,
   Findings,
@@ -5314,6 +5315,7 @@ describe("post — answered findings (issue #151)", () => {
       expect(body).toContain("issuecomment-556");
       expect(body).not.toContain("**Findings:**");
       expect(body).toMatch(/\*\*Convergence\*\*[^\n]*· 1 contested/);
+      expect(body.slice(contestedAt)).toContain(RULING_TEACHING);
       expect(stickySignal(calls).convergence).toMatchObject({ score: 0.51, converged: true });
       expect(parseDialogueMarker(body).entries).toEqual([
         {
@@ -5379,6 +5381,106 @@ describe("post — answered findings (issue #151)", () => {
       const body = patchedBody(calls);
       expect(body).not.toContain("code-review:dialogue");
       expect(body).not.toContain("### ⚖️ Contested");
+    });
+
+    it("closes a contested id a maintainer overrules — every re-raise dropped and named, out of the score", async () => {
+      const contested: DialogueEntry = {
+        ...entry,
+        state: "contested",
+        answer: "https://github.com/owner/repo/pull/42#issuecomment-556",
+        at: "2026-07-02T01:00:00Z",
+      };
+      const ruling = answerRow("Review-Response: recurring-a overruled — Not a shipped path.", {
+        id: 558,
+        created: "2026-07-04T01:00:00Z",
+      });
+      const rebutting = mkFinding({ ...argued, rebuttal: "The ruling missed the cold path." });
+      const calls = await run(stickyWith([contested]), mkFindings([rebutting]), [
+        answerRow(DISMISSAL),
+        answerAgain,
+        ruling,
+      ]);
+      const body = patchedBody(calls);
+      expect(body).toContain("treated as answered");
+      expect(body).toContain("issuecomment-558");
+      expect(body).not.toContain("### ⚖️ Contested");
+      expect(stickySignal(calls).convergence).toMatchObject({ score: 0 });
+      expect(parseDialogueMarker(body).entries).toMatchObject([
+        { id: "recurring-a", state: "overruled" },
+      ]);
+    });
+
+    describe("a ruling holds in every later round", () => {
+      const upholding = answerRow("Review-Response: recurring-a upheld — The reviewer is right.", {
+        id: 559,
+        created: "2026-07-04T01:00:00Z",
+      });
+      const overruling = answerRow("Review-Response: recurring-a overruled — Not a shipped path.", {
+        id: 558,
+        created: "2026-07-04T01:00:00Z",
+      });
+      const ruled = (state: "upheld" | "overruled", id: number): DialogueEntry => ({
+        ...entry,
+        state,
+        answer: `https://github.com/owner/repo/pull/42#issuecomment-${String(id)}`,
+        at: "2026-07-04T01:00:00Z",
+      });
+
+      it("keeps an upheld finding open in the round of the ruling and every round after", async () => {
+        const contested: DialogueEntry = {
+          ...entry,
+          state: "contested",
+          answer: "https://github.com/owner/repo/pull/42#issuecomment-556",
+          at: "2026-07-02T01:00:00Z",
+        };
+        const answers = [answerRow(DISMISSAL), answerAgain, upholding];
+        const ruling = await run(stickyWith([contested]), mkFindings([argued]), answers);
+        expect(parseDialogueMarker(patchedBody(ruling)).entries).toEqual([ruled("upheld", 559)]);
+        const after = await run(stickyWith([ruled("upheld", 559)]), mkFindings([argued]), answers);
+        const body = patchedBody(after);
+        expect(body).not.toContain("treated as answered");
+        expect(body).not.toContain("### ⚖️ Contested");
+        expect(body).toContain("The same claim");
+      });
+
+      it("drops an overruled id's re-raise in every round after the ruling", async () => {
+        const after = await run(stickyWith([ruled("overruled", 558)]), mkFindings([argued]), [
+          answerRow(DISMISSAL),
+          answerAgain,
+          overruling,
+        ]);
+        const body = patchedBody(after);
+        expect(body).toContain("treated as answered");
+        expect(body).toContain("issuecomment-558");
+      });
+    });
+
+    it("reads a ruling on an id that is not contested as no verdict", async () => {
+      const ruling = answerRow("Review-Response: recurring-a overruled — Not a shipped path.", {
+        id: 558,
+        created: "2026-07-04T01:00:00Z",
+      });
+      const rebutting = mkFinding({ ...argued, rebuttal: "The ruling missed the cold path." });
+      const calls = await run(stickyWith([entry]), mkFindings([rebutting]), [
+        answerRow(DISMISSAL),
+        ruling,
+      ]);
+      expect(parseDialogueMarker(patchedBody(calls)).entries).toEqual([entry]);
+    });
+
+    it("writes an entry it cannot read back onto the sticky", async () => {
+      const future = { ...entry, id: "future-id", state: "argued-further" };
+      const sticky = `${priorSticky}\n<!-- code-review:dialogue;base64 ${Buffer.from(
+        JSON.stringify([entry, future]),
+        "utf-8",
+      ).toString("base64")} -->`;
+      const calls = await run(sticky, mkFindings([argued]), [answerRow(DISMISSAL)]);
+      const marker = /<!-- code-review:dialogue;base64 ([A-Za-z0-9+/=]+) -->/.exec(
+        patchedBody(calls),
+      )?.[1];
+      expect(JSON.parse(Buffer.from(marker ?? "", "base64").toString("utf-8"))).toContainEqual(
+        future,
+      );
     });
 
     it("carries the dialogue state through a notice", async () => {

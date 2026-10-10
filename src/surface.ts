@@ -1000,16 +1000,21 @@ export const findingsMarkerPair = (
 
 const DIALOGUE_RE = /<!-- code-review:dialogue;base64 ([A-Za-z0-9+/=]+) -->/;
 
-export const dialogueMarker = (entries: readonly DialogueEntry[]): string =>
-  entries.length === 0
+export const dialogueMarker = (
+  entries: readonly DialogueEntry[],
+  undecoded: readonly unknown[] = [],
+): string =>
+  entries.length + undecoded.length === 0
     ? ""
-    : `<!-- code-review:dialogue;base64 ${Buffer.from(JSON.stringify(entries), "utf-8").toString("base64")} -->`;
+    : `<!-- code-review:dialogue;base64 ${Buffer.from(JSON.stringify([...entries, ...undecoded]), "utf-8").toString("base64")} -->`;
 
 export const carriedDialogueMarker = (body: string): string => DIALOGUE_RE.exec(body)?.[0] ?? "";
 
 export const parseDialogueMarker = (body: string): DecodedDialogue => {
   const b64 = DIALOGUE_RE.exec(body)?.[1];
-  return b64 === undefined ? { entries: [], skipped: 0 } : decodeDialogue(decodeBase64Json(b64));
+  return b64 === undefined
+    ? { entries: [], undecoded: [], skipped: 0 }
+    : decodeDialogue(decodeBase64Json(b64));
 };
 
 export const parseConvergenceMarker = (body: string): Convergence | null => {

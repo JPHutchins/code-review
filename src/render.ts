@@ -27,7 +27,7 @@ import {
   DEFAULT_NIT_VISIBILITY_FLOOR,
 } from "./surface.js";
 import { answeredNoteKey, answeredSystemicNoteKey } from "./answered.js";
-import { RESPONSE_FORM, RESPONSE_TEACHING } from "./response-grammar.js";
+import { RESPONSE_FORM, RESPONSE_TEACHING, RULING_TEACHING } from "./response-grammar.js";
 import type { PatchProjection } from "./surface.js";
 
 // pipes break markdown table columns.
@@ -741,6 +741,7 @@ export const render = (input: RenderInput): string => {
     summaryAvailable: input.summaryAvailable ?? false,
     responseForm: RESPONSE_FORM,
     responseTeaching: RESPONSE_TEACHING,
+    rulingTeaching: RULING_TEACHING,
     teachesResponses: isConvergenceRound(route, incomplete),
     shedNote: shedNote(
       input.shedCount ?? 0,

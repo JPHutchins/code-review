@@ -351,15 +351,50 @@ export const applyAnsweredSystemic = (
   };
 };
 
+// The answer a dropped or annotated item links to, wherever the closure came from.
+export type ClosingAnswer = Pick<AnsweredEntry, "code" | "title" | "answerUrl" | "answerAuthor">;
+
+export interface OverruledFilter<Item> {
+  readonly kept: readonly Item[];
+  readonly reRaisedNotes: Readonly<Record<string, string>>;
+  readonly verbatimReRaised: readonly ClosingAnswer[];
+  readonly droppedCount: number;
+}
+
+// An overruled id is closed for good: any re-raise of it drops, rebuttal or not, except a critical,
+// which stays with the ruling linked.
+export const applyOverruled = <Item extends { readonly severity: Severity }>(
+  items: readonly Item[],
+  rulings: ReadonlyMap<string, ClosingAnswer>,
+  idOf: (item: Item) => string | undefined,
+  noteKey: (item: Item) => string,
+): OverruledFilter<Item> => {
+  const ruled = items.map((item) => ({ item, ruling: rulings.get(idOf(item) ?? "") }));
+  const drops = (entry: (typeof ruled)[number]): boolean =>
+    entry.ruling !== undefined && entry.item.severity !== "critical";
+  const dropped = ruled
+    .filter(drops)
+    .flatMap(({ ruling }) => (ruling === undefined ? [] : [ruling]));
+  return {
+    kept: ruled.filter((entry) => !drops(entry)).map(({ item }) => item),
+    reRaisedNotes: Object.fromEntries(
+      ruled.flatMap(({ item, ruling }) =>
+        ruling !== undefined && !drops({ item, ruling })
+          ? [[noteKey(item), answeredNote(ruling)] as const]
+          : [],
+      ),
+    ),
+    verbatimReRaised: [...new Map(dropped.map((ruling) => [ruling.code, ruling])).values()],
+    droppedCount: dropped.length,
+  };
+};
+
 // The sticky note naming what was dropped — the suppression is never silent (SPEC §3.3 truthful).
 // The COUNT is the true pre-dedup finding count (several findings sharing one code count as several
 // suppressions); the LINES stay deduped by key (issue #151 review r5). count is REQUIRED — a
 // default would silently reintroduce the understated count for a caller that forgets it (issue
 // #151 review r7).
-export const answeredReRaiseNote = (
-  entries: readonly Pick<AnsweredEntry, "code" | "title" | "answerUrl" | "answerAuthor">[],
-  count: number,
-): string => {
+export const answeredReRaiseNote = (entries: readonly ClosingAnswer[], count: number): string => {
   if (entries.length === 0) return "";
   const label = (e: Pick<AnsweredEntry, "code" | "title">): string =>
     e.code !== "" ? `\`${escapeCodeBackticks(e.code)}\`` : `“${escapeCodeBackticks(e.title)}”`;
@@ -367,7 +402,7 @@ export const answeredReRaiseNote = (
     (e) => `> - ${label(e)} — [prior answer](${linkSafeUrl(e.answerUrl)})${byAuthor(e)}`,
   );
   return [
-    `> ↩️ **${String(count)} re-raise(s) without new evidence — treated as answered** (a maintainer refuted or dismissed each):`,
+    `> ↩️ **${String(count)} re-raise(s) without new evidence — treated as answered** (a maintainer's answer closed each):`,
     ...lines,
   ].join("\n");
 };

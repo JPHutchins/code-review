@@ -809,7 +809,8 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     const reusable = noteOf(".github/workflows/review-reusable.yaml");
     expect(noteOf("examples/workflows/review.yaml")).toEqual(reusable);
     const script = scriptOf(".github/workflows/review-reusable.yaml", "Phase 2 — agentic review");
-    const gate = script.indexOf(`if grep -q '"unfinished"' "$SCHEMA_FILE"; then`);
+    const gate = script.indexOf(`elif grep -q '"unfinished"' "$SCHEMA_FILE"; then`);
+    expect(script.lastIndexOf('if [ "$ROUTE" = "mechanic" ]; then', gate)).toBeGreaterThan(-1);
     expect(gate).toBeGreaterThan(-1);
     expect(script.indexOf('UNFINISHED_NOTE=" Name every check')).toBeGreaterThan(gate);
   });

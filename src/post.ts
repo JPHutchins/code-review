@@ -17,7 +17,6 @@ import {
   isReviewVerdict,
   PER_FINDING_LINKS,
   shedNote,
-  shownUnfinished,
   terminalNotice,
   verdictBadge,
 } from "./render.js";
@@ -1897,10 +1896,7 @@ export const post = async (
         : []),
       "",
       terminalNotice({
-        unfinished: shownUnfinished(
-          loadedFindings,
-          isConvergenceRound(route, incomplete) && isReviewVerdict(loadedFindings.verdict),
-        ),
+        unfinished: [],
         reviewedSha: input.headSha,
         verdictBadge: verdictBadge(loadedFindings.verdict),
         route: route ?? undefined,

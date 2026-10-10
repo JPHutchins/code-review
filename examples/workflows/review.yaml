@@ -802,7 +802,9 @@ jobs:
           # The honesty half of a cut-short hunt: a CLI whose schema carries `unfinished` is told to
           # name the checks it did not complete, which the sticky then shows beside the badge.
           UNFINISHED_NOTE=""
-          if grep -q '"unfinished"' "$SCHEMA_FILE"; then
+          if [ "$ROUTE" = "mechanic" ]; then
+            :
+          elif grep -q '"unfinished"' "$SCHEMA_FILE"; then
             UNFINISHED_NOTE=" Name every check you planned but did not complete — an angle you skipped, a probe the budget cut short, a subagent that stopped early — in the findings document's \`unfinished\` field, one entry each. Leave it out only when every planned check finished: a review that reads complete when it was not is worse than one that says what it skipped."
           else
             echo "the pinned code-review CLI (${CODE_REVIEW_VERSION}) has no \`unfinished\` field in its findings schema; this review is not asked to name its unfinished checks"

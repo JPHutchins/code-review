@@ -1033,6 +1033,19 @@ describe("render", () => {
       expect(line.endsWith("…")).toBe(true);
     });
 
+    it("never cuts an escaped entity in two at the clip", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: [`${"x".repeat(239)}&yz`] }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      const line = result.split("\n").find((l) => l.includes("xxxx")) ?? "";
+      expect(line.endsWith("x…")).toBe(true);
+    });
+
     it("shows no list on an incomplete notice", () => {
       const result = render({
         findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),

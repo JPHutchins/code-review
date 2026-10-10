@@ -332,9 +332,10 @@ export const RECOVERABLE_OPTIONAL_FIELDS: ReadonlySet<string> = new Set([
   "unfinished",
 ]);
 
-// A document recovered by dropping only its broken best-effort fields: every recoverable field is
-// stripped, then each one the document still accepts on its own is put back, so one bad field never
-// costs a good one. Null when even the stripped document is rejected.
+// A document recovered by dropping only what is broken in its best-effort fields: every recoverable
+// field is stripped, then each one the document still accepts on its own is put back — a list field
+// with just the entries it accepts — so one bad field, or one bad entry, never costs a good one.
+// Null when even the stripped document is rejected.
 export const withoutBrokenOptionalFields = (
   doc: Readonly<Record<string, unknown>>,
   accepts: (candidate: Readonly<Record<string, unknown>>) => boolean,
@@ -346,16 +347,27 @@ export const withoutBrokenOptionalFields = (
     Object.entries(doc).filter(([key]) => !RECOVERABLE_OPTIONAL_FIELDS.has(key)),
   );
   if (!accepts(bare)) return null;
+  const usable = (
+    kept: Readonly<Record<string, unknown>>,
+    key: string,
+    value: unknown,
+  ): unknown => {
+    if (accepts({ ...kept, [key]: value })) return value;
+    if (!Array.isArray(value)) return undefined;
+    const entries = value.filter((entry: unknown) => accepts({ ...kept, [key]: [entry] }));
+    return entries.length > 0 && accepts({ ...kept, [key]: entries }) ? entries : undefined;
+  };
   const restored = Object.entries(doc)
     .filter(([key]) => RECOVERABLE_OPTIONAL_FIELDS.has(key))
-    .reduce<Readonly<Record<string, unknown>>>(
-      (kept, [key, value]) =>
-        accepts({ ...kept, [key]: value }) ? { ...kept, [key]: value } : kept,
-      bare,
-    );
+    .reduce<Readonly<Record<string, unknown>>>((kept, [key, value]) => {
+      const restoredValue = usable(kept, key, value);
+      return restoredValue === undefined ? kept : { ...kept, [key]: restoredValue };
+    }, bare);
   return {
     doc: restored,
-    stripped: Object.keys(doc).filter((key) => !Object.hasOwn(restored, key)),
+    stripped: Object.keys(doc).filter(
+      (key) => !Object.hasOwn(restored, key) || restored[key] !== doc[key],
+    ),
   };
 };
 

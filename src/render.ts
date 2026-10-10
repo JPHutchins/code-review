@@ -81,7 +81,10 @@ const UNFINISHED_CLIP_CHARS = 240;
 const unfinishedLine = (check: string): string => {
   const escaped = escapeHtml(check.replace(/\s+/g, " ").trim());
   return escaped.length > UNFINISHED_CLIP_CHARS
-    ? `${escaped.slice(0, UNFINISHED_CLIP_CHARS).replace(/&[#a-z0-9]*$/i, "")}…`
+    ? `${escaped
+        .slice(0, UNFINISHED_CLIP_CHARS)
+        .replace(/&[#a-z0-9]*$/i, "")
+        .replace(/[\uD800-\uDBFF]$/, "")}…`
     : escaped;
 };
 

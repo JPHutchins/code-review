@@ -1158,7 +1158,7 @@ const seedDraftCmd = defineCommand({
         return strippedPrior;
       // The registry upcast runs FIRST (code → id, or the synthesized id), so the scope_metastasis
       // carry sees the 0.10 shape. A doc the upcast rejects (a malformed carried field) falls through
-      // raw: the adorn below and the gate's barePrior recovery still handle it.
+      // raw: the adorn below and the gate's best-effort recovery still handle it.
       const resolved = resolvedPriorValue(strippedPrior);
       const doc: Record<string, unknown> =
         resolved === null ? (strippedPrior as Record<string, unknown>) : resolved;

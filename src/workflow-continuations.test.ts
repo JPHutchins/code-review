@@ -148,7 +148,7 @@ describe("full-review prompt — the vocabulary defers to the schema channel", (
     expect(example).toBe(reusable);
     // The argument must run to its known terminators — a truncating extraction fails here instead
     // of letting the negative pins below pass vacuously.
-    expect(promptArg("examples/workflows/review.yaml").endsWith("$LOG_SUBSET_NOTE")).toBe(true);
+    expect(promptArg("examples/workflows/review.yaml").endsWith("$UNFINISHED_NOTE")).toBe(true);
     expect(promptArg(".github/workflows/review-reusable.yaml").endsWith("$INSTRUCTION_BLOCK")).toBe(
       true,
     );
@@ -790,6 +790,29 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     expect(linesWith(example, "DIALOGUE")).toEqual(linesWith(reusable, "DIALOGUE"));
     expect(reusable).toContain("if post_accepts without-dialogue; then");
     expect(linesWith(reusable, "DIALOGUE")).toContain('"${DIALOGUE_POST_ARGS[@]}" \\');
+  });
+
+  it("owes the prior round's unfinished checks on both re-review modes, identically in both files", () => {
+    const owedOf = (path: string): readonly string[] =>
+      linesWith(scriptOf(path, "Phase 2 — agentic review"), "unfinished\\` field lists");
+    const reusable = owedOf(".github/workflows/review-reusable.yaml");
+    expect(owedOf("examples/workflows/review.yaml")).toEqual(reusable);
+    expect(reusable).toHaveLength(1);
+    const script = scriptOf(".github/workflows/review-reusable.yaml", "Phase 2 — agentic review");
+    const owed = script.indexOf(reusable[0] ?? "");
+    expect(script.lastIndexOf("prior-same|prior-new)", owed)).toBeGreaterThan(-1);
+  });
+
+  it("asks for unfinished checks only from a CLI whose schema carries the field, identically in both files", () => {
+    const noteOf = (path: string): readonly string[] =>
+      linesWith(scriptOf(path, "Phase 2 — agentic review"), "UNFINISHED_NOTE=");
+    const reusable = noteOf(".github/workflows/review-reusable.yaml");
+    expect(noteOf("examples/workflows/review.yaml")).toEqual(reusable);
+    const script = scriptOf(".github/workflows/review-reusable.yaml", "Phase 2 — agentic review");
+    const gate = script.indexOf(`elif grep -q '"unfinished"' "$SCHEMA_FILE"; then`);
+    expect(script.lastIndexOf('if [ "$ROUTE" = "mechanic" ]; then', gate)).toBeGreaterThan(-1);
+    expect(gate).toBeGreaterThan(-1);
+    expect(script.indexOf('UNFINISHED_NOTE=" Name every check')).toBeGreaterThan(gate);
   });
 
   it("the triage names the response form, as the CLI spells it, expected while judging every field, identically in both workflows", () => {

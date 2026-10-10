@@ -106,11 +106,11 @@ const directive = (
 ): string => {
   if (isSubagent)
     return phase.kind === "hard"
-      ? `Budget nearly exhausted — STOP all new investigation now and report the findings you have back to the main agent in your reply. Do not write ${draftPath} yourself; only the main agent writes it.`
-      : `Wind down investigation and report the findings you have back to the main agent in your reply — do not write ${draftPath} yourself; the main agent writes it, and you may run out of budget otherwise.`;
+      ? `Budget nearly exhausted — STOP all new investigation now and report the findings you have back to the main agent in your reply, naming each check you planned but did not finish. Do not write ${draftPath} yourself; only the main agent writes it.`
+      : `Wind down investigation and report the findings you have back to the main agent in your reply, naming each check you planned but did not finish — do not write ${draftPath} yourself; the main agent writes it, and you may run out of budget otherwise.`;
   return phase.kind === "hard"
-    ? `Budget nearly exhausted — STOP all new investigation now. Do not wait for subagents still running in the background. Write your COMPLETE findings from what you already have to ${draftPath} and run \`code-review validate ${draftPath} --explain\` until it passes (--explain prints the exact schema when the shape is wrong). Other tools are blocked until that draft is written.`
-    : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, then run \`code-review validate ${draftPath} --explain\` (it prints the exact schema if the shape is wrong) — fold in the subagent reports you already have rather than waiting on stragglers; you may run out of budget before you finish otherwise.`;
+    ? `Budget nearly exhausted — STOP all new investigation now. Do not wait for subagents still running in the background. Write your COMPLETE findings from what you already have to ${draftPath}, listing in its \`unfinished\` field, when its schema has one, every check you or a subagent planned but did not finish, and run \`code-review validate ${draftPath} --explain\` until it passes (--explain prints the exact schema when the shape is wrong). Other tools are blocked until that draft is written.`
+    : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, listing in its \`unfinished\` field, when its schema has one, every check you or a subagent planned but did not finish, then run \`code-review validate ${draftPath} --explain\` (it prints the exact schema if the shape is wrong) — fold in the subagent reports you already have rather than waiting on stragglers; you may run out of budget before you finish otherwise.`;
 };
 
 export const budgetMessage = (

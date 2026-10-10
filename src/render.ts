@@ -2,7 +2,7 @@
 
 import { Eta } from "eta";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
-import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
+import type { Finding, Findings, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings, resolveFindingId, hasRebuttal } from "./schema.js";
 import type { DiscussionLink, RenderInput, SeverityCounts } from "./types.js";
 import { computeCost, parseInstant, parseIsoDate } from "./cost.js";
@@ -70,7 +70,35 @@ export interface TerminalNoticeInput {
   readonly findingsDocLinked: boolean;
   readonly thisRunArtifact: boolean;
   readonly modelNames: string;
+  readonly unfinished: readonly string[];
 }
+
+const UNFINISHED_SHOWN = 8;
+const UNFINISHED_CLIP_CHARS = 240;
+
+// One check as a comment line: HTML-escaped so it can open no comment or tag, then clipped on the
+// line without cutting an entity, so the cap bounds what renders.
+const unfinishedLine = (check: string): string => {
+  const escaped = escapeHtml(check.replace(/\s+/g, " ").trim());
+  return escaped.length > UNFINISHED_CLIP_CHARS
+    ? `${escaped
+        .slice(0, UNFINISHED_CLIP_CHARS)
+        .replace(/&[#a-z0-9]*$/i, "")
+        .replace(/[\uD800-\uDBFF]$/, "")}…`
+    : escaped;
+};
+
+// The unfinished checks a comment may name: only beside the convergence badge they qualify, at most
+// UNFINISHED_SHOWN with the rest counted. Every surface that names them asks this.
+export const shownUnfinished = (doc: Findings, fullReviewRound: boolean): readonly string[] => {
+  const checks = fullReviewRound ? (doc.unfinished ?? []) : [];
+  return [
+    ...checks.slice(0, UNFINISHED_SHOWN).map(unfinishedLine),
+    ...(checks.length > UNFINISHED_SHOWN
+      ? [`… and ${String(checks.length - UNFINISHED_SHOWN)} more`]
+      : []),
+  ];
+};
 
 export const terminalNotice = (i: TerminalNoticeInput): string =>
   [
@@ -96,6 +124,9 @@ export const terminalNotice = (i: TerminalNoticeInput): string =>
       (i.findingsDocLinked && i.thisRunArtifact
         ? " The machine findings document is linked above."
         : ""),
+    ...(i.unfinished.length > 0
+      ? ["", `> **Unfinished checks:** ${i.unfinished.join(" · ")}`]
+      : []),
     "",
     "> [!WARNING]",
     `> **LLM Disclosure** — this review was produced by ${i.modelNames || "unknown model"}.`,
@@ -525,6 +556,11 @@ export const render = (input: RenderInput): string => {
   const isFullReviewRound =
     (input.convergenceRound ?? (isConvergenceRound(route, incomplete) && trajectory.length > 0)) &&
     isReviewVerdict(input.findings.verdict);
+  const unfinished = input.findings.unfinished ?? [];
+  const unfinishedSuffix =
+    unfinished.length > 0
+      ? ` · ${String(unfinished.length)} unfinished check${unfinished.length === 1 ? "" : "s"}`
+      : "";
   const contestedSuffix =
     (input.contested ?? []).length > 0
       ? ` · ${String((input.contested ?? []).length)} contested`
@@ -753,6 +789,7 @@ export const render = (input: RenderInput): string => {
       input.jsonUrl !== undefined,
     ),
     terminalNotice: terminalNotice({
+      unfinished: shownUnfinished(input.findings, isFullReviewRound),
       reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
       verdictBadge: verdictBadge(input.findings.verdict),
       route: route ?? undefined,
@@ -761,7 +798,7 @@ export const render = (input: RenderInput): string => {
       convergenceSummary: !isFullReviewRound
         ? ""
         : convergence
-          ? convergenceBadge(convergence) + contestedSuffix
+          ? convergenceBadge(convergence) + contestedSuffix + unfinishedSuffix
           : "",
       inlinePosted: input.inlineDisposition?.kind === "posted" ? input.inlineDisposition.count : 0,
       runUrl: input.runUrl,
@@ -793,7 +830,9 @@ export const render = (input: RenderInput): string => {
       ? ""
       : (convergence
           ? convergenceBadge(convergence)
-          : convergenceSummary(input.findings, input.convergenceThreshold)) + contestedSuffix,
+          : convergenceSummary(input.findings, input.convergenceThreshold)) +
+        contestedSuffix +
+        unfinishedSuffix,
     strays: discussionBudget.kept,
     orphanedLines: orphanedRender.lines,
     orphanedUnresolvable: input.orphanedUnresolvable === true,
@@ -844,6 +883,7 @@ export const render = (input: RenderInput): string => {
     answeredNotes: input.answeredNotes ?? {},
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",
     contested: contestedBudget.kept,
+    unfinished: shownUnfinished(input.findings, isFullReviewRound),
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

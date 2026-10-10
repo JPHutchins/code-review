@@ -184,6 +184,12 @@ describe("writesToDraft (single-writer detection)", () => {
 
 describe("budgetMessage", () => {
   const draft = "/work/findings.json";
+  it("asks every agent cut short, main or subagent, to name the checks it did not finish", () => {
+    for (const phase of [{ kind: "soft" }, { kind: "hard" }] as const) {
+      expect(budgetMessage(inputs({}), phase, draft, false)).toContain("`unfinished`");
+      expect(budgetMessage(inputs({}), phase, draft, true)).toContain("did not finish");
+    }
+  });
   it("reports both axes and the hard directive when hard (main agent: write the draft)", () => {
     const msg = budgetMessage(
       inputs({ spentUsd: 0.95, budgetUsd: 1, elapsedMs: 60_000, wallMs: 120_000 }),

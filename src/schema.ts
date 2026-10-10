@@ -28,6 +28,12 @@ const LineNumber = t.refinement(
 );
 
 const Confidence = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Confidence");
+
+const NonEmptyString = t.refinement(
+  t.string,
+  (s): s is string => s.trim().length > 0,
+  "NonEmptyString",
+);
 const Likelihood = t.refinement(t.number, (n): n is number => n >= 0 && n <= 1, "Likelihood");
 
 // A convergence score/threshold must be FINITE: io-ts's t.number accepts Infinity/NaN (JSON.parse("1e400")
@@ -306,15 +312,16 @@ export const FindingsCodec = t.exact(
       convergence: ConvergenceCodec,
       // Agent-written best-effort (issue #182); see ChangeSizeCodec.
       change_size: ChangeSizeCodec,
+      unfinished: t.array(NonEmptyString),
     }),
   ]),
 );
 
 // The optional document fields safe to strip to RECOVER a findings doc when the in-force schema or the
 // codec rejects it — rather than lose the whole review (post's loadFindings) or all prior seed context
-// (the seed's barePrior fallback). PIPELINE_STAMPED_FIELDS are re-derived/re-stamped after load; the
-// agent's best-effort chrome (change_size, issue #182) is dropped because it never affects the verdict.
-// ONE definition so the two recovery sites can never diverge on the key set (issue #182 review r2).
+// (the seed's fallback). PIPELINE_STAMPED_FIELDS are
+// re-derived/re-stamped after load; the agent's best-effort fields never affect the verdict. ONE
+// definition so the recovery sites can never diverge on the key set (issue #182 review r2).
 export const PIPELINE_STAMPED_FIELDS: ReadonlySet<string> = new Set([
   "convergence",
   "scope_metastasis",
@@ -322,7 +329,47 @@ export const PIPELINE_STAMPED_FIELDS: ReadonlySet<string> = new Set([
 export const RECOVERABLE_OPTIONAL_FIELDS: ReadonlySet<string> = new Set([
   ...PIPELINE_STAMPED_FIELDS,
   "change_size",
+  "unfinished",
 ]);
+
+// A document recovered by dropping only what is broken in its best-effort fields: every recoverable
+// field is stripped, then each one the document still accepts on its own is put back — a list field
+// with just the entries it accepts — so one bad field, or one bad entry, never costs a good one.
+// Null when even the stripped document is rejected.
+export const withoutBrokenOptionalFields = (
+  doc: Readonly<Record<string, unknown>>,
+  accepts: (candidate: Readonly<Record<string, unknown>>) => boolean,
+): {
+  readonly doc: Readonly<Record<string, unknown>>;
+  readonly stripped: readonly string[];
+} | null => {
+  const bare = Object.fromEntries(
+    Object.entries(doc).filter(([key]) => !RECOVERABLE_OPTIONAL_FIELDS.has(key)),
+  );
+  if (!accepts(bare)) return null;
+  const usable = (
+    kept: Readonly<Record<string, unknown>>,
+    key: string,
+    value: unknown,
+  ): unknown => {
+    if (accepts({ ...kept, [key]: value })) return value;
+    if (!Array.isArray(value)) return undefined;
+    const entries = value.filter((entry: unknown) => accepts({ ...kept, [key]: [entry] }));
+    return entries.length > 0 && accepts({ ...kept, [key]: entries }) ? entries : undefined;
+  };
+  const restored = Object.entries(doc)
+    .filter(([key]) => RECOVERABLE_OPTIONAL_FIELDS.has(key))
+    .reduce<Readonly<Record<string, unknown>>>((kept, [key, value]) => {
+      const restoredValue = usable(kept, key, value);
+      return restoredValue === undefined ? kept : { ...kept, [key]: restoredValue };
+    }, bare);
+  return {
+    doc: restored,
+    stripped: Object.keys(doc).filter(
+      (key) => !Object.hasOwn(restored, key) || restored[key] !== doc[key],
+    ),
+  };
+};
 
 // The shape of a finding or systemic id: the pipeline's kebab-case identifiers and the synthesized
 // f-/s- base64url forms. A backticked shell command, path, or URL never matches.

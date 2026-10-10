@@ -47,6 +47,14 @@
 <% } -%>
 
 <%~ it.findings.summary %>
+<% if (it.unfinished.length > 0) { -%>
+
+> [!WARNING]
+> **Unfinished checks** — this round did not complete every check it planned, so its convergence covers less than a full review:
+<% it.unfinished.forEach(function(check) { -%>
+> - <%~ check %>
+<% }) -%>
+<% } -%>
 <% const c = it.severityCounts %><% const findingsTotal = c.critical + c.major + c.minor + c.nit -%>
 <% if (it.strays.length > 0 || (!it.incomplete && (findingsTotal > 0 || it.systemic.length > 0 || it.contested.length > 0))) { -%>
 

@@ -176,6 +176,11 @@
         }
       }
     },
+    "unfinished": {
+      "type": "array",
+      "description": "Checks this review planned but did not complete, one entry each.",
+      "items": { "type": "string", "pattern": "\\S" }
+    },
     "change_size": {
       "type": "object",
       "additionalProperties": false,

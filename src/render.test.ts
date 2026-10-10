@@ -970,6 +970,98 @@ describe("render", () => {
     });
   });
 
+  describe("unfinished checks", () => {
+    it("names each unfinished check under the summary and counts them beside the badge", () => {
+      const findings = mkFindings([], {
+        unfinished: ["the free-threaded probe", "the pickle-bypass probe"],
+      });
+      const result = render({
+        findings,
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      const summaryAt = result.indexOf("A test summary.");
+      expect(result.indexOf("the free-threaded probe")).toBeGreaterThan(summaryAt);
+      expect(result).toContain("the pickle-bypass probe");
+      expect(result).toMatch(/\*\*Convergence\*\*[^\n]*2 unfinished checks/);
+    });
+
+    it("escapes each entry, caps the list, and counts the rest", () => {
+      const checks = [
+        "<!-- hides the rest -->",
+        ...Array.from({ length: 9 }, (_, n) => `probe ${String(n)}`),
+      ];
+      const result = render({
+        findings: mkFindings([], { unfinished: checks }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      expect(result).not.toContain("<!-- hides the rest -->");
+      expect(result).toContain("&lt;!-- hides the rest --&gt;");
+      expect(result).toContain("… and 2 more");
+      expect(result).toMatch(/\*\*Convergence\*\*[^\n]*10 unfinished checks/);
+    });
+
+    it("names the checks only beside the badge they qualify — never on a completed round without one", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "mechanic",
+      });
+      expect(result).not.toContain("the free-threaded probe");
+    });
+
+    it("clips a long entry on its own line, inside the warning", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: [`${"x".repeat(300)}&`] }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      const line = result.split("\n").find((l) => l.includes("xxxx")) ?? "";
+      expect(line.startsWith("> - ")).toBe(true);
+      expect(line.endsWith("…")).toBe(true);
+    });
+
+    it("never cuts an escaped entity in two at the clip", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: [`${"x".repeat(239)}&yz`] }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      const line = result.split("\n").find((l) => l.includes("xxxx")) ?? "";
+      expect(line.endsWith("x…")).toBe(true);
+    });
+
+    it("shows no list on an incomplete notice", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),
+        envelope: { ...baseEnvelope, incomplete: true },
+        prices,
+        template,
+      });
+      expect(result).not.toContain("the free-threaded probe");
+    });
+
+    it("says nothing when every planned check finished", () => {
+      const result = render({ findings: mkFindings([]), envelope: baseEnvelope, prices, template });
+      expect(result).not.toContain("unfinished");
+    });
+  });
+
   describe("systemic problems section (issue #134)", () => {
     const systemicFindings = (overrides?: Partial<Omit<Findings, "findings">>): Findings =>
       mkFindings([mkFinding({ severity: "major", title: "Anchored finding" })], {

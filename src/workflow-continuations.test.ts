@@ -792,6 +792,17 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     expect(linesWith(reusable, "DIALOGUE")).toContain('"${DIALOGUE_POST_ARGS[@]}" \\');
   });
 
+  it("owes the prior round's unfinished checks on both re-review modes, identically in both files", () => {
+    const owedOf = (path: string): readonly string[] =>
+      linesWith(scriptOf(path, "Phase 2 — agentic review"), "unfinished\\` field lists");
+    const reusable = owedOf(".github/workflows/review-reusable.yaml");
+    expect(owedOf("examples/workflows/review.yaml")).toEqual(reusable);
+    expect(reusable).toHaveLength(1);
+    const script = scriptOf(".github/workflows/review-reusable.yaml", "Phase 2 — agentic review");
+    const owed = script.indexOf(reusable[0] ?? "");
+    expect(script.lastIndexOf("prior-same|prior-new)", owed)).toBeGreaterThan(-1);
+  });
+
   it("asks for unfinished checks only from a CLI whose schema carries the field, identically in both files", () => {
     const noteOf = (path: string): readonly string[] =>
       linesWith(scriptOf(path, "Phase 2 — agentic review"), "UNFINISHED_NOTE=");

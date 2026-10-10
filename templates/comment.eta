@@ -47,7 +47,7 @@
 <% } -%>
 
 <%~ it.findings.summary %>
-<% if (!it.incomplete && it.unfinished.length > 0) { -%>
+<% if (it.unfinished.length > 0) { -%>
 
 > [!WARNING]
 > **Unfinished checks** — this round did not complete every check it planned, so its convergence covers less than a full review:

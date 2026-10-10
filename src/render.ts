@@ -2,7 +2,7 @@
 
 import { Eta } from "eta";
 import { BODY_CLIP_CHARS, clipText } from "./util.js";
-import type { Finding, Severity, SystemicProblem, Verdict } from "./schema.js";
+import type { Finding, Findings, Severity, SystemicProblem, Verdict } from "./schema.js";
 import { isIncompleteFindings, resolveFindingId, hasRebuttal } from "./schema.js";
 import type { DiscussionLink, RenderInput, SeverityCounts } from "./types.js";
 import { computeCost, parseInstant, parseIsoDate } from "./cost.js";
@@ -76,16 +76,26 @@ export interface TerminalNoticeInput {
 const UNFINISHED_SHOWN = 8;
 const UNFINISHED_CLIP_CHARS = 240;
 
-// The unfinished checks as a comment shows them: one line each, HTML-escaped so no entry can open a
-// comment or a tag, clipped, at most UNFINISHED_SHOWN with the rest counted.
-export const unfinishedLines = (checks: readonly string[]): readonly string[] => [
-  ...checks
-    .slice(0, UNFINISHED_SHOWN)
-    .map((check) => escapeHtml(clipText(check.replace(/\s+/g, " ").trim(), UNFINISHED_CLIP_CHARS))),
-  ...(checks.length > UNFINISHED_SHOWN
-    ? [`… and ${String(checks.length - UNFINISHED_SHOWN)} more`]
-    : []),
-];
+// One check as a comment line: HTML-escaped so it can open no comment or tag, then clipped on the
+// line without cutting an entity, so the cap bounds what renders.
+const unfinishedLine = (check: string): string => {
+  const escaped = escapeHtml(check.replace(/\s+/g, " ").trim());
+  return escaped.length > UNFINISHED_CLIP_CHARS
+    ? `${escaped.slice(0, UNFINISHED_CLIP_CHARS).replace(/&[#a-z0-9]*$/i, "")}…`
+    : escaped;
+};
+
+// The unfinished checks a comment may name: only beside the convergence badge they qualify, at most
+// UNFINISHED_SHOWN with the rest counted. Every surface that names them asks this.
+export const shownUnfinished = (doc: Findings, fullReviewRound: boolean): readonly string[] => {
+  const checks = fullReviewRound ? (doc.unfinished ?? []) : [];
+  return [
+    ...checks.slice(0, UNFINISHED_SHOWN).map(unfinishedLine),
+    ...(checks.length > UNFINISHED_SHOWN
+      ? [`… and ${String(checks.length - UNFINISHED_SHOWN)} more`]
+      : []),
+  ];
+};
 
 export const terminalNotice = (i: TerminalNoticeInput): string =>
   [
@@ -112,7 +122,7 @@ export const terminalNotice = (i: TerminalNoticeInput): string =>
         ? " The machine findings document is linked above."
         : ""),
     ...(i.unfinished.length > 0
-      ? ["", `> **Unfinished checks:** ${unfinishedLines(i.unfinished).join(" · ")}`]
+      ? ["", `> **Unfinished checks:** ${i.unfinished.join(" · ")}`]
       : []),
     "",
     "> [!WARNING]",
@@ -776,7 +786,7 @@ export const render = (input: RenderInput): string => {
       input.jsonUrl !== undefined,
     ),
     terminalNotice: terminalNotice({
-      unfinished: isFullReviewRound ? unfinished : [],
+      unfinished: shownUnfinished(input.findings, isFullReviewRound),
       reviewedSha: input.reviewedSha ?? "0000000000000000000000000000000000000000",
       verdictBadge: verdictBadge(input.findings.verdict),
       route: route ?? undefined,
@@ -870,7 +880,7 @@ export const render = (input: RenderInput): string => {
     answeredNotes: input.answeredNotes ?? {},
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",
     contested: contestedBudget.kept,
-    unfinished: unfinishedLines(unfinished),
+    unfinished: shownUnfinished(input.findings, isFullReviewRound),
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

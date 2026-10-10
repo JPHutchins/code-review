@@ -1008,6 +1008,31 @@ describe("render", () => {
       expect(result).toMatch(/\*\*Convergence\*\*[^\n]*10 unfinished checks/);
     });
 
+    it("names the checks only beside the badge they qualify — never on a completed round without one", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "mechanic",
+      });
+      expect(result).not.toContain("the free-threaded probe");
+    });
+
+    it("clips a long entry on its own line, inside the warning", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: [`${"x".repeat(300)}&`] }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      const line = result.split("\n").find((l) => l.includes("xxxx")) ?? "";
+      expect(line.startsWith("> - ")).toBe(true);
+      expect(line.endsWith("…")).toBe(true);
+    });
+
     it("shows no list on an incomplete notice", () => {
       const result = render({
         findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),

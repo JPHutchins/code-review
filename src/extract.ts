@@ -5,8 +5,7 @@
 // candidate must pass BOTH gates — ajv (shape + additionalProperties:false) and the registry's io-ts
 // codec (cross-field invariants ajv can't express, e.g. end_line >= start_line).
 
-import { asRecord, readFileOrNull, tryParseJson } from "./util.js";
-import { withoutBrokenOptionalFields } from "./schema.js";
+import { readFileOrNull, tryParseJson } from "./util.js";
 import { resolve, schemaPathFor, defaultVersion } from "./registry.js";
 import { validateAgainstSchema } from "./validate.js";
 
@@ -125,26 +124,13 @@ const dedupCandidates = (candidates: readonly GatedCandidate[]): readonly GatedC
 
 // Both gates: ajv (shape + injection defense) then the registry's io-ts codec (materialization +
 // cross-field invariants). Null when either rejects.
-const gateExactly = (kind: ExtractKind, candidate: unknown): GatedCandidate | null => {
+const gateCandidate = (kind: ExtractKind, rawCandidate: unknown): GatedCandidate | null => {
+  const candidate = normalizeCandidate(kind, rawCandidate);
   const schemaPath = safeSchemaPathFor(kind, candidateVersion(kind, candidate));
   if (schemaPath === null) return null;
   if (!validateAgainstSchema(candidate, schemaPath).valid) return null;
   const resolution = resolve(kind, candidate);
   return resolution.kind === "ok" ? { version: resolution.version, candidate } : null;
-};
-
-// A findings draft that fails only on a best-effort field passes without the broken ones, the same
-// recovery post and the seed apply, so a slip in one never sinks the review it annotates.
-const gateCandidate = (kind: ExtractKind, rawCandidate: unknown): GatedCandidate | null => {
-  const candidate = normalizeCandidate(kind, rawCandidate);
-  const exact = gateExactly(kind, candidate);
-  if (exact !== null || kind !== "findings") return exact;
-  const record = asRecord(candidate);
-  const recovered =
-    record === null
-      ? null
-      : withoutBrokenOptionalFields(record, (doc) => gateExactly(kind, doc) !== null);
-  return recovered === null ? null : gateExactly(kind, recovered.doc);
 };
 
 const candidateFromJsonText = (kind: ExtractKind, text: string | null): GatedCandidate | null => {

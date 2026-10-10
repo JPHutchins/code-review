@@ -319,37 +319,6 @@ describe("extractStructured — error-envelope short-circuit (ruling 2)", () => 
   });
 });
 
-describe("extractStructured — a broken best-effort field never sinks the draft", () => {
-  const draft = (overrides: Record<string, unknown>): Record<string, unknown> => ({
-    schema_version: DEFAULT_SCHEMA_VERSION,
-    summary: "s",
-    verdict: "comment",
-    findings: [],
-    unfinished: ["the free-threaded probe"],
-    ...overrides,
-  });
-
-  it("drops only the broken field and keeps the valid unfinished list", () => {
-    const outcome = extractStructured({
-      kind: "findings",
-      native: { structured_output: draft({ change_size: { code: { added: -1 } } }) },
-    });
-    expect(outcome.kind).toBe("ok");
-    expect(outcome.kind === "ok" ? outcome.candidate : null).toMatchObject({
-      unfinished: ["the free-threaded probe"],
-    });
-    expect(outcome.kind === "ok" ? outcome.candidate : null).not.toHaveProperty("change_size");
-  });
-
-  it("still rejects a draft broken outside the best-effort fields", () => {
-    const outcome = extractStructured({
-      kind: "findings",
-      native: { structured_output: draft({ verdict: "maybe" }) },
-    });
-    expect(outcome.kind).toBe("none");
-  });
-});
-
 describe("extractStructured — ajv candidate gate (ruling 3)", () => {
   it("REGRESSION: a findings candidate with one extra top-level key is rejected", () => {
     const native = {

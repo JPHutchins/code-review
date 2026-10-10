@@ -319,7 +319,7 @@ export const FindingsCodec = t.exact(
 
 // The optional document fields safe to strip to RECOVER a findings doc when the in-force schema or the
 // codec rejects it — rather than lose the whole review (post's loadFindings) or all prior seed context
-// (the seed's fallback) or the draft at the extraction gate. PIPELINE_STAMPED_FIELDS are
+// (the seed's fallback). PIPELINE_STAMPED_FIELDS are
 // re-derived/re-stamped after load; the agent's best-effort fields never affect the verdict. ONE
 // definition so the recovery sites can never diverge on the key set (issue #182 review r2).
 export const PIPELINE_STAMPED_FIELDS: ReadonlySet<string> = new Set([
@@ -353,7 +353,10 @@ export const withoutBrokenOptionalFields = (
         accepts({ ...kept, [key]: value }) ? { ...kept, [key]: value } : kept,
       bare,
     );
-  return { doc: restored, stripped: Object.keys(doc).filter((key) => !(key in restored)) };
+  return {
+    doc: restored,
+    stripped: Object.keys(doc).filter((key) => !Object.hasOwn(restored, key)),
+  };
 };
 
 // The shape of a finding or systemic id: the pipeline's kebab-case identifiers and the synthesized

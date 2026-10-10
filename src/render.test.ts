@@ -207,7 +207,7 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
   });
 
   it("teaches the response line under a full review with findings, never on a clean review, a notice, a mechanic pass, or an unknown route", () => {
-    const line = `<sub>${RESPONSE_TEACHING}</sub>`;
+    const line = RESPONSE_TEACHING;
     const finding = mkFinding({});
     const withFindings = render({
       findings: mkFindings([finding]),
@@ -253,6 +253,46 @@ describe("unverified aside — no failing-job logs (issue #154)", () => {
       route: "full review",
     });
     expect(systemicOnly).toContain(line);
+  });
+
+  it("puts the answer form and the systemic problems under ## Findings, ahead of the findings, for a reader that starts there", () => {
+    const finding = mkFinding({});
+    const sticky = render({
+      findings: mkFindings([finding], { systemic_problems: [mkSystemic({ id: "a-class" })] }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      strays: [finding],
+      route: "full review",
+    });
+    const fromFindings = sticky.slice(sticky.indexOf("\n## Findings"));
+    expect(sticky.indexOf("\n## Findings")).toBeGreaterThan(-1);
+    expect(sticky.indexOf("\n## Findings")).toBeGreaterThan(sticky.indexOf("A test summary."));
+    const order = [
+      fromFindings.indexOf(RESPONSE_TEACHING),
+      fromFindings.indexOf("\n### 🔗 Systemic problems"),
+      fromFindings.indexOf("\n#### "),
+      fromFindings.indexOf("\n### 🔵 (minor)"),
+    ];
+    expect(order.every((at) => at > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(sticky).not.toContain("\n## 🔗 Systemic problems");
+  });
+
+  it("opens ## Findings even when every finding was posted inline", () => {
+    const finding = mkFinding({});
+    const sticky = render({
+      findings: mkFindings([finding], { systemic_problems: [mkSystemic({ id: "a-class" })] }),
+      envelope: baseEnvelope,
+      prices,
+      template,
+      route: "full review",
+      inlineDisposition: { kind: "posted", count: 1, sha: "abc123def456" },
+    });
+    const heading = sticky.indexOf("\n## Findings");
+    expect(heading).toBeGreaterThan(-1);
+    expect(sticky.indexOf(RESPONSE_TEACHING)).toBeGreaterThan(heading);
+    expect(sticky.indexOf("\n### 🔗 Systemic problems")).toBeGreaterThan(heading);
   });
 
   it("says nothing when the logs were there", () => {

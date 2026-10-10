@@ -1046,6 +1046,20 @@ describe("render", () => {
       expect(line.endsWith("x…")).toBe(true);
     });
 
+    it("never calls a review clean while a planned check went unfinished", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      expect(result).not.toContain("clean review");
+      expect(result).toContain("No findings");
+      expect(result).toContain("<!-- review-complete -->");
+    });
+
     it("shows no list on an incomplete notice", () => {
       const result = render({
         findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),

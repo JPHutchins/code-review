@@ -48,10 +48,11 @@ export interface DialogueItem {
 }
 
 // One round of the state machine. A newest trusted `fixed` clears an entry. A rebutted entry
-// becomes contested when the id's newest trusted closing answer is not the one the reviewer
-// rebutted. An id the reviewer re-raised with a rebuttal against a trusted closing answer opens as
-// rebutted. Every entry links the newest closing answer. Contested entries keep their place ahead
-// of rebutted ones under the cap.
+// becomes contested when the id's newest trusted closing answer is newer than the one the reviewer
+// rebutted; an older one means that answer is gone, and the entry stays rebutted against the answer
+// still standing. An id the reviewer re-raised with a rebuttal against a trusted closing answer
+// opens as rebutted. Every entry links the newest closing answer, and a re-raise refreshes its
+// title and severity. Contested entries keep their place ahead of rebutted ones under the cap.
 export const advanceDialogue = (
   prior: readonly DialogueEntry[],
   closures: readonly Response[],
@@ -59,46 +60,46 @@ export const advanceDialogue = (
   current: readonly DialogueItem[],
 ): readonly DialogueEntry[] => {
   const closureById = new Map(closures.map((closure) => [closure.id, closure]));
+  const currentById = new Map(current.map((item) => [item.id, item]));
   const advanced = prior.flatMap((entry): readonly DialogueEntry[] => {
+    const item = currentById.get(entry.id);
+    const refreshed =
+      item === undefined ? entry : { ...entry, title: item.title, severity: item.severity };
     const closure = closureById.get(entry.id);
     const at = closure?.created_at ?? null;
     return fixedIds.has(entry.id)
       ? []
       : closure === undefined || at === null
-        ? [entry]
+        ? [refreshed]
         : [
             {
-              ...entry,
-              state: at === entry.at ? entry.state : "contested",
+              ...refreshed,
+              state:
+                entry.state === "rebutted" && Date.parse(at) > Date.parse(entry.at)
+                  ? "contested"
+                  : entry.state,
               answer: closure.source_url,
               at,
             },
           ];
   });
   const priorIds = new Set(prior.map((entry) => entry.id));
-  const opened = [
-    ...new Map(
-      current.flatMap((item): readonly (readonly [string, DialogueEntry])[] => {
-        const closure = closureById.get(item.id);
-        const at = closure?.created_at ?? null;
-        return priorIds.has(item.id) || !item.rebutted || closure === undefined || at === null
-          ? []
-          : [
-              [
-                item.id,
-                {
-                  id: item.id,
-                  state: "rebutted",
-                  answer: closure.source_url,
-                  at,
-                  title: item.title,
-                  severity: item.severity,
-                },
-              ],
-            ];
-      }),
-    ).values(),
-  ];
+  const opened = [...currentById.values()].flatMap((item): readonly DialogueEntry[] => {
+    const closure = closureById.get(item.id);
+    const at = closure?.created_at ?? null;
+    return priorIds.has(item.id) || !item.rebutted || closure === undefined || at === null
+      ? []
+      : [
+          {
+            id: item.id,
+            state: "rebutted",
+            answer: closure.source_url,
+            at,
+            title: item.title,
+            severity: item.severity,
+          },
+        ];
+  });
   const entries = [...advanced, ...opened];
   return [
     ...entries.filter((entry) => entry.state === "contested"),

@@ -684,6 +684,30 @@ export const render = (input: RenderInput): string => {
     (s) => (s.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + s.discussionHtml.length : 0),
     (s) => ({ ...s, discussion: [], discussionHtml: "" }),
   );
+  // The contested asides draw last from the same pool.
+  const contestedBudget = budgetBySize(
+    (input.contested ?? []).map((view) => {
+      const discussion = discussionLinksFor(view.id);
+      return {
+        ...view,
+        ...(view.reRaise?.location !== undefined
+          ? { reRaise: { ...view.reRaise, location: escapeCodeBackticks(view.reRaise.location) } }
+          : {}),
+        id: escapeCodeBackticks(view.id),
+        title: escapePipes(view.title),
+        answerUrl: linkSafeUrl(view.answerUrl),
+        discussion,
+        discussionHtml:
+          discussion.length > 0
+            ? discussionAsideHtml(discussion, discussionTruncatedFor(view.id), "")
+            : "",
+      };
+    }),
+    DISCUSSION_TOTAL_CHARS - orphanedBudget.used - discussionBudget.used - systemicBudget.used,
+    (view) =>
+      view.discussion.length > 0 ? DISCUSSION_BLOCK_OVERHEAD + view.discussionHtml.length : 0,
+    (view) => ({ ...view, discussion: [], discussionHtml: "" }),
+  );
   // The "(showing N of M)" total counts DISTINCT DISPLAYED entries — the pre-budget fold above
   // already merged twins, and the budget's own drops are named in the dropped-threads marker.
   const orphanedRender = {
@@ -775,10 +799,12 @@ export const render = (input: RenderInput): string => {
     discussionDropped:
       discussionBudget.droppedItems.length +
       systemicBudget.droppedItems.length +
+      contestedBudget.droppedItems.length +
       orphanedBudget.droppedItems.length,
-    discussionDroppedIds: discussionBudget.droppedItems
-      .map((v) => clipText(escapeCodeBackticks(v.idKey), 64))
-      .slice(0, DROPPED_IDS_SHOWN),
+    discussionDroppedIds: [
+      ...discussionBudget.droppedItems.map((v) => clipText(escapeCodeBackticks(v.idKey), 64)),
+      ...contestedBudget.droppedItems.map((v) => clipText(v.id, 64)),
+    ].slice(0, DROPPED_IDS_SHOWN),
     discussionDroppedSystemicIds: systemicBudget.droppedItems
       .flatMap((s) => (s.id !== undefined ? [clipText(s.id, 64)] : []))
       .slice(0, DROPPED_IDS_SHOWN),
@@ -786,7 +812,12 @@ export const render = (input: RenderInput): string => {
       .map(([token]) => clipText(token, 64))
       .slice(0, DROPPED_IDS_SHOWN),
     discussionDroppedExtra:
-      Math.max(0, discussionBudget.droppedItems.length - DROPPED_IDS_SHOWN) +
+      Math.max(
+        0,
+        discussionBudget.droppedItems.length +
+          contestedBudget.droppedItems.length -
+          DROPPED_IDS_SHOWN,
+      ) +
       Math.max(0, systemicBudget.droppedItems.length - DROPPED_IDS_SHOWN) +
       Math.max(0, orphanedBudget.droppedItems.length - DROPPED_IDS_SHOWN),
     discussionCap: PER_FINDING_LINKS,
@@ -811,15 +842,7 @@ export const render = (input: RenderInput): string => {
     sameRootNotes: advisoryAllowed ? sameRootNotes : {},
     answeredNotes: input.answeredNotes ?? {},
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",
-    contested: (input.contested ?? []).map((view) => ({
-      ...view,
-      ...(view.reRaise?.location !== undefined
-        ? { reRaise: { ...view.reRaise, location: escapeCodeBackticks(view.reRaise.location) } }
-        : {}),
-      id: escapeCodeBackticks(view.id),
-      title: escapePipes(view.title),
-      answerUrl: linkSafeUrl(view.answerUrl),
-    })),
+    contested: contestedBudget.kept,
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

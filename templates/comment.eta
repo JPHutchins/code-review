@@ -94,6 +94,13 @@ _The reviewer rebutted a maintainer's answer, and a maintainer answered again. E
 >
 > </details>
 <% } -%>
+<% if (k.discussionHtml) { -%>
+
+<details><summary>💬 Discussion</summary>
+
+<%~ k.discussionHtml %>
+</details>
+<% } -%>
 <% }) -%>
 <% } -%>
 <% if (!it.incomplete && it.systemic.length > 0) { -%>
@@ -148,7 +155,7 @@ _The reviewer rebutted a maintainer's answer, and a maintainer answered again. E
 <% const parts = [] %><% if (c.critical) { parts.push(it.severityEmoji('critical') + ' ' + c.critical) } %><% if (c.major) { parts.push(it.severityEmoji('major') + ' ' + c.major) } %><% if (c.minor) { parts.push(it.severityEmoji('minor') + ' ' + c.minor) } %><% if (c.nit) { parts.push(it.severityEmoji('nit') + ' ' + c.nit) } %>
 **Findings:** <%~ parts.join(' · ') %>
 <% } else if (!it.incomplete && (it.systemic.length > 0 || it.contested.length > 0)) { %>
-<% const held = [] %><% if (it.contested.length > 0) { held.push(it.contested.length + ' contested finding' + (it.contested.length === 1 ? '' : 's')) } %><% if (it.systemic.length > 0) { held.push(it.systemic.length + ' systemic problem' + (it.systemic.length === 1 ? '' : 's')) } %>
+<% const held = [] %><% if (it.contested.length > 0) { held.push(it.contested.length + ' contested item' + (it.contested.length === 1 ? '' : 's')) } %><% if (it.systemic.length > 0) { held.push(it.systemic.length + ' systemic problem' + (it.systemic.length === 1 ? '' : 's')) } %>
 _No findings beyond the <%= held.join(' and ') %> above._
 <% } else if (!it.incomplete && !it.answeredReRaiseNote) { %>
 <% if (it.unverifiedNoLogs) { %>_No findings — but no failing-job logs were staged, so this pass could not read the CI failure. "No findings" is not evidence of none._<% } else { %>_No findings — clean review._<% } %>

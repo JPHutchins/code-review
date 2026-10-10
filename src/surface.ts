@@ -8,9 +8,8 @@ import {
   mergedCountsMaps,
   resolveFindingId,
   resolveRuleId,
-  resolveSystemicId,
   usableCountsMap,
-  withSystemicProblems,
+  withoutIds,
 } from "./schema.js";
 import type {
   ChangeSize,
@@ -674,16 +673,8 @@ export const dialogueScore = (
   contested: readonly Pick<DialogueEntry, "id" | "severity">[],
   threshold: number,
 ): number => {
-  const contestedIds = new Set(contested.map((entry) => entry.id));
-  const argued = {
-    ...withSystemicProblems(
-      doc,
-      (doc.systemic_problems ?? []).filter((s) => !contestedIds.has(resolveSystemicId(s) ?? "")),
-    ),
-    findings: doc.findings.filter((f) => !contestedIds.has(resolveFindingId(f))),
-  };
   return round2(
-    convergenceScore(argued, threshold) +
+    convergenceScore(withoutIds(doc, new Set(contested.map((entry) => entry.id))), threshold) +
       contested.reduce((sum, entry) => sum + contestedWeight(entry.severity, threshold), 0),
   );
 };

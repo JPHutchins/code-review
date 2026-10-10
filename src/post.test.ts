@@ -5344,6 +5344,21 @@ describe("post — answered findings (issue #151)", () => {
       expect(patchedBody(calls)).toContain("### ⚖️ Contested");
     });
 
+    it("keeps the replies naming a contested id under its section", async () => {
+      const contested: DialogueEntry = { ...entry, state: "contested" };
+      const reply = answerRow("Still not convinced about `recurring-a` on the cold path.", {
+        id: 600,
+        association: "NONE",
+        created: "2026-07-05T01:00:00Z",
+      });
+      const calls = await run(stickyWith([contested]), mkFindings([]), [
+        answerRow(DISMISSAL),
+        reply,
+      ]);
+      const body = patchedBody(calls);
+      expect(body.slice(body.indexOf("### ⚖️ Contested"))).toContain("issuecomment-600");
+    });
+
     it("lists a verbatim re-raise of a contested id under Contested, never as treated as answered", async () => {
       const contested: DialogueEntry = { ...entry, state: "contested" };
       const calls = await run(stickyWith([contested]), mkFindings([argued]), [

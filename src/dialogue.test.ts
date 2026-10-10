@@ -74,6 +74,25 @@ describe("advanceDialogue — one round of the review dialogue", () => {
     ]);
   });
 
+  it("keeps a rebutted id rebutted when the rebutted answer is deleted, linking the one still standing", () => {
+    const standing = mkClosure({
+      source_url: "https://github.com/o/r/pull/1#issuecomment-0",
+      created_at: "2026-06-30T01:00:00Z",
+    });
+    expect(advanceDialogue([rebutted], [standing], new Set(), [])).toEqual([
+      { ...rebutted, answer: standing.source_url, at: standing.created_at },
+    ]);
+  });
+
+  it("weighs a re-raise's own title and severity over the entry's", () => {
+    const contested: DialogueEntry = { ...rebutted, state: "contested" };
+    expect(
+      advanceDialogue([contested], [], new Set(), [
+        mkItem({ title: "Retry plumbing is unbounded", severity: "critical" }),
+      ]),
+    ).toEqual([{ ...contested, title: "Retry plumbing is unbounded", severity: "critical" }]);
+  });
+
   it("keeps a contested id contested whether or not the reviewer re-raises it, linking the newest answer", () => {
     const contested: DialogueEntry = { ...rebutted, state: "contested" };
     const newest = mkClosure({

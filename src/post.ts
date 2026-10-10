@@ -81,9 +81,12 @@ import {
   priorIdsFrom,
 } from "./schema.js";
 import {
+  findingIdIn,
   hasRebuttal,
   resolveFindingId,
   resolveSystemicId,
+  systemicIdIn,
+  withoutIds,
   withSystemicProblems,
 } from "./schema.js";
 import type { SystemicProblem } from "./schema.js";
@@ -1516,9 +1519,8 @@ export const post = async (
       : priorDialogue.entries;
   const contested = dialogueRound ? dialogue.filter((entry) => entry.state === "contested") : [];
   const contestedIds = new Set(contested.map((entry) => entry.id));
-  const isContestedFinding = (f: Finding): boolean => contestedIds.has(resolveFindingId(f));
-  const isContestedSystemic = (s: SystemicProblem): boolean =>
-    contestedIds.has(resolveSystemicId(s) ?? "");
+  const isContestedFinding = findingIdIn(contestedIds);
+  const isContestedSystemic = systemicIdIn(contestedIds);
   // The prior document the closures name, resolved only when one exists — and the one resolve the
   // nit stickiness and the discussion gate below reuse.
   const priorForAnswers =
@@ -1648,7 +1650,8 @@ export const post = async (
       .map((s) => s.id)
       .filter((id): id is string => id !== undefined && id !== ""),
   ];
-  const roundHasNit = findings.findings.some((f) => f.severity === "nit");
+  const argued = findings.findings.filter((f) => !isContestedFinding(f));
+  const roundHasNit = argued.some((f) => f.severity === "nit");
   const nitWantsPrior =
     roundHasNit &&
     existingSticky !== null &&
@@ -1676,7 +1679,6 @@ export const post = async (
       priorSuppressedKeys.has(resolveFindingId(f)) ||
       priorSuppressedKeys.has(answeredNoteKey(f)) ||
       priorSuppressedKeys.has(`title:${f.title}`));
-  const argued = findings.findings.filter((f) => !isContestedFinding(f));
   const suppressedNits = argued.filter(isSuppressedNit);
   const visibleFindings = argued.filter((f) => !isSuppressedNit(f));
   // The drop note, shared by every surface that renders the filtered findings: the TRUE pre-dedup
@@ -1710,6 +1712,7 @@ export const post = async (
     ...(findings.systemic_problems ?? [])
       .map((s) => s.id)
       .filter((id): id is string => id !== undefined && id !== ""),
+    ...contested.map((entry) => entry.id),
   ];
   // When a reply named an unknown token but the prior document could not be resolved (an expired
   // artifact, a transport failure), the trail loss is named on the surface, never silent. Only
@@ -2133,16 +2136,7 @@ export const post = async (
 
   const commonRenderInput: Omit<RenderInput, "inlineDisposition" | "reviewUrl"> = {
     ...sharedRenderInput,
-    findings:
-      contestedIds.size === 0
-        ? stampedFindings
-        : {
-            ...withSystemicProblems(
-              stampedFindings,
-              (stampedFindings.systemic_problems ?? []).filter((s) => !isContestedSystemic(s)),
-            ),
-            findings: stampedFindings.findings.filter((f) => !isContestedFinding(f)),
-          },
+    findings: withoutIds(stampedFindings, contestedIds),
     envelope,
     incomplete: thisIncomplete,
     sameRootNotes,

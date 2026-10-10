@@ -9,7 +9,7 @@ import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
 import { ghArtifactReader, resolvePriorFindings, type ArtifactReader } from "./artifact.js";
-import { isFullReviewAncestry } from "./surface.js";
+import { isFullReviewAncestry, parseDialogueMarker } from "./surface.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
 import { parseJsonl } from "./transcript.js";
 import { annotationSafe, BODY_CLIP_CHARS, clipText, errMsg } from "./util.js";
@@ -551,7 +551,21 @@ export const gather = async (
         comments: issueComments ?? [],
       })
     : { file: { responses: [], unmatched: [] }, dropped: 0 };
-  writeFileSync(join(input.outDir, "responses.json"), JSON.stringify(harvest.file));
+  const priorDialogue = seedsFromPrior ? parseDialogueMarker(prior.body).entries : [];
+  writeFileSync(
+    join(input.outDir, "responses.json"),
+    JSON.stringify({
+      ...harvest.file,
+      ...Object.fromEntries(
+        (["contested", "upheld", "overruled"] as const).flatMap((state) => {
+          const ids = priorDialogue
+            .filter((entry) => entry.state === state)
+            .map((entry) => entry.id);
+          return ids.length > 0 ? [[state, ids]] : [];
+        }),
+      ),
+    }),
+  );
   if (seedsFromPrior && priorFindings === null) {
     process.stderr.write(
       "Note: the prior review's findings did not resolve — every id-shaped answer is staged as unmatched\n",

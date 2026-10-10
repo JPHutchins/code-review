@@ -39,12 +39,21 @@ export const UnmatchedResponseCodec = strictExact("UnmatchedResponse", Unmatched
   UnmatchedResponseShape,
 ]);
 
-const ResponsesFileShape = t.type({
+const ResponsesFileAnswers = t.type({
   responses: t.array(ResponseCodec),
   unmatched: t.array(UnmatchedResponseCodec),
 });
+// The ids the maintainers hold: contested ones await a ruling, upheld ones stand until fixed, and
+// overruled ones are closed for good.
+const ResponsesFileDialogue = t.partial({
+  contested: t.array(t.string),
+  upheld: t.array(t.string),
+  overruled: t.array(t.string),
+});
+const ResponsesFileShape = t.intersection([ResponsesFileAnswers, ResponsesFileDialogue]);
 export const ResponsesFileCodec = strictExact("ResponsesFile", ResponsesFileShape, [
-  ResponsesFileShape,
+  ResponsesFileAnswers,
+  ResponsesFileDialogue,
 ]);
 
 export type Response = t.TypeOf<typeof ResponseCodec>;

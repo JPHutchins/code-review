@@ -7,6 +7,8 @@ import type { GatherInput, GitRun } from "./gather.js";
 import { gather, renderOutputs } from "./gather.js";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
+import { dialogueMarker } from "./surface.js";
+import type { DialogueEntry } from "./dialogue.js";
 
 const sampleDiff = `diff --git a/src/foo.ts b/src/foo.ts
 index abc..def 100644
@@ -517,6 +519,53 @@ describe("gather — prior review", () => {
 
     expect(consulted).toEqual(["https://api.github.com/repos/o/r/actions/artifacts/9/zip"]);
     expect(JSON.parse(outFile("prior_findings.json")) as unknown).toEqual(doc);
+  });
+
+  it("stages the ids the maintainers hold, read from the prior sticky's dialogue state", async () => {
+    const doc = { schema_version: "0.9.0", summary: "prior", verdict: "comment", findings: [] };
+    const held = (id: string, state: DialogueEntry["state"]): DialogueEntry => ({
+      id,
+      state,
+      answer: "https://github.com/o/r/pull/42#issuecomment-1",
+      at: "2026-10-01T00:00:00Z",
+      title: "t",
+      severity: "major",
+    });
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      {
+        match: commentsMatch(42),
+        response: ndjson([
+          {
+            id: 7,
+            body: `<!-- code-review -->\n<!-- reviewed-route: full review -->\n<!-- code-review:findings-json https://api.github.com/repos/o/r/actions/artifacts/9/zip -->\n${dialogueMarker(
+              [
+                held("argued", "contested"),
+                held("stands", "upheld"),
+                held("ruled", "overruled"),
+                held("open", "rebutted"),
+              ],
+            )}`,
+            user: { login: "github-actions[bot]" },
+          },
+        ]),
+      },
+    ]);
+
+    await gather(mkInput({}), api, mkMockGit([]).git, () => Promise.resolve(JSON.stringify(doc)));
+
+    expect(JSON.parse(outFile("responses.json")) as unknown).toEqual({
+      responses: [],
+      unmatched: [],
+      contested: ["argued"],
+      upheld: ["stands"],
+      overruled: ["ruled"],
+    });
   });
 
   it("stages the implementer's responses to the prior round's ids, from comments and commits", async () => {

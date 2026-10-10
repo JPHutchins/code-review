@@ -5508,6 +5508,23 @@ describe("post — answered findings (issue #151)", () => {
       expect(body).toContain(dialogueMarker([contested, overruled]));
     });
 
+    it("writes the round's dialogue to the run summary", async () => {
+      process.env["GITHUB_STEP_SUMMARY"] = join(tmpDir, "summary.md");
+      try {
+        const rebutting = mkFinding({
+          ...argued,
+          rebuttal: "The measurement skipped the cold path.",
+        });
+        await run(stickyWith([entry]), mkFindings([rebutting]), [
+          answerRow(DISMISSAL),
+          answerAgain,
+        ]);
+        expect(readFileSync(join(tmpDir, "summary.md"), "utf-8")).toContain("Review dialogue");
+      } finally {
+        delete process.env["GITHUB_STEP_SUMMARY"];
+      }
+    });
+
     it("carries the dialogue state through a notice", async () => {
       const sticky = stickyWith([entry]);
       const { api, calls } = mkMockGhApi([

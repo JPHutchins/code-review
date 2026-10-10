@@ -90,7 +90,12 @@ import {
   withSystemicProblems,
 } from "./schema.js";
 import type { SystemicProblem } from "./schema.js";
-import { advanceDialogue, dialogueAnswers } from "./dialogue.js";
+import {
+  advanceDialogue,
+  dialogueAnswers,
+  dialogueMetricsTable,
+  reMintedNearMisses,
+} from "./dialogue.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
@@ -1533,9 +1538,7 @@ export const post = async (
               : [{ id, title: s.title, severity: s.severity, rebutted: hasRebuttal(s) }];
           }),
         ])
-      : input.withoutDialogue === true
-        ? []
-        : priorDialogue.entries;
+      : priorDialogue.entries;
   // An upheld id stays open whatever older answer would close it. Only a closure some current finding
   // or systemic problem could match is worth the prior's download.
   const upheldIds = new Set(
@@ -2499,6 +2502,33 @@ export const post = async (
       finalDiscussionOverride,
     ),
   );
+  if (answerable && dialogueRound) {
+    appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => {
+      const comparedPrior = resolvedPrior === null ? null : resolveTolerantFindings(resolvedPrior);
+      const answeredIds = new Set(allAnswers.map((answer) => answer.id));
+      return dialogueMetricsTable({
+        commentAnswers: answers.comments.length,
+        commitAnswers: answers.commits.length,
+        closures: allClosures.length,
+        droppedAnswered: answeredFilter.droppedCount + answeredSystemicFilter.droppedCount,
+        droppedOverruled: overruledFilter.droppedCount + overruledSystemicFilter.droppedCount,
+        annotated: Object.keys(reRaisedNotes).length,
+        entries: dialogue,
+        nearMisses:
+          comparedPrior === null
+            ? null
+            : reMintedNearMisses(
+                loadedFindings,
+                comparedPrior,
+                new Set(allClosures.map((closure) => closure.id)),
+              ),
+        systemicUnanswered: (findings.systemic_problems ?? []).filter((s) => {
+          const id = resolveSystemicId(s);
+          return id === undefined || !answeredIds.has(id);
+        }).length,
+      });
+    });
+  }
 };
 
 export interface AnnounceInput {

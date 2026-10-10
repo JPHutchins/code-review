@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { advanceDialogue, decodeDialogue, DIALOGUE_ENTRY_CAP } from "./dialogue.js";
+import {
+  advanceDialogue,
+  decodeDialogue,
+  dialogueMetricsTable,
+  DIALOGUE_ENTRY_CAP,
+  reMintedNearMisses,
+} from "./dialogue.js";
+import type { Finding, Findings } from "./schema.js";
 import type { DialogueAnswers, DialogueEntry, DialogueItem } from "./dialogue.js";
 import type { Response } from "./responses.js";
 
@@ -280,5 +287,83 @@ describe("decodeDialogue — each entry decodes alone", () => {
       skipped: 1,
     });
     expect(decodeDialogue(undefined)).toEqual({ entries: [], undecoded: [], skipped: 1 });
+  });
+});
+
+describe("reMintedNearMisses — a closed claim back under a new id", () => {
+  const finding = (overrides: Partial<Finding>): Finding => ({
+    path: "src/retry.ts",
+    id: "retry-plumbing",
+    start_line: 10,
+    end_line: 14,
+    severity: "major",
+    title: "Retry plumbing is inconsistent",
+    description: "d",
+    reasoning: "r",
+    confidence: 0.8,
+    likelihood: 1,
+    ...overrides,
+  });
+  const doc = (findings: Finding[], overrides: Partial<Findings> = {}): Findings => ({
+    schema_version: "0.11.0",
+    summary: "s",
+    verdict: "comment",
+    findings,
+    ...overrides,
+  });
+  const closed = new Set(["retry-plumbing"]);
+  const prior = doc([finding({})]);
+
+  it("counts a new id at lines a closed finding covered in the same file", () => {
+    expect(
+      reMintedNearMisses(doc([finding({ id: "retry-policy", start_line: 12 })]), prior, closed),
+    ).toBe(1);
+  });
+
+  it("counts neither the closed id itself nor a new id elsewhere", () => {
+    expect(reMintedNearMisses(doc([finding({})]), prior, closed)).toBe(0);
+    expect(
+      reMintedNearMisses(
+        doc([finding({ id: "retry-policy", start_line: 40, end_line: 41 })]),
+        prior,
+        closed,
+      ),
+    ).toBe(0);
+  });
+
+  it("counts a new systemic tying together a finding a closed systemic tied", () => {
+    const systemic = {
+      title: "t",
+      description: "d",
+      severity: "major" as const,
+      reasoning: "r",
+      confidence: 0.8,
+      likelihood: 1,
+    };
+    const priorSystemic = doc([], {
+      systemic_problems: [{ ...systemic, id: "retry-plumbing", finding_ids: ["a"] }],
+    });
+    const current = doc([], {
+      systemic_problems: [{ ...systemic, id: "retry-class", finding_ids: ["a", "b"] }],
+    });
+    expect(reMintedNearMisses(current, priorSystemic, closed)).toBe(1);
+  });
+});
+
+describe("dialogueMetricsTable — the round's dialogue in the run summary", () => {
+  it("counts each state, and marks near-misses unmeasured without a prior", () => {
+    const table = dialogueMetricsTable({
+      commentAnswers: 3,
+      commitAnswers: 1,
+      closures: 2,
+      droppedAnswered: 1,
+      droppedOverruled: 0,
+      annotated: 1,
+      entries: [rebutted, { ...rebutted, id: "other", state: "contested" }],
+      nearMisses: null,
+      systemicUnanswered: 1,
+    });
+    expect(table).toContain("1 · 1 · 0 · 0");
+    expect(table).toMatch(/near-misses \| — \|/);
   });
 });

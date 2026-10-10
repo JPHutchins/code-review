@@ -1454,7 +1454,7 @@ export const post = async (
   // answer can name, or dialogue state an answer can advance.
   const loadedFindings = findingsResult.findings;
   const priorDialogue =
-    existingSticky !== null
+    existingSticky !== null && input.withoutDialogue !== true
       ? parseDialogueMarker(existingSticky.body)
       : { entries: [], undecoded: [], skipped: 0 };
   if (priorDialogue.skipped > 0) {

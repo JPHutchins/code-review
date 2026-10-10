@@ -734,8 +734,8 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     const reusable = armOf(".github/workflows/review-reusable.yaml");
     const example = armOf("examples/workflows/review.yaml");
     expect(example).toEqual(reusable);
-    expect(reusable[0]).toBe(
-      'if [ "$DIALOGUE" != "false" ] && [ -f "$GATHER_DIR/responses.json" ]; then',
+    expect(reusable).toContain(
+      'if [ "$DIALOGUE_OFF" != "1" ] && [ -f "$GATHER_DIR/responses.json" ]; then',
     );
     expect(reusable.some((line) => line.includes("::warning::"))).toBe(true);
     expect(reusable.some((line) => line.includes("rebuttal"))).toBe(true);
@@ -765,7 +765,7 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     ]) {
       const script = scriptOf(path, "Phase 2 — agentic review");
       const arm = script.indexOf(
-        'if [ "$DIALOGUE" != "false" ] && [ -f "$GATHER_DIR/responses.json" ]',
+        'if [ "$DIALOGUE_OFF" != "1" ] && [ -f "$GATHER_DIR/responses.json" ]',
       );
       const caseOpen = script.lastIndexOf('case "$SEED_MODE" in', arm);
       expect(caseOpen, path).toBeGreaterThan(-1);
@@ -773,6 +773,15 @@ describe("the review dialogue — the reviewer and the triage read the same prot
       expect(script.slice(caseOpen, arm), path).not.toContain("esac");
       expect(arm, path).toBeLessThan(script.indexOf('ROUTE="mechanic"'));
     }
+  });
+
+  it("the reviewer honors the dialogue switch only when the pinned post can, identically in both workflows", () => {
+    const reusable = scriptOf(".github/workflows/review-reusable.yaml", "Phase 2 — agentic review");
+    const example = scriptOf("examples/workflows/review.yaml", "Phase 2 — agentic review");
+    expect(linesWith(example, "DIALOGUE")).toEqual(linesWith(reusable, "DIALOGUE"));
+    const probe = reusable.indexOf('*" --without-dialogue "*');
+    expect(probe).toBeGreaterThan(-1);
+    expect(reusable.indexOf('rm -f "$GATHER_DIR/responses.json"')).toBeGreaterThan(probe);
   });
 
   it("the dialogue switch reaches post, probed, identically in both workflows", () => {

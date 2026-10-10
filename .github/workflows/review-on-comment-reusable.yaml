@@ -178,6 +178,13 @@ on:
         type: boolean
         required: false
         default: false
+      dialogue:
+        description: >-
+          The review dialogue; forwarded to review-reusable.yaml, whose own input documents what false
+          turns off.
+        type: boolean
+        required: false
+        default: true
       claude_code_version:
         description: >-
           Claude Code CLI version to install; only the pinned default has been validated. The model
@@ -327,6 +334,7 @@ jobs:
       egress_policy:   ${{ inputs.egress_policy }}
       claude_code_version: ${{ inputs.claude_code_version }}
       inline:          ${{ inputs.inline }}
+      dialogue: ${{ inputs.dialogue }}
       scope:           ${{ inputs.scope }}
       # Per-run overrides parsed from the comment (already clamped by the gate). Empty ⇒ review-reusable
       # keeps its configured defaults, so a bare `/code-review` just runs a normal review.

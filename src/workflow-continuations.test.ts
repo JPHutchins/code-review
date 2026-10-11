@@ -101,7 +101,7 @@ describe("route prose — the reusable workflow and the example teach the SAME i
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|UNFINISHED_NOTE|SEED_NOTE)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE)="/.test(
           line,
         ),
       )
@@ -113,6 +113,90 @@ describe("route prose — the reusable workflow and the example teach the SAME i
     expect(reusable.length).toBeGreaterThan(0);
     expect(example).toEqual(reusable);
   });
+});
+
+describe("the passed-run evidence note — what the full review is told matches what gather staged", () => {
+  // The selection block runs as written, in both workflow copies: a parity pin compares the copies
+  // to each other, never the note to the gather state that picks it.
+  const noteBlock = (workflowPath: string): string => {
+    const lines = runScripts(workflowPath)
+      .flatMap(({ script }) => script.split("\n"))
+      .map((line) => line.trim());
+    const start = lines.findIndex((line) => line.startsWith('CI_STATUS_NOTE="All CI jobs'));
+    const end = lines.indexOf(
+      "fi",
+      lines.findIndex((line) => line.startsWith('elif [ -f "$GATHER_DIR/ci_jobs.json" ]')),
+    );
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    return lines.slice(start, end + 1).join("\n");
+  };
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const notesFor = (
+    workflowPath: string,
+    index: boolean,
+    stagedJobLogs: string,
+    passedJobs = "",
+    ranJobs = passedJobs,
+  ): { readonly status: string; readonly jobs: string } => {
+    const gatherDir = mkdtempSync(join(tmpdir(), "ci-note-"));
+    roots.push(gatherDir);
+    if (index) writeFileSync(join(gatherDir, "ci_jobs.json"), "[]\n");
+    const [status = "", jobs = ""] = execFileSync(
+      "bash",
+      [
+        "-euo",
+        "pipefail",
+        "-c",
+        `${noteBlock(workflowPath)}\nprintf '%s\\0%s' "$CI_STATUS_NOTE" "$CI_JOBS_NOTE"`,
+      ],
+      {
+        env: {
+          ...process.env,
+          GATHER_DIR: gatherDir,
+          STAGED_JOB_LOGS: stagedJobLogs,
+          CI_JOBS_PASSED: passedJobs,
+          CI_JOBS_RAN: ranJobs,
+        },
+        encoding: "utf-8",
+      },
+    ).split("\0");
+    return { status, jobs };
+  };
+  const noteFor = (workflowPath: string, index: boolean, stagedJobLogs: string): string =>
+    notesFor(workflowPath, index, stagedJobLogs).jobs;
+
+  for (const workflowPath of [
+    ".github/workflows/review-reusable.yaml",
+    "examples/workflows/review.yaml",
+  ]) {
+    it(`${workflowPath}: staged logs point at the index and every log; no logs says so; no index says so`, () => {
+      const staged = noteFor(workflowPath, true, "15");
+      expect(staged).toContain("ci_jobs.json");
+      expect(staged).toContain("job_*.log");
+      const indexOnly = noteFor(workflowPath, true, "0");
+      expect(indexOnly).toContain("ci_jobs.json");
+      expect(indexOnly).toContain("no log could be staged");
+      expect(indexOnly).not.toContain("job_*.log");
+      const nothing = noteFor(workflowPath, false, "0");
+      expect(nothing).not.toContain("ci_jobs.json");
+      expect(nothing).toContain("could be staged");
+    });
+
+    it(`${workflowPath}: the full review is told all CI jobs have passed, with gather's count when it has one`, () => {
+      expect(notesFor(workflowPath, true, "15", "15").status).toMatch(
+        /^All CI jobs have passed: 15\/15, named in .*\/ci_jobs\.json\. $/,
+      );
+      expect(notesFor(workflowPath, true, "15", "15", "16").status).toMatch(
+        /^CI passed: 15\/16 jobs/,
+      );
+      expect(notesFor(workflowPath, false, "0").status).toBe("All CI jobs have passed. ");
+      expect(notesFor(workflowPath, true, "1", "1; x").status).toBe("All CI jobs have passed. ");
+    });
+  }
 });
 
 describe("full-review prompt — the vocabulary defers to the schema channel", () => {

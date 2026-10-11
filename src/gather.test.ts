@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhApi } from "./gh.js";
 import type { GatherInput, GitRun } from "./gather.js";
-import { gather, parseRunAttempt, renderOutputs } from "./gather.js";
+import { gather, JOBS_JQ, parseRunAttempt, renderOutputs } from "./gather.js";
+import { execFileSync } from "node:child_process";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
 import { dialogueMarker } from "./surface.js";
@@ -191,6 +192,7 @@ describe("gather — PR resolution", () => {
       // A success-route run never looks for failing-job logs.
       stagedJobLogs: 0,
       failingJobs: 0,
+      passedJobs: null,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -1231,15 +1233,44 @@ describe("gather — failing-job logs", () => {
       },
     ]);
 
-    await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
 
     expect(calls().some((c) => c.args[0] === "repos/owner/repo/actions/jobs/12/logs")).toBe(false);
+    expect(result).toMatchObject({ passedJobs: { passed: 1, ran: 1 } });
 
     expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
-      { name: "conformance", conclusion: "success", log: "job_11.log" },
-      { name: "free-threaded", conclusion: "skipped", log: null },
+      { name: "conformance", conclusion: "success", steps: [], log: "job_11.log" },
+      { name: "free-threaded", conclusion: "skipped", steps: [], log: null },
     ]);
     expect(outFile("job_11.log")).toContain("162/162 passed");
+  });
+
+  it("indexes each passed job's step names, so a check is found in a job whose name does not say so", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: `${JSON.stringify({ id: 11, name: "wheels", conclusion: "success", steps: ["Set up job", "Run conformance"] })}\n`,
+      },
+      { match: logsMatch, response: "conformance.py 3.14.6 success\n" },
+    ]);
+
+    await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
+      {
+        name: "wheels",
+        conclusion: "success",
+        steps: ["Set up job", "Run conformance"],
+        log: "job_11.log",
+      },
+    ]);
   });
 
   it("counts a passed run's staged logs, so the review is told whether it has evidence", async () => {
@@ -1345,7 +1376,7 @@ describe("gather — failing-job logs", () => {
 
     expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 0 });
     expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
-      { name: "tests", conclusion: "success", log: null },
+      { name: "tests", conclusion: "success", steps: [], log: null },
     ]);
 
     stderrSpy.mockRestore();
@@ -1400,6 +1431,30 @@ describe("gather — pr_context.json", () => {
   });
 });
 
+describe("JOBS_JQ — the projection gather reads the jobs API through", () => {
+  it("keeps each job's string step names and drops any malformed entry", () => {
+    const page = JSON.stringify({
+      jobs: [
+        {
+          id: 1,
+          name: "wheels",
+          conclusion: "success",
+          steps: [{ name: "Run camas ci" }, "junk", { name: 5 }, { name: null }],
+        },
+        { id: 2, name: "lint", conclusion: "skipped" },
+      ],
+    });
+    const rows = execFileSync("jq", ["-c", JOBS_JQ], { input: page, encoding: "utf-8" })
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as unknown);
+    expect(rows).toEqual([
+      { id: 1, name: "wheels", conclusion: "success", steps: ["Run camas ci"] },
+      { id: 2, name: "lint", conclusion: "skipped", steps: [] },
+    ]);
+  });
+});
+
 describe("renderOutputs", () => {
   it("renders skip=true for the skip case", () => {
     expect(renderOutputs({ kind: "skip" })).toBe("skip=true\n");
@@ -1416,9 +1471,10 @@ describe("renderOutputs", () => {
         baseSha: "abc1234",
         stagedJobLogs: 0,
         failingJobs: 0,
+        passedJobs: { passed: 15, ran: 15 },
       }),
     ).toBe(
-      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\n",
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\nci_jobs_ran=15\n",
     );
   });
 });

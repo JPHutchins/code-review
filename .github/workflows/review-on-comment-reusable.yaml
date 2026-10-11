@@ -117,7 +117,7 @@ on:
         required: false
         default: false
       install_command:
-        description: Shell command to install project deps so the agent can run the project's checks. Empty ⇒ no shell install.
+        description: Shell command to install project deps so the agent can run project code — the CI-fix pass reproducing a failure and confirming its fix, the full review probing a suspected bug. Empty ⇒ no shell install. Trusted consumer config.
         type: string
         required: false
         default: ""

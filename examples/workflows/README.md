@@ -8,7 +8,8 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
 - **`review` job** — holds the model key + a **read-only** token + locked egress. Fetches the diff
   as data via the API. `code-review gather` collects the inputs (resolves the PR, fetches the diff
-  with a git-diff fallback, the PR context, the prior bot review, and failing-job logs as files),
+  with a git-diff fallback, the PR context, the prior bot review, and the CI run's job logs as files —
+  the failing jobs' on a failure, the jobs that ran on a pass, from the attempt that triggered the review),
   then it runs the two-phase gate: (1) a data-only security triage of the diff → `{safe, reasons}`,
   fail-closed; (2) if safe, the agentic review runs and its output is mapped onto the spec envelope
   with `code-review adapt`.
@@ -72,6 +73,7 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
         head_branch:   ${{ github.event.workflow_run.head_branch }}
         head_repo:     ${{ github.event.workflow_run.head_repository.full_name }}   # fork-safe concurrency
         run_id:        ${{ github.event.workflow_run.id }}
+        run_attempt:   ${{ github.event.workflow_run.run_attempt }}   # the attempt that concluded — a re-run since can't hide its logs
         conclusion:    ${{ github.event.workflow_run.conclusion }}
         trigger_event: ${{ github.event.workflow_run.event }}
         api_base_url:  ${{ vars.API_BASE_URL }}

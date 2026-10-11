@@ -50,6 +50,9 @@ export type GatherResult =
       // the fast-fix route is TOLD it is reading a subset, rather than reporting the break fixed on
       // the strength of the logs it happened to get.
       readonly failingJobs: number;
+      // The passed run's successful jobs out of those that ran, when its job list could be read —
+      // told to the full review as its first words.
+      readonly passedJobs: { readonly passed: number; readonly ran: number } | null;
     };
 
 export const renderOutputs = (result: GatherResult): string => {
@@ -57,7 +60,7 @@ export const renderOutputs = (result: GatherResult): string => {
     case "skip":
       return "skip=true\n";
     case "gathered":
-      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\nstaged_job_logs=${String(result.stagedJobLogs)}\nfailing_jobs=${String(result.failingJobs)}\n`;
+      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\nstaged_job_logs=${String(result.stagedJobLogs)}\nfailing_jobs=${String(result.failingJobs)}\nci_jobs_passed=${result.passedJobs === null ? "" : String(result.passedJobs.passed)}\nci_jobs_ran=${result.passedJobs === null ? "" : String(result.passedJobs.ran)}\n`;
   }
 };
 
@@ -104,21 +107,26 @@ const IssueCommentCodec = t.intersection([
 ]);
 type IssueComment = t.TypeOf<typeof IssueCommentCodec>;
 
-const JobCodec = t.type({
-  id: t.number,
-  // A null name (an API edge) degrades to a nameless entry rather than aborting the whole gather —
-  // the identity the reproduction steer needs is best-effort, never load-bearing.
-  name: t.union([t.string, t.null]),
-  conclusion: t.union([t.string, t.null]),
-});
+const JobCodec = t.intersection([
+  t.type({
+    id: t.number,
+    // A null name (an API edge) degrades to a nameless entry rather than aborting the whole gather —
+    // the identity the reproduction steer needs is best-effort, never load-bearing.
+    name: t.union([t.string, t.null]),
+    conclusion: t.union([t.string, t.null]),
+  }),
+  t.partial({ steps: t.array(t.string) }),
+]);
 
 // One job per row across all pages, for the same reason the conversation fetches project with --jq:
 // `--paginate` alone concatenates each page into an invalid `{..}{..}` stream. Unpaginated, a failing
 // job past the first page is invisible — and everything this route reports (the staged count, the
 // "(N failing job(s) reported)" line, the unverified stamp) would be computed from a truncated list.
 // `name` rides along so a zero-logs pass can still tell the agent WHICH jobs failed (failed_jobs.json),
-// not just how many.
-const JOBS_JQ = ".jobs[] | {id: .id, name: .name, conclusion: .conclusion}";
+// not just how many; the step names ride along so a passed run's index says which checks each job ran
+// — a check often runs in a job whose name does not say so.
+export const JOBS_JQ =
+  ".jobs[] | {id: .id, name: .name, conclusion: .conclusion, steps: [.steps[]? | .name? | strings]}";
 
 export const parseRunAttempt = (raw: string | undefined): string | undefined => {
   if (raw === undefined || raw === "") return undefined;
@@ -372,7 +380,7 @@ const reviewsFrom = (reviews: readonly Review[], botLogin: string) =>
     body: clip(r.body),
   }));
 
-// Jobs-list failure is fatal; a per-log download failure degrades — logs are advisory, and partial
+// On the failure route a jobs-list failure is fatal; a per-log download failure degrades — logs are advisory, and partial
 // logs plus the diff beat a dead review. Returns how many landed: on the fast-fix route the logs are
 // the whole premise, so zero of them is worth saying out loud rather than leaving the agent to infer
 // it from an empty directory (issue #154).
@@ -501,7 +509,10 @@ const stagePassedRun = async (
   runAttempt: string | undefined,
   outDir: string,
   ghApi: GhApi,
-): Promise<number> => {
+): Promise<{
+  readonly staged: number;
+  readonly passed: { readonly passed: number; readonly ran: number } | null;
+}> => {
   try {
     const jobs = await listRunJobs(repo, runId, runAttempt, ghApi);
     const writeIndex = (logs: ReadonlyMap<number, string>): void => {
@@ -511,6 +522,7 @@ const stagePassedRun = async (
           jobs.map((j) => ({
             name: j.name,
             conclusion: j.conclusion,
+            steps: j.steps ?? [],
             log: logs.get(j.id) ?? null,
           })),
           null,
@@ -540,12 +552,18 @@ const stagePassedRun = async (
         `::warning::${annotationSafe(`${String(ran.length)} jobs ran in the passed run ${runId}; logs were staged for the first ${String(selected.length)} only`)}\n`,
       );
     }
-    return logs.size;
+    return {
+      staged: logs.size,
+      passed: {
+        passed: jobs.filter((j) => j.conclusion === "success").length,
+        ran: ran.length,
+      },
+    };
   } catch (err) {
     process.stderr.write(
-      `::warning::${annotationSafe(`the passed CI run's jobs could not be listed (${errMsg(err)}) — the review knows CI passed, not which jobs ran`)}\n`,
+      `::warning::${annotationSafe(`the passed CI run's jobs could not be staged (${errMsg(err)}) — the review knows CI passed, not what its jobs reported`)}\n`,
     );
-    return 0;
+    return { staged: 0, passed: null };
   }
 };
 
@@ -707,10 +725,10 @@ export const gather = async (
     input.conclusion === "failure"
       ? await downloadFailingJobLogs(input.repo, input.runId, input.runAttempt, input.outDir, ghApi)
       : { staged: 0, failing: 0 };
-  const passedLogs =
+  const passedRun =
     input.conclusion === "success"
       ? await stagePassedRun(input.repo, input.runId, input.runAttempt, input.outDir, ghApi)
-      : 0;
+      : { staged: 0, passed: null };
 
   return {
     kind: "gathered",
@@ -719,7 +737,8 @@ export const gather = async (
     diffSize: Buffer.byteLength(prDiff, "utf8"),
     stacked,
     baseSha: meta.base_sha,
-    stagedJobLogs: jobLogs.staged + passedLogs,
+    stagedJobLogs: jobLogs.staged + passedRun.staged,
     failingJobs: jobLogs.failing,
+    passedJobs: passedRun.passed,
   };
 };

@@ -168,9 +168,9 @@ _The reviewer rebutted a maintainer's answer, and a maintainer answered again. E
 **Findings:** <%~ parts.join(' · ') %>
 <% } else if (!it.incomplete && (it.systemic.length > 0 || it.contested.length > 0)) { %>
 <% const held = [] %><% if (it.contested.length > 0) { held.push(it.contested.length + ' contested item' + (it.contested.length === 1 ? '' : 's')) } %><% if (it.systemic.length > 0) { held.push(it.systemic.length + ' systemic problem' + (it.systemic.length === 1 ? '' : 's')) } %>
-_No findings beyond the <%= held.join(' and ') %> above._
+_No findings beyond the <%= held.join(' and ') %> above<%= it.unfinishedCaveat %>._
 <% } else if (!it.incomplete && !it.answeredReRaiseNote) { %>
-<% if (it.unverifiedNoLogs) { %>_No findings — but no failing-job logs were staged, so this pass could not read the CI failure. "No findings" is not evidence of none._<% } else { %>_No findings — clean review._<% } %>
+<% if (it.unverifiedNoLogs) { %>_No findings — but no failing-job logs were staged, so this pass could not read the CI failure. "No findings" is not evidence of none._<% } else if (it.unfinishedCaveat) { %>_No findings in the checks this round completed<%= it.unfinishedCaveat %>._<% } else { %>_No findings — clean review._<% } %>
 <% } %>
 
 <% if (it.inlineDisposition && it.inlineDisposition.kind === 'posted') { %>

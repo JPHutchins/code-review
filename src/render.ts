@@ -884,6 +884,10 @@ export const render = (input: RenderInput): string => {
     answeredReRaiseNote: input.answeredReRaiseNote ?? "",
     contested: contestedBudget.kept,
     unfinished: shownUnfinished(input.findings, isFullReviewRound),
+    unfinishedCaveat:
+      unfinished.length > 0
+        ? ` — ${String(unfinished.length)} planned check${unfinished.length === 1 ? "" : "s"} went unfinished`
+        : "",
     reviewUrl: input.reviewUrl ?? null,
     formatTokens: (n: number): string =>
       Number.isFinite(n) && n >= 0 ? n.toLocaleString("en-US") : "—",

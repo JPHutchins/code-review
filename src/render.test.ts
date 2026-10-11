@@ -1046,6 +1046,49 @@ describe("render", () => {
       expect(line.endsWith("x…")).toBe(true);
     });
 
+    it("never calls a review clean while a planned check went unfinished", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),
+        envelope: baseEnvelope,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: true,
+      });
+      expect(result).not.toContain("clean review");
+      expect(result).toMatch(/No findings[^\n]*unfinished/);
+      expect(result).toContain("<!-- review-complete -->");
+    });
+
+    it("never calls a review clean while a planned check went unfinished, even with no badge to list them beside", () => {
+      const result = render({
+        findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),
+        envelope: null,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: false,
+      });
+      expect(result).not.toContain("the free-threaded probe");
+      expect(result).not.toContain("clean review");
+      expect(result).toMatch(/No findings[^\n]*unfinished/);
+    });
+
+    it("never lets a no-findings line beside held items or systemic problems hide an unfinished check", () => {
+      const result = render({
+        findings: mkFindings([], {
+          unfinished: ["the free-threaded probe"],
+          systemic_problems: [mkSystemic()],
+        }),
+        envelope: null,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: false,
+      });
+      expect(result).toMatch(/No findings beyond[^\n]*unfinished/);
+    });
+
     it("shows no list on an incomplete notice", () => {
       const result = render({
         findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),

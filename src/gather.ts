@@ -104,21 +104,26 @@ const IssueCommentCodec = t.intersection([
 ]);
 type IssueComment = t.TypeOf<typeof IssueCommentCodec>;
 
-const JobCodec = t.type({
-  id: t.number,
-  // A null name (an API edge) degrades to a nameless entry rather than aborting the whole gather —
-  // the identity the reproduction steer needs is best-effort, never load-bearing.
-  name: t.union([t.string, t.null]),
-  conclusion: t.union([t.string, t.null]),
-});
+const JobCodec = t.intersection([
+  t.type({
+    id: t.number,
+    // A null name (an API edge) degrades to a nameless entry rather than aborting the whole gather —
+    // the identity the reproduction steer needs is best-effort, never load-bearing.
+    name: t.union([t.string, t.null]),
+    conclusion: t.union([t.string, t.null]),
+  }),
+  t.partial({ steps: t.array(t.union([t.string, t.null])) }),
+]);
 
 // One job per row across all pages, for the same reason the conversation fetches project with --jq:
 // `--paginate` alone concatenates each page into an invalid `{..}{..}` stream. Unpaginated, a failing
 // job past the first page is invisible — and everything this route reports (the staged count, the
 // "(N failing job(s) reported)" line, the unverified stamp) would be computed from a truncated list.
 // `name` rides along so a zero-logs pass can still tell the agent WHICH jobs failed (failed_jobs.json),
-// not just how many.
-const JOBS_JQ = ".jobs[] | {id: .id, name: .name, conclusion: .conclusion}";
+// not just how many; the step names ride along so a passed run's index says which checks each job ran
+// — a check often runs in a job whose name does not say so.
+const JOBS_JQ =
+  ".jobs[] | {id: .id, name: .name, conclusion: .conclusion, steps: [.steps[]?.name]}";
 
 export const parseRunAttempt = (raw: string | undefined): string | undefined => {
   if (raw === undefined || raw === "") return undefined;
@@ -511,6 +516,9 @@ const stagePassedRun = async (
           jobs.map((j) => ({
             name: j.name,
             conclusion: j.conclusion,
+            ...(j.steps === undefined
+              ? {}
+              : { steps: j.steps.filter((step): step is string => step !== null) }),
             log: logs.get(j.id) ?? null,
           })),
           null,

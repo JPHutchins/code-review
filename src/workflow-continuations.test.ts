@@ -101,7 +101,7 @@ describe("route prose — the reusable workflow and the example teach the SAME i
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|UNFINISHED_NOTE|SEED_NOTE)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_UNREAD_NOTE|UNFINISHED_NOTE|SEED_NOTE)="/.test(
           line,
         ),
       )
@@ -113,6 +113,56 @@ describe("route prose — the reusable workflow and the example teach the SAME i
     expect(reusable.length).toBeGreaterThan(0);
     expect(example).toEqual(reusable);
   });
+});
+
+describe("the passed-run evidence note — what the full review is told matches what gather staged", () => {
+  // The selection block runs as written, in both workflow copies: a parity pin compares the copies
+  // to each other, never the note to the gather state that picks it.
+  const noteBlock = (workflowPath: string): string => {
+    const lines = runScripts(workflowPath)
+      .flatMap(({ script }) => script.split("\n"))
+      .map((line) => line.trim());
+    const start = lines.findIndex((line) => line.startsWith("CI_UNREAD_NOTE="));
+    const end = lines.indexOf("fi", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    return lines.slice(start, end + 1).join("\n");
+  };
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const noteFor = (workflowPath: string, index: boolean, stagedJobLogs: string): string => {
+    const gatherDir = mkdtempSync(join(tmpdir(), "ci-note-"));
+    roots.push(gatherDir);
+    if (index) writeFileSync(join(gatherDir, "ci_jobs.json"), "[]\n");
+    return execFileSync(
+      "bash",
+      ["-euo", "pipefail", "-c", `${noteBlock(workflowPath)}\nprintf '%s' "$CI_JOBS_NOTE"`],
+      {
+        env: { ...process.env, GATHER_DIR: gatherDir, STAGED_JOB_LOGS: stagedJobLogs },
+        encoding: "utf-8",
+      },
+    );
+  };
+
+  for (const workflowPath of [
+    ".github/workflows/review-reusable.yaml",
+    "examples/workflows/review.yaml",
+  ]) {
+    it(`${workflowPath}: staged logs point at the index and every log; no logs says so; no index says so`, () => {
+      const staged = noteFor(workflowPath, true, "15");
+      expect(staged).toContain("ci_jobs.json");
+      expect(staged).toContain("job_*.log");
+      const indexOnly = noteFor(workflowPath, true, "0");
+      expect(indexOnly).toContain("ci_jobs.json");
+      expect(indexOnly).toContain("cannot read what each check reported");
+      expect(indexOnly).not.toContain("job_*.log");
+      const nothing = noteFor(workflowPath, false, "0");
+      expect(nothing).not.toContain("ci_jobs.json");
+      expect(nothing).toContain("cannot read what each check reported");
+    });
+  }
 });
 
 describe("full-review prompt — the vocabulary defers to the schema channel", () => {

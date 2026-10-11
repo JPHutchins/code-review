@@ -1242,6 +1242,34 @@ describe("gather — failing-job logs", () => {
     expect(outFile("job_11.log")).toContain("162/162 passed");
   });
 
+  it("indexes each passed job's step names, so a check is found in a job whose name does not say so", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: `${JSON.stringify({ id: 11, name: "wheels", conclusion: "success", steps: ["Set up job", "Run conformance", null] })}\n`,
+      },
+      { match: logsMatch, response: "conformance.py 3.14.6 success\n" },
+    ]);
+
+    await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
+      {
+        name: "wheels",
+        conclusion: "success",
+        steps: ["Set up job", "Run conformance"],
+        log: "job_11.log",
+      },
+    ]);
+  });
+
   it("counts a passed run's staged logs, so the review is told whether it has evidence", async () => {
     const { api } = mkMockGhApi([
       {

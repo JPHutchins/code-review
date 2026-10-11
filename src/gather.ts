@@ -22,6 +22,7 @@ export interface GatherInput {
   // the full (triage) diff. A PR whose base is a different branch is "stacked".
   readonly defaultBranch: string;
   readonly runId: string;
+  readonly runAttempt?: string;
   readonly conclusion: string;
   readonly botLogin: string;
   readonly outDir: string;
@@ -117,6 +118,22 @@ const JobCodec = t.type({
 // `name` rides along so a zero-logs pass can still tell the agent WHICH jobs failed (failed_jobs.json),
 // not just how many.
 const JOBS_JQ = ".jobs[] | {id: .id, name: .name, conclusion: .conclusion}";
+
+export const parseRunAttempt = (raw: string | undefined): string | undefined => {
+  if (raw === undefined || raw === "") return undefined;
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error(`--run-attempt must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return raw;
+};
+
+// The attempt that triggered the review, when known: a re-run is a newer attempt of the same run, and
+// the run's bare jobs list follows the newest attempt — still running, with none of the logs that
+// decided the route.
+const jobsEndpoint = (repo: string, runId: string, runAttempt: string | undefined): string =>
+  runAttempt === undefined
+    ? `repos/${repo}/actions/runs/${runId}/jobs`
+    : `repos/${repo}/actions/runs/${runId}/attempts/${runAttempt}/jobs`;
 
 const fetchPrMeta = async (repo: string, prNumber: number, ghApi: GhApi): Promise<PrMeta> => {
   const stdout = await ghApi([
@@ -399,11 +416,12 @@ const stageJobLog = async (
 const downloadFailingJobLogs = async (
   repo: string,
   runId: string,
+  runAttempt: string | undefined,
   outDir: string,
   ghApi: GhApi,
 ): Promise<{ readonly staged: number; readonly failing: number }> => {
   const rows = parseJsonl(
-    await ghApi([`repos/${repo}/actions/runs/${runId}/jobs`, "--paginate", "--jq", JOBS_JQ]),
+    await ghApi([jobsEndpoint(repo, runId, runAttempt), "--paginate", "--jq", JOBS_JQ]),
   );
   const decoded = t.array(JobCodec).decode(rows);
   if (decoded._tag === "Left") {
@@ -459,6 +477,7 @@ const MAX_STAGED_PASSED_JOB_LOGS = 64;
 const stagePassedRun = async (
   repo: string,
   runId: string,
+  runAttempt: string | undefined,
   outDir: string,
   ghApi: GhApi,
 ): Promise<void> => {
@@ -467,7 +486,7 @@ const stagePassedRun = async (
       .array(JobCodec)
       .decode(
         parseJsonl(
-          await ghApi([`repos/${repo}/actions/runs/${runId}/jobs`, "--paginate", "--jq", JOBS_JQ]),
+          await ghApi([jobsEndpoint(repo, runId, runAttempt), "--paginate", "--jq", JOBS_JQ]),
         ),
       );
     if (decoded._tag === "Left") {
@@ -658,10 +677,10 @@ export const gather = async (
 
   const jobLogs =
     input.conclusion === "failure"
-      ? await downloadFailingJobLogs(input.repo, input.runId, input.outDir, ghApi)
+      ? await downloadFailingJobLogs(input.repo, input.runId, input.runAttempt, input.outDir, ghApi)
       : { staged: 0, failing: 0 };
   if (input.conclusion === "success") {
-    await stagePassedRun(input.repo, input.runId, input.outDir, ghApi);
+    await stagePassedRun(input.repo, input.runId, input.runAttempt, input.outDir, ghApi);
   }
 
   return {

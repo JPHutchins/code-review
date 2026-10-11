@@ -254,6 +254,7 @@ jobs:
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -274,6 +275,7 @@ jobs:
             --head-branch "$HEAD_BRANCH" \
             --default-branch "$DEFAULT_BRANCH" \
             --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
             --conclusion "$CONCLUSION" \
             --out-dir "$GATHER_DIR" \
             >> "$GITHUB_OUTPUT"

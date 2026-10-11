@@ -70,7 +70,7 @@ import { parseCommand, renderCommandOutputs, safeHeredocDelim } from "./command.
 import { react, isReaction, REACTIONS } from "./react.js";
 import type { Reaction } from "./react.js";
 import { awaitCiConclusion, renderCiOutputs } from "./ci.js";
-import { gather, renderOutputs } from "./gather.js";
+import { gather, parseRunAttempt, renderOutputs } from "./gather.js";
 import { adapt, isAdapterName } from "./adapt.js";
 import type { AdapterName, TranscriptTelemetry } from "./adapt.js";
 import { extractStructured, describeLadderFailure, ladderFailureDiagnostics } from "./extract.js";
@@ -1764,6 +1764,11 @@ const gatherCmd = defineCommand({
         "CI run id (from workflow_run.id); its job logs are downloaded — the failing jobs' on failure, every job's on success",
       required: true,
     },
+    "run-attempt": {
+      type: "string",
+      description:
+        "The CI run's attempt that triggered the review (from workflow_run.run_attempt); its jobs' logs are the ones staged, even after a re-run starts a newer attempt. Empty or omitted: the run's latest attempt",
+    },
     conclusion: {
       type: "string",
       description:
@@ -1787,6 +1792,7 @@ const gatherCmd = defineCommand({
       headBranch: args["head-branch"],
       defaultBranch: args["default-branch"],
       runId: args["run-id"],
+      runAttempt: parseRunAttempt(args["run-attempt"]),
       conclusion: args.conclusion,
       botLogin: args["bot-login"] || "github-actions[bot]",
       outDir: args["out-dir"] ? resolve(args["out-dir"]) : process.cwd(),
@@ -2226,7 +2232,7 @@ const awaitCiCmd = defineCommand({
   meta: {
     name: "await-ci",
     description:
-      "Wait for the PR head's CI workflow run to conclude, then emit its REAL conclusion + run id to $GITHUB_OUTPUT (ci_settled, ci_conclusion, ci_run_id). The on-demand comment trigger uses this so it routes on the same CI result the CI-completion trigger would — success → full review, failure → mechanic with that run's logs — instead of reviewing blind. Polls until the run completes or the timeout elapses; ci_settled=false ⇒ no conclusive result (caller should decline to review, not guess).",
+      "Wait for the PR head's CI workflow run to conclude, then emit its REAL conclusion, run id and run attempt to $GITHUB_OUTPUT (ci_settled, ci_conclusion, ci_run_id, ci_run_attempt). The on-demand comment trigger uses this so it routes on the same CI result the CI-completion trigger would — success → full review, failure → mechanic with that run's logs — instead of reviewing blind. Polls until the run completes or the timeout elapses; ci_settled=false ⇒ no conclusive result (caller should decline to review, not guess).",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },

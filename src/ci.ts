@@ -12,13 +12,16 @@ import { runGhApi } from "./gh.js";
 import { parseJsonl } from "./transcript.js";
 import { errMsg } from "./util.js";
 
-const RunCodec = t.type({
-  id: t.number,
-  name: t.union([t.string, t.null]),
-  status: t.union([t.string, t.null]),
-  conclusion: t.union([t.string, t.null]),
-  run_number: t.number,
-});
+const RunCodec = t.intersection([
+  t.type({
+    id: t.number,
+    name: t.union([t.string, t.null]),
+    status: t.union([t.string, t.null]),
+    conclusion: t.union([t.string, t.null]),
+    run_number: t.number,
+  }),
+  t.partial({ run_attempt: t.union([t.number, t.null]) }),
+]);
 
 export interface CiRun {
   readonly id: number;
@@ -26,6 +29,7 @@ export interface CiRun {
   readonly status: string;
   // success | failure | cancelled | timed_out | ... — null until status is completed
   readonly conclusion: string | null;
+  readonly attempt: number | null;
 }
 
 export interface CiLookup {
@@ -42,7 +46,7 @@ export interface CiLookup {
 // view and the comment path would decline with no diagnostic. `--jq` unwraps `.workflow_runs[]` and
 // streams NDJSON parseJsonl reads line by line, the shape gather/post already use.
 const RUN_JQ =
-  ".workflow_runs[] | {id: .id, name: .name, status: .status, conclusion: .conclusion, run_number: .run_number}";
+  ".workflow_runs[] | {id: .id, name: .name, status: .status, conclusion: .conclusion, run_number: .run_number, run_attempt: .run_attempt}";
 
 // The latest run of the named CI workflow for this head SHA. NOT filtered by triggering event: CI may
 // run on `push` as well as `pull_request`, and the head SHA already pins the commit. Latest = highest
@@ -82,13 +86,23 @@ export const resolveCiRun = async (
     run:
       latest === null
         ? null
-        : { id: latest.id, status: latest.status ?? "unknown", conclusion: latest.conclusion },
+        : {
+            id: latest.id,
+            status: latest.status ?? "unknown",
+            conclusion: latest.conclusion,
+            attempt: latest.run_attempt ?? null,
+          },
     seenNames: [...new Set(runs.flatMap((r) => (r.name === null ? [] : [r.name])))],
   };
 };
 
 export type CiOutcome =
-  | { readonly kind: "concluded"; readonly conclusion: string; readonly runId: number }
+  | {
+      readonly kind: "concluded";
+      readonly conclusion: string;
+      readonly runId: number;
+      readonly runAttempt: number | null;
+    }
   // No conclusive CI result within the timeout — the run never appeared or never completed. The
   // caller declines to review rather than fabricate a conclusion. seenNames carries the workflow
   // names that DID run, so a mistyped ci_workflow can be diagnosed instead of silently timing out.
@@ -139,7 +153,12 @@ export const awaitCiConclusion = async (
     // that as concluded would fabricate a routing decision, so keep polling until the conclusion lands
     // (or the timeout declines) rather than collapsing it to a made-up "unknown" the caller can act on.
     if (run !== null && run.status === "completed" && run.conclusion !== null)
-      return { kind: "concluded", conclusion: run.conclusion, runId: run.id };
+      return {
+        kind: "concluded",
+        conclusion: run.conclusion,
+        runId: run.id,
+        runAttempt: run.attempt,
+      };
     // A caught error zeroes this poll's view, so carry the last non-empty observation forward — else a
     // transient failure on the very iteration that times out would erase the run id and workflow names
     // earlier polls saw, misleading the mistyped-workflow-vs-not-queued-yet diagnostic renderCiOutputs
@@ -168,5 +187,5 @@ export const monotonicElapsed = (): (() => number) => {
 // the review on a non-settle rather than run it on a guessed conclusion.
 export const renderCiOutputs = (outcome: CiOutcome): string =>
   outcome.kind === "concluded"
-    ? `ci_settled=true\nci_conclusion=${outcome.conclusion}\nci_run_id=${String(outcome.runId)}\n`
+    ? `ci_settled=true\nci_conclusion=${outcome.conclusion}\nci_run_id=${String(outcome.runId)}\nci_run_attempt=${outcome.runAttempt === null ? "" : String(outcome.runAttempt)}\n`
     : `ci_settled=false\nci_run_id=${outcome.runId === null ? "" : String(outcome.runId)}\n`;

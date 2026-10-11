@@ -8,6 +8,7 @@ interface RunJson {
   readonly status: string | null;
   readonly conclusion: string | null;
   readonly run_number: number;
+  readonly run_attempt?: number;
 }
 
 // resolveCiRun now fetches with `--jq RUN_JQ`, so gh's stdout is one projected run per line (NDJSON),
@@ -45,6 +46,7 @@ const run = (over: Partial<RunJson> & Pick<RunJson, "run_number">): RunJson => (
   name: "CI",
   status: "completed",
   conclusion: "success",
+  run_attempt: 1,
   ...over,
 });
 
@@ -74,7 +76,7 @@ describe("resolveCiRun", () => {
         run({ run_number: 2, name: "Lint", conclusion: "failure" }),
       ]),
     );
-    expect(got.run).toEqual({ id: 3, status: "completed", conclusion: "success" });
+    expect(got.run).toEqual({ id: 3, status: "completed", conclusion: "success", attempt: 1 });
     expect(got.seenNames).toEqual(["CI", "Lint"]);
   });
 
@@ -85,7 +87,7 @@ describe("resolveCiRun", () => {
       "CI",
       api([run({ run_number: 7, status: "completed", conclusion: "success" })]),
     );
-    expect(got.run).toEqual({ id: 7, status: "completed", conclusion: "success" });
+    expect(got.run).toEqual({ id: 7, status: "completed", conclusion: "success", attempt: 1 });
   });
 
   it("keeps the valid rows but warns about a partial drop (a dropped row is never normal)", async () => {
@@ -99,7 +101,7 @@ describe("resolveCiRun", () => {
           `{"nope":1}\n${JSON.stringify(run({ run_number: 4, conclusion: "success" }))}`,
         ]),
       );
-      expect(got.run).toEqual({ id: 4, status: "completed", conclusion: "success" });
+      expect(got.run).toEqual({ id: 4, status: "completed", conclusion: "success", attempt: 1 });
       expect(spy).toHaveBeenCalledWith(expect.stringContaining("1 of 2 workflow-run row(s)"));
     } finally {
       spy.mockRestore();
@@ -128,7 +130,7 @@ describe("resolveCiRun", () => {
       "CI",
       api([...page1, run({ run_number: 101, name: "CI", conclusion: "failure" })]),
     );
-    expect(got.run).toEqual({ id: 101, status: "completed", conclusion: "failure" });
+    expect(got.run).toEqual({ id: 101, status: "completed", conclusion: "failure", attempt: 1 });
   });
 });
 
@@ -141,7 +143,7 @@ describe("awaitCiConclusion", () => {
       ghApi: mkSeqGhApi([runsJson([run({ run_number: 5, conclusion: "failure" })])]),
       ...clock,
     });
-    expect(got).toEqual({ kind: "concluded", conclusion: "failure", runId: 5 });
+    expect(got).toEqual({ kind: "concluded", conclusion: "failure", runId: 5, runAttempt: 1 });
     expect(clock.elapsedMs()).toBe(0);
   });
 
@@ -155,7 +157,7 @@ describe("awaitCiConclusion", () => {
       ]),
       ...clock,
     });
-    expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 1 });
+    expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 1, runAttempt: 1 });
     expect(clock.elapsedMs()).toBe(2000);
   });
 
@@ -169,7 +171,7 @@ describe("awaitCiConclusion", () => {
       ]),
       ...clock,
     });
-    expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 2 });
+    expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 2, runAttempt: 1 });
   });
 
   it("times out when the run never completes, reporting the last-seen run id + names", async () => {
@@ -207,7 +209,7 @@ describe("awaitCiConclusion", () => {
       ]),
       ...clock,
     });
-    expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 1 });
+    expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 1, runAttempt: 1 });
     expect(clock.elapsedMs()).toBe(1000);
   });
 
@@ -235,7 +237,7 @@ describe("awaitCiConclusion", () => {
         ]),
         ...clock,
       });
-      expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 1 });
+      expect(got).toEqual({ kind: "concluded", conclusion: "success", runId: 1, runAttempt: 1 });
       expect(clock.elapsedMs()).toBe(2000);
       expect(spy).toHaveBeenCalledWith(expect.stringContaining("retrying until the timeout"));
     } finally {
@@ -261,11 +263,28 @@ describe("awaitCiConclusion", () => {
   });
 });
 
+describe("awaitCiConclusion — the attempt", () => {
+  it("names the attempt that concluded, so a re-run started later cannot replace its jobs", async () => {
+    const clock = mkClock();
+    const opts = { workflowName: "CI", pollIntervalMs: 1000, timeoutMs: 10_000 };
+    const got = await awaitCiConclusion("o/r", "sha", opts, {
+      ghApi: mkSeqGhApi([
+        runsJson([run({ run_number: 4, run_attempt: 2, conclusion: "failure" })]),
+      ]),
+      ...clock,
+    });
+    expect(got).toEqual({ kind: "concluded", conclusion: "failure", runId: 4, runAttempt: 2 });
+  });
+});
+
 describe("renderCiOutputs", () => {
   it("emits ci_settled=true + conclusion + run id when concluded", () => {
-    expect(renderCiOutputs({ kind: "concluded", conclusion: "failure", runId: 7 })).toBe(
-      "ci_settled=true\nci_conclusion=failure\nci_run_id=7\n",
-    );
+    expect(
+      renderCiOutputs({ kind: "concluded", conclusion: "failure", runId: 7, runAttempt: 2 }),
+    ).toBe("ci_settled=true\nci_conclusion=failure\nci_run_id=7\nci_run_attempt=2\n");
+    expect(
+      renderCiOutputs({ kind: "concluded", conclusion: "failure", runId: 7, runAttempt: null }),
+    ).toBe("ci_settled=true\nci_conclusion=failure\nci_run_id=7\nci_run_attempt=\n");
   });
 
   it("emits ci_settled=false + the last-seen run id when timed out", () => {

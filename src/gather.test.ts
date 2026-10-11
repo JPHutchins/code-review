@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhApi } from "./gh.js";
 import type { GatherInput, GitRun } from "./gather.js";
-import { gather, renderOutputs } from "./gather.js";
+import { gather, parseRunAttempt, renderOutputs } from "./gather.js";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
 import { dialogueMarker } from "./surface.js";
@@ -1240,6 +1240,42 @@ describe("gather — failing-job logs", () => {
       { name: "free-threaded", conclusion: "skipped", log: null },
     ]);
     expect(outFile("job_11.log")).toContain("162/162 passed");
+  });
+
+  it("stages the logs of the attempt that triggered the review, not of a re-run started since", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: (a) => a[0] === "repos/owner/repo/actions/runs/RUN1/attempts/1/jobs",
+        response: jobRows({ id: 11, conclusion: "failure", name: "wheels" }),
+      },
+      { match: jobsMatch, response: jobRows({ id: 21, conclusion: null, name: "wheels" }) },
+      { match: logsMatch, response: "wheels: build failed\n" },
+    ]);
+
+    const result = await gather(
+      mkInput({ conclusion: "failure", runAttempt: "1" }),
+      api,
+      mkMockGit([]).git,
+    );
+
+    expect(calls().some((c) => jobsMatch(c.args))).toBe(false);
+    expect(outFile("job_11.log")).toContain("build failed");
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1, failingJobs: 1 });
+  });
+
+  it("refuses a run attempt that is not a positive integer, and reads an empty one as the latest", () => {
+    expect(parseRunAttempt("2")).toBe("2");
+    expect(parseRunAttempt("")).toBeUndefined();
+    expect(parseRunAttempt(undefined)).toBeUndefined();
+    expect(() => parseRunAttempt("1/../../x")).toThrow();
+    expect(() => parseRunAttempt("0")).toThrow();
   });
 
   it("still gathers a passed CI's review when its jobs cannot be listed", async () => {

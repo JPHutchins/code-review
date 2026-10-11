@@ -18,9 +18,14 @@ on:
         type: string
         required: true
       run_id:
-        description: The triggering CI run id (used to fetch failing-job logs on the mechanic route)
+        description: The triggering CI run id — its job logs are staged for the review (the failing jobs' on the mechanic route, every job's on the full review)
         type: string
         required: true
+      run_attempt:
+        description: The attempt of that CI run that concluded (workflow_run.run_attempt) — a re-run started since is a newer attempt whose jobs are not the ones that decided the route; empty means the latest attempt
+        type: string
+        required: false
+        default: ''
       conclusion:
         description: CI conclusion — 'success' routes the full reviewer, 'failure' the mechanic
         type: string
@@ -516,6 +521,7 @@ jobs:
           HEAD_BRANCH: ${{ inputs.head_branch }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RUN_ID: ${{ inputs.run_id }}
+          RUN_ATTEMPT: ${{ inputs.run_attempt }}
           CONCLUSION: ${{ inputs.conclusion }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -538,6 +544,7 @@ jobs:
             --head-branch "$HEAD_BRANCH" \
             --default-branch "$DEFAULT_BRANCH" \
             --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
             --conclusion "$CONCLUSION" \
             --out-dir "$GATHER_DIR" \
             >> "$GITHUB_OUTPUT"

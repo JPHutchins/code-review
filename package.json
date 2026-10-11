@@ -1,6 +1,6 @@
 {
   "name": "@jphutchins/code-review",
-  "version": "0.1.0-alpha.68",
+  "version": "0.1.0-alpha.69",
   "description": "Deterministic commenter for agentic PR review — gather, render, inline, post, adapt, extract, cost, validate, print-schema",
   "type": "module",
   "license": "MIT",

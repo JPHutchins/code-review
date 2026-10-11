@@ -35,7 +35,8 @@ The routing signal is the **native CI outcome**, which every repo already has â€
 test report, and not any camas-specific artifact. Triggering the privileged review off CI *completion*
 (rather than off the PR) gets three things at once: the result arrives for free, CI is guaranteed to
 have finished before a model token is spent, and the trigger is not fork-controlled. Green code gets a
-full agentic review; red code gets a fast mechanic pass that only proposes minimal fixes from the
+full agentic review that knows it is green, with the passed run's job logs as its evidence of what CI
+already verified; red code gets a fast mechanic pass that only proposes minimal fixes from the
 failing-job logs â€” because paying a max-effort agent to review code that doesn't pass yet is premature
 and wasteful.
 

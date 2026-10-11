@@ -1209,8 +1209,8 @@ describe("gather — failing-job logs", () => {
     ]);
   });
 
-  it("never calls the jobs endpoint when conclusion is success", async () => {
-    const { api, calls } = mkMockGhApi([
+  it("stages the passed CI's jobs and their logs on success", async () => {
+    const { api } = mkMockGhApi([
       {
         match: candidatesMatch,
         response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
@@ -1218,12 +1218,45 @@ describe("gather — failing-job logs", () => {
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
       { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: jobRows(
+          { id: 11, conclusion: "success", name: "conformance" },
+          { id: 12, conclusion: "skipped", name: "free-threaded" },
+        ),
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
+        response: "conformance: 162/162 passed\n",
+      },
+      { match: logsMatch, response: "no log available\n" },
     ]);
 
     await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
 
-    expect(calls().some((c) => jobsMatch(c.args))).toBe(false);
-    expect(hasOutFile("job_11.log")).toBe(false);
+    expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
+      { name: "conformance", conclusion: "success", log: "job_11.log" },
+      { name: "free-threaded", conclusion: "skipped", log: null },
+    ]);
+    expect(outFile("job_11.log")).toContain("162/162 passed");
+  });
+
+  it("still gathers a passed CI's review when its jobs cannot be listed", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: new Error("403") },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(result.kind).toBe("gathered");
+    expect(hasOutFile("ci_jobs.json")).toBe(false);
   });
 });
 

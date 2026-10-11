@@ -365,6 +365,37 @@ const reviewsFrom = (reviews: readonly Review[], botLogin: string) =>
 // log still shows the original error rather than a cascade.
 const MAX_STAGED_JOB_LOGS = 20;
 
+// The staged file's name, or null when the job has no usable log.
+const stageJobLog = async (
+  repo: string,
+  jobId: number,
+  outDir: string,
+  ghApi: GhApi,
+): Promise<string | null> => {
+  try {
+    const log = await ghApi([`repos/${repo}/actions/jobs/${String(jobId)}/logs`]);
+    // GitHub serves a "no log available" placeholder body when a job produced none (a killed
+    // runner, no step output). A placeholder is NOT failure evidence: counting it as staged
+    // would fire the all-staged steer and skip the unverified stamp on exactly the rounds that
+    // must not present themselves as evidenced.
+    if (log.trim() === "no log available" || log.trim() === "") {
+      process.stderr.write(
+        `Warning: job ${String(jobId)} has no log available (placeholder body) — not staged
+`,
+      );
+      return null;
+    }
+    const file = `job_${String(jobId)}.log`;
+    writeFileSync(join(outDir, file), log);
+    return file;
+  } catch (err) {
+    process.stderr.write(
+      `Warning: failed to download logs for job ${String(jobId)}: ${errMsg(err)} — continuing with the logs retrieved so far\n`,
+    );
+    return null;
+  }
+};
+
 const downloadFailingJobLogs = async (
   repo: string,
   runId: string,
@@ -382,26 +413,7 @@ const downloadFailingJobLogs = async (
   const selected = failing.slice(0, MAX_STAGED_JOB_LOGS);
   let staged = 0;
   for (const job of selected) {
-    try {
-      const log = await ghApi([`repos/${repo}/actions/jobs/${String(job.id)}/logs`]);
-      // GitHub serves a "no log available" placeholder body when a job produced none (a killed
-      // runner, no step output). A placeholder is NOT failure evidence: counting it as staged
-      // would fire the all-staged steer and skip the unverified stamp on exactly the rounds that
-      // must not present themselves as evidenced.
-      if (log.trim() === "no log available" || log.trim() === "") {
-        process.stderr.write(
-          `Warning: job ${String(job.id)} has no log available (placeholder body) — not staged
-`,
-        );
-        continue;
-      }
-      writeFileSync(join(outDir, `job_${String(job.id)}.log`), log);
-      staged += 1;
-    } catch (err) {
-      process.stderr.write(
-        `Warning: failed to download logs for job ${String(job.id)}: ${errMsg(err)} — continuing with the logs retrieved so far\n`,
-      );
-    }
+    if ((await stageJobLog(repo, job.id, outDir, ghApi)) !== null) staged += 1;
   }
   // The failing jobs' identities ride along even when their log bodies cannot: a zero-logs mechanic
   // pass still knows WHICH jobs failed (name + conclusion), so its reproduction instruction has a
@@ -437,6 +449,56 @@ const downloadFailingJobLogs = async (
     );
   }
   return { staged, failing: failing.length };
+};
+
+// A passed CI's jobs and logs are the reviewer's record of what is already verified on this exact
+// commit, so it reads what each check ran and reported instead of re-running it. Best-effort: without
+// them the review still knows CI passed, so a failed fetch costs a warning, never the review.
+const MAX_STAGED_PASSED_JOB_LOGS = 64;
+
+const stagePassedRun = async (
+  repo: string,
+  runId: string,
+  outDir: string,
+  ghApi: GhApi,
+): Promise<void> => {
+  try {
+    const decoded = t
+      .array(JobCodec)
+      .decode(
+        parseJsonl(
+          await ghApi([`repos/${repo}/actions/runs/${runId}/jobs`, "--paginate", "--jq", JOBS_JQ]),
+        ),
+      );
+    if (decoded._tag === "Left") {
+      throw new Error(`the jobs list for run ${runId} did not match the expected shape`);
+    }
+    const jobs = decoded.right;
+    const logs = await jobs
+      .slice(0, MAX_STAGED_PASSED_JOB_LOGS)
+      .reduce<Promise<ReadonlyMap<number, string>>>(async (staged, job) => {
+        const prior = await staged;
+        const file = await stageJobLog(repo, job.id, outDir, ghApi);
+        return file === null ? prior : new Map([...prior, [job.id, file]]);
+      }, Promise.resolve(new Map()));
+    writeFileSync(
+      join(outDir, "ci_jobs.json"),
+      `${JSON.stringify(
+        jobs.map((j) => ({ name: j.name, conclusion: j.conclusion, log: logs.get(j.id) ?? null })),
+        null,
+        2,
+      )}\n`,
+    );
+    if (jobs.length > MAX_STAGED_PASSED_JOB_LOGS) {
+      process.stderr.write(
+        `::warning::${annotationSafe(`${String(jobs.length)} jobs in the passed run ${runId}; logs were staged for the first ${String(MAX_STAGED_PASSED_JOB_LOGS)} only`)}\n`,
+      );
+    }
+  } catch (err) {
+    process.stderr.write(
+      `::warning::${annotationSafe(`the passed CI run's jobs could not be listed (${errMsg(err)}) — the review knows CI passed, not which jobs ran`)}\n`,
+    );
+  }
 };
 
 export const gather = async (
@@ -597,6 +659,9 @@ export const gather = async (
     input.conclusion === "failure"
       ? await downloadFailingJobLogs(input.repo, input.runId, input.outDir, ghApi)
       : { staged: 0, failing: 0 };
+  if (input.conclusion === "success") {
+    await stagePassedRun(input.repo, input.runId, input.outDir, ghApi);
+  }
 
   return {
     kind: "gathered",

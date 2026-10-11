@@ -1739,7 +1739,7 @@ const gatherCmd = defineCommand({
   meta: {
     name: "gather",
     description:
-      "Resolve the PR from the CI head SHA and gather review inputs (diff with git-diff fallback, PR context, prior bot review, untrusted PR conversation to triage, failing-job logs and the failing jobs' identities in failed_jobs.json) as files for the review agent",
+      "Resolve the PR from the CI head SHA and gather review inputs (diff with git-diff fallback, PR context, prior bot review, untrusted PR conversation to triage, the CI run's job logs — the failing jobs' with their identities in failed_jobs.json on a failure, every job's listed in ci_jobs.json on a pass) as files for the review agent",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },

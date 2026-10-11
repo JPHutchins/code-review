@@ -1209,8 +1209,8 @@ describe("gather — failing-job logs", () => {
     ]);
   });
 
-  it("stages the passed CI's jobs and their logs on success", async () => {
-    const { api } = mkMockGhApi([
+  it("stages the passed CI's jobs and their logs on success, never asking a skipped job for one", async () => {
+    const { api, calls } = mkMockGhApi([
       {
         match: candidatesMatch,
         response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
@@ -1229,10 +1229,11 @@ describe("gather — failing-job logs", () => {
         match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
         response: "conformance: 162/162 passed\n",
       },
-      { match: logsMatch, response: "no log available\n" },
     ]);
 
     await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(calls().some((c) => c.args[0] === "repos/owner/repo/actions/jobs/12/logs")).toBe(false);
 
     expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
       { name: "conformance", conclusion: "success", log: "job_11.log" },

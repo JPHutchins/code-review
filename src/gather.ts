@@ -475,6 +475,7 @@ const stagePassedRun = async (
     }
     const jobs = decoded.right;
     const logs = await jobs
+      .filter((j) => j.conclusion !== "skipped")
       .slice(0, MAX_STAGED_PASSED_JOB_LOGS)
       .reduce<Promise<ReadonlyMap<number, string>>>(async (staged, job) => {
         const prior = await staged;
@@ -489,9 +490,9 @@ const stagePassedRun = async (
         2,
       )}\n`,
     );
-    if (jobs.length > MAX_STAGED_PASSED_JOB_LOGS) {
+    if (jobs.filter((j) => j.conclusion !== "skipped").length > MAX_STAGED_PASSED_JOB_LOGS) {
       process.stderr.write(
-        `::warning::${annotationSafe(`${String(jobs.length)} jobs in the passed run ${runId}; logs were staged for the first ${String(MAX_STAGED_PASSED_JOB_LOGS)} only`)}\n`,
+        `::warning::${annotationSafe(`more than ${String(MAX_STAGED_PASSED_JOB_LOGS)} jobs ran in the passed run ${runId}; logs were staged for the first ${String(MAX_STAGED_PASSED_JOB_LOGS)} only`)}\n`,
       );
     }
   } catch (err) {

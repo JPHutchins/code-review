@@ -1761,13 +1761,13 @@ const gatherCmd = defineCommand({
     "run-id": {
       type: "string",
       description:
-        "CI run id (from workflow_run.id); its failing jobs' logs are downloaded on failure",
+        "CI run id (from workflow_run.id); its job logs are downloaded — the failing jobs' on failure, every job's on success",
       required: true,
     },
     conclusion: {
       type: "string",
       description:
-        "CI conclusion (e.g. success | failure); failure triggers failing-job log download",
+        "CI conclusion (e.g. success | failure); failure stages the failing jobs' logs, success every job's log and ci_jobs.json",
       required: true,
     },
     "bot-login": {

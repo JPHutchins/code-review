@@ -115,7 +115,7 @@ const JobCodec = t.intersection([
     name: t.union([t.string, t.null]),
     conclusion: t.union([t.string, t.null]),
   }),
-  t.partial({ steps: t.array(t.union([t.string, t.null])) }),
+  t.partial({ steps: t.array(t.string) }),
 ]);
 
 // One job per row across all pages, for the same reason the conversation fetches project with --jq:
@@ -126,7 +126,7 @@ const JobCodec = t.intersection([
 // not just how many; the step names ride along so a passed run's index says which checks each job ran
 // — a check often runs in a job whose name does not say so.
 export const JOBS_JQ =
-  ".jobs[] | {id: .id, name: .name, conclusion: .conclusion, steps: [.steps[]? | .name?]}";
+  ".jobs[] | {id: .id, name: .name, conclusion: .conclusion, steps: [.steps[]? | .name? | strings]}";
 
 export const parseRunAttempt = (raw: string | undefined): string | undefined => {
   if (raw === undefined || raw === "") return undefined;
@@ -522,9 +522,7 @@ const stagePassedRun = async (
           jobs.map((j) => ({
             name: j.name,
             conclusion: j.conclusion,
-            ...(j.steps === undefined
-              ? {}
-              : { steps: j.steps.filter((step): step is string => step !== null) }),
+            steps: j.steps ?? [],
             log: logs.get(j.id) ?? null,
           })),
           null,

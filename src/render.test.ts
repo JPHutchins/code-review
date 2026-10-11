@@ -1074,6 +1074,21 @@ describe("render", () => {
       expect(result).toMatch(/No findings[^\n]*unfinished/);
     });
 
+    it("never lets a no-findings line beside held items or systemic problems hide an unfinished check", () => {
+      const result = render({
+        findings: mkFindings([], {
+          unfinished: ["the free-threaded probe"],
+          systemic_problems: [mkSystemic()],
+        }),
+        envelope: null,
+        prices,
+        template,
+        route: "full review",
+        convergenceRound: false,
+      });
+      expect(result).toMatch(/No findings beyond[^\n]*unfinished/);
+    });
+
     it("shows no list on an incomplete notice", () => {
       const result = render({
         findings: mkFindings([], { unfinished: ["the free-threaded probe"] }),

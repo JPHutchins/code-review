@@ -750,6 +750,7 @@ jobs:
           STAGED_JOB_LOGS: ${{ steps.gather.outputs.staged_job_logs }}
           FAILING_JOBS: ${{ steps.gather.outputs.failing_jobs }}
           CI_JOBS_PASSED: ${{ steps.gather.outputs.ci_jobs_passed }}
+          CI_JOBS_RAN: ${{ steps.gather.outputs.ci_jobs_ran }}
           HEAD_SHA: ${{ inputs.head_sha }}
           # Coerce an explicit empty string to the default — a workflow_call default applies only when
           # the key is OMITTED, but a consumer wiring `full_review_time_limit: ${{ vars.X }}` with X
@@ -803,8 +804,12 @@ jobs:
             ROUTE="full review"; EFFORT="$FULL_EFFORT"
             PROMPT="/code-review"
             CI_STATUS_NOTE="All CI jobs have passed. "
-            if [[ "${CI_JOBS_PASSED:-}" =~ ^[1-9][0-9]*$ ]]; then
-              CI_STATUS_NOTE="All CI jobs have passed: ${CI_JOBS_PASSED} jobs, named in $GATHER_DIR/ci_jobs.json. "
+            if [[ "${CI_JOBS_PASSED:-}" =~ ^[1-9][0-9]*$ && "${CI_JOBS_RAN:-}" =~ ^[1-9][0-9]*$ ]]; then
+              if [ "$CI_JOBS_PASSED" -eq "$CI_JOBS_RAN" ]; then
+                CI_STATUS_NOTE="All CI jobs have passed: ${CI_JOBS_PASSED}/${CI_JOBS_RAN}, named in $GATHER_DIR/ci_jobs.json. "
+              else
+                CI_STATUS_NOTE="CI passed: ${CI_JOBS_PASSED}/${CI_JOBS_RAN} jobs succeeded and the rest did not fail the run, named in $GATHER_DIR/ci_jobs.json. "
+              fi
             fi
             CI_JOBS_NOTE=" No CI job list or log could be staged."
             if [ -f "$GATHER_DIR/ci_jobs.json" ] && [ "${STAGED_JOB_LOGS:-0}" -gt 0 ] 2>/dev/null; then

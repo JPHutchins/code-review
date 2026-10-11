@@ -140,6 +140,7 @@ describe("the passed-run evidence note — what the full review is told matches 
     index: boolean,
     stagedJobLogs: string,
     passedJobs = "",
+    ranJobs = passedJobs,
   ): { readonly status: string; readonly jobs: string } => {
     const gatherDir = mkdtempSync(join(tmpdir(), "ci-note-"));
     roots.push(gatherDir);
@@ -158,6 +159,7 @@ describe("the passed-run evidence note — what the full review is told matches 
           GATHER_DIR: gatherDir,
           STAGED_JOB_LOGS: stagedJobLogs,
           CI_JOBS_PASSED: passedJobs,
+          CI_JOBS_RAN: ranJobs,
         },
         encoding: "utf-8",
       },
@@ -186,7 +188,10 @@ describe("the passed-run evidence note — what the full review is told matches 
 
     it(`${workflowPath}: the full review is told all CI jobs have passed, with gather's count when it has one`, () => {
       expect(notesFor(workflowPath, true, "15", "15").status).toMatch(
-        /^All CI jobs have passed: 15 jobs, named in .*\/ci_jobs\.json\. $/,
+        /^All CI jobs have passed: 15\/15, named in .*\/ci_jobs\.json\. $/,
+      );
+      expect(notesFor(workflowPath, true, "15", "15", "16").status).toMatch(
+        /^CI passed: 15\/16 jobs/,
       );
       expect(notesFor(workflowPath, false, "0").status).toBe("All CI jobs have passed. ");
       expect(notesFor(workflowPath, true, "1", "1; x").status).toBe("All CI jobs have passed. ");

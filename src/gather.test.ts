@@ -1236,7 +1236,7 @@ describe("gather — failing-job logs", () => {
     const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
 
     expect(calls().some((c) => c.args[0] === "repos/owner/repo/actions/jobs/12/logs")).toBe(false);
-    expect(result).toMatchObject({ passedJobs: 1 });
+    expect(result).toMatchObject({ passedJobs: { passed: 1, ran: 1 } });
 
     expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
       { name: "conformance", conclusion: "success", log: "job_11.log" },
@@ -1466,10 +1466,10 @@ describe("renderOutputs", () => {
         baseSha: "abc1234",
         stagedJobLogs: 0,
         failingJobs: 0,
-        passedJobs: 15,
+        passedJobs: { passed: 15, ran: 15 },
       }),
     ).toBe(
-      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\n",
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\nci_jobs_ran=15\n",
     );
   });
 });

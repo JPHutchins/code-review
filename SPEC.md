@@ -116,7 +116,7 @@ a concrete platform binding is illustrative, not part of the contract (Appendix 
 
   | Outcome | Route | Behavior |
   |---|---|---|
-  | passed | **review** | Full agentic review; MAY re-run the project's checks to validate findings; higher effort. |
+  | passed | **review** | Full agentic review that knows CI passed: the passed run's jobs and logs are its evidence of what is verified, so it MUST NOT re-run those checks; it MAY run code to probe a specific finding; higher effort. |
   | failed | **mechanic** | Fast, minimal pass over the failure only — propose targeted fixes, not a broad review; lower effort. |
   | did not run (cancelled/skipped/errored) | **skip** | Post nothing — there is no meaningful result to review. |
 

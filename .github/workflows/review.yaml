@@ -38,6 +38,7 @@ jobs:
       head_branch:   ${{ github.event.workflow_run.head_branch }}
       head_repo:     ${{ github.event.workflow_run.head_repository.full_name }}
       run_id:        ${{ github.event.workflow_run.id }}
+      run_attempt:   ${{ github.event.workflow_run.run_attempt }}
       conclusion:    ${{ github.event.workflow_run.conclusion }}
       trigger_event: ${{ github.event.workflow_run.event }}
       api_base_url:  ${{ vars.API_BASE_URL }}

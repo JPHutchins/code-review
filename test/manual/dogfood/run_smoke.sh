@@ -88,7 +88,7 @@ if [ "${USE_SKILL:-}" = "1" ]; then
 fi
 APPEND="You're reviewing a PR in a throwaway sandbox; the diff is already applied to the working tree (./pr.diff), and there is NO GitHub PR — do NOT use gh; review the local diff. Your only deliverable is the review as JSON conforming to the findings schema provided via --json-schema. Write the JSON to $DRAFT (an absolute path outside the repo tree), run \`code-review validate $DRAFT\`, and fix-and-revalidate until it exits 0 before ending your turn.
 You have about $WALL of wall-clock. Write a COMPLETE, valid draft to $DRAFT as early as you can — the moment you have a first pass of findings — then refine it in place. Never leave $DRAFT unwritten while you keep exploring: a valid review that exists beats a thorough one that gets cut off.
-Validate freely: run the project's checks and edit or run code to confirm a bug or a candidate fix."
+Validate freely: edit or run code to confirm a bug or a candidate fix."
 # FANOUT=1 → explicitly invoke the skill's parallel-subagent step, to exercise the hook against a
 # real fan-out (subagent tool calls are denied once the hard reserve bites).
 if [ "${FANOUT:-}" = "1" ]; then

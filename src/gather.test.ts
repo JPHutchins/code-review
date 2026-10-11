@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhApi } from "./gh.js";
 import type { GatherInput, GitRun } from "./gather.js";
-import { gather, renderOutputs } from "./gather.js";
+import { gather, parseRunAttempt, renderOutputs } from "./gather.js";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
 import { dialogueMarker } from "./surface.js";
@@ -1209,7 +1209,7 @@ describe("gather — failing-job logs", () => {
     ]);
   });
 
-  it("never calls the jobs endpoint when conclusion is success", async () => {
+  it("stages the passed CI's jobs and their logs on success, never asking a skipped job for one", async () => {
     const { api, calls } = mkMockGhApi([
       {
         match: candidatesMatch,
@@ -1218,12 +1218,155 @@ describe("gather — failing-job logs", () => {
       { match: metaMatch(42), response: mkMeta() },
       { match: diffMatch(42), response: sampleDiff },
       { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: jobRows(
+          { id: 11, conclusion: "success", name: "conformance" },
+          { id: 12, conclusion: "skipped", name: "free-threaded" },
+        ),
+      },
+      {
+        match: (a) => a[0] === "repos/owner/repo/actions/jobs/11/logs",
+        response: "conformance: 162/162 passed\n",
+      },
     ]);
 
     await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
 
+    expect(calls().some((c) => c.args[0] === "repos/owner/repo/actions/jobs/12/logs")).toBe(false);
+
+    expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
+      { name: "conformance", conclusion: "success", log: "job_11.log" },
+      { name: "free-threaded", conclusion: "skipped", log: null },
+    ]);
+    expect(outFile("job_11.log")).toContain("162/162 passed");
+  });
+
+  it("counts a passed run's staged logs, so the review is told whether it has evidence", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: jobRows({ id: 11, conclusion: "success", name: "tests" }) },
+      { match: logsMatch, response: "1777 passed\n" },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1, failingJobs: 0 });
+  });
+
+  it("stages the logs of the attempt that triggered the review, not of a re-run started since", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: (a) => a[0] === "repos/owner/repo/actions/runs/RUN1/attempts/1/jobs",
+        response: jobRows({ id: 11, conclusion: "failure", name: "wheels" }),
+      },
+      { match: jobsMatch, response: jobRows({ id: 21, conclusion: null, name: "wheels" }) },
+      { match: logsMatch, response: "wheels: build failed\n" },
+    ]);
+
+    const result = await gather(
+      mkInput({ conclusion: "failure", runAttempt: "1" }),
+      api,
+      mkMockGit([]).git,
+    );
+
     expect(calls().some((c) => jobsMatch(c.args))).toBe(false);
-    expect(hasOutFile("job_11.log")).toBe(false);
+    expect(outFile("job_11.log")).toContain("build failed");
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1, failingJobs: 1 });
+  });
+
+  it("refuses a run attempt that is not a positive integer, and reads an empty one as the latest", () => {
+    expect(parseRunAttempt("2")).toBe("2");
+    expect(parseRunAttempt("")).toBeUndefined();
+    expect(parseRunAttempt(undefined)).toBeUndefined();
+    expect(() => parseRunAttempt("1/../../x")).toThrow();
+    expect(() => parseRunAttempt("0")).toThrow();
+  });
+
+  it("caps a passed run's staged logs, says so, and still indexes every job", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: jobRows(
+          ...Array.from({ length: 70 }, (_, i) => ({ id: i + 1, conclusion: "success" })),
+        ),
+      },
+      { match: logsMatch, response: "LOG" },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 64 });
+    expect(calls().filter((c) => logsMatch(c.args))).toHaveLength(64);
+    const index = JSON.parse(outFile("ci_jobs.json")) as readonly { log: string | null }[];
+    expect(index).toHaveLength(70);
+    expect(index.filter((j) => j.log === null)).toHaveLength(6);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("::warning::70 jobs ran"));
+
+    stderrSpy.mockRestore();
+  });
+
+  it("indexes a passed run's jobs even when no log downloads, and counts none staged", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: jobRows({ id: 11, conclusion: "success", name: "tests" }) },
+      { match: logsMatch, response: new Error("403") },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 0 });
+    expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
+      { name: "tests", conclusion: "success", log: null },
+    ]);
+
+    stderrSpy.mockRestore();
+  });
+
+  it("still gathers a passed CI's review when its jobs cannot be listed", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: new Error("403") },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(result.kind).toBe("gathered");
+    expect(hasOutFile("ci_jobs.json")).toBe(false);
   });
 });
 

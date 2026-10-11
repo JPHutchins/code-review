@@ -228,6 +228,7 @@ jobs:
       ci_settled:    ${{ steps.ci.outputs.ci_settled }}
       ci_conclusion: ${{ steps.ci.outputs.ci_conclusion }}
       ci_run_id:     ${{ steps.ci.outputs.ci_run_id }}
+      ci_run_attempt: ${{ steps.ci.outputs.ci_run_attempt }}
     steps:
       - uses: actions/setup-node@v6
         with:
@@ -309,7 +310,8 @@ jobs:
       head_sha:      ${{ needs.gate.outputs.head_sha }}
       head_branch:   ${{ needs.gate.outputs.head_branch }}
       head_repo:     ${{ needs.gate.outputs.head_repo }}
-      run_id:        ${{ needs.gate.outputs.ci_run_id }}     # the CI run — its logs feed the mechanic route
+      run_id:        ${{ needs.gate.outputs.ci_run_id }}     # the CI run — its logs feed the review
+      run_attempt:   ${{ needs.gate.outputs.ci_run_attempt }} # the attempt that concluded, not a re-run since
       conclusion:    ${{ needs.gate.outputs.ci_conclusion }} # the REAL CI result: success → full, failure → mechanic
       trigger_event: pull_request
       api_base_url:    ${{ inputs.api_base_url }}

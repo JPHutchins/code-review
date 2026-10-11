@@ -15,7 +15,7 @@ and prohibitions are normative in SPEC — this file explains the shape and the 
 ### Input
 
 The adapter receives the reviewer's inputs — the PR diff, the CI result, prior-review context, an
-optional test report, and failing-job logs — as **files** (SPEC §2.2, §3.1). It never fetches them
+optional test report, and the CI run's job logs — as **files** (SPEC §2.2, §3.1). It never fetches them
 itself (no network) and never takes untrusted text as a shell argument or environment variable
 (SPEC §4.4). The CI result routes the run per [SPEC §3.1](../SPEC.md#31-trigger--routing): pass →
 full review, fail → mechanic-only pass, cancelled/skipped/not-run → post nothing.
@@ -116,8 +116,8 @@ burner key with spend cap). The full conformance requirements are the Reviewer b
 [SPEC §5](../SPEC.md#5-conformance); the reference to mirror is [`src/adapt.ts`](../src/adapt.ts).
 
 An adapter MAY use any CLI flag syntax (the contract is the data, not the flags), add project-specific
-context (CLAUDE.md, README, contributing guidelines) to the prompt, and re-run project checks to
-validate findings (the runner is throwaway).
+context (CLAUDE.md, README, contributing guidelines) to the prompt, and run code to probe a finding
+(the runner is throwaway), but never re-run the checks a passed CI already ran.
 
 ## Conformance tests
 

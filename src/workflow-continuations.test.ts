@@ -101,7 +101,7 @@ describe("route prose — the reusable workflow and the example teach the SAME i
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_UNREAD_NOTE|UNFINISHED_NOTE|SEED_NOTE)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE)="/.test(
           line,
         ),
       )
@@ -122,8 +122,11 @@ describe("the passed-run evidence note — what the full review is told matches 
     const lines = runScripts(workflowPath)
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim());
-    const start = lines.findIndex((line) => line.startsWith("CI_UNREAD_NOTE="));
-    const end = lines.indexOf("fi", start);
+    const start = lines.findIndex((line) => line.startsWith('CI_STATUS_NOTE="All CI jobs'));
+    const end = lines.indexOf(
+      "fi",
+      lines.findIndex((line) => line.startsWith('elif [ -f "$GATHER_DIR/ci_jobs.json" ]')),
+    );
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     return lines.slice(start, end + 1).join("\n");
@@ -132,19 +135,37 @@ describe("the passed-run evidence note — what the full review is told matches 
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
-  const noteFor = (workflowPath: string, index: boolean, stagedJobLogs: string): string => {
+  const notesFor = (
+    workflowPath: string,
+    index: boolean,
+    stagedJobLogs: string,
+    passedJobs = "",
+  ): { readonly status: string; readonly jobs: string } => {
     const gatherDir = mkdtempSync(join(tmpdir(), "ci-note-"));
     roots.push(gatherDir);
     if (index) writeFileSync(join(gatherDir, "ci_jobs.json"), "[]\n");
-    return execFileSync(
+    const [status = "", jobs = ""] = execFileSync(
       "bash",
-      ["-euo", "pipefail", "-c", `${noteBlock(workflowPath)}\nprintf '%s' "$CI_JOBS_NOTE"`],
+      [
+        "-euo",
+        "pipefail",
+        "-c",
+        `${noteBlock(workflowPath)}\nprintf '%s\\0%s' "$CI_STATUS_NOTE" "$CI_JOBS_NOTE"`,
+      ],
       {
-        env: { ...process.env, GATHER_DIR: gatherDir, STAGED_JOB_LOGS: stagedJobLogs },
+        env: {
+          ...process.env,
+          GATHER_DIR: gatherDir,
+          STAGED_JOB_LOGS: stagedJobLogs,
+          CI_JOBS_PASSED: passedJobs,
+        },
         encoding: "utf-8",
       },
-    );
+    ).split("\0");
+    return { status, jobs };
   };
+  const noteFor = (workflowPath: string, index: boolean, stagedJobLogs: string): string =>
+    notesFor(workflowPath, index, stagedJobLogs).jobs;
 
   for (const workflowPath of [
     ".github/workflows/review-reusable.yaml",
@@ -156,11 +177,19 @@ describe("the passed-run evidence note — what the full review is told matches 
       expect(staged).toContain("job_*.log");
       const indexOnly = noteFor(workflowPath, true, "0");
       expect(indexOnly).toContain("ci_jobs.json");
-      expect(indexOnly).toContain("cannot read what each check reported");
+      expect(indexOnly).toContain("no log could be staged");
       expect(indexOnly).not.toContain("job_*.log");
       const nothing = noteFor(workflowPath, false, "0");
       expect(nothing).not.toContain("ci_jobs.json");
-      expect(nothing).toContain("cannot read what each check reported");
+      expect(nothing).toContain("could be staged");
+    });
+
+    it(`${workflowPath}: the full review is told all CI jobs have passed, with gather's count when it has one`, () => {
+      expect(notesFor(workflowPath, true, "15", "15").status).toMatch(
+        /^All CI jobs have passed: 15 jobs, named in .*\/ci_jobs\.json\. $/,
+      );
+      expect(notesFor(workflowPath, false, "0").status).toBe("All CI jobs have passed. ");
+      expect(notesFor(workflowPath, true, "1", "1; x").status).toBe("All CI jobs have passed. ");
     });
   }
 });

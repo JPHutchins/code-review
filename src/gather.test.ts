@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhApi } from "./gh.js";
 import type { GatherInput, GitRun } from "./gather.js";
-import { gather, parseRunAttempt, renderOutputs } from "./gather.js";
+import { gather, JOBS_JQ, parseRunAttempt, renderOutputs } from "./gather.js";
+import { execFileSync } from "node:child_process";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
 import { dialogueMarker } from "./surface.js";
@@ -191,6 +192,7 @@ describe("gather — PR resolution", () => {
       // A success-route run never looks for failing-job logs.
       stagedJobLogs: 0,
       failingJobs: 0,
+      passedJobs: null,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -1231,9 +1233,10 @@ describe("gather — failing-job logs", () => {
       },
     ]);
 
-    await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
 
     expect(calls().some((c) => c.args[0] === "repos/owner/repo/actions/jobs/12/logs")).toBe(false);
+    expect(result).toMatchObject({ passedJobs: 1 });
 
     expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
       { name: "conformance", conclusion: "success", log: "job_11.log" },
@@ -1428,6 +1431,25 @@ describe("gather — pr_context.json", () => {
   });
 });
 
+describe("JOBS_JQ — the projection gather reads the jobs API through", () => {
+  it("keeps each job's step names and survives a malformed steps entry", () => {
+    const page = JSON.stringify({
+      jobs: [
+        { id: 1, name: "wheels", conclusion: "success", steps: [{ name: "Run camas ci" }, "junk"] },
+        { id: 2, name: "lint", conclusion: "skipped" },
+      ],
+    });
+    const rows = execFileSync("jq", ["-c", JOBS_JQ], { input: page, encoding: "utf-8" })
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as unknown);
+    expect(rows).toEqual([
+      { id: 1, name: "wheels", conclusion: "success", steps: ["Run camas ci"] },
+      { id: 2, name: "lint", conclusion: "skipped", steps: [] },
+    ]);
+  });
+});
+
 describe("renderOutputs", () => {
   it("renders skip=true for the skip case", () => {
     expect(renderOutputs({ kind: "skip" })).toBe("skip=true\n");
@@ -1444,9 +1466,10 @@ describe("renderOutputs", () => {
         baseSha: "abc1234",
         stagedJobLogs: 0,
         failingJobs: 0,
+        passedJobs: 15,
       }),
     ).toBe(
-      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\n",
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\n",
     );
   });
 });

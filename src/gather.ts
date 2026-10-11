@@ -42,8 +42,9 @@ export type GatherResult =
       // The review-scope base commit (the pr.diff endpoint), exposed so a downstream step can run
       // `cloc --git --diff <baseSha> <head>` over exactly the PR's own change (issue #182).
       readonly baseSha: string;
-      // Failing-job logs actually written for the fast-fix route to read. Zero means that route has
-      // nothing but the diff, which every downstream surface has to say rather than imply (#154).
+      // Job logs actually written for the review to read: the failing jobs' on the fast-fix route,
+      // the passed run's on the full review. Zero means that route has nothing but the diff, which
+      // every downstream surface has to say rather than imply (#154).
       readonly stagedJobLogs: number;
       // Failing jobs the run reported, which the cap can leave larger than stagedJobLogs. Carried so
       // the fast-fix route is TOLD it is reading a subset, rather than reporting the break fixed on
@@ -392,9 +393,7 @@ const stageJobLog = async (
   try {
     const log = await ghApi([`repos/${repo}/actions/jobs/${String(jobId)}/logs`]);
     // GitHub serves a "no log available" placeholder body when a job produced none (a killed
-    // runner, no step output). A placeholder is NOT failure evidence: counting it as staged
-    // would fire the all-staged steer and skip the unverified stamp on exactly the rounds that
-    // must not present themselves as evidenced.
+    // runner, no step output). A placeholder is not a log, so it is never staged.
     if (log.trim() === "no log available" || log.trim() === "") {
       process.stderr.write(
         `Warning: job ${String(jobId)} has no log available (placeholder body) — not staged
@@ -413,6 +412,25 @@ const stageJobLog = async (
   }
 };
 
+const listRunJobs = async (
+  repo: string,
+  runId: string,
+  runAttempt: string | undefined,
+  ghApi: GhApi,
+): Promise<readonly t.TypeOf<typeof JobCodec>[]> => {
+  const decoded = t
+    .array(JobCodec)
+    .decode(
+      parseJsonl(
+        await ghApi([jobsEndpoint(repo, runId, runAttempt), "--paginate", "--jq", JOBS_JQ]),
+      ),
+    );
+  if (decoded._tag === "Left") {
+    throw new Error(`Jobs list for run ${runId} did not match the expected shape`);
+  }
+  return decoded.right;
+};
+
 const downloadFailingJobLogs = async (
   repo: string,
   runId: string,
@@ -420,15 +438,13 @@ const downloadFailingJobLogs = async (
   outDir: string,
   ghApi: GhApi,
 ): Promise<{ readonly staged: number; readonly failing: number }> => {
-  const rows = parseJsonl(
-    await ghApi([jobsEndpoint(repo, runId, runAttempt), "--paginate", "--jq", JOBS_JQ]),
+  const failing = (await listRunJobs(repo, runId, runAttempt, ghApi)).filter(
+    (j) => j.conclusion === "failure",
   );
-  const decoded = t.array(JobCodec).decode(rows);
-  if (decoded._tag === "Left") {
-    throw new Error(`Jobs list for run ${runId} did not match the expected shape`);
-  }
-  const failing = decoded.right.filter((j) => j.conclusion === "failure");
   const selected = failing.slice(0, MAX_STAGED_JOB_LOGS);
+  // A placeholder body is NOT failure evidence: counting it as staged would fire the all-staged
+  // steer and skip the unverified stamp on exactly the rounds that must not present themselves as
+  // evidenced — so only a staged file counts.
   let staged = 0;
   for (const job of selected) {
     if ((await stageJobLog(repo, job.id, outDir, ghApi)) !== null) staged += 1;
@@ -471,8 +487,13 @@ const downloadFailingJobLogs = async (
 
 // A passed CI's jobs and logs are the reviewer's record of what is already verified on this exact
 // commit, so it reads what each check ran and reported instead of re-running it. Best-effort: without
-// them the review still knows CI passed, so a failed fetch costs a warning, never the review.
+// them the review still knows CI passed, and the workflow tells it the evidence is missing, so a
+// failed fetch costs a warning, never the review. The index lands before any log does, so a stalled
+// download never costs the job list; logs then download a few at a time. The cap bounds a huge
+// matrix in a gather step that has no timeout of its own, and is set well above the failure route's
+// because here every job's report is evidence, not one failure's cascade.
 const MAX_STAGED_PASSED_JOB_LOGS = 64;
+const PASSED_LOG_CONCURRENCY = 8;
 
 const stagePassedRun = async (
   repo: string,
@@ -480,44 +501,51 @@ const stagePassedRun = async (
   runAttempt: string | undefined,
   outDir: string,
   ghApi: GhApi,
-): Promise<void> => {
+): Promise<number> => {
   try {
-    const decoded = t
-      .array(JobCodec)
-      .decode(
-        parseJsonl(
-          await ghApi([jobsEndpoint(repo, runId, runAttempt), "--paginate", "--jq", JOBS_JQ]),
-        ),
+    const jobs = await listRunJobs(repo, runId, runAttempt, ghApi);
+    const writeIndex = (logs: ReadonlyMap<number, string>): void => {
+      writeFileSync(
+        join(outDir, "ci_jobs.json"),
+        `${JSON.stringify(
+          jobs.map((j) => ({
+            name: j.name,
+            conclusion: j.conclusion,
+            log: logs.get(j.id) ?? null,
+          })),
+          null,
+          2,
+        )}\n`,
       );
-    if (decoded._tag === "Left") {
-      throw new Error(`the jobs list for run ${runId} did not match the expected shape`);
-    }
-    const jobs = decoded.right;
-    const logs = await jobs
-      .filter((j) => j.conclusion !== "skipped")
-      .slice(0, MAX_STAGED_PASSED_JOB_LOGS)
-      .reduce<Promise<ReadonlyMap<number, string>>>(async (staged, job) => {
-        const prior = await staged;
-        const file = await stageJobLog(repo, job.id, outDir, ghApi);
-        return file === null ? prior : new Map([...prior, [job.id, file]]);
-      }, Promise.resolve(new Map()));
-    writeFileSync(
-      join(outDir, "ci_jobs.json"),
-      `${JSON.stringify(
-        jobs.map((j) => ({ name: j.name, conclusion: j.conclusion, log: logs.get(j.id) ?? null })),
-        null,
-        2,
-      )}\n`,
-    );
-    if (jobs.filter((j) => j.conclusion !== "skipped").length > MAX_STAGED_PASSED_JOB_LOGS) {
+    };
+    writeIndex(new Map());
+    const ran = jobs.filter((j) => j.conclusion !== "skipped");
+    const selected = ran.slice(0, MAX_STAGED_PASSED_JOB_LOGS);
+    const logs = await Array.from(
+      { length: Math.ceil(selected.length / PASSED_LOG_CONCURRENCY) },
+      (_, i) => selected.slice(i * PASSED_LOG_CONCURRENCY, (i + 1) * PASSED_LOG_CONCURRENCY),
+    ).reduce<Promise<ReadonlyMap<number, string>>>(async (staged, batch) => {
+      const prior = await staged;
+      const files = await Promise.all(
+        batch.map(async (job) => [job.id, await stageJobLog(repo, job.id, outDir, ghApi)] as const),
+      );
+      return new Map([
+        ...prior,
+        ...files.flatMap(([id, file]) => (file === null ? [] : [[id, file] as const])),
+      ]);
+    }, Promise.resolve(new Map()));
+    writeIndex(logs);
+    if (ran.length > selected.length) {
       process.stderr.write(
-        `::warning::${annotationSafe(`more than ${String(MAX_STAGED_PASSED_JOB_LOGS)} jobs ran in the passed run ${runId}; logs were staged for the first ${String(MAX_STAGED_PASSED_JOB_LOGS)} only`)}\n`,
+        `::warning::${annotationSafe(`${String(ran.length)} jobs ran in the passed run ${runId}; logs were staged for the first ${String(selected.length)} only`)}\n`,
       );
     }
+    return logs.size;
   } catch (err) {
     process.stderr.write(
       `::warning::${annotationSafe(`the passed CI run's jobs could not be listed (${errMsg(err)}) — the review knows CI passed, not which jobs ran`)}\n`,
     );
+    return 0;
   }
 };
 
@@ -679,9 +707,10 @@ export const gather = async (
     input.conclusion === "failure"
       ? await downloadFailingJobLogs(input.repo, input.runId, input.runAttempt, input.outDir, ghApi)
       : { staged: 0, failing: 0 };
-  if (input.conclusion === "success") {
-    await stagePassedRun(input.repo, input.runId, input.runAttempt, input.outDir, ghApi);
-  }
+  const passedLogs =
+    input.conclusion === "success"
+      ? await stagePassedRun(input.repo, input.runId, input.runAttempt, input.outDir, ghApi)
+      : 0;
 
   return {
     kind: "gathered",
@@ -690,7 +719,7 @@ export const gather = async (
     diffSize: Buffer.byteLength(prDiff, "utf8"),
     stacked,
     baseSha: meta.base_sha,
-    stagedJobLogs: jobLogs.staged,
+    stagedJobLogs: jobLogs.staged + passedLogs,
     failingJobs: jobLogs.failing,
   };
 };

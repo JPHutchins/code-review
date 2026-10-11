@@ -1739,7 +1739,7 @@ const gatherCmd = defineCommand({
   meta: {
     name: "gather",
     description:
-      "Resolve the PR from the CI head SHA and gather review inputs (diff with git-diff fallback, PR context, prior bot review, untrusted PR conversation to triage, the CI run's job logs — the failing jobs' with their identities in failed_jobs.json on a failure, every job's listed in ci_jobs.json on a pass) as files for the review agent",
+      "Resolve the PR from the CI head SHA and gather review inputs (diff with git-diff fallback, PR context, prior bot review, untrusted PR conversation to triage, the CI run's job logs — the failing jobs' with their identities in failed_jobs.json on a failure, the jobs that ran, up to 64, indexed in ci_jobs.json on a pass) as files for the review agent",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },
@@ -1761,7 +1761,7 @@ const gatherCmd = defineCommand({
     "run-id": {
       type: "string",
       description:
-        "CI run id (from workflow_run.id); its job logs are downloaded — the failing jobs' on failure, every job's on success",
+        "CI run id (from workflow_run.id); its job logs are downloaded — the failing jobs' on failure, the jobs that ran (up to 64) on success",
       required: true,
     },
     "run-attempt": {
@@ -1772,7 +1772,7 @@ const gatherCmd = defineCommand({
     conclusion: {
       type: "string",
       description:
-        "CI conclusion (e.g. success | failure); failure stages the failing jobs' logs, success every job's log and ci_jobs.json",
+        "CI conclusion (e.g. success | failure); failure stages the failing jobs' logs, success the logs of the jobs that ran (up to 64) and ci_jobs.json",
       required: true,
     },
     "bot-login": {

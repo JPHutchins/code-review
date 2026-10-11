@@ -90,7 +90,7 @@ describe("workflow run scripts — argument lines stay attached to their command
   });
 });
 
-describe("mechanic route prose — the reusable workflow and the example teach the SAME instructions", () => {
+describe("route prose — the reusable workflow and the example teach the SAME instructions", () => {
   // The mechanic PROMPT and its log-state notes steer the route's whole deliverable; the reusable
   // workflow and the consumer template carry byte-identical copies that must not drift (a template
   // consumer would otherwise get a different mechanic than a reusable consumer — e.g. one that still
@@ -101,13 +101,13 @@ describe("mechanic route prose — the reusable workflow and the example teach t
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|UNFINISHED_NOTE|SEED_NOTE)="/.test(
           line,
         ),
       )
       .sort();
 
-  it("every mechanic steer line is byte-identical between review-reusable.yaml and the example", () => {
+  it("every route steer line is byte-identical between review-reusable.yaml and the example", () => {
     const reusable = steerLines(".github/workflows/review-reusable.yaml");
     const example = steerLines("examples/workflows/review.yaml");
     expect(reusable.length).toBeGreaterThan(0);

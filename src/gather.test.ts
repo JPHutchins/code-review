@@ -1242,6 +1242,24 @@ describe("gather — failing-job logs", () => {
     expect(outFile("job_11.log")).toContain("162/162 passed");
   });
 
+  it("counts a passed run's staged logs, so the review is told whether it has evidence", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: jobRows({ id: 11, conclusion: "success", name: "tests" }) },
+      { match: logsMatch, response: "1777 passed\n" },
+    ]);
+
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 1, failingJobs: 0 });
+  });
+
   it("stages the logs of the attempt that triggered the review, not of a re-run started since", async () => {
     const { api, calls } = mkMockGhApi([
       {
@@ -1276,6 +1294,61 @@ describe("gather — failing-job logs", () => {
     expect(parseRunAttempt(undefined)).toBeUndefined();
     expect(() => parseRunAttempt("1/../../x")).toThrow();
     expect(() => parseRunAttempt("0")).toThrow();
+  });
+
+  it("caps a passed run's staged logs, says so, and still indexes every job", async () => {
+    const { api, calls } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      {
+        match: jobsMatch,
+        response: jobRows(
+          ...Array.from({ length: 70 }, (_, i) => ({ id: i + 1, conclusion: "success" })),
+        ),
+      },
+      { match: logsMatch, response: "LOG" },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 64 });
+    expect(calls().filter((c) => logsMatch(c.args))).toHaveLength(64);
+    const index = JSON.parse(outFile("ci_jobs.json")) as readonly { log: string | null }[];
+    expect(index).toHaveLength(70);
+    expect(index.filter((j) => j.log === null)).toHaveLength(6);
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("::warning::70 jobs ran"));
+
+    stderrSpy.mockRestore();
+  });
+
+  it("indexes a passed run's jobs even when no log downloads, and counts none staged", async () => {
+    const { api } = mkMockGhApi([
+      {
+        match: candidatesMatch,
+        response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+      },
+      { match: metaMatch(42), response: mkMeta() },
+      { match: diffMatch(42), response: sampleDiff },
+      { match: commentsMatch(42), response: "" },
+      { match: jobsMatch, response: jobRows({ id: 11, conclusion: "success", name: "tests" }) },
+      { match: logsMatch, response: new Error("403") },
+    ]);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const result = await gather(mkInput({ conclusion: "success" }), api, mkMockGit([]).git);
+
+    expect(result).toMatchObject({ kind: "gathered", stagedJobLogs: 0 });
+    expect(JSON.parse(outFile("ci_jobs.json"))).toEqual([
+      { name: "tests", conclusion: "success", log: null },
+    ]);
+
+    stderrSpy.mockRestore();
   });
 
   it("still gathers a passed CI's review when its jobs cannot be listed", async () => {

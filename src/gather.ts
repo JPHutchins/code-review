@@ -372,7 +372,7 @@ const reviewsFrom = (reviews: readonly Review[], botLogin: string) =>
     body: clip(r.body),
   }));
 
-// Jobs-list failure is fatal; a per-log download failure degrades — logs are advisory, and partial
+// On the failure route a jobs-list failure is fatal; a per-log download failure degrades — logs are advisory, and partial
 // logs plus the diff beat a dead review. Returns how many landed: on the fast-fix route the logs are
 // the whole premise, so zero of them is worth saying out loud rather than leaving the agent to infer
 // it from an empty directory (issue #154).
@@ -543,7 +543,7 @@ const stagePassedRun = async (
     return logs.size;
   } catch (err) {
     process.stderr.write(
-      `::warning::${annotationSafe(`the passed CI run's jobs could not be listed (${errMsg(err)}) — the review knows CI passed, not which jobs ran`)}\n`,
+      `::warning::${annotationSafe(`the passed CI run's jobs could not be staged (${errMsg(err)}) — the review knows CI passed, not what its jobs reported`)}\n`,
     );
     return 0;
   }

@@ -62,6 +62,18 @@ describe("parseCommandArgs — duration + usd tokens", () => {
     expect(asCommand("/code-review $2").usd).toBe(2);
   });
 
+  it("ignores a $0 cap, which would leave the run uncapped, and says so", () => {
+    const zero = asCommand("/code-review $0 focus on X");
+    expect(zero.usd).toBeNull();
+    expect(zero.instructions).toBe("focus on X");
+    expect(zero.notes.join(" ")).toContain("uncapped");
+    expect(asCommand("/code-review $0.00").usd).toBeNull();
+    expect(asCommand("/code-review $0.004").usd).toBeNull();
+    const zeroCeiling = asCommand("/code-review $2 go", { ...OPTS, maxUsd: 0 });
+    expect(zeroCeiling.usd).toBeNull();
+    expect(zeroCeiling.notes.join(" ")).toContain("uncapped");
+  });
+
   it("accepts duration and usd in either order, then instructions", () => {
     expect(asCommand("/code-review 10m $2.00 focus on X")).toMatchObject({
       durationSec: 600,

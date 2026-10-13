@@ -769,12 +769,10 @@ jobs:
           # over-budget window in which the hooks keep denying every tool but reading and
           # writing/validating $DRAFT, so a review still finalizing lands before the kill. USD_LIMIT
           # caps spend on the cost axis when a price map prices the run. Durations are summed in whole
-          # seconds. Edit the literals below (time limit, grace per route, one shared USD cap) to
-          # retune. A whole number with an optional h/m/s suffix; anything else fails loudly.
-          # The time/grace literals must mirror review-reusable.yaml's AND review-on-comment-reusable.yaml's
-          # full_review_* / mechanic_* input defaults; USD_LIMIT is the example's single shared cap
-          # (the reusables keep per-route USD inputs, whose defaults currently agree) — retune all
-          # three sites in lockstep.
+          # seconds. Edit the literals below (time limit, grace and USD cap per route) to retune. A
+          # whole number with an optional h/m/s suffix; anything else fails loudly.
+          # The literals must mirror review-reusable.yaml's AND review-on-comment-reusable.yaml's
+          # full_review_* / mechanic_* input defaults — retune all three sites in lockstep.
           dur_to_secs() {
             [[ "$1" =~ ^([0-9]+)([hms])?$ ]] || { echo "::error::invalid duration '$1' — use a whole number optionally suffixed h/m/s (e.g. 24m, 90s, 1h)"; exit 1; }
             case "${BASH_REMATCH[2]}" in
@@ -783,8 +781,7 @@ jobs:
               *) echo "${BASH_REMATCH[1]}" ;;
             esac
           }
-          USD_LIMIT=1
-          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=20m; GRACE=6m; else AGENT_WALL=24m; GRACE=12m; fi
+          if [ "$ROUTE" = "mechanic" ]; then AGENT_WALL=6m; GRACE=3m; USD_LIMIT=0.10; else AGENT_WALL=24m; GRACE=12m; USD_LIMIT=1; fi
           HARD_KILL=$(( $(dur_to_secs "$AGENT_WALL") + $(dur_to_secs "$GRACE") ))
 
           # Compose the review agent's hooks into one settings file, written to

@@ -369,26 +369,27 @@ describe("route budget parity — the example's literals mirror the reusable inp
   const exampleRouteLiterals = (): {
     mechanic: string;
     mechanicGrace: string;
+    mechanicUsd: string;
     full: string;
     fullGrace: string;
-    usd: string;
+    fullUsd: string;
   } => {
     const lines = runScripts("examples/workflows/review.yaml")
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim());
     const routeLine = lines.find((l) => l.includes("AGENT_WALL=")) ?? "";
-    const usdLine = lines.find((l) => l.startsWith("USD_LIMIT=")) ?? "";
-    const mechanic = /AGENT_WALL=(\S+); GRACE=(\S+); else AGENT_WALL=(\S+); GRACE=([^;\s]+)/.exec(
-      routeLine,
-    );
-    const usd = /USD_LIMIT=(\S+)/.exec(usdLine)?.[1];
-    if (mechanic === null || usd === undefined) throw new Error("example route literals not found");
+    const route =
+      /AGENT_WALL=(\S+); GRACE=(\S+); USD_LIMIT=(\S+); else AGENT_WALL=(\S+); GRACE=(\S+); USD_LIMIT=([^;\s]+)/.exec(
+        routeLine,
+      );
+    if (route === null) throw new Error("example route literals not found");
     return {
-      mechanic: mechanic[1]!,
-      mechanicGrace: mechanic[2]!,
-      full: mechanic[3]!,
-      fullGrace: mechanic[4]!,
-      usd,
+      mechanic: route[1]!,
+      mechanicGrace: route[2]!,
+      mechanicUsd: route[3]!,
+      full: route[4]!,
+      fullGrace: route[5]!,
+      fullUsd: route[6]!,
     };
   };
 
@@ -423,6 +424,28 @@ describe("route budget parity — the example's literals mirror the reusable inp
     MECHANIC_USD: "mechanic_usd_limit",
   };
 
+  it("a failing CI gets the cheap pass: the mechanic defaults stay a small fraction of the full review's", () => {
+    const seconds = (duration: string): number => {
+      const m = /^(\d+)([hms]?)$/.exec(duration);
+      if (m === null) throw new Error(`not a duration: ${duration}`);
+      return (
+        Number(m[1]) * ({ h: 3600, m: 60, s: 1, "": 1 } as const)[m[2] as "h" | "m" | "s" | ""]
+      );
+    };
+    for (const workflowPath of [
+      ".github/workflows/review-reusable.yaml",
+      ".github/workflows/review-on-comment-reusable.yaml",
+    ]) {
+      const d = inputDefaults(workflowPath);
+      const wall = (route: "mechanic" | "full_review"): number =>
+        seconds(d[`${route}_time_limit`]!) + seconds(d[`${route}_grace_period`]!);
+      expect(wall("mechanic")).toBeLessThanOrEqual(wall("full_review") / 4);
+      expect(Number(d["mechanic_usd_limit"])).toBeLessThanOrEqual(
+        Number(d["full_review_usd_limit"]) / 10,
+      );
+    }
+  });
+
   it("the example's mechanic/full literals equal both reusables' input defaults", () => {
     const reusable = inputDefaults(".github/workflows/review-reusable.yaml");
     const facade = inputDefaults(".github/workflows/review-on-comment-reusable.yaml");
@@ -431,10 +454,9 @@ describe("route budget parity — the example's literals mirror the reusable inp
     expect(reusable["mechanic_grace_period"]).toBe(example.mechanicGrace);
     expect(reusable["full_review_time_limit"]).toBe(example.full);
     expect(reusable["full_review_grace_period"]).toBe(example.fullGrace);
-    // The example carries ONE shared cap modeled on the full route's; per-route USD inputs in the
-    // reusables stay independently retunable (their agreement is pinned below, not their equality
-    // with the example).
-    expect(reusable["full_review_usd_limit"]).toBe(example.usd);
+    // The example carries a cap per route, mirroring each reusable's per-route USD input.
+    expect(reusable["mechanic_usd_limit"]).toBe(example.mechanicUsd);
+    expect(reusable["full_review_usd_limit"]).toBe(example.fullUsd);
     // The two reusables must agree with each other on every budget default.
     for (const key of [
       "mechanic_time_limit",

@@ -149,20 +149,20 @@ on:
         required: false
         default: "1"
       mechanic_time_limit:
-        description: Wall-clock budget for the fast fix (CI-failure) route, sized to leave room to reproduce the failure when no job logs are staged
+        description: Wall-clock budget for the fast fix (CI-failure) route
         type: string
         required: false
-        default: 20m
+        default: 6m
       mechanic_grace_period:
         description: Time past mechanic_time_limit before the hard SIGTERM (keep ≥ ~1m)
         type: string
         required: false
-        default: 6m
+        default: 3m
       mechanic_usd_limit:
         description: USD spend cap for the mechanic route (takes effect only with a committed .github/prices.json that covers every model the run records)
         type: string
         required: false
-        default: "1"
+        default: "0.10"
       duration_override:
         description: >-
           Override the full-review wall for this run (e.g. from a ChatOps /code-review comment).
@@ -759,9 +759,9 @@ jobs:
           FULL_TIME_LIMIT: ${{ inputs.full_review_time_limit != '' && inputs.full_review_time_limit || '24m' }}
           FULL_GRACE: ${{ inputs.full_review_grace_period != '' && inputs.full_review_grace_period || '12m' }}
           FULL_USD: ${{ inputs.full_review_usd_limit != '' && inputs.full_review_usd_limit || '1' }}
-          MECHANIC_TIME_LIMIT: ${{ inputs.mechanic_time_limit != '' && inputs.mechanic_time_limit || '20m' }}
-          MECHANIC_GRACE: ${{ inputs.mechanic_grace_period != '' && inputs.mechanic_grace_period || '6m' }}
-          MECHANIC_USD: ${{ inputs.mechanic_usd_limit != '' && inputs.mechanic_usd_limit || '1' }}
+          MECHANIC_TIME_LIMIT: ${{ inputs.mechanic_time_limit != '' && inputs.mechanic_time_limit || '6m' }}
+          MECHANIC_GRACE: ${{ inputs.mechanic_grace_period != '' && inputs.mechanic_grace_period || '3m' }}
+          MECHANIC_USD: ${{ inputs.mechanic_usd_limit != '' && inputs.mechanic_usd_limit || '0.10' }}
           # Coerce an explicit empty string to the default — a workflow_call default applies only when
           # the key is OMITTED, but a consumer wiring `full_review_effort: ${{ vars.X }}` with X unset
           # passes "", which would otherwise reach the agent as an empty effort. Same idiom as the model

@@ -122,7 +122,7 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 ### Check-running with the reusable workflow
 
 By default the reusable workflow reviews **statically** (the diff + source, no execution). To let the
-agent run code — the CI-fix pass reproducing a failure and confirming its fix, the full review probing
+agent run code — the CI-fix pass reproducing a failure and checking a fix as its budget allows, the full review probing
 a suspected bug (it never re-runs what a passed CI already ran; it reads that run's logs) — there are
 two opt-in hooks; the shared workflow deliberately owns **no** ecosystem toolchain or cache action:
 

@@ -440,8 +440,9 @@ describe("route budget parity — the example's literals mirror the reusable inp
       const wall = (route: "mechanic" | "full_review"): number =>
         seconds(d[`${route}_time_limit`]!) + seconds(d[`${route}_grace_period`]!);
       expect(wall("mechanic")).toBeLessThanOrEqual(wall("full_review") / 4);
-      expect(Number(d["mechanic_usd_limit"])).toBeLessThanOrEqual(
-        Number(d["full_review_usd_limit"]) / 10,
+      const cents = (usd: string | undefined): number => Math.round(Number(usd) * 100);
+      expect(cents(d["mechanic_usd_limit"]) * 10).toBeLessThanOrEqual(
+        cents(d["full_review_usd_limit"]),
       );
     }
   });

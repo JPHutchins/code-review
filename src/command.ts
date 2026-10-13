@@ -81,14 +81,19 @@ const clampUsd = (
   requested: number | null,
   ceiling: number | null,
 ): { readonly value: number | null; readonly notes: readonly string[] } =>
-  requested !== null && ceiling !== null && requested > ceiling
+  requested === 0
     ? {
-        value: ceiling,
-        notes: [
-          `requested $${requested.toFixed(2)} exceeds the $${ceiling.toFixed(2)} ceiling — clamped to $${ceiling.toFixed(2)}`,
-        ],
+        value: null,
+        notes: ["a $0.00 cap would leave the run uncapped — ignored; the route's own cap applies"],
       }
-    : { value: requested, notes: [] };
+    : requested !== null && ceiling !== null && requested > ceiling
+      ? {
+          value: ceiling,
+          notes: [
+            `requested $${requested.toFixed(2)} exceeds the $${ceiling.toFixed(2)} ceiling — clamped to $${ceiling.toFixed(2)}`,
+          ],
+        }
+      : { value: requested, notes: [] };
 
 const capInstructions = (
   text: string,

@@ -179,7 +179,7 @@ free-form instructions (a `/` slash command, like prow's `/lgtm` or `slash-comma
 
 | token | example | effect |
 | --- | --- | --- |
-| duration | `24m`, `90s`, `1h` | overrides the full-review wall for this run, **clamped** to `--max-duration` |
+| duration | `24m`, `90s`, `1h` | overrides the wall of whichever route runs (the full review or the CI-fix pass), **clamped** to `--max-duration` |
 | dollar amount | `$2.00`, `$0.50` | overrides the USD spend cap for this run, **clamped** to `--max-usd` |
 | everything else | `audit the error paths` | appended to the review agent's system prompt as guidance |
 

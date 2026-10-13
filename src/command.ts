@@ -77,16 +77,15 @@ const clampDuration = (
       }
     : { value: requested, notes: [] };
 
+// Any cap that renders as $0.00 — a request or a ceiling of zero, or a sub-cent amount — reaches
+// the budget hook as zero, which disables the cost axis, so it is dropped and the route's own cap
+// applies.
 const clampUsd = (
   requested: number | null,
   ceiling: number | null,
-): { readonly value: number | null; readonly notes: readonly string[] } =>
-  requested === 0
-    ? {
-        value: null,
-        notes: ["a $0.00 cap would leave the run uncapped — ignored; the route's own cap applies"],
-      }
-    : requested !== null && ceiling !== null && requested > ceiling
+): { readonly value: number | null; readonly notes: readonly string[] } => {
+  const clamped =
+    requested !== null && ceiling !== null && requested > ceiling
       ? {
           value: ceiling,
           notes: [
@@ -94,6 +93,16 @@ const clampUsd = (
           ],
         }
       : { value: requested, notes: [] };
+  return clamped.value !== null && clamped.value.toFixed(2) === "0.00"
+    ? {
+        value: null,
+        notes: [
+          ...clamped.notes,
+          "a $0.00 cap would leave the run uncapped — ignored; the route's own cap applies",
+        ],
+      }
+    : clamped;
+};
 
 const capInstructions = (
   text: string,

@@ -68,6 +68,10 @@ describe("parseCommandArgs — duration + usd tokens", () => {
     expect(zero.instructions).toBe("focus on X");
     expect(zero.notes.join(" ")).toContain("uncapped");
     expect(asCommand("/code-review $0.00").usd).toBeNull();
+    expect(asCommand("/code-review $0.004").usd).toBeNull();
+    const zeroCeiling = asCommand("/code-review $2 go", { ...OPTS, maxUsd: 0 });
+    expect(zeroCeiling.usd).toBeNull();
+    expect(zeroCeiling.notes.join(" ")).toContain("uncapped");
   });
 
   it("accepts duration and usd in either order, then instructions", () => {

@@ -771,7 +771,8 @@ jobs:
           # caps spend on the cost axis when a price map prices the run. Durations are summed in whole
           # seconds. Edit the literals below (time limit, grace and USD cap per route) to retune. A
           # duration is a whole number with an optional h/m/s suffix (anything else fails loudly); a
-          # USD cap is a bare decimal dollar amount (0 or a non-number disables the cost axis).
+          # USD cap is a bare decimal such as 0.10, with no $ and no suffix (a value that is not a
+          # number, or is 0, disables the cost axis).
           # The literals must mirror review-reusable.yaml's AND review-on-comment-reusable.yaml's
           # full_review_* / mechanic_* input defaults — retune all three sites in lockstep.
           dur_to_secs() {

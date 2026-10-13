@@ -177,7 +177,8 @@ on:
         description: >-
           Override the USD spend cap of whichever route runs. Empty ⇒ keep that route's *_usd_limit.
           Trusted caller config — clamp an untrusted source to a ceiling before passing it here (see
-          `code-review parse-command --max-usd`). Takes effect only with a committed .github/prices.json that covers every model the run records.
+          `code-review parse-command --max-usd`). Takes effect only with a committed
+          .github/prices.json that covers every model the run records.
         type: string
         required: false
         default: ""

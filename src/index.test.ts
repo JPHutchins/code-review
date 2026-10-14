@@ -6,6 +6,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { snapshotIfValid, printableSchema } from "./index.js";
 import { lastValidPath, priorContextPath, priorSuppressedPath, SEED_SENTINEL } from "./budget.js";
+import { UNREADABLE_UNFINISHED_ENTRY } from "./unfinished.js";
 import {
   DEFAULT_SCHEMA_VERSION,
   ResultEnvelopeCodec,
@@ -1371,22 +1372,26 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     ).toBeUndefined();
   });
 
-  it("carries a malformed unfinished list into the prior context as its readable checks only, never the stand-in", async () => {
-    const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker({
+  it.each<[string, readonly unknown[], unknown]>([
+    [
+      "a malformed list carries its readable checks only",
+      ["the pickle-bypass probe", " "],
+      ["the pickle-bypass probe"],
+    ],
+    [
+      "a carried stand-in is never carried again",
+      [UNREADABLE_UNFINISHED_ENTRY, "the pickle-bypass probe"],
+      ["the pickle-bypass probe"],
+    ],
+    ["an all-unreadable list carries no field, never an empty one", [" "], undefined],
+  ])("seed: %s", async (_label, unfinished, expected) => {
+    expect(
+      await seededContextUnfinished({
         ...priorFindings,
         schema_version: DEFAULT_SCHEMA_VERSION,
-        unfinished: ["the pickle-bypass probe", " "],
-      })}\nold sticky`,
-    );
-    const out = join(tmpDir, "draft.json");
-    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
-    expect(exitCode).toBeNull();
-    expect(stdout.trim()).toBe("prior-new");
-    const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as {
-      unfinished?: string[];
-    };
-    expect(context.unfinished).toEqual(["the pickle-bypass probe"]);
+        unfinished,
+      }),
+    ).toEqual(expected);
   });
 
   it("strips the prior round's rebuttals from the context it carries — a re-raise must supply its own", async () => {

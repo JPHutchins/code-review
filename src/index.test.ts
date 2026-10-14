@@ -1322,22 +1322,76 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     expect(context.findings[0]).not.toHaveProperty("rebuttal");
   });
 
-  it("carries a malformed unfinished list into the prior context as its readable entries plus the stand-in", async () => {
-    const prior = writePrior(
-      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker({
-        ...priorFindings,
-        schema_version: DEFAULT_SCHEMA_VERSION,
-        unfinished: ["the pickle-bypass probe", " "],
-      })}\nold sticky`,
-    );
+  const seededContextUnfinished = async (
+    prior: Record<string, unknown>,
+    extraArgs: readonly string[] = [],
+  ): Promise<unknown> => {
     const out = join(tmpDir, "draft.json");
-    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    const { stdout, exitCode } = await runCli([
+      "seed-draft",
+      "--prior",
+      writePrior(
+        `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker(prior)}\nold sticky`,
+      ),
+      ...extraArgs,
+      "--out",
+      out,
+    ]);
     expect(exitCode).toBeNull();
     expect(stdout.trim()).toBe("prior-new");
-    const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as {
-      unfinished?: string[];
-    };
-    expect(context.unfinished).toEqual(["the pickle-bypass probe", UNREADABLE_UNFINISHED_ENTRY]);
+    return (JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as { unfinished?: unknown })
+      .unfinished;
+  };
+
+  it("carries a legacy-version prior's unfinished list the legacy codec drops", async () => {
+    expect(
+      await seededContextUnfinished({
+        ...priorFindings,
+        schema_version: "0.4.0",
+        unfinished: ["the pickle-bypass probe"],
+      }),
+    ).toEqual(["the pickle-bypass probe"]);
+  });
+
+  it("carries no unfinished list into a prior context whose pinned schema predates the field", async () => {
+    const live = JSON.parse(
+      readFileSync(resolve(repoRoot, "schema", "findings.schema.json"), "utf-8"),
+    ) as { properties: Record<string, unknown> };
+    delete live.properties["unfinished"];
+    const pinned = join(tmpDir, "pinned-0.10.schema.json");
+    writeFileSync(pinned, JSON.stringify(live));
+    expect(
+      await seededContextUnfinished(
+        {
+          ...priorFindings,
+          schema_version: DEFAULT_SCHEMA_VERSION,
+          unfinished: ["the pickle-bypass probe"],
+        },
+        ["--schema", pinned],
+      ),
+    ).toBeUndefined();
+  });
+
+  it.each<[string, readonly unknown[], unknown]>([
+    [
+      "a malformed list carries its readable checks only",
+      ["the pickle-bypass probe", " "],
+      ["the pickle-bypass probe"],
+    ],
+    [
+      "a carried stand-in is never carried again",
+      [UNREADABLE_UNFINISHED_ENTRY, "the pickle-bypass probe"],
+      ["the pickle-bypass probe"],
+    ],
+    ["an all-unreadable list carries no field, never an empty one", [" "], undefined],
+  ])("seed: %s", async (_label, unfinished, expected) => {
+    expect(
+      await seededContextUnfinished({
+        ...priorFindings,
+        schema_version: DEFAULT_SCHEMA_VERSION,
+        unfinished,
+      }),
+    ).toEqual(expected);
   });
 
   it("strips the prior round's rebuttals from the context it carries — a re-raise must supply its own", async () => {

@@ -6,6 +6,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { snapshotIfValid, printableSchema } from "./index.js";
 import { lastValidPath, priorContextPath, priorSuppressedPath, SEED_SENTINEL } from "./budget.js";
+import { UNREADABLE_UNFINISHED_ENTRY } from "./unfinished.js";
 import {
   DEFAULT_SCHEMA_VERSION,
   ResultEnvelopeCodec,
@@ -1319,6 +1320,24 @@ describe("cli — seed-draft (issues #52, #53, #127: the sentinel draft + out-of
     };
     expect(context.findings).toHaveLength(priorFindings.findings.length);
     expect(context.findings[0]).not.toHaveProperty("rebuttal");
+  });
+
+  it("carries a malformed unfinished list into the prior context as its readable entries plus the stand-in", async () => {
+    const prior = writePrior(
+      `<!-- code-review -->\n${FULL_REVIEW_MARKER}\n${legacyEmbeddedMarker({
+        ...priorFindings,
+        schema_version: DEFAULT_SCHEMA_VERSION,
+        unfinished: ["the pickle-bypass probe", " "],
+      })}\nold sticky`,
+    );
+    const out = join(tmpDir, "draft.json");
+    const { stdout, exitCode } = await runCli(["seed-draft", "--prior", prior, "--out", out]);
+    expect(exitCode).toBeNull();
+    expect(stdout.trim()).toBe("prior-new");
+    const context = JSON.parse(readFileSync(priorContextPath(out), "utf-8")) as {
+      unfinished?: string[];
+    };
+    expect(context.unfinished).toEqual(["the pickle-bypass probe", UNREADABLE_UNFINISHED_ENTRY]);
   });
 
   it("strips the prior round's rebuttals from the context it carries — a re-raise must supply its own", async () => {

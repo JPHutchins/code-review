@@ -45,6 +45,7 @@ import {
   withoutRebuttals,
 } from "./schema.js";
 import type { Triage, Finding, Findings, PriceMap } from "./schema.js";
+import { withDraftUnfinished } from "./unfinished.js";
 import {
   buildConvergence,
   computeScopeMetastasis,
@@ -1264,7 +1265,10 @@ const seedDraftCmd = defineCommand({
               if (isIncompleteFindings(seedDoc)) return false;
               if (!isFullReviewAncestry(priorBody ?? "")) return false;
               writeFileSync(outPath, SEED_SENTINEL);
-              writeFileSync(priorContextPath(outPath), `${JSON.stringify(seedDoc, null, 2)}\n`);
+              writeFileSync(
+                priorContextPath(outPath),
+                `${JSON.stringify(withDraftUnfinished(strippedPrior, seedDoc), null, 2)}\n`,
+              );
               process.stderr.write(
                 `Seeded ${outPath} with the sentinel and wrote the prior review (${String(seedDoc.findings.length)} finding(s)) to ${priorContextPath(outPath)} as context\n`,
               );

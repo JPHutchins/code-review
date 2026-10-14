@@ -93,6 +93,7 @@ import {
 import type { SystemicProblem } from "./schema.js";
 import { advanceDialogue, dialogueAnswers, dialogueMetricsTable } from "./dialogue.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
+import { withDraftUnfinished } from "./unfinished.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -230,6 +231,14 @@ const decodeFindings = (doc: unknown): FindingsLoadResult => {
   }
 };
 
+const withDraftUnfinishedChecks = (
+  draft: unknown,
+  result: FindingsLoadResult,
+): FindingsLoadResult =>
+  result.kind === "ok"
+    ? { ...result, findings: withDraftUnfinished(draft, result.findings) }
+    : result;
+
 const loadFindings = (path: string): FindingsLoadResult => {
   let raw: unknown;
   try {
@@ -257,10 +266,10 @@ const loadFindings = (path: string): FindingsLoadResult => {
       process.stderr.write(
         `Warning: the review draft carried an invalid best-effort field (${recovered.stripped.join("/")}) — stripped it and used the rest; the pipeline re-stamps convergence\n`,
       );
-      return decodeFindings(recovered.doc);
+      return withDraftUnfinishedChecks(raw, decodeFindings(recovered.doc));
     }
   }
-  return first;
+  return withDraftUnfinishedChecks(raw, first);
 };
 
 const noticeMessageFor = (result: Exclude<FindingsLoadResult, { kind: "ok" }>): string => {

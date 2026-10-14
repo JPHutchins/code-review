@@ -15,8 +15,8 @@ import {
   mentionsOutsideKnown,
   discussionRows,
   STICKY_CHAR_LIMIT,
-  UNREADABLE_UNFINISHED_ENTRY,
 } from "./post.js";
+import { UNREADABLE_UNFINISHED_ENTRY } from "./unfinished.js";
 import { priorIdsFrom } from "./schema.js";
 import {
   AGENTS_STOP_DIRECTIVE,
@@ -4723,20 +4723,21 @@ describe("post — convergence rounds (issue #125)", () => {
     expect(decodedBlob(calls()).change_size).toBeUndefined();
   });
 
+  const postedWithDraft = async (draft: Record<string, unknown>): Promise<string> => {
+    writeFileSync(join(tmpDir, "findings.json"), JSON.stringify({ ...mkFindings([]), ...draft }));
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+    await post(mkInput({ route: "full review" }), api);
+    return patchedBody(calls());
+  };
+
   it.each([
-    ["a string", "the free-threaded probe"],
-    ["a blank entry", [" "]],
-    ["a null", null],
+    ["a blank entry", "0.11.0", [" "]],
+    ["a null", "0.11.0", null],
+    ["a legacy-version null", "0.4.0", null],
   ])(
-    "an unfinished list recovery drops (%s) still keeps the unfinished caveat, never a clean review",
-    async (_label, unfinished) => {
-      writeFileSync(
-        join(tmpDir, "findings.json"),
-        JSON.stringify({ ...mkFindings([]), schema_version: "0.11.0", unfinished }),
-      );
-      const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
-      await post(mkInput({ route: "full review" }), api);
-      const body = patchedBody(calls());
+    "an unreadable unfinished list (%s) keeps the unfinished caveat, never a clean review",
+    async (_label, schema_version, unfinished) => {
+      const body = await postedWithDraft({ schema_version, unfinished });
       expect(body).not.toContain("Review output was malformed");
       expect(body).not.toContain("clean review");
       expect(body).toMatch(/No findings[^\n]*unfinished/);
@@ -4744,35 +4745,35 @@ describe("post — convergence rounds (issue #125)", () => {
     },
   );
 
-  it("an unfinished list recovery trims keeps its readable entries beside the unreadable stand-in", async () => {
-    writeFileSync(
-      join(tmpDir, "findings.json"),
-      JSON.stringify({
-        ...mkFindings([]),
-        schema_version: "0.11.0",
-        unfinished: ["the pickle-bypass probe", " "],
-      }),
-    );
-    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
-    await post(mkInput({ route: "full review" }), api);
-    const body = patchedBody(calls());
+  it.each([
+    ["a bare string", { schema_version: "0.11.0", unfinished: "the pickle-bypass probe" }],
+    [
+      "a list a legacy codec drops",
+      { schema_version: "0.4.0", unfinished: ["the pickle-bypass probe"] },
+    ],
+    [
+      "a list beside a broken convergence",
+      { schema_version: "0.11.0", unfinished: ["the pickle-bypass probe"], convergence: "garbage" },
+    ],
+  ])(
+    "a readable unfinished check (%s) is named, with no unreadable stand-in",
+    async (_label, draft) => {
+      const body = await postedWithDraft(draft);
+      expect(body).not.toContain("Review output was malformed");
+      expect(body).not.toContain("clean review");
+      expect(body).toContain("the pickle-bypass probe");
+      expect(body).not.toContain(UNREADABLE_UNFINISHED_ENTRY);
+    },
+  );
+
+  it("a trimmed unfinished list keeps its readable entries beside the unreadable stand-in", async () => {
+    const body = await postedWithDraft({
+      schema_version: "0.11.0",
+      unfinished: ["the pickle-bypass probe", " "],
+    });
     expect(body).toContain("the pickle-bypass probe");
     expect(body).toContain(UNREADABLE_UNFINISHED_ENTRY);
     expect(body).toMatch(/\*\*Convergence\*\*[^\n]*2 unfinished checks/);
-  });
-
-  it("a readable unfinished list gets no unreadable stand-in", async () => {
-    writeFileSync(
-      join(tmpDir, "findings.json"),
-      JSON.stringify({
-        ...mkFindings([]),
-        schema_version: "0.11.0",
-        unfinished: ["the pickle-bypass probe"],
-      }),
-    );
-    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
-    await post(mkInput({ route: "full review" }), api);
-    expect(patchedBody(calls())).not.toContain(UNREADABLE_UNFINISHED_ENTRY);
   });
 
   it("a mechanic pass carries the convergence trajectory forward with no code append (#145 / #174)", async () => {

@@ -93,6 +93,7 @@ import {
 import type { SystemicProblem } from "./schema.js";
 import { advanceDialogue, dialogueAnswers, dialogueMetricsTable } from "./dialogue.js";
 import type { Convergence, Finding, Findings, ResultEnvelope, TestSummary } from "./schema.js";
+import { withDraftUnfinished } from "./unfinished.js";
 import { resolve, resolveTolerantFindings, supportedVersions } from "./registry.js";
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -230,21 +231,13 @@ const decodeFindings = (doc: unknown): FindingsLoadResult => {
   }
 };
 
-// The reviewer wrote an unfinished-checks list that recovery could not read in full: a stand-in entry
-// keeps the round's unfinished caveat, so a dropped list never turns it into a clean review.
-export const UNREADABLE_UNFINISHED_ENTRY = "unreadable entries in the unfinished-checks list";
-
-const withUnreadableUnfinishedEntry = (
-  doc: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> =>
-  ((candidate: Readonly<Record<string, unknown>>) =>
-    decodeFindings(candidate).kind === "ok" ? candidate : doc)({
-    ...doc,
-    unfinished: [
-      ...(Array.isArray(doc["unfinished"]) ? (doc["unfinished"] as readonly unknown[]) : []),
-      UNREADABLE_UNFINISHED_ENTRY,
-    ],
-  });
+const withDraftUnfinishedChecks = (
+  draft: unknown,
+  result: FindingsLoadResult,
+): FindingsLoadResult =>
+  result.kind === "ok"
+    ? { ...result, findings: withDraftUnfinished(draft, result.findings) }
+    : result;
 
 const loadFindings = (path: string): FindingsLoadResult => {
   let raw: unknown;
@@ -273,14 +266,10 @@ const loadFindings = (path: string): FindingsLoadResult => {
       process.stderr.write(
         `Warning: the review draft carried an invalid best-effort field (${recovered.stripped.join("/")}) — stripped it and used the rest; the pipeline re-stamps convergence\n`,
       );
-      return decodeFindings(
-        recovered.stripped.includes("unfinished")
-          ? withUnreadableUnfinishedEntry(recovered.doc)
-          : recovered.doc,
-      );
+      return withDraftUnfinishedChecks(raw, decodeFindings(recovered.doc));
     }
   }
-  return first;
+  return withDraftUnfinishedChecks(raw, first);
 };
 
 const noticeMessageFor = (result: Exclude<FindingsLoadResult, { kind: "ok" }>): string => {

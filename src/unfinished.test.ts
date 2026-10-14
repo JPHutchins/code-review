@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   UNREADABLE_UNFINISHED_ENTRY,
+  readableUnfinishedChecks,
   unfinishedNamedBy,
   withDraftUnfinished,
 } from "./unfinished.js";
@@ -21,10 +22,25 @@ describe("unfinishedNamedBy — every readable check, and a stand-in for whateve
     ["a blank string", " ", [UNREADABLE_UNFINISHED_ENTRY]],
     ["a null", null, [UNREADABLE_UNFINISHED_ENTRY]],
     ["an object", { check: "a" }, [UNREADABLE_UNFINISHED_ENTRY]],
-    ["a list with a blank entry", ["a", " "], ["a", UNREADABLE_UNFINISHED_ENTRY]],
-    ["a list with a non-string entry", [1, "a"], ["a", UNREADABLE_UNFINISHED_ENTRY]],
+    ["a list with a blank entry", ["a", " "], [UNREADABLE_UNFINISHED_ENTRY, "a"]],
+    ["a list with a non-string entry", [1, "a"], [UNREADABLE_UNFINISHED_ENTRY, "a"]],
+    [
+      "an echoed stand-in beside a blank entry",
+      [UNREADABLE_UNFINISHED_ENTRY, " "],
+      [UNREADABLE_UNFINISHED_ENTRY],
+    ],
   ])("%s", (_label, named, expected) => {
     expect(unfinishedNamedBy(named)).toEqual(expected);
+  });
+});
+
+describe("readableUnfinishedChecks — only the checks a next round could do", () => {
+  it.each<[string, unknown, readonly string[]]>([
+    ["a null", null, []],
+    ["a bare string", "a", ["a"]],
+    ["a list with a blank entry", [" ", "a"], ["a"]],
+  ])("%s", (_label, named, expected) => {
+    expect(readableUnfinishedChecks(named)).toEqual(expected);
   });
 });
 

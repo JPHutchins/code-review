@@ -15,6 +15,7 @@ import {
   mentionsOutsideKnown,
   discussionRows,
   STICKY_CHAR_LIMIT,
+  UNREADABLE_UNFINISHED_ENTRY,
 } from "./post.js";
 import { priorIdsFrom } from "./schema.js";
 import {
@@ -4720,6 +4721,58 @@ describe("post — convergence rounds (issue #125)", () => {
     // change_size was dropped — the blob carries no change_size (nothing re-adds it).
     expect(decodedBlob(calls()).convergence?.rounds).toHaveLength(1);
     expect(decodedBlob(calls()).change_size).toBeUndefined();
+  });
+
+  it.each([
+    ["a string", "the free-threaded probe"],
+    ["a blank entry", [" "]],
+    ["a null", null],
+  ])(
+    "an unfinished list recovery drops (%s) still keeps the unfinished caveat, never a clean review",
+    async (_label, unfinished) => {
+      writeFileSync(
+        join(tmpDir, "findings.json"),
+        JSON.stringify({ ...mkFindings([]), schema_version: "0.11.0", unfinished }),
+      );
+      const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+      await post(mkInput({ route: "full review" }), api);
+      const body = patchedBody(calls());
+      expect(body).not.toContain("Review output was malformed");
+      expect(body).not.toContain("clean review");
+      expect(body).toMatch(/No findings[^\n]*unfinished/);
+      expect(body).toContain(UNREADABLE_UNFINISHED_ENTRY);
+    },
+  );
+
+  it("an unfinished list recovery trims keeps its readable entries beside the unreadable stand-in", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        ...mkFindings([]),
+        schema_version: "0.11.0",
+        unfinished: ["the pickle-bypass probe", " "],
+      }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+    await post(mkInput({ route: "full review" }), api);
+    const body = patchedBody(calls());
+    expect(body).toContain("the pickle-bypass probe");
+    expect(body).toContain(UNREADABLE_UNFINISHED_ENTRY);
+    expect(body).toMatch(/\*\*Convergence\*\*[^\n]*2 unfinished checks/);
+  });
+
+  it("a readable unfinished list gets no unreadable stand-in", async () => {
+    writeFileSync(
+      join(tmpDir, "findings.json"),
+      JSON.stringify({
+        ...mkFindings([]),
+        schema_version: "0.11.0",
+        unfinished: ["the pickle-bypass probe"],
+      }),
+    );
+    const { api, calls } = mkMockGhApi(mocksWithPriorSticky({ rounds: 0 }));
+    await post(mkInput({ route: "full review" }), api);
+    expect(patchedBody(calls())).not.toContain(UNREADABLE_UNFINISHED_ENTRY);
   });
 
   it("a mechanic pass carries the convergence trajectory forward with no code append (#145 / #174)", async () => {

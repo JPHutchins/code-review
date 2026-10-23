@@ -371,6 +371,38 @@ describe("suppressed-nit aside — issue #164", () => {
     expect(out).toContain("src/a b.ts");
   });
 
+  it.each([
+    ["no nit has discussion", {}],
+    [
+      "only the first nit has discussion",
+      {
+        discussionByFinding: {
+          "nit-a": [
+            {
+              author: "alice",
+              when: "2026-10-21",
+              url: "https://github.com/owner/repo/pull/1#issuecomment-1",
+            },
+          ],
+        },
+      },
+    ],
+  ])("keeps every nit inside the one NOTE blockquote and its <details> when %s", (_case, over) => {
+    const aside = contiguousBlockFrom(
+      renderWith(
+        [nit({ id: "nit-a", title: "First" }), nit({ id: "nit-b", title: "Second" })],
+        over,
+      ),
+      (line) => line.startsWith("> <details><summary>🔇"),
+      (line) => line.startsWith(">"),
+    );
+    expect(aside.filter((line) => line.includes("<!-- code-review:suppressed-nit"))).toHaveLength(
+      2,
+    );
+    expect(aside.some((line) => line.includes("Second"))).toBe(true);
+    expect(aside.at(-1)).toBe("> </details>");
+  });
+
   it("still renders the aside on an incomplete round that carries suppressed nits (they must not vanish while the histogram counts them)", () => {
     expect(renderWith([nit({ title: "A" })], { incomplete: true })).toContain(
       "below the visibility floor",

@@ -5,6 +5,7 @@ import {
   decideCheckAction,
   decideCancelledAction,
   runIdFromUrl,
+  supersededOnHead,
   type ExistingCheck,
 } from "./checkrun.js";
 
@@ -181,6 +182,28 @@ describe("checkRun", () => {
     expect(body.output?.summary).toContain(INCOMPLETE_REMEDY);
   });
 
+  it("settles a superseded run's failure as cancelled — a newer run's check is on the head", async () => {
+    const calls: Array<{ args: readonly string[]; stdin?: string }> = [];
+    const ghApi = (args: readonly string[], stdin?: string): Promise<string> => {
+      calls.push({ args, stdin });
+      return Promise.resolve(
+        args.some((a) => a.includes("/check-runs?check_name="))
+          ? [
+              '{"id":1,"status":"in_progress","conclusion":null,"detailsUrl":"https://g/actions/runs/123"}',
+              '{"id":2,"status":"in_progress","conclusion":null,"detailsUrl":"https://g/actions/runs/124"}',
+            ].join("\n")
+          : "{}",
+      );
+    };
+    await checkRun(
+      { repo: "o/r", headSha: "abc", intent: "failure", runUrl: "https://g/actions/runs/123" },
+      ghApi,
+    );
+    const patch = calls.find((c) => c.args.includes("PATCH"));
+    expect(patch?.args).toContain("repos/o/r/check-runs/1");
+    expect(JSON.parse(patch?.stdin ?? "{}")).toMatchObject({ conclusion: "cancelled" });
+  });
+
   it("makes no write call when the decision is a no-op (already-neutral owned check)", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
     const ghApi = (args: readonly string[]): Promise<string> => {
@@ -208,5 +231,26 @@ describe("checkRun", () => {
       ghApi,
     );
     expect(calls.some((c) => c.args.includes("POST") || c.args.includes("PATCH"))).toBe(false);
+  });
+});
+
+describe("supersededOnHead", () => {
+  const check = (runId: string | null): ExistingCheck => ({
+    id: 1,
+    status: "in_progress",
+    conclusion: null,
+    detailsUrl: runId === null ? null : `https://g/actions/runs/${runId}`,
+  });
+  const runUrl = "https://g/actions/runs/123";
+
+  it("is true only when a check names a newer run", () => {
+    expect(supersededOnHead([check("124")], runUrl)).toBe(true);
+    expect(supersededOnHead([check("123"), check("99")], runUrl)).toBe(false);
+    expect(supersededOnHead([check(null)], runUrl)).toBe(false);
+    expect(supersededOnHead([], runUrl)).toBe(false);
+  });
+
+  it("compares run ids as numbers, not strings (1000 is newer than 999)", () => {
+    expect(supersededOnHead([check("1000")], "https://g/actions/runs/999")).toBe(true);
   });
 });

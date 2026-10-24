@@ -126,7 +126,7 @@ export const decideCancelledAction = (
 const CHECK_JQ =
   ".check_runs[] | {id: .id, status: .status, conclusion: .conclusion, detailsUrl: .details_url}";
 
-const fetchChecks = async (
+export const fetchChecks = async (
   repo: string,
   headSha: string,
   ghApi: GhApi,
@@ -174,10 +174,18 @@ export interface CheckRunInput {
 
 // Resolve the current check, decide the forward-only ownership-aware action, then apply it. Head SHA
 // (not the PR) is the whole key — no PR resolution needed, which is why this also works for fork PRs.
+// A newer run of the review on the same head superseded this one: its announce opened a check whose
+// details_url carries a larger run id. A superseded run is informational, never a failure.
+export const supersededOnHead = (checks: readonly ExistingCheck[], runUrl: string): boolean => {
+  const runId = Number(runIdFromUrl(runUrl) ?? Number.NaN);
+  return checks.some((c) => Number(runIdFromUrl(c.detailsUrl ?? "") ?? Number.NaN) > runId);
+};
+
 export const checkRun = async (input: CheckRunInput, ghApi: GhApi = runGhApi): Promise<void> => {
   const checks = await fetchChecks(input.repo, input.headSha, ghApi);
   const action =
-    input.intent === "cancelled"
+    input.intent === "cancelled" ||
+    (input.intent === "failure" && supersededOnHead(checks, input.runUrl))
       ? decideCancelledAction(checks, input.runUrl)
       : decideCheckAction(checks, input.intent, input.runUrl);
   if (action.kind === "noop") {

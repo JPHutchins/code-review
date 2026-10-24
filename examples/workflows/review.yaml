@@ -1471,7 +1471,8 @@ jobs:
   # (ownership-matched by details_url, so a superseding run's live check is never touched); result ==
   # 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`; result == 'success'
   # + the comment job FAILED or was CANCELLED with no `posted` signal (it ended before reporting) →
-  # the "did not complete" sticky + `failure` pair, which never overwrites a completed review; with
+  # the "did not complete" sticky + `failure` pair, which never overwrites a completed review and
+  # turns informational when a newer run superseded this one; with
   # `posted` set (true: landed; false: chose not to post) → settle the check `neutral` only — a
   # posted review must not be re-requested or failed. The
   # has_findings guard excludes a review that DID post but failed a later step (comment finalized it)
@@ -1576,10 +1577,11 @@ jobs:
           elif { [ "$REVIEW_RESULT" = "failure" ] && [ "$POSTED" != "true" ]; } || { [ "$REVIEW_RESULT" = "success" ] && { [ "$COMMENT_RESULT" = "failure" ] || [ "$COMMENT_RESULT" = "cancelled" ]; } && [ "$POSTED" = "" ]; }; then
             # A review that never LANDED: the review job died (anything-but-true, including a
             # deliberate false), or a SUCCEEDED review whose comment job failed or was cancelled with
-            # NO signal at all (POSTED = ''). A cancel without a signal is a superseding run or a
-            # runner that lost GitHub before the job could report; either way a post that did land
-            # stays, since neither command overwrites a completed review. A succeeded review with
-            # posted=false settles neutral below.
+            # NO signal at all (POSTED = ''): a lost findings download, or a runner that lost GitHub
+            # before the job could report. A post that did land stays, since neither command
+            # overwrites a completed review, and a run a newer one superseded (the PR's head moved,
+            # or a newer run's check is on this head) gets the informational notice from both
+            # commands instead. A succeeded review with posted=false settles neutral below.
             code-review report-incomplete \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

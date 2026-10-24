@@ -106,7 +106,7 @@ import {
 } from "./artifact.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
-import { INCOMPLETE_REMEDY, runIdFromUrl } from "./checkrun.js";
+import { fetchChecks, INCOMPLETE_REMEDY, runIdFromUrl, supersededOnHead } from "./checkrun.js";
 import {
   applyAnswered,
   applyAnsweredSystemic,
@@ -2670,6 +2670,16 @@ export const reportIncomplete = async (
     );
     return;
   }
+  const superseded =
+    input.cancelled === true
+      ? null
+      : await supersedingRun(input, candidates, resolution.prNumber, ghApi);
+  if (superseded !== null) {
+    process.stderr.write(
+      `This run was superseded (${superseded}) — posting the informational notice, not the failure one\n`,
+    );
+  }
+  const cancelled = input.cancelled === true || superseded !== null;
   const existing = await findBotComment(
     input.repo,
     resolution.prNumber,
@@ -2695,7 +2705,7 @@ export const reportIncomplete = async (
   // nothing ever posted) must not CREATE a lone "superseded" sticky — nothing superseded it. Only a
   // run that announced (or already posted its own notice) replaces its placeholder. A superseding run
   // will post its own review, so a missing sticky is not a gap.
-  if (input.cancelled && existing === null) {
+  if (cancelled && existing === null) {
     process.stderr.write(`Cancelled review has no sticky to supersede — leaving it absent\n`);
     return;
   }
@@ -2703,9 +2713,31 @@ export const reportIncomplete = async (
     input.repo,
     resolution.prNumber,
     existing,
-    input.cancelled
+    cancelled
       ? cancelledBody(input.headSha, input.runUrl, existing?.body)
       : incompleteBody(input.headSha, input.runUrl, existing?.body),
     ghApi,
   );
+};
+
+// A run is superseded when the PR moved on to a newer head, or a newer run of the review opened a
+// check on this head (SPEC §4.3: a superseded run is informational). The check lookup is best-effort:
+// when it fails, the run is reported as it would be without it.
+const supersedingRun = async (
+  input: ReportIncompleteInput,
+  candidates: Awaited<ReturnType<typeof fetchPrCandidates>>,
+  prNumber: number,
+  ghApi: GhApi,
+): Promise<string | null> => {
+  const prHead = candidates.find((c) => c.number === prNumber)?.headSha ?? "";
+  if (prHead !== "" && prHead.toLowerCase() !== input.headSha.toLowerCase()) {
+    return `the PR's head moved to ${prHead.slice(0, 7)}`;
+  }
+  try {
+    return supersededOnHead(await fetchChecks(input.repo, input.headSha, ghApi), input.runUrl)
+      ? "a newer run opened a check on this head"
+      : null;
+  } catch {
+    return null;
+  }
 };

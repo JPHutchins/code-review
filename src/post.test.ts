@@ -3949,6 +3949,51 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     expect(body).toContain("Re-run its failed jobs");
   });
 
+  // SPEC §4.3: a superseded run is informational. finalize cannot tell a comment job a newer run
+  // cancelled from one that was lost, so report-incomplete detects the supersede itself.
+  describe("a superseded run posts the informational notice, never the failure one", () => {
+    const runUrl = "https://github.com/owner/repo/actions/runs/12345";
+    const ownPlaceholder = [
+      "<!-- code-review -->",
+      "",
+      `🔄 **Code review in progress** for \`abc123d\` — see the [workflow run](${runUrl})`,
+    ].join("\n");
+    const patchedBody = async (prHead: string, checks: string): Promise<string> => {
+      const { api, calls } = mkMockGhApi([
+        { match: (a) => a[0]?.includes("/check-runs") ?? false, response: checks },
+        {
+          match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+          response: `{"number":42,"state":"open","headRef":"feature-branch","headSha":"${prHead}"}\n`,
+        },
+        { match: commentsMatch, response: commentRow(999, ownPlaceholder) },
+        { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+      ]);
+      await reportIncomplete(mkAnnounceInput({ runUrl }), api);
+      const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+      return (JSON.parse(patch!.stdin!) as CommentBody).body;
+    };
+    const newerRunCheck =
+      '{"id":2,"status":"in_progress","conclusion":null,"detailsUrl":"https://github.com/owner/repo/actions/runs/12399"}\n';
+
+    it("when the PR's head moved past this run's commit", async () => {
+      const body = await patchedBody("f".repeat(40), "");
+      expect(body).toContain("Code review superseded");
+      expect(body).not.toContain("did not complete");
+    });
+
+    it("when a newer run opened a check on the same head", async () => {
+      const body = await patchedBody("abc123def456", newerRunCheck);
+      expect(body).toContain("Code review superseded");
+      expect(body).not.toContain("did not complete");
+    });
+
+    it("but a run nothing superseded still reports that its review did not complete", async () => {
+      const ownCheck =
+        '{"id":1,"status":"in_progress","conclusion":null,"detailsUrl":"https://github.com/owner/repo/actions/runs/12345"}\n';
+      expect(await patchedBody("abc123def456", ownCheck)).toContain("Code review did not complete");
+    });
+  });
+
   it("overwrites its OWN in-progress placeholder and carries its re-review markers forward", async () => {
     const runUrl = "https://github.com/owner/repo/actions/runs/12345";
     const existing = [

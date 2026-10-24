@@ -268,7 +268,7 @@ so it costs the gather step, not a full review.
 
 In the copy-paste file, model configuration is committed step `env` on the two claude-invoking steps —
 models, efforts, the subagent model, and the tier aliases, scoped to where each is consumed. In the
-reusable workflow the same knobs are `with:` inputs. Only the backend endpoint is a per-repo **Actions
+reusable workflow the same knobs are `with:` inputs. The backend endpoint is a per-repo **Actions
 variable** (`API_BASE_URL`, required, no default — an unset endpoint fails loudly instead of letting
 the CLI choose where the key gets sent), and it is safe as one because the jail reaches only the host
 it names, and the setup fails closed when that host is neither a built-in provider (`anthropic.com`,

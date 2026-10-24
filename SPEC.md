@@ -307,9 +307,11 @@ appendix records only the platform facts that make the binding safe.
   job ([GitHub — security hardening][ghsec]; [GitHub Security Lab, Part 4][seclab4]).
 - **Least-privilege token.** The `review` job is granted read-only scopes; the `comment` job is granted
   only the write scopes it needs ([GitHub — controlling `GITHUB_TOKEN` permissions][ghtoken]).
-- **Egress lock on both jobs.** Enforced by a runner-hardening step ([StepSecurity][harden]); because
-  the lock arms at job start, the allowlist must also cover trusted setup (CLI/dependency installs), so
-  the allowlist is *not* the reviewer's containment — the read-only token and capped burner key are.
+- **Egress lock on every job.** The review agents run in a network namespace whose only way out is a
+  proxy that allows the model host and any declared extras ([sandbox-runtime][srt]); trusted setup
+  (CLI/dependency installs) runs before the jail, outside it. The write-token jobs, which run no agent
+  and no PR code, lock egress with a runner-hardening step ([StepSecurity][harden]). Neither lock is
+  the reviewer's whole containment — the read-only token and capped burner key are.
 - **Target resolution** derives the pull request from the trusted `workflow_run.head_sha`, disambiguated
   by `head_branch`; author-controlled artifacts never carry or override it.
 
@@ -349,6 +351,7 @@ adapter is Claude Code; an OpenCode or other CLI adapter drops into the same con
 [ppe]: https://owasp.org/www-project-top-10-ci-cd-security-risks/CICD-SEC-04-Poisoned-Pipeline-Execution
 [ppeorig]: https://medium.com/cider-sec/ppe-poisoned-pipeline-execution-34f4e8d0d4e9
 [harden]: https://docs.stepsecurity.io/github-actions/harden-runner
+[srt]: https://github.com/anthropic-experimental/sandbox-runtime
 [tjcve]: https://github.com/advisories/GHSA-mrrh-fwg8-r2c3
 [unit42]: https://unit42.paloaltonetworks.com/github-actions-supply-chain-attack/
 [codecov]: https://about.codecov.io/security-update/

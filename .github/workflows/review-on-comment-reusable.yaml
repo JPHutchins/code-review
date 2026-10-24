@@ -154,7 +154,7 @@ on:
         required: false
         default: "0.10"
       extra_endpoints:
-        description: Extra harden-runner allowed endpoints (single space-separated line). E.g. your package registries or the model host if not deepseek/anthropic.
+        description: Extra hostnames to allow through the review agent's sandbox egress proxy, on top of the model host derived from api_base_url. Passed through to review-reusable.yaml's extra_endpoints.
         type: string
         required: false
         default: ""
@@ -167,7 +167,7 @@ on:
         required: false
         default: ""
       egress_policy:
-        description: harden-runner egress-policy — 'block' to enforce, 'audit' for first-run discovery
+        description: Deprecated / no-op, passed through to review-reusable.yaml's egress_policy (the review agent is always jailed and the write-token jobs always block). Retained for interface compatibility.
         type: string
         required: false
         default: block

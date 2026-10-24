@@ -51,7 +51,7 @@ jobs:
       # id it does not recognize) — see model_full on review-reusable.yaml.
       model_full:      deepseek-v4-pro[1m]
       model_mechanic:  deepseek-v4-pro[1m]
-      # Optional per-repo tuning, same knobs as review.yaml — e.g. install_command, egress_policy,
+      # Optional per-repo tuning, same knobs as review.yaml — e.g. install_command, extra_endpoints,
       # the ceilings the comment overrides are clamped to (max_duration / max_usd), tier aliases.
       install_command: npm ci
       scope:            ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README (#139)

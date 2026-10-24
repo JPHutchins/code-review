@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
 import { dialogueMarker } from "./surface.js";
+import { LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX } from "./linked-issues.js";
 import type { DialogueEntry } from "./dialogue.js";
 
 const sampleDiff = `diff --git a/src/foo.ts b/src/foo.ts
@@ -74,6 +75,10 @@ const mkMockGhApi = (
     // NDJSON stream (no commits) unless a test mocks it explicitly above.
     if ((args[0]?.startsWith("repos/owner/repo/compare/") ?? false) && args.includes("--jq")) {
       return Promise.resolve("");
+    }
+    // The full review's closing-issues read runs for every success-route PR; default it to none.
+    if (args[0] === "graphql" && args.some((a) => a.includes("closingIssuesReferences"))) {
+      return Promise.resolve('{"totalCount":0,"nodes":[]}');
     }
     return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
   };
@@ -1684,5 +1689,61 @@ describe("gather — failing-job identity", () => {
     expect(JSON.parse(outFile("failed_jobs.json"))).toEqual([
       { name: null, conclusion: "failure" },
     ]);
+  });
+});
+
+describe("gather — the issues the PR closes", () => {
+  const prMocks = [
+    {
+      match: candidatesMatch,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
+    { match: diffMatch(42), response: sampleDiff },
+    { match: commentsMatch(42), response: "" },
+  ];
+  const closingIssuesRead = (a: readonly string[]): boolean =>
+    a[0] === "graphql" && a.some((x) => x.includes("closingIssuesReferences"));
+
+  it("stages them for the full review", async () => {
+    const { api } = mkMockGhApi([
+      ...prMocks,
+      {
+        match: closingIssuesRead,
+        response: JSON.stringify({
+          totalCount: 1,
+          nodes: [
+            {
+              number: 7,
+              title: "crash on a path input",
+              body: "repro: run it",
+              url: "https://github.com/owner/repo/issues/7",
+              state: "OPEN",
+              createdAt: null,
+              authorAssociation: "NONE",
+              author: { login: "reporter" },
+              repository: { nameWithOwner: "owner/repo" },
+            },
+          ],
+        }),
+      },
+      { match: (a) => a[0] === "repos/owner/repo/issues/7/comments", response: "" },
+    ]);
+    const { git } = mkMockGit([]);
+
+    await gather(mkInput({}), api, git);
+
+    expect(hasOutFile(join(LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX))).toBe(true);
+    expect(hasOutFile(join(LINKED_ISSUES_DIR, "owner__repo__7.json"))).toBe(true);
+  });
+
+  it("never asks on the CI-fix route", async () => {
+    const { api, calls } = mkMockGhApi([...prMocks, { match: jobsMatch, response: "" }]);
+    const { git } = mkMockGit([]);
+
+    await gather(mkInput({ conclusion: "failure" }), api, git);
+
+    expect(calls().some((c) => closingIssuesRead(c.args))).toBe(false);
+    expect(hasOutFile(LINKED_ISSUES_DIR)).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
 import { harvestResponses, RESPONSES_PER_CHANNEL } from "./responses.js";
+import { stageLinkedIssues } from "./linked-issues.js";
 import { priorIdsFrom } from "./schema.js";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
@@ -720,6 +721,10 @@ export const gather = async (
       reviews: reviews === null ? [] : reviewsFrom(reviews, input.botLogin),
     }),
   );
+
+  // The full review only: the CI-fix pass reads the failure, not the bug report.
+  if (input.conclusion === "success")
+    await stageLinkedIssues(input.repo, prNumber, input.outDir, ghApi);
 
   const jobLogs =
     input.conclusion === "failure"

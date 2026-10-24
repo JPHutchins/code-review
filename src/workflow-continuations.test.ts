@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { readRepoFile, allWorkflows } from "./test-util.js";
 import { DISPOSITIONS, RESPONSE_FORM, RULINGS } from "./response-grammar.js";
 import { MAINTAINER_ASSOCIATIONS } from "./responses.js";
+import { LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX } from "./linked-issues.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -101,7 +102,7 @@ describe("route prose — the reusable workflow and the example teach the SAME i
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|SUBAGENT_CONTEXT)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|SUBAGENT_CONTEXT|LINKED_ISSUES_NOTE|LINKED_ISSUES_TRIAGE)="/.test(
           line,
         ),
       )
@@ -395,8 +396,10 @@ describe("the subagent context — the fan-out subagents start with the full rev
     it(`${workflowPath}: the settings receive the context, empty unless the full-review branch set it`, () => {
       expect(lines).toContain('--subagent-context "$SUBAGENT_CONTEXT" \\');
       const reset = lines.indexOf('SUBAGENT_CONTEXT=""');
+      const branch = lines.indexOf('if [ "$CONCLUSION" = "success" ]; then');
       expect(reset).toBeGreaterThanOrEqual(0);
-      expect(lines.indexOf('if [ "$CONCLUSION" = "success" ]; then')).toBe(reset + 1);
+      expect(branch).toBeGreaterThan(reset);
+      expect(lines.slice(reset, branch).every((line) => /^[A-Z_]+=""$/.test(line))).toBe(true);
     });
 
     it(`${workflowPath}: a pinned CLI that drops the context is named, and an emitted hook or an empty context is quiet`, () => {
@@ -419,6 +422,77 @@ describe("the subagent context — the fan-out subagents start with the full rev
       );
       expect(warningFor({ Stop: [], SubagentStart: [{}] }, "All CI jobs have passed.")).toBe("");
       expect(warningFor({ Stop: [] }, "")).toBe("");
+    });
+  }
+});
+
+describe("the issues a PR closes — the triage screens them and the review is told, at gather's path", () => {
+  const indexCheck = `if [ -f "$GATHER_DIR/${LINKED_ISSUES_DIR}/${LINKED_ISSUES_INDEX}" ]; then`;
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const gatherDir = (withIndex: boolean): string => {
+    const dir = mkdtempSync(join(tmpdir(), "linked-issues-note-"));
+    roots.push(dir);
+    if (withIndex) {
+      mkdirSync(join(dir, LINKED_ISSUES_DIR));
+      writeFileSync(join(dir, LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX), "[]\n");
+    }
+    return dir;
+  };
+  const noteFrom = (block: string, name: string, withIndex: boolean): string =>
+    execFileSync(
+      "bash",
+      ["-euo", "pipefail", "-c", `${name}=""\n${block}\nprintf '%s' "$${name}"`],
+      {
+        env: { ...process.env, GATHER_DIR: gatherDir(withIndex) },
+        encoding: "utf-8",
+      },
+    );
+
+  for (const workflowPath of [
+    ".github/workflows/review-reusable.yaml",
+    "examples/workflows/review.yaml",
+  ]) {
+    const scriptOfStep = (needle: string): readonly string[] => {
+      const found = runScripts(workflowPath).find(({ script }) => script.includes(needle));
+      expect(found, needle).toBeDefined();
+      return found!.script.split("\n").map((line) => line.trim());
+    };
+    const blockAt = (lines: readonly string[]): string => {
+      const start = lines.indexOf(indexCheck);
+      expect(start, indexCheck).toBeGreaterThanOrEqual(0);
+      return lines.slice(start, lines.indexOf("fi", start) + 1).join("\n");
+    };
+
+    it(`${workflowPath}: the triage screens the folder only when gather staged one, for text aimed at an AI`, () => {
+      const triage = scriptOfStep("Decide whether it is safe to check out");
+      const block = blockAt(triage);
+      const staged = noteFrom(block, "LINKED_ISSUES_TRIAGE", true);
+      expect(staged).toContain(`/${LINKED_ISSUES_DIR}/`);
+      expect(staged).toContain("text addressed to an AI reviewer");
+      expect(staged).toContain("are not reasons");
+      expect(noteFrom(block, "LINKED_ISSUES_TRIAGE", false)).toBe("");
+      expect(
+        triage.some((line) => line.includes("${LINKED_ISSUES_TRIAGE} Respond with ONLY")),
+      ).toBe(true);
+    });
+
+    it(`${workflowPath}: the review is told where the issues are, as untrusted claims, only when gather staged them`, () => {
+      const review = scriptOfStep('SUBAGENT_CONTEXT="${CI_STATUS_NOTE}');
+      const block = blockAt(review);
+      const staged = noteFrom(block, "LINKED_ISSUES_NOTE", true);
+      expect(staged).toContain(`/${LINKED_ISSUES_DIR}/`);
+      expect(staged).toContain("UNTRUSTED");
+      expect(staged).toContain("that issue's repository, not in this one");
+      expect(noteFrom(block, "LINKED_ISSUES_NOTE", false)).toBe("");
+      expect(
+        review.some((line) => line.includes("$CONVERSATION_NOTE$LINKED_ISSUES_NOTE$ROUTE_NOTE")),
+      ).toBe(true);
+      expect(review.indexOf('LINKED_ISSUES_NOTE=""')).toBeLessThan(
+        review.indexOf('if [ "$CONCLUSION" = "success" ]; then'),
+      );
     });
   }
 });

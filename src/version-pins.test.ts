@@ -133,7 +133,11 @@ describe("harden-runner pins", () => {
     expect(
       sites.filter((site) => !/^[0-9a-f]{40}$/.test(site.ref ?? "")).map((site) => site.at),
     ).toEqual([]);
-    expect(new Set(sites.map((site) => `${site.ref ?? ""} ${site.label ?? ""}`)).size).toBe(1);
+    const sitesByPin = sites.reduce<Readonly<Record<string, readonly string[]>>>((groups, site) => {
+      const pin = `${site.ref ?? ""} # ${site.label ?? "(no label)"}`;
+      return { ...groups, [pin]: [...(groups[pin] ?? []), site.at] };
+    }, {});
+    expect(Object.keys(sitesByPin), JSON.stringify(sitesByPin, null, 2)).toHaveLength(1);
     expect(sites[0]?.label).toMatch(/^v\d+\.\d+\.\d+$/);
   });
 });

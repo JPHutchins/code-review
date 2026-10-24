@@ -149,9 +149,9 @@ toolchain or cache action:
         run: nix develop --command true                # warm the dev shell (outside the agent wall)
   ```
 
-  Hosts the composite needs (`cache.nixos.org`, package registries, the Actions cache backend, …) must
-  be reachable when harden-runner arms — run `egress_policy: audit` first to discover them, then pin
-  via `extra_endpoints` and switch back to `block`.
+  The composite runs before the agents' network jail, on the runner's own network, so the hosts it
+  needs (`cache.nixos.org`, package registries, the Actions cache backend, …) need no allowlist entry.
+  Only a host the jailed agents themselves must reach goes in `extra_endpoints`.
 
 ## Comment / ChatOps trigger (on-demand reviews)
 
@@ -254,22 +254,26 @@ so it costs the gather step, not a full review.
    reusable workflow checks out your repo, so it reads your committed price map too.
 4. `workflow_run` only fires from the **default branch** — merge first, then open a test PR. The
    introducing PR won't review itself. (Both paths.)
-5. First run: discover the real egress allowlist before locking it. Copy-paste: set the
-   `harden-runner` step's `egress-policy: audit`. Reusable: pass `egress_policy: audit`. Then switch
-   to `block` (copy-paste: add hosts to `allowed-endpoints`; reusable: add them via `extra_endpoints`)
+5. Egress needs no discovery run. The review agents run in a network jail that reaches only the
+   model host (derived from `API_BASE_URL`) and the hosts you add (copy-paste: `--extra` on the
+   `code-review sandbox-config` call; reusable: `extra_endpoints`), and a jail canary proves on every
+   run that nothing else is reachable
    ([SPEC Appendix A](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
-   An egress **canary** step then proves the lock actually engaged on every run — harden-runner before
-   v2.21.0 could silently degrade `block` to audit ([harden-runner#675](https://github.com/step-security/harden-runner/issues/675))
-   — and fails the job closed if it can reach the open internet. The reusable workflow skips it
-   automatically in audit mode; in the copy-paste file, comment it out during audit discovery.
+   The write-token jobs (announce, comment, finalize) always run harden-runner in `block` mode with a
+   fixed allowlist, and an egress **canary** proves on every run that the lock engaged — harden-runner
+   before v2.21.0 could silently degrade `block` to audit
+   ([harden-runner#675](https://github.com/step-security/harden-runner/issues/675)) — failing the job
+   closed if it can reach the open internet. The reusable's `egress_policy` input is a no-op kept for
+   compatibility.
 
 In the copy-paste file, model configuration is committed step `env` on the two claude-invoking steps —
 models, efforts, the subagent model, and the tier aliases, scoped to where each is consumed. In the
 reusable workflow the same knobs are `with:` inputs. Only the backend endpoint is a per-repo **Actions
 variable** (`API_BASE_URL`, required, no default — an unset endpoint fails loudly instead of letting
-the CLI choose where the key gets sent), and it is safe as one because the egress allowlist still pins
-the reachable hosts: a different provider means allowlisting its API host (copy-paste:
-`allowed-endpoints`; reusable: `extra_endpoints`).
+the CLI choose where the key gets sent), and it is safe as one because the jail reaches only the host
+it names, and the setup fails closed when that host is neither a built-in provider (`anthropic.com`,
+`deepseek.com`) nor one you declare (copy-paste: the `KNOWN_MODEL_HOSTS` variable; reusable:
+`known_model_hosts`).
 
 The approach was proven by a live review on
 [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691); see

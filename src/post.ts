@@ -439,7 +439,7 @@ const postInlineReview = async (
         const finding = inDiff[i];
         if (finding) unposted.push(finding);
         process.stderr.write(
-          `Warning: inline comment on ${c.path}:${String(c.line)} rejected (${errMsg(e)}) — surfacing that finding in the sticky instead (issue #57)\n`,
+          `${annotationSafe(`Warning: inline comment on ${c.path}:${String(c.line)} rejected (${errMsg(e)}) — surfacing that finding in the sticky instead (issue #57)`)}\n`,
         );
       }
     }

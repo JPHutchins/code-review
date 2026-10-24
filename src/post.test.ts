@@ -423,7 +423,7 @@ describe("post — the landed signal (issue #254)", () => {
 
   it.each([
     ["the review-object POST", () => mkInput({})],
-    ["the batched review and its body-only retry", () => mkInlineInput()],
+    ["the batched review, its body-only retry and each comment's re-post", () => mkInlineInput()],
   ])(
     "keeps gh's error text on each log line when %s fails, so it cannot start a workflow command",
     async (_case, input) => {
@@ -433,7 +433,8 @@ describe("post — the landed signal (issue #254)", () => {
       try {
         const { api } = mkMockGhApi(degradedFixtures());
         const forging: GhApi = (args, stdin, env) =>
-          args[0] === "repos/owner/repo/pulls/42/reviews" && !args.includes("--paginate")
+          (args[0] === "repos/owner/repo/pulls/42/reviews" && !args.includes("--paginate")) ||
+          (args[0] === "repos/owner/repo/pulls/42/comments" && args.includes("--input"))
             ? Promise.reject(new Error("HTTP 422\n::error::forged"))
             : api(args, stdin, env);
         await expect(post(input(), forging)).resolves.toBeUndefined();

@@ -223,7 +223,8 @@ each in the *trusted* default-branch context (`issue_comment` runs there, never 
   own sticky never begins with `/code-review`.
 
 The front-end's gate/ack jobs run only trusted code (the workflow + the CLI + the GitHub API), never
-PR code, so the egress lock stays where untrusted code executes — the reusable workflow's review job.
+PR code; they hold a write token, so they lock egress like the reusable workflow's write-token jobs.
+The network jail stays where untrusted code executes — the review job's agents.
 
 ## Cancel a review when the PR is merged or closed ([#183](../../../issues/183))
 

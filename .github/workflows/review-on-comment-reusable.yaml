@@ -207,7 +207,8 @@ jobs:
   # Trusted gate: parse the in-comment args, resolve the PR head from its NUMBER via the API, and ack.
   # No auth `if:` here — the CALLER owns authorization (only its reviewed workflow can even reach this
   # file), so the security boundary stays in the consumer's repo. This job runs only trusted code
-  # (this workflow + the code-review CLI + the GitHub API), never the PR's, so it needs no egress lock.
+  # (this workflow + the code-review CLI + the GitHub API), never the PR's; it still holds a write
+  # token, so its egress is locked like every write-token job.
   gate:
     runs-on: ubuntu-latest
     permissions:
@@ -235,6 +236,32 @@ jobs:
           node-version: "22"
       - name: Install code-review
         run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+
+      # Holds a write token, so lock egress like review-reusable.yaml's announce (it runs no untrusted
+      # PR code, but a write-token job never runs unenforced). Fixed host set: npm registry + the GitHub
+      # API; harden-runner admits the endpoints the runner itself needs on its own.
+      - name: Lock network egress
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            registry.npmjs.org:443
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            *.blob.core.windows.net:443
+
+      # The same fail-closed backstop as announce: the job fails if it can reach the open internet.
+      - name: Egress canary — verify the lock engaged
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
+            echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
+            exit 1
+          fi
+          echo "Egress canary could not connect — block policy verified"
 
       - name: Parse the command + resolve the PR head
         id: parse
@@ -359,6 +386,32 @@ jobs:
           node-version: "22"
       - name: Install code-review
         run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+
+      # Holds a write token, so lock egress like review-reusable.yaml's announce (it runs no untrusted
+      # PR code, but a write-token job never runs unenforced). Fixed host set: npm registry + the GitHub
+      # API; harden-runner admits the endpoints the runner itself needs on its own.
+      - name: Lock network egress
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            registry.npmjs.org:443
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            *.blob.core.windows.net:443
+
+      # The same fail-closed backstop as announce: the job fails if it can reach the open internet.
+      - name: Egress canary — verify the lock engaged
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null 2>&1 || { echo "::error::curl not found — cannot verify the egress lock; failing closed"; exit 1; }
+          if curl -sS --max-time 12 -o /dev/null https://example.com ||
+             curl -sS --max-time 12 -o /dev/null https://example.org; then
+            echo "::error::egress canary connected — the block egress policy did NOT engage (see the harden-runner step log); failing closed"
+            exit 1
+          fi
+          echo "Egress canary could not connect — block policy verified"
       - name: Update the acknowledgement (👀 → 🚀 / 😕)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

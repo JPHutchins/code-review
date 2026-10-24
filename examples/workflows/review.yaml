@@ -476,8 +476,8 @@ jobs:
           # The search reports its own end and grep's status, since srt turns a signal into exit 0 or 1:
           # a search that stopped part-way (a kill, the timeout, srt failing) leaves no report line.
           report=$(timeout --kill-after=10s 300 srt --settings "$RUNNER_TEMP/sandbox.json" -- \
-            bash -c "grep -rlF -D skip --exclude-dir=store -- \"\$0\" \"\$@\" 2>&1; echo \"token search finished: \$?\"" \
-            "$JOB_TOKEN" "${paths[@]}") || true
+            bash -c "token=\$1; shift; grep -rlF -D skip --exclude-dir=store -- \"\$token\" \"\$@\" 2>&1; echo \"token search finished: \$?\"" \
+            token-search "$JOB_TOKEN" "${paths[@]}") || true
           found=$(printf '%s\n' "$report" | grep '^/' || true)
           if [ -n "$found" ]; then
             echo "::error::the job token is on disk where the jailed agents can read it — refusing to start them:"

@@ -786,8 +786,10 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       expect(step.run).toContain("--exclude-dir=store");
       expect(step.run).not.toMatch(/sudo\s+grep/);
       expect(step.run).toMatch(
-        /srt --settings "\$RUNNER_TEMP\/sandbox\.json" -- \\\n\s*bash -c "grep -rlF/,
+        /srt --settings "\$RUNNER_TEMP\/sandbox\.json" -- \\\n\s*bash -c ".*grep -rlF/,
       );
+      // bash names its $0 in its own messages ("$0: line 1: … Killed"), so the token is never $0.
+      expect(step.run).toMatch(/\\\n\s*token-search "\$JOB_TOKEN" "\$\{paths\[@\]\}"\) \|\| true/);
     });
 
     it.skipIf(process.platform !== "linux")(

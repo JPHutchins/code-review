@@ -269,7 +269,9 @@ _Comments naming tokens outside this round's report could not be matched against
 >
 <% it.suppressedNits.forEach(function(n) { -%>
 > - `<%= n.path %>:<%= n.startLine %>` — <%= n.title %><% if (n.id) { %> (<% if (n.codeUrl) { %>[`<%~ n.id %>`](<%~ n.codeUrl %>)<% } else { %>`<%~ n.id %>`<% } %>)<% } %> _(m = <%= n.m %>)_
-<% if (n.discussionHtml) { %><%~ n.discussionHtml %><% } %>
+<% if (n.discussionHtml) { -%>
+<%~ n.discussionHtml %>
+<% } -%>
 > <%~ '<!-- code-review:suppressed-nit' %>
 > <%~ 'severity: ' + n.severity %>
 > <%~ 'location: ' + n.path + ':' + n.startLine + '-' + n.endLine + (n.side ? ' (' + n.side + ')' : '') %>

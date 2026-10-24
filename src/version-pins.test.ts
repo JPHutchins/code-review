@@ -167,7 +167,14 @@ describe("harden-runner pins", () => {
     run?: string;
   };
   type Job = { uses?: string; permissions?: unknown; steps?: readonly Step[] };
-  type Workflow = { permissions?: unknown; jobs: Record<string, Job> };
+  type Workflow = { on?: unknown; permissions?: unknown; jobs: Record<string, Job> };
+
+  // A step can be skipped when a condition might be false or its failure is tolerated; an explicit
+  // `if: true` / always() or `continue-on-error: false` cannot skip it.
+  const isSkippable = (step: Step): boolean =>
+    (step["continue-on-error"] !== undefined && step["continue-on-error"] !== false) ||
+    (step.if !== undefined &&
+      ![true, "true", "always()", "${{ always() }}"].includes(step.if as never));
 
   const REVIEW_WORKFLOW_REF =
     /^(?:\.\/|JPHutchins\/code-review\/)\.github\/workflows\/review[\w-]*\.ya?ml(?:@\S+)?$/;
@@ -215,13 +222,11 @@ describe("harden-runner pins", () => {
     const locks = steps.filter(isLock);
     if (locks.map((step) => String(step.with?.["egress-policy"])).join() !== "block")
       return "not exactly one block-mode lock";
-    if (locks[0]?.if !== undefined || locks[0]?.["continue-on-error"] !== undefined)
-      return "the lock can be skipped";
+    if (isSkippable(locks[0] ?? {})) return "the lock can be skipped";
     if (hostsOf(locks[0] ?? {}).join() !== (EXPECTED_HOSTS[name] ?? []).join())
       return `allows ${hostsOf(locks[0] ?? {}).join(" ")}, expected ${(EXPECTED_HOSTS[name] ?? ["(no entry)"]).join(" ")}`;
     if (canary === undefined) return "no canary after the lock";
-    if (canary.if !== undefined || canary["continue-on-error"] !== undefined)
-      return "the canary can be skipped";
+    if (isSkippable(canary)) return "the canary can be skipped";
     return canaryCommands(canary) === canonicalCanary ? null : "the canary differs from announce's";
   };
 
@@ -238,6 +243,14 @@ describe("harden-runner pins", () => {
         const at = `${path} → ${name}`;
         // A called workflow's own jobs carry the steps; a write grant may only flow into one of this
         // project's review workflows, which this test reads itself.
+        // In a reusable workflow an undeclared grant is the caller's; in a top-level one it is the
+        // repository default, which may be write-all.
+        const reusable =
+          workflow.on !== null &&
+          typeof workflow.on === "object" &&
+          Object.keys(workflow.on).includes("workflow_call");
+        if (job.uses !== undefined && granted === undefined && !reusable)
+          return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
         if (job.uses !== undefined)
           return granted !== undefined &&
             [...asPermissionSet(granted).values()].includes("write") &&

@@ -216,6 +216,7 @@ jobs:
   # token, so its egress is locked like every write-token job.
   gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10       # a quick job (install, lock, parse, react); bound a hung install/API
     permissions:
       contents: read
       # write, not read: a reaction on a PR comment is scoped to Pull requests (issues:write does NOT
@@ -260,7 +261,8 @@ jobs:
           echo "Egress canary could not connect — block policy verified"
 
       # A lock that refuses the GitHub API fails the gate here, before anything else calls it, with a
-      # message that names the lock (the parse below also fails loudly on a head it cannot resolve).
+      # message that names the lock (from the CLI after v0.1.0-alpha.73, the parse below also fails
+      # loudly on a head it cannot resolve).
       - name: Verify the GitHub API is reachable through the lock
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -411,6 +413,7 @@ jobs:
     # as 😕. Every comment that reaches the gate passed the caller's trigger filter.
     if: ${{ always() && (needs.gate.outputs.should_run == 'true' || needs.gate.result == 'failure') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10       # one reaction swap; bound a hung install/API
     permissions:
       pull-requests: write     # react to a PR comment ⇒ pull-requests:write (issues:write 403s)
     steps:

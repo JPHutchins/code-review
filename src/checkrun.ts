@@ -6,9 +6,10 @@
 // completed review finalizes it `neutral` (non-gating); a hard-failed review, or one whose comment
 // job ended without reporting a post, finalizes it `failure`;
 // a cancelled review finalizes its OWN check `cancelled` (issue #139). Every settlement is
-// OWNERSHIP-AWARE: it targets the check whose details_url carries this run's id (the announce stamps
-// `${server_url}/${repo}/actions/runs/<run_id>`), so a same-SHA supersede — where a newer run's
-// announce has already opened its own in-progress check — never settles the wrong run's check.
+// OWNERSHIP-AWARE: it targets the check whose external_id is this run's id (stamped when the check is
+// created), so a same-SHA supersede — where a newer run's announce has already opened its own
+// in-progress check — never settles the wrong run's check. Not details_url: GitHub replaces the one a
+// GitHub Actions token sends with the check's own page.
 
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -28,6 +29,7 @@ export interface ExistingCheck {
   readonly status: string;
   readonly conclusion: string | null;
   readonly detailsUrl: string | null;
+  readonly externalId?: string | null;
 }
 
 // Forward-only across the writers (comment finalizes `neutral`, attribute_failure finalizes
@@ -50,22 +52,25 @@ export type CheckAction =
 
 const settled = new Set(["success", "neutral", "skipped"]);
 
-// The run id the announce job stamps into the check's details_url (`.../actions/runs/<run_id>`), used
-// to attribute a check to the run that created it. null when the URL doesn't carry one.
+// The run id in a workflow run URL (`.../actions/runs/<run_id>`). null when the URL doesn't carry one.
 export const runIdFromUrl = (runUrl: string): string | null => {
   const m = /\/actions\/runs\/(\d+)\/?$/.exec(runUrl);
   return m?.[1] ?? null;
 };
 
-// The check THIS run's announce created — the one whose details_url ends with `/runs/<this run id>`.
-// Matching the numeric run id (not a substring of the whole URL) keeps a successor whose run id has
-// this one as a numeric prefix from being matched.
+// The run a check belongs to: its external_id, or — for a check created before the id was stamped
+// there — a run id its details_url still carries.
+const checkRunId = (check: ExistingCheck): string | null =>
+  check.externalId !== undefined && check.externalId !== null && /^\d+$/.test(check.externalId)
+    ? check.externalId
+    : runIdFromUrl(check.detailsUrl ?? "");
+
+// The check THIS run's announce created. Matching the whole run id (not a prefix) keeps a successor
+// whose run id has this one as a numeric prefix from being matched.
 const ownedCheck = (checks: readonly ExistingCheck[], runUrl: string): ExistingCheck | null => {
   const runId = runIdFromUrl(runUrl);
   if (runId === null) return null;
-  return (
-    checks.find((c) => c.detailsUrl !== null && c.detailsUrl.endsWith(`/runs/${runId}`)) ?? null
-  );
+  return checks.find((c) => checkRunId(c) === runId) ?? null;
 };
 
 export const decideCheckAction = (
@@ -104,8 +109,7 @@ export const decideCheckAction = (
   }
 };
 
-// Settle ONLY the check this run's announce created — matched by its details_url carrying this run's
-// id. Ownership-aware: on a concurrency-cancelled review the superseding run's announce has already
+// Settle ONLY the check this run's announce created — matched by its run id. Ownership-aware: on a concurrency-cancelled review the superseding run's announce has already
 // opened a NEWER in-progress check on the same head, and settling that one would falsely mark a live
 // review cancelled. Matching the numeric run id (not a substring of the whole URL) also keeps a
 // successor whose run id has this one as a numeric prefix from being matched.
@@ -124,7 +128,7 @@ export const decideCancelledAction = (
 };
 
 const CHECK_JQ =
-  ".check_runs[] | {id: .id, status: .status, conclusion: .conclusion, detailsUrl: .details_url}";
+  ".check_runs[] | {id: .id, status: .status, conclusion: .conclusion, detailsUrl: .details_url, externalId: .external_id}";
 
 export const fetchChecks = async (
   repo: string,
@@ -133,7 +137,9 @@ export const fetchChecks = async (
 ): Promise<readonly ExistingCheck[]> =>
   parseJsonl(
     await ghApi([
-      `repos/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_RUN_NAME)}&per_page=100`,
+      // filter=all: the default (latest) lists only the newest check per name, hiding this run's own
+      // check once a newer run opened one.
+      `repos/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_RUN_NAME)}&filter=all&per_page=100`,
       "--paginate",
       "--jq",
       CHECK_JQ,
@@ -174,13 +180,13 @@ export interface CheckRunInput {
 
 // Resolve the current check, decide the forward-only ownership-aware action, then apply it. Head SHA
 // (not the PR) is the whole key — no PR resolution needed, which is why this also works for fork PRs.
-// A newer run of the review on the same head superseded this one: its announce opened a check whose
-// details_url carries a larger run id. A superseded run is informational, never a failure. Scoped to
+// A newer run of the review on the same head superseded this one: its announce opened a check with a
+// larger run id. A superseded run is informational, never a failure. Scoped to
 // the commit, not the PR: a newer review of another PR at this exact head also counts — rare, and the
 // result is only informational.
 export const supersededOnHead = (checks: readonly ExistingCheck[], runUrl: string): boolean => {
   const runId = Number(runIdFromUrl(runUrl) ?? Number.NaN);
-  return checks.some((c) => Number(runIdFromUrl(c.detailsUrl ?? "") ?? Number.NaN) > runId);
+  return checks.some((c) => Number(checkRunId(c) ?? Number.NaN) > runId);
 };
 
 export const checkRun = async (input: CheckRunInput, ghApi: GhApi = runGhApi): Promise<void> => {
@@ -204,6 +210,7 @@ export const checkRun = async (input: CheckRunInput, ghApi: GhApi = runGhApi): P
           head_sha: input.headSha,
           status: action.status,
           details_url: input.runUrl,
+          ...((id) => (id === null ? {} : { external_id: id }))(runIdFromUrl(input.runUrl)),
           ...(action.conclusion ? { conclusion: action.conclusion } : {}),
           output: output(intent, input.runUrl),
         }

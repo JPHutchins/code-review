@@ -3975,7 +3975,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
       return (JSON.parse(patch!.stdin!) as CommentBody).body;
     };
     const newerRunCheck =
-      '{"id":2,"status":"in_progress","conclusion":null,"detailsUrl":"https://github.com/owner/repo/actions/runs/12399"}\n';
+      '{"id":2,"status":"in_progress","conclusion":null,"detailsUrl":"https://github.com/owner/repo/runs/2","externalId":"12399"}\n';
 
     it("when the PR's head moved past this run's commit", async () => {
       const body = await patchedBody("f".repeat(40), "");
@@ -4024,7 +4024,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
 
     it("but a run nothing superseded still reports that its review did not complete", async () => {
       const ownCheck =
-        '{"id":1,"status":"in_progress","conclusion":null,"detailsUrl":"https://github.com/owner/repo/actions/runs/12345"}\n';
+        '{"id":1,"status":"in_progress","conclusion":null,"detailsUrl":"https://github.com/owner/repo/runs/1","externalId":"12345"}\n';
       expect(await patchedBody("abc123def456", ownCheck)).toContain("Code review did not complete");
     });
   });

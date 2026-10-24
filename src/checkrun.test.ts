@@ -9,17 +9,21 @@ import {
   type ExistingCheck,
 } from "./checkrun.js";
 
+// As GitHub returns them: details_url is the check's own page (GitHub replaces what a GitHub Actions
+// token sends); the run id lives in external_id.
 const open = (id: number, runId: string | null): ExistingCheck => ({
   id,
   status: "in_progress",
   conclusion: null,
-  detailsUrl: runId === null ? null : `https://github.com/o/r/actions/runs/${runId}`,
+  detailsUrl: `https://github.com/o/r/runs/${String(id)}`,
+  externalId: runId,
 });
 const done = (id: number, runId: string | null, conclusion: string): ExistingCheck => ({
   id,
   status: "completed",
   conclusion,
-  detailsUrl: runId === null ? null : `https://github.com/o/r/actions/runs/${runId}`,
+  detailsUrl: `https://github.com/o/r/runs/${String(id)}`,
+  externalId: runId,
 });
 
 const ownedOpen = open(1, "123");
@@ -189,8 +193,8 @@ describe("checkRun", () => {
       return Promise.resolve(
         args.some((a) => a.includes("/check-runs?check_name="))
           ? [
-              '{"id":1,"status":"in_progress","conclusion":null,"detailsUrl":"https://g/actions/runs/123"}',
-              '{"id":2,"status":"in_progress","conclusion":null,"detailsUrl":"https://g/actions/runs/124"}',
+              '{"id":1,"status":"in_progress","conclusion":null,"detailsUrl":"https://g/runs/1","externalId":"123"}',
+              '{"id":2,"status":"in_progress","conclusion":null,"detailsUrl":"https://g/runs/2","externalId":"124"}',
             ].join("\n")
           : "{}",
       );
@@ -245,7 +249,8 @@ describe("supersededOnHead", () => {
     id: 1,
     status: "in_progress",
     conclusion: null,
-    detailsUrl: runId === null ? null : `https://g/actions/runs/${runId}`,
+    detailsUrl: "https://g/runs/1",
+    externalId: runId,
   });
   const runUrl = "https://g/actions/runs/123";
 
@@ -258,5 +263,47 @@ describe("supersededOnHead", () => {
 
   it("compares run ids as numbers, not strings (1000 is newer than 999)", () => {
     expect(supersededOnHead([check("1000")], "https://g/actions/runs/999")).toBe(true);
+  });
+});
+
+describe("check ownership — the run id GitHub keeps", () => {
+  const runUrl = "https://github.com/o/r/actions/runs/123";
+
+  it("matches a check by its external_id, not by a details_url GitHub rewrote", () => {
+    const own = done(7, "123", "failure");
+    expect(decideCheckAction([own], "neutral", runUrl)).toEqual({
+      kind: "patch",
+      id: 7,
+      status: "completed",
+      conclusion: "neutral",
+    });
+    expect(decideCheckAction([done(8, null, "failure")], "neutral", runUrl).kind).toBe("create");
+  });
+
+  it("still matches a check created before the id was stamped, by a run id its details_url carries", () => {
+    const legacy: ExistingCheck = {
+      id: 9,
+      status: "in_progress",
+      conclusion: null,
+      detailsUrl: "https://github.com/o/r/actions/runs/123",
+    };
+    expect(decideCancelledAction([legacy], runUrl)).toEqual({
+      kind: "patch",
+      id: 9,
+      status: "completed",
+      conclusion: "cancelled",
+    });
+  });
+
+  it("stamps the run id into external_id on create, and lists every check (filter=all)", async () => {
+    const calls: Array<{ args: readonly string[]; stdin?: string }> = [];
+    const ghApi = (args: readonly string[], stdin?: string): Promise<string> => {
+      calls.push({ args, stdin });
+      return Promise.resolve(args[0]?.includes("/check-runs?") === true ? "" : "{}");
+    };
+    await checkRun({ repo: "o/r", headSha: "abc", intent: "in_progress", runUrl }, ghApi);
+    expect(calls[0]?.args[0]).toContain("filter=all");
+    const post = calls.find((c) => c.args.includes("POST"));
+    expect(JSON.parse(post?.stdin ?? "{}")).toMatchObject({ external_id: "123" });
   });
 });

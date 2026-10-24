@@ -167,6 +167,16 @@ describe("checkRun", () => {
     expect(body).toMatchObject({ name: "Code review", head_sha: "abc", status: "in_progress" });
   });
 
+  it("a failure check blames no job, since finalize also files one when only the comment job died", async () => {
+    const { calls, ghApi } = capture();
+    await checkRun({ repo: "o/r", headSha: "abc", intent: "failure", runUrl: "u" }, ghApi);
+    const body = JSON.parse(calls.find((c) => c.args.includes("POST"))?.stdin ?? "{}") as {
+      output?: { summary?: string };
+    };
+    expect(body.output?.summary).not.toContain("review job failed");
+    expect(body.output?.summary).toContain("Re-run its failed jobs");
+  });
+
   it("makes no write call when the decision is a no-op (already-neutral owned check)", async () => {
     const calls: Array<{ args: readonly string[] }> = [];
     const ghApi = (args: readonly string[]): Promise<string> => {

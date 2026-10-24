@@ -2630,7 +2630,7 @@ const incompleteBody = (
   existingBody: string | undefined,
 ): string =>
   noticeBody(
-    `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — the review job failed ([run](${runUrl})). Re-request the review; do not treat this round as spent.`,
+    `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — this round's review never reached the PR ([run](${runUrl})). Re-run its failed jobs or re-request the review; do not treat this round as spent.`,
     existingBody,
   );
 

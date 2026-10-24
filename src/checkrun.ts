@@ -149,7 +149,7 @@ const output = (intent: CheckIntent, runUrl: string): { title: string; summary: 
     case "failure":
       return {
         title: "Code review did not complete",
-        summary: `The review job failed — [see the run](${runUrl}). Re-request the review; do not treat this round as spent.`,
+        summary: `This round's review never reached the PR — [see the run](${runUrl}). Re-run its failed jobs or re-request the review; do not treat this round as spent.`,
       };
     case "cancelled":
       return {

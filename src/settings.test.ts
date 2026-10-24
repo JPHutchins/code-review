@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { execFileSync } from "node:child_process";
 import { composeReviewSettings } from "./settings.js";
 
 describe("composeReviewSettings", () => {
@@ -48,5 +49,36 @@ describe("composeReviewSettings", () => {
   it("carries no matcher on the tool hooks, so they run for every tool (the CLI decides per tool)", () => {
     expect(settings.hooks.PreToolUse[0]).not.toHaveProperty("matcher");
     expect(settings.hooks.PostToolBatch[0]).not.toHaveProperty("matcher");
+  });
+});
+
+describe("composeReviewSettings — the context every subagent starts with", () => {
+  const withContext = (subagentContext?: string) =>
+    composeReviewSettings({
+      draftPath: "/work/findings.json",
+      stop: {},
+      budget: {},
+      ...(subagentContext !== undefined ? { subagentContext } : {}),
+    });
+
+  it.each([
+    ["no context", undefined],
+    ["an empty context (the CI-fix route)", ""],
+    ["a blank context", "  \n"],
+  ])("adds no SubagentStart hook for %s", (_case, subagentContext) => {
+    expect(withContext(subagentContext).hooks).not.toHaveProperty("SubagentStart");
+  });
+
+  it("hands every subagent type the context verbatim, in the hook-output JSON form, through sh", () => {
+    const context = `All CI jobs have passed: 3/3. Don't re-run it; $(touch /tmp/x) \`id\` "quoted" \\n stays literal.`;
+    const entries = withContext(context).hooks.SubagentStart ?? [];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).not.toHaveProperty("matcher");
+    const output = execFileSync("sh", ["-c", entries[0]!.hooks[0]!.command], {
+      encoding: "utf-8",
+    });
+    expect(JSON.parse(output)).toEqual({
+      hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: context },
+    });
   });
 });

@@ -19,8 +19,9 @@ on:
 
 # issue_comment runs in the DEFAULT-branch (trusted) context, so this file and its gate are your
 # reviewed code, never the PR's. This top-level block is the GITHUB_TOKEN ceiling — the union of what
-# the nested reusable jobs need (each narrows from it): the review job runs read-only, the comment
-# job writes the sticky/inline review, and the gate/ack react to the comment.
+# the nested reusable jobs need (each narrows from it): the review job runs read-only, the
+# announce/comment/finalize jobs write the sticky, inline review and check, and the gate/ack react to
+# the comment.
 permissions:
   contents: read
   actions: read
@@ -56,6 +57,5 @@ jobs:
       # tier aliases.
       install_command: npm ci
       scope:            ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README (#139)
-      known_model_hosts: ${{ vars.KNOWN_MODEL_HOSTS }}   # a model host outside anthropic.com / deepseek.com
     secrets:
       MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}

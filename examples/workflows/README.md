@@ -90,7 +90,7 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
   See the reusable workflow's [`inputs:` block](../../.github/workflows/review-reusable.yaml) for the
   full set (tier aliases, per-route time limits + grace periods + USD caps, `extra_endpoints`,
-  `egress_policy`, `scope`, `inline`).
+  `known_model_hosts`, `scope`, `inline`).
 
 ### Where findings appear
 
@@ -229,7 +229,9 @@ each in the *trusted* default-branch context (`issue_comment` runs there, never 
   own sticky never begins with `/code-review`.
 
 The front-end's gate/ack jobs run only trusted code (the workflow + the CLI + the GitHub API), never
-PR code, so the egress lock stays where untrusted code executes — the reusable workflow's review job.
+PR code, and run without an egress lock: the network jail stays where untrusted code executes — the
+review job's agents — while the reusable workflow's write-token jobs lock egress
+([#331](../../../issues/331) asks whether gate/ack should too).
 
 ## Cancel a review when the PR is merged or closed ([#183](../../../issues/183))
 

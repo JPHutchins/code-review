@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { allWorkflows, readRepoFile, repoRoot, WORKFLOW_EXTENSIONS } from "./test-util.js";
 import { readPackageVersion } from "./index.js";
 
@@ -145,4 +146,26 @@ describe("harden-runner pins", () => {
         .map((site) => `${site.at}: ${site.owner}/harden-runner@${site.ref} # ${site.label}`),
     ).toEqual([]);
   });
+
+  it.each([".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"])(
+    "%s: every write-token job locks egress with it in block mode",
+    (path) => {
+      const jobs = (
+        parseYaml(readRepoFile(path)) as {
+          jobs: Record<string, { steps?: { uses?: string; with?: Record<string, unknown> }[] }>;
+        }
+      ).jobs;
+      const locks = (job: string): readonly string[] =>
+        (jobs[job]?.steps ?? []).flatMap((step) =>
+          step.uses?.startsWith("step-security/harden-runner@") === true
+            ? [String(step.with?.["egress-policy"])]
+            : [],
+        );
+      expect(["announce", "comment", "finalize"].map((job) => [job, locks(job)])).toEqual([
+        ["announce", ["block"]],
+        ["comment", ["block"]],
+        ["finalize", ["block"]],
+      ]);
+    },
+  );
 });

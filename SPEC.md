@@ -309,7 +309,7 @@ appendix records only the platform facts that make the binding safe.
   job ([GitHub — security hardening][ghsec]; [GitHub Security Lab, Part 4][seclab4]).
 - **Least-privilege token.** The `review` job is granted read-only scopes; the `announce`, `comment`
   and `finalize` jobs are granted only the write scopes they need ([GitHub — controlling `GITHUB_TOKEN` permissions][ghtoken]).
-- **Egress lock on every job.** The review agents run in a network namespace whose only way out is a
+- **Egress locks on the agents and the write tokens.** The review agents run in a network namespace whose only way out is a
   proxy that allows the model host and any declared extras ([sandbox-runtime][srt]); trusted setup
   (CLI/dependency installs) runs before the jail, outside it. The write-token jobs, which run no agent
   and no PR code, lock egress with a runner-hardening step ([StepSecurity][harden]). Neither lock is

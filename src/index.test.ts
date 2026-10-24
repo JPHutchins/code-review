@@ -3002,3 +3002,32 @@ describe("cli — notice --sandbox-config (issue #97)", () => {
     expect(stderr).toBe("");
   });
 });
+
+describe("parse-command — a head it cannot resolve fails the gate, never a quiet skip", () => {
+  it("annotates an error, still writes should_run=false, and exits non-zero", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "fake-gh-"));
+    writeFileSync(join(bin, "gh"), "#!/bin/sh\necho 'HTTP 502: Bad Gateway' >&2\nexit 1\n", {
+      mode: 0o755,
+    });
+    const path = process.env["PATH"];
+    process.env["PATH"] = `${bin}:${path ?? ""}`;
+    try {
+      const out = await runCli([
+        "parse-command",
+        "--repo",
+        "owner/repo",
+        "--pr",
+        "42",
+        "--comment-body",
+        "/code-review look closely",
+      ]);
+      expect(out.stderr).toMatch(/^::error::code-review parse-command: could not resolve PR #42/m);
+      expect(out.stdout).toBe("should_run=false\n");
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.env["PATH"] = path;
+      process.exitCode = undefined;
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+});

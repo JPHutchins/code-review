@@ -77,3 +77,38 @@ export const allWorkflows = (): readonly string[] =>
 // able to seed its next round.
 export const legacyEmbeddedMarker = (document: unknown): string =>
   `<!-- code-review:findings-json;base64 ${Buffer.from(JSON.stringify(document), "utf-8").toString("base64")} -->`;
+
+export type PermissionSet = ReadonlyMap<string, string>;
+
+const EMPTY_PERMISSIONS: PermissionSet = new Map();
+
+// Every scope GitHub grants, so the `read-all` / `write-all` shorthands can be expanded to the set
+// they actually stand for instead of being read as no permissions at all.
+const ALL_SCOPES = [
+  "actions",
+  "attestations",
+  "checks",
+  "contents",
+  "deployments",
+  "discussions",
+  "id-token",
+  "issues",
+  "models",
+  "packages",
+  "pages",
+  "pull-requests",
+  "repository-projects",
+  "security-events",
+  "statuses",
+] as const;
+
+export const asPermissionSet = (declared: unknown): PermissionSet => {
+  if (declared === "read-all") return new Map(ALL_SCOPES.map((scope) => [scope, "read"]));
+  if (declared === "write-all") return new Map(ALL_SCOPES.map((scope) => [scope, "write"]));
+  if (declared === null || typeof declared !== "object") return EMPTY_PERMISSIONS;
+  return new Map(
+    Object.entries(declared).flatMap(([scope, access]) =>
+      typeof access === "string" ? [[scope, access] as const] : [],
+    ),
+  );
+};

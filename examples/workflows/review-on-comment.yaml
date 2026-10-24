@@ -57,5 +57,6 @@ jobs:
       # tier aliases.
       install_command: npm ci
       scope:            ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README (#139)
+      known_model_hosts: ${{ vars.KNOWN_MODEL_HOSTS }}   # a model host outside the built-in providers
     secrets:
       MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}

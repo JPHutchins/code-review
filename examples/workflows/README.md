@@ -229,9 +229,9 @@ each in the *trusted* default-branch context (`issue_comment` runs there, never 
   own sticky never begins with `/code-review`.
 
 The front-end's gate/ack jobs run only trusted code (the workflow + the CLI + the GitHub API), never
-PR code, and run without an egress lock: the network jail stays where untrusted code executes — the
-review job's agents — while the reusable workflow's write-token jobs lock egress
-([#331](../../../issues/331) asks whether gate/ack should too).
+PR code; they hold a write token, so from v0.1.0-alpha.74 they lock egress like the reusable
+workflow's write-token jobs, and the CI wait runs in a separate read-only job. The network jail stays
+where untrusted code executes — the review job's agents.
 
 ## Cancel a review when the PR is merged or closed ([#183](../../../issues/183))
 
@@ -267,9 +267,9 @@ so it costs the gather step, not a full review.
    `code-review sandbox-config` call; reusable: `extra_endpoints`), and a jail canary proves on every
    run that nothing else is reachable
    ([SPEC Appendix A](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
-   The write-token jobs (announce, comment, finalize) always run harden-runner in `block` mode with a
-   fixed allowlist, and an egress **canary** proves on every run that the lock engaged — harden-runner
-   before v2.21.0 could silently degrade `block` to audit
+   The write-token jobs (the on-comment gate and ack too, from v0.1.0-alpha.74) always run
+   harden-runner in `block` mode with a fixed allowlist, and an egress **canary** proves on every run
+   that the lock engaged — harden-runner before v2.21.0 could silently degrade `block` to audit
    ([harden-runner#675](https://github.com/step-security/harden-runner/issues/675)) — failing the job
    closed if it can reach the open internet. The reusable's `egress_policy` input is a no-op kept for
    compatibility.
@@ -279,8 +279,8 @@ models, efforts, the subagent model, and the tier aliases, scoped to where each 
 reusable workflow the same knobs are `with:` inputs. The backend endpoint is a per-repo **Actions
 variable** (`API_BASE_URL`, required, no default — an unset endpoint fails loudly instead of letting
 the CLI choose where the key gets sent), and it is safe as one because the jail reaches only the host
-it names, and the setup fails closed when that host is neither a built-in provider (`anthropic.com`,
-`deepseek.com`) nor one you declare (copy-paste: the `KNOWN_MODEL_HOSTS` variable; either reusable:
+it names, and the setup fails closed when that host is neither a built-in provider (a subdomain of
+`anthropic.com` or `deepseek.com`) nor one you declare (copy-paste: the `KNOWN_MODEL_HOSTS` variable; either reusable:
 `known_model_hosts`) or allow as an extra host.
 
 The approach was proven by a live review on

@@ -320,13 +320,14 @@ describe("parseCommand — PR resolution", () => {
     if (result.kind === "skip") expect(result.reason).toContain("not open");
   });
 
-  it("skips (does not throw) when the head resolution fails", async () => {
-    const api = mkMockGhApi([{ match: prHeadMatch, response: new Error("404") }]);
+  it("reports an error (never a quiet skip) when the head resolution fails", async () => {
+    const api = mkMockGhApi([{ match: prHeadMatch, response: new Error("HTTP 502") }]);
     const result = await parseCommand(
       { repo: "owner/repo", prNumber: 42, body: "/code-review go", options: OPTS },
       api,
     );
-    expect(result).toMatchObject({ kind: "skip" });
-    if (result.kind === "skip") expect(result.reason).toContain("could not resolve");
+    expect(result).toMatchObject({ kind: "error" });
+    if (result.kind === "error") expect(result.reason).toContain("could not resolve");
+    expect(renderCommandOutputs(result, "UNUSED")).toBe("should_run=false\n");
   });
 });

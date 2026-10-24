@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import { readdirSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { allWorkflows, readRepoFile, repoRoot, WORKFLOW_EXTENSIONS } from "./test-util.js";
+import {
+  allWorkflows,
+  asPermissionSet,
+  readRepoFile,
+  repoRoot,
+  WORKFLOW_EXTENSIONS,
+} from "./test-util.js";
 import { readPackageVersion } from "./index.js";
 
 // The pin shape, wherever a consumer-facing surface names it: a uses: line in a workflow or a
@@ -147,25 +153,119 @@ describe("harden-runner pins", () => {
     ).toEqual([]);
   });
 
-  it.each([".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"])(
-    "%s: every write-token job locks egress with it in block mode",
-    (path) => {
-      const jobs = (
-        parseYaml(readRepoFile(path)) as {
-          jobs: Record<string, { steps?: { uses?: string; with?: Record<string, unknown> }[] }>;
-        }
-      ).jobs;
-      const locks = (job: string): readonly string[] =>
-        (jobs[job]?.steps ?? []).flatMap((step) =>
-          step.uses?.startsWith("step-security/harden-runner@") === true
-            ? [String(step.with?.["egress-policy"])]
-            : [],
-        );
-      expect(["announce", "comment", "finalize"].map((job) => [job, locks(job)])).toEqual([
-        ["announce", ["block"]],
-        ["comment", ["block"]],
-        ["finalize", ["block"]],
-      ]);
-    },
-  );
+  // Derived from the jobs' own permissions, so a new write-token job cannot skip the lock unnoticed.
+  // The review workflows are the product; this repo's own ci and release jobs are not in scope.
+  const reviewWorkflows = (): readonly string[] =>
+    allWorkflows().filter((path) => /\/review[\w-]*\.ya?ml$/.test(path));
+
+  type Step = {
+    name?: string;
+    uses?: string;
+    if?: unknown;
+    "continue-on-error"?: unknown;
+    with?: Record<string, unknown>;
+    run?: string;
+  };
+  type Job = { uses?: string; permissions?: unknown; steps?: readonly Step[] };
+  type Workflow = { permissions?: unknown; jobs: Record<string, Job> };
+
+  const REVIEW_WORKFLOW_REF =
+    /^(?:\.\/|JPHutchins\/code-review\/)\.github\/workflows\/review[\w-]*\.ya?ml(?:@\S+)?$/;
+  const workflowOf = (path: string): Workflow => parseYaml(readRepoFile(path)) as Workflow;
+  const isLock = (step: Step): boolean =>
+    step.uses?.toLowerCase().startsWith("step-security/harden-runner@") === true;
+  const isCanary = (step: Step): boolean => (step.name ?? "").startsWith("Egress canary");
+  // The canary's commands, without its comments, which differ by job.
+  const canaryCommands = (step: Step): string =>
+    (step.run ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"))
+      .join("\n");
+
+  // Each write-token job's allowlist, exactly: the on-comment jobs reach only the npm registry and the
+  // GitHub API; the review workflow's jobs also download the findings artifact.
+  const NPM_AND_API = ["api.github.com:443", "registry.npmjs.org:443"];
+  const WITH_ARTIFACTS = [
+    "*.blob.core.windows.net:443",
+    "api.github.com:443",
+    "github.com:443",
+    "objects.githubusercontent.com:443",
+    "registry.npmjs.org:443",
+  ];
+  const EXPECTED_HOSTS: Readonly<Record<string, readonly string[]>> = {
+    gate: NPM_AND_API,
+    ack: NPM_AND_API,
+    announce: WITH_ARTIFACTS,
+    comment: WITH_ARTIFACTS,
+    finalize: WITH_ARTIFACTS,
+  };
+  const hostsOf = (step: Step): readonly string[] =>
+    ((endpoints: unknown) => (typeof endpoints === "string" ? endpoints : ""))(
+      step.with?.["allowed-endpoints"],
+    )
+      .split(/\s+/)
+      .filter((host) => host !== "")
+      .sort();
+
+  const lockProblem = (name: string, job: Job, canonicalCanary: string): string | null => {
+    const steps = job.steps ?? [];
+    const lock = steps.findIndex(isLock);
+    const canary = steps.find((step, index) => index > lock && isCanary(step));
+    const locks = steps.filter(isLock);
+    if (locks.map((step) => String(step.with?.["egress-policy"])).join() !== "block")
+      return "not exactly one block-mode lock";
+    if (locks[0]?.if !== undefined || locks[0]?.["continue-on-error"] !== undefined)
+      return "the lock can be skipped";
+    if (hostsOf(locks[0] ?? {}).join() !== (EXPECTED_HOSTS[name] ?? []).join())
+      return `allows ${hostsOf(locks[0] ?? {}).join(" ")}, expected ${(EXPECTED_HOSTS[name] ?? ["(no entry)"]).join(" ")}`;
+    if (canary === undefined) return "no canary after the lock";
+    if (canary.if !== undefined || canary["continue-on-error"] !== undefined)
+      return "the canary can be skipped";
+    return canaryCommands(canary) === canonicalCanary ? null : "the canary differs from announce's";
+  };
+
+  it("every review-workflow job that holds a write scope locks egress in block mode, with announce's canary after the lock", () => {
+    const announce = workflowOf(".github/workflows/review-reusable.yaml").jobs["announce"];
+    const canonicalCanary = canaryCommands((announce?.steps ?? []).find(isCanary) ?? {});
+    expect(canonicalCanary).toContain("https://example.com");
+    expect(canonicalCanary).toContain("https://example.org");
+    expect(canonicalCanary).toContain("exit 1");
+    const jobs = reviewWorkflows().flatMap((path) => {
+      const workflow = workflowOf(path);
+      return Object.entries(workflow.jobs).flatMap(([name, job]) => {
+        const granted = job.permissions !== undefined ? job.permissions : workflow.permissions;
+        const at = `${path} → ${name}`;
+        // A called workflow's own jobs carry the steps; a write grant may only flow into one of this
+        // project's review workflows, which this test reads itself.
+        if (job.uses !== undefined)
+          return granted !== undefined &&
+            [...asPermissionSet(granted).values()].includes("write") &&
+            !REVIEW_WORKFLOW_REF.test(job.uses)
+            ? [
+                {
+                  job: at,
+                  problem: `passes a write scope to ${job.uses}, which this test does not read`,
+                },
+              ]
+            : [];
+        if (granted === undefined)
+          return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
+        return [...asPermissionSet(granted).values()].includes("write")
+          ? [{ job: at, problem: lockProblem(name, job, canonicalCanary) }]
+          : [];
+      });
+    });
+    expect(jobs.map((entry) => entry.job)).toEqual([
+      ".github/workflows/review-on-comment-reusable.yaml → gate",
+      ".github/workflows/review-on-comment-reusable.yaml → ack",
+      ".github/workflows/review-reusable.yaml → announce",
+      ".github/workflows/review-reusable.yaml → comment",
+      ".github/workflows/review-reusable.yaml → finalize",
+      "examples/workflows/review.yaml → announce",
+      "examples/workflows/review.yaml → comment",
+      "examples/workflows/review.yaml → finalize",
+    ]);
+    expect(jobs.filter((entry) => entry.problem !== null)).toEqual([]);
+  });
 });

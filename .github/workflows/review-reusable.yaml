@@ -584,7 +584,12 @@ jobs:
             while read -r _ _ _ _ _ _ _ path; do
               case "$path" in /*) bound+=("$path") ;; esac
             done < /proc/net/unix
-            sockets=$(jailed bash -c "for path in \"\$@\"; do if [ -S \"\$path\" ] && [ -w \"\$path\" ]; then echo \"\$path\"; fi; done" _ "${bound[@]}" || true)
+            # The inventory reports its own end, since srt turns a signal into exit 0 or 1: one that
+            # stopped part-way (a kill, the timeout) leaves no report line.
+            inventory=$(jailed bash -c "for path in \"\$@\"; do if [ -S \"\$path\" ] && [ -w \"\$path\" ]; then echo \"\$path\"; fi; done; echo 'inventory finished'" _ "${bound[@]}") || true
+            [ "${inventory##*$'\n'}" = "inventory finished" ] \
+              || { echo "::error::the jail's socket inventory did not finish — failing closed"; exit 1; }
+            sockets=${inventory%$'\n'inventory finished}
             case "$sockets" in *"/nix/var/nix/daemon-socket/socket"*) ;; *) echo "::error::the jail's socket inventory did not run (the daemon's own socket is missing from it) — failing closed"; exit 1 ;; esac
             unknown=$(printf '%s\n' "$sockets" \
               | grep -Ev '^(/nix/var/nix/daemon-socket/socket|/tmp/srt-mux-[0-9]+-[0-9]+\.sock|/tmp/claude-(http|socks)-[0-9a-f]+\.sock)$' || true)
@@ -736,10 +741,23 @@ jobs:
           # masks applied, so a file they cannot read is out of reach and one they can is found.
           srt --settings "$RUNNER_TEMP/sandbox.json" -- true \
             || { echo "::error::the jail does not start, so the job token search cannot run — refusing to start the jailed agents"; exit 1; }
-          found=$(srt --settings "$RUNNER_TEMP/sandbox.json" -- grep -rlF -D skip --exclude-dir=store -- "$JOB_TOKEN" "${paths[@]}" 2>/dev/null || true)
+          # The search reports its own end and grep's status, since srt turns a signal into exit 0 or 1:
+          # a search that stopped part-way (a kill, the timeout, srt failing) leaves no report line.
+          report=$(timeout --kill-after=10s 300 srt --settings "$RUNNER_TEMP/sandbox.json" -- \
+            bash -c "token=\$1; shift; grep -rlF -D skip --exclude-dir=store -- \"\$token\" \"\$@\" 2>&1; echo \"token search finished: \$?\"" \
+            token-search "$JOB_TOKEN" "${paths[@]}") || true
+          found=$(printf '%s\n' "$report" | grep '^/' || true)
           if [ -n "$found" ]; then
             echo "::error::the job token is on disk where the jailed agents can read it — refusing to start them:"
             printf '%s\n' "$found"
+            exit 1
+          fi
+          # grep exits 2 on any error, so its messages tell a skipped unreadable or vanished file from a
+          # read that failed part-way.
+          grep_status=$(printf '%s\n' "$report" | sed -n 's/^token search finished: \([0-9]*\)$/\1/p')
+          failed=$(printf '%s\n' "$report" | grep '^grep: ' | grep -Ev ': (Permission denied|No such file or directory)$' || true)
+          if [ -z "$grep_status" ] || [ "$grep_status" -gt 2 ] || [ -n "$failed" ]; then
+            echo "::error::the job token search did not finish${failed:+ (${failed//$'\n'/; })} — refusing to start the jailed agents"
             exit 1
           fi
 

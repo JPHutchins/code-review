@@ -572,9 +572,40 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       (parseYaml(readRepoFile(workflowPath)) as { jobs: Record<string, { steps?: Step[] }> }).jobs,
     ).flatMap((job) => job.steps ?? []);
   const stepNamed = (workflowPath: string, name: string): Step => {
-    const step = stepsOf(workflowPath).find((candidate) => candidate.name === name);
-    expect(step, name).toBeDefined();
-    return step!;
+    const found = stepsOf(workflowPath).filter((candidate) => candidate.name === name);
+    expect(found, name).toHaveLength(1);
+    return found[0]!;
+  };
+  // An `srt` that answers for the jailed command the way the real one ends: `true` exits STUB_TRUE_RC
+  // (0 unless set), anything else prints STUB_OUT and exits STUB_RC. The real srt passes its child's
+  // status through but turns a signal into 0 or 1, so those are the codes a stopped check shows.
+  const withStubSrt = (
+    script: string,
+    stub: { out: string; rc: number; trueRc?: number },
+  ): { status: number | null; stdout: string } => {
+    const root = scratch();
+    mkdirSync(join(root, "bin"));
+    writeFileSync(
+      join(root, "bin", "srt"),
+      '#!/usr/bin/env bash\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ "$#" -gt 0 ] || exit 64\nshift\n[ "$1" = true ] && exit "$STUB_TRUE_RC"\nprintf \'%s\' "$STUB_OUT"\nexit "$STUB_RC"\n',
+      { mode: 0o755 },
+    );
+    // GitHub Actions runs a `run:` step as `bash --noprofile --norc -eo pipefail {0}`.
+    const run = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
+      env: {
+        ...process.env,
+        PATH: `${join(root, "bin")}:${process.env["PATH"] ?? ""}`,
+        RUNNER_TEMP: root,
+        HOME: root,
+        JOB_TOKEN: "ghs_tokenvalue",
+        STUB_OUT: stub.out,
+        STUB_RC: String(stub.rc),
+        STUB_TRUE_RC: String(stub.trueRc ?? 0),
+      },
+      encoding: "utf-8",
+      timeout: 30_000,
+    });
+    return { status: run.status, stdout: run.stdout };
   };
   const linesOf = (workflowPath: string, name: string): readonly string[] =>
     (stepNamed(workflowPath, name).run ?? "").split("\n").map((line) => line.trim());
@@ -754,8 +785,79 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       expect(step.run).toContain('/etc /nix /run /var/log "$RUNNER_TEMP"');
       expect(step.run).toContain("--exclude-dir=store");
       expect(step.run).not.toMatch(/sudo\s+grep/);
-      expect(step.run).toContain('srt --settings "$RUNNER_TEMP/sandbox.json" -- grep -rlF');
-      expect(step.run).toContain("exit 1");
+      expect(step.run).toMatch(
+        /srt --settings "\$RUNNER_TEMP\/sandbox\.json" -- \\\n\s*bash -c ".*grep -rlF/,
+      );
+      // bash names its $0 in its own messages ("$0: line 1: … Killed"), so the token is never $0.
+      expect(step.run).toMatch(/\\\n\s*token-search "\$JOB_TOKEN" "\$\{paths\[@\]\}"\) \|\| true/);
+    });
+
+    it.skipIf(process.platform !== "linux")(
+      `${workflowPath}: a socket inventory that did not report its end fails the canary, whatever it listed first`,
+      () => {
+        const lines = linesOf(workflowPath, CANARY);
+        const start = lines.findIndex((line) => line.startsWith("jailed() {"));
+        const end = lines.findIndex((line) => line.startsWith('[ -z "$unknown" ]'));
+        expect(start).toBeGreaterThanOrEqual(0);
+        expect(end).toBeGreaterThan(start);
+        const inventory = lines.slice(start, end + 1).join("\n");
+        const daemon = "/nix/var/nix/daemon-socket/socket\n";
+        expect(withStubSrt(inventory, { out: `${daemon}inventory finished\n`, rc: 0 }).status).toBe(
+          0,
+        );
+        const extra = withStubSrt(inventory, {
+          out: `${daemon}/run/dbus/system_bus_socket\ninventory finished\n`,
+          rc: 0,
+        });
+        expect(extra.status).toBe(1);
+        expect(extra.stdout).toContain("besides the Nix daemon's: /run/dbus/system_bus_socket —");
+        for (const rc of [0, 1]) {
+          const stopped = withStubSrt(inventory, { out: daemon, rc });
+          expect(stopped.status).toBe(1);
+          expect(stopped.stdout).toContain("the jail's socket inventory did not finish");
+        }
+      },
+    );
+
+    it(`${workflowPath}: the token search refuses the agents on a hit, a failed read, or a search that did not report its end`, () => {
+      const search = String(stepNamed(workflowPath, TOKEN).run);
+      const outcome = (
+        out: string,
+        rc: number,
+        trueRc = 0,
+      ): { status: number | null; stdout: string } => withStubSrt(search, { out, rc, trueRc });
+      const finished = (status: number): string => `token search finished: ${String(status)}\n`;
+      expect(outcome(finished(1), 1).status).toBe(0);
+      expect(outcome(`grep: /var/log/syslog: Permission denied\n${finished(2)}`, 2).status).toBe(0);
+      expect(outcome(`grep: /run/x.pid: No such file or directory\n${finished(2)}`, 2).status).toBe(
+        0,
+      );
+      for (const report of [
+        `/etc/nix/nix.custom.conf\n${finished(0)}`,
+        `/etc/nix/nix.custom.conf\ngrep: /var/log/auth.log: Permission denied\n${finished(2)}`,
+      ]) {
+        const hit = outcome(report, 0);
+        expect(hit.status).toBe(1);
+        expect(hit.stdout).toContain("the job token is on disk");
+        expect(hit.stdout).toContain("/etc/nix/nix.custom.conf");
+      }
+      const failedRead = outcome(`grep: /etc/x: Input/output error\n${finished(2)}`, 2);
+      expect(failedRead.status).toBe(1);
+      expect(failedRead.stdout).toContain(
+        "the job token search did not finish (grep: /etc/x: Input/output error)",
+      );
+      for (const [report, rc] of [
+        ["", 0],
+        ["", 1],
+        [finished(137), 137],
+      ] as const) {
+        const stopped = outcome(report, rc);
+        expect(stopped.status).toBe(1);
+        expect(stopped.stdout).toContain("the job token search did not finish");
+      }
+      const noJail = outcome(finished(1), 1, 1);
+      expect(noJail.status).toBe(1);
+      expect(noJail.stdout).toContain("the jail does not start");
     });
 
     it(`${workflowPath}: the main agent and every subagent are told to use the dev shell, only when it is open`, () => {

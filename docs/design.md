@@ -198,7 +198,11 @@ this doc.
   instruction aimed at the reviewer, and get it linked to an unrelated PR, and a bug report has no
   reason to address an AI. The triage treats only text addressed to an AI reviewer as unsafe (a
   report's code, commands and logs are expected), and an unsafe issue fails the round like an unsafe
-  diff.
+  diff. The issues the PR's description names (`#N`, `owner/repo#N`, an issue URL) are staged the same
+  way, marked `references` beside the `closes` ones: a PR often implements items of a tracking issue it
+  must not close, and the description is the PR author's, while anyone can comment. The triage's wall
+  clock grows with the files staged (three minutes, a minute per ten files, at most fifteen), so a
+  sprawling thread is screened rather than timed out.
 - **In-progress sticky at start.** A `workflow_run` review runs from the default branch and leaves no
   trace on the PR until it finishes, so a separate write-token `announce` job upserts a placeholder
   sticky ("review in progress", linking the run) the moment it starts. It runs in parallel with the

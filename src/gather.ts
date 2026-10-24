@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
 import { harvestResponses, RESPONSES_PER_CHANNEL } from "./responses.js";
-import { stageLinkedIssues } from "./linked-issues.js";
+import { stageLinkedIssues, triageWallSeconds } from "./linked-issues.js";
 import { priorIdsFrom } from "./schema.js";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
 import type { GhApi } from "./gh.js";
@@ -57,8 +57,10 @@ export type GatherResult =
       // The passed run's successful jobs out of those that ran, when its job list could be read —
       // told to the full review as its first words.
       readonly passedJobs: { readonly passed: number; readonly ran: number } | null;
-      // This run staged the issues the PR closes: the one fact the workflow's notes key on.
+      // This run staged the issues the PR closes or names: the one fact the workflow's notes key on.
       readonly linkedIssues: boolean;
+      // The triage's wall clock, grown with the issue files it must read.
+      readonly triageWallSec: number;
     };
 
 export const renderOutputs = (result: GatherResult): string => {
@@ -66,7 +68,7 @@ export const renderOutputs = (result: GatherResult): string => {
     case "skip":
       return "skip=true\n";
     case "gathered":
-      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\nstaged_job_logs=${String(result.stagedJobLogs)}\nfailing_jobs=${String(result.failingJobs)}\nci_jobs_passed=${result.passedJobs === null ? "" : String(result.passedJobs.passed)}\nci_jobs_ran=${result.passedJobs === null ? "" : String(result.passedJobs.ran)}\nlinked_issues=${String(result.linkedIssues)}\n`;
+      return `pr=${String(result.pr)}\nconclusion=${result.conclusion}\ndiff_size=${String(result.diffSize)}\nstacked=${String(result.stacked)}\nbase_sha=${result.baseSha}\nstaged_job_logs=${String(result.stagedJobLogs)}\nfailing_jobs=${String(result.failingJobs)}\nci_jobs_passed=${result.passedJobs === null ? "" : String(result.passedJobs.passed)}\nci_jobs_ran=${result.passedJobs === null ? "" : String(result.passedJobs.ran)}\nlinked_issues=${String(result.linkedIssues)}\ntriage_wall=${String(result.triageWallSec)}s\n`;
   }
 };
 
@@ -741,7 +743,7 @@ export const gather = async (
     input.conclusion === "success"
       ? await stagePassedRun(input.repo, input.runId, input.runAttempt, input.outDir, ghApi)
       : { staged: 0, passed: null };
-  const linkedIssuesStaged = (await linkedIssues)?.indexed ?? false;
+  const staged = await linkedIssues;
 
   return {
     kind: "gathered",
@@ -753,6 +755,7 @@ export const gather = async (
     stagedJobLogs: jobLogs.staged + passedRun.staged,
     failingJobs: jobLogs.failing,
     passedJobs: passedRun.passed,
-    linkedIssues: linkedIssuesStaged,
+    linkedIssues: staged?.indexed ?? false,
+    triageWallSec: triageWallSeconds(staged?.files ?? 0),
   };
 };

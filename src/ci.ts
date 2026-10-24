@@ -183,8 +183,8 @@ export const monotonicElapsed = (): (() => number) => {
   return () => performance.now() - start;
 };
 
-// ci_settled distinguishes "we know the CI result" from "we gave up waiting" so the gate can decline
-// the review on a non-settle rather than run it on a guessed conclusion.
+// ci_settled distinguishes "we know the CI result" from "we gave up waiting" so the review job can
+// decline to run on a non-settle rather than review on a guessed conclusion.
 export const renderCiOutputs = (outcome: CiOutcome): string =>
   outcome.kind === "concluded"
     ? `ci_settled=true\nci_conclusion=${outcome.conclusion}\nci_run_id=${String(outcome.runId)}\nci_run_attempt=${outcome.runAttempt === null ? "" : String(outcome.runAttempt)}\n`

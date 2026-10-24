@@ -2151,7 +2151,7 @@ const parseCommandCmd = defineCommand({
   meta: {
     name: "parse-command",
     description:
-      'Resolve a PR\'s head (SHA/branch/repo) from its NUMBER via the API and parse a ChatOps trigger comment ("/code-review [24m] [$1.00] <instructions>") into $GITHUB_OUTPUT lines. The untrusted comment is parsed here in type-safe code, never in workflow bash, and the head is resolved from the trusted PR number, never from the comment text. Emits should_run=false (and nothing else) when the comment is not the trigger, the PR is closed, or resolution fails.',
+      'Resolve a PR\'s head (SHA/branch/repo) from its NUMBER via the API and parse a ChatOps trigger comment ("/code-review [24m] [$1.00] <instructions>") into $GITHUB_OUTPUT lines. The untrusted comment is parsed here in type-safe code, never in workflow bash, and the head is resolved from the trusted PR number, never from the comment text. Emits should_run=false (and nothing else) when the comment is not the trigger or the PR is closed; when the head cannot be resolved (the comment WAS a command) it also annotates an ::error:: and exits 1, so the gate fails loudly.',
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },

@@ -15,8 +15,11 @@ import {
   COMMENT_READ_CONCURRENCY,
   LINKED_ISSUES_DIR,
   LINKED_ISSUES_INDEX,
+  LINKED_ISSUES_LIMIT,
   READABLE_LINE_CHARS,
+  referencedIssues,
   stageLinkedIssues,
+  triageWallSeconds,
 } from "./linked-issues.js";
 
 let outDir: string;
@@ -75,8 +78,8 @@ const ghWith = (closing: Reply, comments: Readonly<Record<string, Reply>> = {}) 
   return { api, calls };
 };
 
-const closingReply = (nodes: readonly unknown[], totalCount = nodes.length): string =>
-  JSON.stringify({ totalCount, nodes });
+const closingReply = (nodes: readonly unknown[], totalCount = nodes.length, body = ""): string =>
+  JSON.stringify({ body, closingIssuesReferences: { totalCount, nodes } });
 
 const staged = (...path: readonly string[]): string =>
   readFileSync(join(outDir, LINKED_ISSUES_DIR, ...path), "utf-8");
@@ -108,6 +111,7 @@ describe("stageLinkedIssues — every issue the PR closes, with every comment, o
 
     expect(stagedJson(LINKED_ISSUES_INDEX)).toEqual({
       closes: 2,
+      references: 0,
       issues: [
         expect.objectContaining({ number: 7, folder: "owner__repo__7", comments: 2 }),
         expect.objectContaining({
@@ -177,6 +181,7 @@ describe("stageLinkedIssues — every issue the PR closes, with every comment, o
       issues: 0,
       comments: 0,
       bytes: 0,
+      files: 0,
     });
     expect(existsSync(folder())).toBe(false);
   });
@@ -269,6 +274,7 @@ describe("stageLinkedIssues — every issue the PR closes, with every comment, o
       issues: 0,
       comments: 0,
       bytes: 0,
+      files: 0,
     });
     expect(warnings()).toEqual([expect.stringContaining("could not stage")]);
   });
@@ -288,5 +294,105 @@ describe("stageLinkedIssues — every issue the PR closes, with every comment, o
     expect(inFlight.peak).toBeLessThanOrEqual(COMMENT_READ_CONCURRENCY);
     expect(inFlight.peak).toBeGreaterThan(1);
     expect(readdirSync(folder())).toHaveLength(21);
+  });
+});
+
+describe("referencedIssues — the issues a PR description names", () => {
+  it("reads #N, owner/repo#N and issue URLs, in order and once each, without the PR itself", () => {
+    const body = [
+      "Implements #329 items 79-81 (see owner/repo#329 again), after other-org/lib_x#12.",
+      "Follows https://github.com/owner/repo/issues/40 and #3, which is this PR.",
+    ].join("\n");
+    expect(referencedIssues(body, "owner/repo", 3)).toEqual([
+      { repository: "owner/repo", number: 329 },
+      { repository: "other-org/lib_x", number: 12 },
+      { repository: "owner/repo", number: 40 },
+    ]);
+  });
+
+  it("is not fooled by code, headings, anchors or HTML entities", () => {
+    const body = [
+      "## Summary",
+      "`#11` in inline code, and a fence:",
+      "```",
+      "x = items[#12]",
+      "```",
+      "see the comment https://github.com/owner/repo/pull/5#issuecomment-123 and line #L40",
+      "an entity &#13; and a pull https://github.com/owner/repo/pull/14",
+    ].join("\n");
+    expect(referencedIssues(body, "owner/repo", 3)).toEqual([]);
+  });
+});
+
+describe("stageLinkedIssues — the issues the description names, beside the ones the PR closes", () => {
+  const restIssue = (repository: string, number: number, pull = false, commentCount = 1): string =>
+    JSON.stringify({
+      ...issueNode(repository, number, `tracking issue ${String(number)}`, commentCount),
+      pull,
+    });
+
+  it("stages a named issue as `references` with its comments, and skips a named pull request", async () => {
+    const { api } = ghWith(closingReply([], 0, "Implements #329 items 79-81; reverts #391."), {
+      "repos/owner/repo/issues/329": restIssue("owner/repo", 329),
+      "repos/owner/repo/issues/391": restIssue("owner/repo", 391, true),
+      "repos/owner/repo/issues/329/comments": commentRow("maintainer", "item 80: won't do"),
+    });
+    expect(await stageLinkedIssues("owner/repo", 395, outDir, api)).toMatchObject({
+      indexed: true,
+      issues: 1,
+      comments: 1,
+      files: 2,
+    });
+    expect(stagedJson(LINKED_ISSUES_INDEX)).toEqual({
+      closes: 0,
+      references: 1,
+      issues: [expect.objectContaining({ number: 329, relation: "references", comments: 1 })],
+    });
+    expect(staged("owner__repo__329", "comment-001.md")).toBe("item 80: won't do");
+    expect(existsSync(join(folder(), "owner__repo__391"))).toBe(false);
+    expect(warnings()).toEqual([]);
+  });
+
+  it("stages an issue the PR both closes and names once, as `closes`", async () => {
+    const { api, calls } = ghWith(closingReply([issueNode("owner/repo", 7)], 1, "Fixes #7."), {
+      "repos/owner/repo/issues/7/comments": "",
+    });
+    await stageLinkedIssues("owner/repo", 3, outDir, api);
+    expect(stagedJson(LINKED_ISSUES_INDEX)).toMatchObject({
+      closes: 1,
+      references: 0,
+      issues: [expect.objectContaining({ number: 7, relation: "closes" })],
+    });
+    expect(calls.some((args) => args[0] === "repos/owner/repo/issues/7")).toBe(false);
+  });
+
+  it("warns and skips a named issue it cannot read", async () => {
+    const { api } = ghWith(closingReply([], 0, "See #8."), {
+      "repos/owner/repo/issues/8": new Error("HTTP 404"),
+    });
+    expect((await stageLinkedIssues("owner/repo", 3, outDir, api)).indexed).toBe(false);
+    expect(warnings()).toEqual([expect.stringContaining("could not read owner/repo#8")]);
+  });
+
+  it(`stages at most ${String(LINKED_ISSUES_LIMIT)} in all, closing issues first, and names the cut`, async () => {
+    const closing = Array.from({ length: LINKED_ISSUES_LIMIT }, (_, i) =>
+      issueNode("owner/repo", i + 1, "b", 0),
+    );
+    const { api, calls } = ghWith(closingReply(closing, closing.length, "Also #900 and #901."));
+    expect((await stageLinkedIssues("owner/repo", 999, outDir, api)).issues).toBe(
+      LINKED_ISSUES_LIMIT,
+    );
+    expect(calls.some((args) => args[0] === "repos/owner/repo/issues/900")).toBe(false);
+    expect(warnings()).toEqual([expect.stringContaining("names 2 more issues; only 0")]);
+  });
+});
+
+describe("triageWallSeconds — the triage reads every staged issue file", () => {
+  it("is three minutes with none, a minute more per ten files, at most fifteen", () => {
+    expect(triageWallSeconds(0)).toBe(180);
+    expect(triageWallSeconds(1)).toBe(240);
+    expect(triageWallSeconds(10)).toBe(240);
+    expect(triageWallSeconds(11)).toBe(300);
+    expect(triageWallSeconds(10_000)).toBe(900);
   });
 });

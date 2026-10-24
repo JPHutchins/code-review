@@ -63,9 +63,11 @@ export const parseExtraEndpoints = (extra: string): readonly string[] =>
     .map((token) => token.replace(/:\d+$/, ""))
     .filter((token) => token.length > 0);
 
-// Opening Unix sockets (the Nix daemon's) is all-or-nothing on Linux, so it always comes with /run
-// masked inside the jail: the host's root daemons there (systemd-resolved over varlink or D-Bus, which
-// would carry DNS out of the jail, snapd, journald, PID 1's notify socket) stay out of reach.
+// The system logs are always masked inside the jail: setup steps log under sudo, and sudo records each
+// command line, environment included (a Nix installer's carries the job token), where the runner user
+// can read it. Opening Unix sockets (the Nix daemon's) is all-or-nothing on Linux, so it also masks
+// /run: the host's root daemons there (systemd-resolved over varlink or D-Bus, which would carry DNS out
+// of the jail, snapd, journald, PID 1's notify socket) stay out of reach.
 export const buildSandboxConfig = (opts: {
   readonly apiBaseUrl: string;
   readonly extra?: string;
@@ -80,7 +82,7 @@ export const buildSandboxConfig = (opts: {
   },
   filesystem: {
     allowRead: [],
-    denyRead: opts.allowUnixSockets === true ? ["/run"] : [],
+    denyRead: ["/var/log", "/run/log", ...(opts.allowUnixSockets === true ? ["/run"] : [])],
     allowWrite: ["/"],
     denyWrite: [],
   },

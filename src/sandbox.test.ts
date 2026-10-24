@@ -92,11 +92,11 @@ describe("buildSandboxConfig", () => {
     expect(config.network.allowedDomains).toEqual(["api.anthropic.com"]);
   });
 
-  it("disables filesystem isolation (network-only jail)", () => {
+  it("disables filesystem isolation except for the system logs (a network jail)", () => {
     const config = buildSandboxConfig({ apiBaseUrl: "https://api.deepseek.com" });
     expect(config.filesystem).toEqual({
       allowRead: [],
-      denyRead: [],
+      denyRead: ["/var/log", "/run/log"],
       allowWrite: ["/"],
       denyWrite: [],
     });
@@ -107,22 +107,25 @@ describe("buildSandboxConfig — Unix sockets for a Nix project's daemon", () =>
   it.each([
     ["by default", undefined],
     ["when not asked", false],
-  ])("keeps every Unix socket closed and /run visible %s", (_case, allowUnixSockets) => {
-    const config = buildSandboxConfig({
-      apiBaseUrl: "https://api.deepseek.com/anthropic",
-      ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
-    });
-    expect(config.network).not.toHaveProperty("allowAllUnixSockets");
-    expect(config.filesystem.denyRead).toEqual([]);
-  });
+  ])(
+    "keeps every Unix socket closed and masks only the system logs %s",
+    (_case, allowUnixSockets) => {
+      const config = buildSandboxConfig({
+        apiBaseUrl: "https://api.deepseek.com/anthropic",
+        ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
+      });
+      expect(config.network).not.toHaveProperty("allowAllUnixSockets");
+      expect(config.filesystem.denyRead).toEqual(["/var/log", "/run/log"]);
+    },
+  );
 
-  it("opens Unix sockets only together with /run masked inside the jail", () => {
+  it("opens Unix sockets only together with /run masked inside the jail, the logs still masked", () => {
     const config = buildSandboxConfig({
       apiBaseUrl: "https://api.deepseek.com/anthropic",
       allowUnixSockets: true,
     });
     expect(config.network.allowAllUnixSockets).toBe(true);
-    expect(config.filesystem.denyRead).toEqual(["/run"]);
+    expect(config.filesystem.denyRead).toEqual(["/var/log", "/run/log", "/run"]);
     expect(config.network.allowedDomains).toEqual(["api.deepseek.com"]);
   });
 });

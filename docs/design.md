@@ -75,8 +75,11 @@ step first closes every way out that opening would expose, verified on hosted ru
   manager stopped (it starts processes outside the jail), determinate-nixd's socket made root-only, the
   runner's .NET diagnostic sockets deleted, and `/run` masked inside the jail (systemd-resolved there
   would carry DNS out).
-- **No token on disk:** the Nix installer writes the job's GitHub token into a world-readable config. It
-  is removed, and a search for the token fails the job if any copy remains (#324).
+- **No token in reach:** the Nix installer writes the job's GitHub token into a world-readable config
+  and its receipt, and runs `sudo` with it in the environment, which sudo records in the journal and
+  `auth.log` (the runner user can read both). The config line is removed, the receipt's copies are
+  replaced, the system logs are masked inside every jail, and a search for the token, run from inside
+  the jail, fails the job if any copy remains in reach (#324).
 
 The canary proves each of these inside the jail before any PR data is fetched, and fails closed. Only
 Determinate Nix has been probed; upstream multi-user Nix uses the same unit and drop-in but is untested.

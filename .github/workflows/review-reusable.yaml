@@ -732,8 +732,11 @@ jobs:
           for path in /etc /nix /run /var/log "$RUNNER_TEMP" "$HOME/.config" "$HOME/.netrc" "$HOME/.git-credentials"; do
             if [ -e "$path" ]; then paths+=("$path"); fi
           done
-          # Searched as this user, who is the jailed agents' user: a file it cannot read is out of reach.
-          found=$(grep -rlF -D skip --exclude-dir=store -- "$JOB_TOKEN" "${paths[@]}" 2>/dev/null || true)
+          # Searched from inside the jail, as the agents see the machine: as their user, with the jail's
+          # masks applied, so a file they cannot read is out of reach and one they can is found.
+          srt --settings "$RUNNER_TEMP/sandbox.json" -- true \
+            || { echo "::error::the jail does not start, so the job token search cannot run — refusing to start the jailed agents"; exit 1; }
+          found=$(srt --settings "$RUNNER_TEMP/sandbox.json" -- grep -rlF -D skip --exclude-dir=store -- "$JOB_TOKEN" "${paths[@]}" 2>/dev/null || true)
           if [ -n "$found" ]; then
             echo "::error::the job token is on disk where the jailed agents can read it — refusing to start them:"
             printf '%s\n' "$found"

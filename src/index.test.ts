@@ -2867,7 +2867,7 @@ describe("cli — sandbox-config derived-host validation (issue #129)", () => {
       filesystem: { denyRead: string[] };
     };
     expect(config.network.allowAllUnixSockets).toBe(true);
-    expect(config.filesystem.denyRead).toEqual(["/run"]);
+    expect(config.filesystem.denyRead).toEqual(["/var/log", "/run/log", "/run"]);
   });
 
   it("warns loudly but still emits config for an unknown-provider host (fail-open is at least visible)", async () => {

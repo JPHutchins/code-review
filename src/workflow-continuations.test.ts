@@ -742,7 +742,7 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       );
     });
 
-    it(`${workflowPath}: the job token is searched for as the agents' user, after the checkout's copy is gone and before any agent`, () => {
+    it(`${workflowPath}: the job token is searched for from inside the jail, after the checkout's copy is gone and before any agent`, () => {
       const names = stepsOf(workflowPath).map((step) => step.name);
       const removal = names.indexOf("Remove the persisted git credential before the jailed agents");
       const search = names.indexOf(TOKEN);
@@ -754,6 +754,7 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       expect(step.run).toContain('/etc /nix /run /var/log "$RUNNER_TEMP"');
       expect(step.run).toContain("--exclude-dir=store");
       expect(step.run).not.toMatch(/sudo\s+grep/);
+      expect(step.run).toContain('srt --settings "$RUNNER_TEMP/sandbox.json" -- grep -rlF');
       expect(step.run).toContain("exit 1");
     });
 

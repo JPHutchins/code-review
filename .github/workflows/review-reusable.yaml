@@ -469,38 +469,19 @@ jobs:
           timeout 30s bwrap --unshare-net --unshare-user --bind / / -- /bin/sh -c 'exit 0' \
             || { echo "::error::bwrap cannot create an unprivileged user+net namespace — the sandbox cannot start on this runner; if kernel.apparmor_restrict_unprivileged_userns is non-zero, the AppArmor grant above did not take effect; failing closed"; exit 1; }
 
-          # A Nix project's dev shell needs its daemon, and Linux lets the jail reach it only by opening
-          # every Unix socket. So everything else that would expose is closed first, then the jail opens.
-          # The Nix installer also leaves the job's GITHUB_TOKEN in a world-readable config: removed.
+          # The Nix installer leaves the job's GITHUB_TOKEN in a world-readable config, and its receipt
+          # may carry the same: neither is left where the jailed agents can read it.
           for conf in /etc/nix/nix.conf /etc/nix/nix.custom.conf "$HOME/.config/nix/nix.conf"; do
-            if [ -f "$conf" ]; then sudo sed -i '/^[[:space:]]*access-tokens[[:space:]]*=/d' "$conf"; fi
+            if [ -f "$conf" ] && grep -q 'access-tokens' "$conf"; then
+              sudo sed -i --follow-symlinks '/^[[:space:]]*access-tokens[[:space:]]*=/d' "$conf"
+            fi
           done
+          if [ -f /nix/receipt.json ]; then sudo chmod 600 /nix/receipt.json; fi
+          # A Nix project's dev shell needs its daemon, and Linux lets the jail reach it only by opening
+          # every Unix socket. Asked for only when the project has a dev shell the daemon can serve.
           SOCKET_ARGS=()
-          if [ -S /nix/var/nix/daemon-socket/socket ]; then
-            # The daemon gets no network at all, so nothing a client asks for (a build, a fixed-output
-            # fetch, a substitution) leaves the runner; what the store holds still builds. No client is
-            # trusted, so none can turn its build sandbox off.
-            nix_conf=/etc/nix/nix.conf
-            if grep -q 'nix.custom.conf' /etc/nix/nix.conf; then nix_conf=/etc/nix/nix.custom.conf; fi
-            printf '%s\n' '' 'trusted-users = root' 'substitute = false' 'builders =' | sudo tee -a "$nix_conf" >/dev/null
-            sudo mkdir -p /etc/systemd/system/nix-daemon.service.d
-            printf '%s\n' '[Service]' 'PrivateNetwork=yes' | sudo tee /etc/systemd/system/nix-daemon.service.d/code-review-offline.conf >/dev/null
-            sudo systemctl daemon-reload
-            sudo systemctl restart nix-daemon.service
-            [ "$(systemctl show nix-daemon.service -p PrivateNetwork --value)" = "yes" ] \
-              || { echo "::error::the Nix daemon did not restart without network — refusing to open the jail to it; failing closed"; exit 1; }
-            nix store info >/dev/null \
-              || { echo "::error::the Nix daemon does not answer after its restart; failing closed"; exit 1; }
-            # The other sockets the runner user can open: root's container runtimes, its own user manager
-            # (which starts processes outside the jail), determinate-nixd, and the runner's .NET diagnostic
-            # ports (a memory dump of the job's worker). /run itself is masked inside the jail.
-            sudo systemctl stop docker.socket docker.service containerd.service 2>/dev/null || true
-            sudo rm -f /var/run/docker.sock /run/docker.sock /run/containerd/containerd.sock
-            sudo systemctl stop "user@$(id -u).service" 2>/dev/null || true
-            if [ -S /nix/var/determinate/determinate-nixd.socket ]; then sudo chmod 600 /nix/var/determinate/determinate-nixd.socket; fi
-            sudo rm -f /tmp/dotnet-diagnostic-*
-            # srt points TMPDIR here without creating it, and nix develop writes there.
-            mkdir -p /tmp/claude
+          if [ -S /nix/var/nix/daemon-socket/socket ] && command -v nix >/dev/null 2>&1 \
+            && { [ -f flake.nix ] || [ -f shell.nix ] || [ -f default.nix ]; }; then
             SOCKET_ARGS=(--allow-unix-sockets)
           fi
 
@@ -516,11 +497,35 @@ jobs:
             --out "$RUNNER_TEMP/sandbox.json"
           cat "$RUNNER_TEMP/sandbox.json"
 
-          # An older CLI ignores --allow-unix-sockets; the review hears of the dev shell only when the jail
-          # really opens to it.
+          # Everything the open sockets would expose is closed only once the jail really opens: an older
+          # CLI ignores --allow-unix-sockets, and then nothing on the host changes.
           NIX_DEVSHELL=false
           if [ "${#SOCKET_ARGS[@]}" -gt 0 ]; then
             if jq -e '.network.allowAllUnixSockets == true' "$RUNNER_TEMP/sandbox.json" >/dev/null; then
+              # The daemon gets no network at all, so nothing a client asks for (a build, a fixed-output
+              # fetch, a substitution) leaves the runner; what the store holds still builds. No client
+              # is trusted, so none can turn its build sandbox off.
+              nix_conf=/etc/nix/nix.conf
+              if grep -q 'nix.custom.conf' /etc/nix/nix.conf; then nix_conf=/etc/nix/nix.custom.conf; fi
+              printf '%s\n' '' 'trusted-users = root' 'substitute = false' 'builders =' | sudo tee -a "$nix_conf" >/dev/null
+              sudo mkdir -p /etc/systemd/system/nix-daemon.service.d
+              printf '%s\n' '[Service]' 'PrivateNetwork=yes' | sudo tee /etc/systemd/system/nix-daemon.service.d/code-review-offline.conf >/dev/null
+              sudo systemctl daemon-reload
+              sudo systemctl restart nix-daemon.service
+              [ "$(systemctl show nix-daemon.service -p PrivateNetwork --value)" = "yes" ] \
+                || { echo "::error::the Nix daemon did not restart without network — refusing to open the jail to it; failing closed"; exit 1; }
+              nix store info >/dev/null \
+                || { echo "::error::the Nix daemon does not answer after its restart; failing closed"; exit 1; }
+              # The other sockets the runner user can open: root's container runtimes, its own user
+              # manager (which starts processes outside the jail), determinate-nixd, and the runner's
+              # .NET diagnostic ports (a memory dump of the job's worker). /run is masked in the jail.
+              sudo systemctl stop docker.socket docker.service containerd.service 2>/dev/null || true
+              sudo rm -f /var/run/docker.sock /run/docker.sock /run/containerd/containerd.sock
+              sudo systemctl stop "user@$(id -u).service" 2>/dev/null || true
+              if [ -S /nix/var/determinate/determinate-nixd.socket ]; then sudo chmod 600 /nix/var/determinate/determinate-nixd.socket; fi
+              sudo rm -f /tmp/dotnet-diagnostic-*
+              # srt points TMPDIR here without creating it, and nix develop writes there.
+              mkdir -p /tmp/claude
               NIX_DEVSHELL=true
             else
               echo "::warning::the pinned code-review CLI (${CODE_REVIEW_VERSION}) does not open the jail to the Nix daemon, so the review cannot enter the dev shell"
@@ -568,16 +573,24 @@ jobs:
             && { echo "::error::sudo works inside the jail — failing closed"; exit 1; }
           if [ "${NIX_DEVSHELL:-}" = "true" ]; then
             jailed() { srt --settings "$RUNNER_TEMP/sandbox.json" -- "$@"; }
-            unknown=$(jailed bash -c 'find / \( -path /proc -o -path /sys -o -path /nix/store \) -prune -o -type s -writable -print 2>/dev/null' \
+            sockets=$(jailed bash -c 'find / \( -path /proc -o -path /sys -o -path /nix/store \) -prune -o -type s -writable -print 2>/dev/null' || true)
+            case "$sockets" in *"/nix/var/nix/daemon-socket/socket"*) ;; *) echo "::error::the jail's socket inventory did not run (the daemon's own socket is missing from it) — failing closed"; exit 1 ;; esac
+            unknown=$(printf '%s\n' "$sockets" \
               | grep -Ev '^(/nix/var/nix/daemon-socket/socket|/tmp/srt-mux-[0-9]+-[0-9]+\.sock|/tmp/claude-(http|socks)-[0-9a-f]+\.sock)$' || true)
             [ -z "$unknown" ] || { echo "::error::the jail can open Unix sockets besides the Nix daemon's: ${unknown//$'\n'/ } — failing closed"; exit 1; }
             jailed systemd-run --user --wait true >/dev/null 2>&1 \
               && { echo "::error::systemd-run --user starts processes outside the jail — failing closed"; exit 1; }
-            fetch=$(jailed nix build --no-link --impure --max-jobs 1 --expr 'derivation { name = "jail-canary-fetch"; system = "builtin"; builder = "builtin:fetchurl"; url = "https://example.com/"; outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; }' 2>&1) \
+            # A fixed-output fetch of a stable file with its true hash succeeds exactly when the daemon
+            # reached the network.
+            fetch=$(jailed nix build --no-link --impure --max-jobs 1 --expr 'derivation { name = "jail-canary-fetch"; system = "builtin"; builder = "builtin:fetchurl"; url = "https://cache.nixos.org/nix-cache-info"; outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "sha256-LJ3jc651pScWN2NQNERaXNOmrjWsbDBtQMDgZ2R4WJc="; }' 2>&1) \
               && { echo "::error::a fixed-output fetch through the Nix daemon succeeded — failing closed"; exit 1; }
             case "$fetch" in *"hash mismatch"*) echo "::error::the Nix daemon fetched from the network for the jail — failing closed"; exit 1 ;; esac
-            unsandboxed=$(jailed nix build --no-link --impure --max-jobs 1 --option sandbox false --expr 'derivation { name = "jail-canary-sandbox"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "exit 1" ]; }' 2>&1 || true)
-            case "$unsandboxed" in *"ignoring the client-specified setting 'sandbox'"*) ;; *) echo "::error::the Nix daemon did not refuse an untrusted client's sandbox setting — failing closed"; exit 1 ;; esac
+            # An untrusted client's sandbox setting must be ignored: a build that writes the host's /tmp
+            # when unsandboxed must leave nothing there.
+            sudo rm -f /tmp/code-review-sandbox-canary
+            jailed nix build --no-link --impure --max-jobs 1 --option sandbox false --expr 'derivation { name = "jail-canary-sandbox"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "touch /tmp/code-review-sandbox-canary; exit 1" ]; }' >/dev/null 2>&1 || true
+            [ ! -e /tmp/code-review-sandbox-canary ] \
+              || { echo "::error::a build ran outside the Nix sandbox for an untrusted client — failing closed"; exit 1; }
             jailed nix store info >/dev/null || echo "::warning::the jailed review cannot reach the Nix daemon"
           fi
           echo "Jail canary — non-allowlisted egress denied and the agent starts inside the jail"
@@ -703,11 +716,13 @@ jobs:
           JOB_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
+          command -v grep >/dev/null || { echo "::error::grep not found — cannot verify the job token is off disk; refusing to start the jailed agents"; exit 1; }
           paths=()
-          for path in /etc /nix/var /run "$RUNNER_TEMP" "$HOME/.config" "$HOME/.netrc" "$HOME/.git-credentials"; do
+          for path in /etc /nix /run "$RUNNER_TEMP" "$HOME/.config" "$HOME/.netrc" "$HOME/.git-credentials"; do
             if [ -e "$path" ]; then paths+=("$path"); fi
           done
-          found=$(sudo grep -rlF -D skip -- "$JOB_TOKEN" "${paths[@]}" 2>/dev/null || true)
+          # Searched as this user, who is the jailed agents' user: a file it cannot read is out of reach.
+          found=$(grep -rlF -D skip --exclude-dir=store -- "$JOB_TOKEN" "${paths[@]}" 2>/dev/null || true)
           if [ -n "$found" ]; then
             echo "::error::the job token is on disk where the jailed agents can read it — refusing to start them:"
             printf '%s\n' "$found"
@@ -1324,8 +1339,9 @@ jobs:
       # A failed build the agent started leaves root-owned lock files in the store, which a store-cache
       # save in the setup's post-steps cannot read.
       - name: Release the Nix store for the setup's post-steps
-        if: ${{ always() && steps.jail.outputs.nix_devshell == 'true' }}
-        run: sudo find /nix/store -maxdepth 1 -name '*.lock' -user root -delete || true
+        if: ${{ always() }}
+        run: |
+          if [ -d /nix/store ]; then sudo find /nix/store -maxdepth 1 -name '*.lock' -user root -delete || true; fi
 
       # Best-effort capture of the whole session transcript tree (both the triage and review agents —
       # the PR code is already public; no secrets live here) for advisory auditability only. Runs on

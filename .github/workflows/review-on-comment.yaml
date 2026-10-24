@@ -11,7 +11,8 @@ on:
     types: [created]
 
 # Top-level ceiling for the GITHUB_TOKEN — the union of what the nested reusable jobs need (each
-# narrows from this): review = read-only, comment = pull-requests/issues:write, gate/ack = react.
+# narrows from this): review = read-only, announce/comment/finalize = pull-requests/issues:write,
+# gate/ack = react.
 permissions:
   contents: read
   actions: read

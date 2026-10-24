@@ -203,7 +203,7 @@ own decision (the reference commenter's templates are the source of truth for it
 | Threat | Why it matters | Control |
 |---|---|---|
 | Untrusted content hijacks the reviewer (direct or indirect prompt injection) | The reviewer reads author-controlled text by design ([OWASP LLM01][llm01]; [NIST][nist]) | The reviewer holds no write/publish credential and no open egress; its worst output is a public comment (§2.2) |
-| Reviewer is induced to exfiltrate the model key or environment secrets | The "lethal trifecta" turns injection into exfiltration ([Willison][trifecta]) | Read-only credential; egress allowlist ([StepSecurity][harden]); burner key with hard spend cap; public comment is the sole accepted residual channel |
+| Reviewer is induced to exfiltrate the model key or environment secrets | The "lethal trifecta" turns injection into exfiltration ([Willison][trifecta]) | Read-only credential; egress allowlist ([sandbox-runtime][srt]); burner key with hard spend cap; public comment is the sole accepted residual channel |
 | Untrusted change runs in a privileged context (pwn request / poisoned pipeline execution) | A documented, high-impact CI class ([GitHub Security Lab][pwn]; [OWASP][ppe]; [Gil & Krivelevich][ppeorig]) | The privileged (write) role never executes the change; the trigger and reviewed commit come from CI, not author content |
 | Output carries a payload aimed at the maintainer (phishing, "ignore previous instructions") | A finding is untrusted text shown to a human | Rendered as data by a host that neutralizes active content; the commenter escapes all untrusted text (defense in depth) |
 | Output smuggles a second, conflicting result to flip the verdict | Appending an extra block could mask the real one | Recovery accepts exactly one validating candidate; ambiguity fails closed (§3.2) |
@@ -232,8 +232,9 @@ A conforming implementation MUST:
 - Run the commenter as a **separate execution context** with **no model key**, and never let it
   execute the change under review.
 - **Lock network egress** on **both** roles to minimal allowlists — the reviewer (holds the model key)
-  and the commenter (holds the write credential) ([StepSecurity][harden]; and see the exfiltration
-  precedents [CVE-2025-30066][tjcve], [Unit 42][unit42], [Codecov][codecov]).
+  and the commenter (holds the write credential). The reference binding confines the reviewer's agents
+  with [sandbox-runtime][srt] and the commenter's jobs with [StepSecurity][harden]; see the exfiltration
+  precedents [CVE-2025-30066][tjcve], [Unit 42][unit42], [Codecov][codecov].
 - Use a **burner model key with a hard spend cap**; a run SHOULD also enforce a per-run budget from the
   usage record and abort to a notice if a ceiling is exceeded.
 - Pass all untrusted content (change, logs, discussion, the deliverable itself) as **files or
@@ -295,8 +296,9 @@ backend; the same contract fits other agent CLIs (e.g. OpenCode) and any compati
 
 ## Appendix A — Reference realization: GitHub Actions (non-normative)
 
-The reference binding is a single `review.yaml` with two jobs — `review` (reviewer) and `comment`
-(commenter) — triggered by `workflow_run` on completion of the project's existing CI. The full,
+The reference binding is a single `review.yaml` with four jobs — `review` (reviewer), `comment`
+(commenter), and `announce` and `finalize`, which post the in-progress notice and settle the round
+whenever `comment` does not — triggered by `workflow_run` on completion of the project's existing CI. The full,
 copy-paste-ready file is [`examples/workflows/review.yaml`](examples/workflows/review.yaml); this
 appendix records only the platform facts that make the binding safe.
 
@@ -305,11 +307,13 @@ appendix records only the platform facts that make the binding safe.
   was unprivileged ([GitHub — events][events]; [GitHub — `pull_request_target`][prtarget]). That is
   exactly why the reviewer must never check out and run fork code, and why the write role is a separate
   job ([GitHub — security hardening][ghsec]; [GitHub Security Lab, Part 4][seclab4]).
-- **Least-privilege token.** The `review` job is granted read-only scopes; the `comment` job is granted
-  only the write scopes it needs ([GitHub — controlling `GITHUB_TOKEN` permissions][ghtoken]).
-- **Egress lock on both jobs.** Enforced by a runner-hardening step ([StepSecurity][harden]); because
-  the lock arms at job start, the allowlist must also cover trusted setup (CLI/dependency installs), so
-  the allowlist is *not* the reviewer's containment — the read-only token and capped burner key are.
+- **Least-privilege token.** The `review` job is granted read-only scopes; the `announce`, `comment`
+  and `finalize` jobs are granted only the write scopes they need ([GitHub — controlling `GITHUB_TOKEN` permissions][ghtoken]).
+- **Egress lock on every job.** The review agents run in a network namespace whose only way out is a
+  proxy that allows the model host and any declared extras ([sandbox-runtime][srt]); trusted setup
+  (CLI/dependency installs) runs before the jail, outside it. The write-token jobs, which run no agent
+  and no PR code, lock egress with a runner-hardening step ([StepSecurity][harden]). Neither lock is
+  the reviewer's whole containment — the read-only token and capped burner key are.
 - **Target resolution** derives the pull request from the trusted `workflow_run.head_sha`, disambiguated
   by `head_branch`; author-controlled artifacts never carry or override it.
 
@@ -333,7 +337,7 @@ adapter is Claude Code; an OpenCode or other CLI adapter drops into the same con
 4. **GitHub Security Lab (J. Lobačevski)** — [Preventing pwn requests (Part 1)][pwn]; [New vulnerability patterns and mitigations (Part 4)][seclab4].
 5. **GitHub** — [Securely using `pull_request_target`][prtarget]; [Events that trigger workflows][events]; [Security hardening for GitHub Actions][ghsec]; [Controlling permissions for `GITHUB_TOKEN`][ghtoken].
 6. **OWASP** — [CICD-SEC-04: Poisoned Pipeline Execution][ppe]; **O. Gil & D. Krivelevich (Cider Security)** — [PPE — Poisoned Pipeline Execution][ppeorig] (2022).
-7. **StepSecurity** — [Harden-Runner: egress filtering for CI runners][harden].
+7. **StepSecurity** — [Harden-Runner: egress filtering for CI runners][harden]; **Anthropic** — [sandbox-runtime: filesystem and network sandboxing for processes][srt].
 8. **GitHub Advisory Database** — [CVE-2025-30066 — tj-actions/changed-files][tjcve]; **Palo Alto Networks Unit 42** — [tj-actions & reviewdog supply-chain attack][unit42] (2025); **Codecov** — [Bash Uploader Security Update][codecov] (2021).
 9. **NIST CSRC Glossary** — [Least privilege][leastpriv].
 
@@ -349,6 +353,7 @@ adapter is Claude Code; an OpenCode or other CLI adapter drops into the same con
 [ppe]: https://owasp.org/www-project-top-10-ci-cd-security-risks/CICD-SEC-04-Poisoned-Pipeline-Execution
 [ppeorig]: https://medium.com/cider-sec/ppe-poisoned-pipeline-execution-34f4e8d0d4e9
 [harden]: https://docs.stepsecurity.io/github-actions/harden-runner
+[srt]: https://github.com/anthropic-experimental/sandbox-runtime
 [tjcve]: https://github.com/advisories/GHSA-mrrh-fwg8-r2c3
 [unit42]: https://unit42.paloaltonetworks.com/github-actions-supply-chain-attack/
 [codecov]: https://about.codecov.io/security-update/

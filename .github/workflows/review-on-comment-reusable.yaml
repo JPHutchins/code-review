@@ -259,14 +259,14 @@ jobs:
           fi
           echo "Egress canary could not connect — block policy verified"
 
-      # The parse below reads a failed API call as "nothing to run", so a lock that refuses the GitHub
-      # API would skip the review silently; this fails the gate loudly instead, and ack shows 😕.
+      # A lock that refuses the GitHub API fails the gate here, before anything else calls it, with a
+      # message that names the lock (the parse below also fails loudly on a head it cannot resolve).
       - name: Verify the GitHub API is reachable through the lock
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh api rate_limit --jq .rate.limit >/dev/null \
+          timeout 30 gh api rate_limit --jq .rate.limit >/dev/null \
             || { echo "::error::the GitHub API is unreachable through the egress lock — failing the gate"; exit 1; }
 
       - name: Parse the command + resolve the PR head
@@ -329,7 +329,8 @@ jobs:
         run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Wait for the head's CI run and emit its REAL conclusion + run id — the differentiator. The CLI
-      # bounds the wait (--timeout), so no job-level timeout is needed. ci_settled=false ⇒ CI never
+      # bounds the wait (--timeout; GitHub's 6-hour job cap bounds a larger ci_wait_timeout), so no
+      # job-level timeout is needed. ci_settled=false ⇒ CI never
       # concluded in time; the review job below declines rather than reviewing without a CI result.
       - name: Wait for CI to conclude
         id: ci
@@ -405,8 +406,9 @@ jobs:
   # Swap the 👀 ack for 🚀 (review completed → read the sticky) or 😕 (the run failed). Best-effort.
   ack:
     needs: [gate, ci, review]
-    # A gate that FAILED (a refused API, a broken lock) may already have posted 👀 and never says
-    # should_run, so it settles the acknowledgement too: the review is then skipped, which reads as 😕.
+    # A gate that FAILED (a refused API, a head it could not resolve, a broken lock) never says
+    # should_run; the request still failed, so ack settles it too: the review is skipped, which reads
+    # as 😕. Every comment that reaches the gate passed the caller's trigger filter.
     if: ${{ always() && (needs.gate.outputs.should_run == 'true' || needs.gate.result == 'failure') }}
     runs-on: ubuntu-latest
     permissions:

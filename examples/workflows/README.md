@@ -267,9 +267,9 @@ so it costs the gather step, not a full review.
    `code-review sandbox-config` call; reusable: `extra_endpoints`), and a jail canary proves on every
    run that nothing else is reachable
    ([SPEC Appendix A](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
-   The write-token jobs always run harden-runner in `block` mode with a fixed allowlist, and an egress
-   **canary** proves on every run that the lock engaged — harden-runner before v2.21.0 could silently
-   degrade `block` to audit
+   The write-token jobs (the on-comment gate and ack too, from v0.1.0-alpha.74) always run
+   harden-runner in `block` mode with a fixed allowlist, and an egress **canary** proves on every run
+   that the lock engaged — harden-runner before v2.21.0 could silently degrade `block` to audit
    ([harden-runner#675](https://github.com/step-security/harden-runner/issues/675)) — failing the job
    closed if it can reach the open internet. The reusable's `egress_policy` input is a no-op kept for
    compatibility.

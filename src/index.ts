@@ -2201,6 +2201,14 @@ const parseCommandCmd = defineCommand({
       process.stdout.write(renderCommandOutputs(result, "UNUSED"));
       return;
     }
+    if (result.kind === "error") {
+      process.stderr.write(
+        `${annotationSafe(`::error::code-review parse-command: ${result.reason} — failing the gate`)}\n`,
+      );
+      process.stdout.write(renderCommandOutputs(result, "UNUSED"));
+      process.exitCode = 1;
+      return;
+    }
     for (const note of result.args.notes)
       process.stderr.write(`code-review parse-command: ${note}\n`);
     const delim = safeHeredocDelim(result.args.instructions, () => randomBytes(16).toString("hex"));

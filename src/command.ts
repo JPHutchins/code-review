@@ -166,8 +166,11 @@ export interface CommandInput {
   readonly options: ParseOptions;
 }
 
+// `error` is a resolution the API refused or garbled — the comment WAS a command, so the gate fails
+// loudly instead of reading as "nothing to run".
 export type CommandResult =
   | { readonly kind: "skip"; readonly reason: string }
+  | { readonly kind: "error"; readonly reason: string }
   | {
       readonly kind: "run";
       readonly headSha: string;
@@ -192,7 +195,7 @@ export const parseCommand = async (
   );
   if (head instanceof Error) {
     return {
-      kind: "skip",
+      kind: "error",
       reason: `could not resolve PR #${String(input.prNumber)}: ${head.message}`,
     };
   }
@@ -226,7 +229,7 @@ export const safeHeredocDelim = (
 };
 
 export const renderCommandOutputs = (result: CommandResult, delim: string): string => {
-  if (result.kind === "skip") return "should_run=false\n";
+  if (result.kind !== "run") return "should_run=false\n";
   const { headSha, headBranch, headRepo, args } = result;
   return `${[
     "should_run=true",

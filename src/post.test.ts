@@ -3941,8 +3941,12 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     const body = (JSON.parse(postCall!.stdin!) as CommentBody).body;
     expect(body).toContain("<!-- code-review -->");
     expect(body).toContain("Code review did not complete");
-    expect(body).toContain("Re-request");
+    expect(body).toContain("re-request the review");
     expect(body).toContain("abc123d");
+    // finalize also posts this when the review succeeded and only the comment job died, so the
+    // notice blames no job and offers the re-run that re-posts saved findings.
+    expect(body).not.toContain("review job failed");
+    expect(body).toContain("Re-run its failed jobs");
   });
 
   it("overwrites its OWN in-progress placeholder and carries its re-review markers forward", async () => {
@@ -4038,7 +4042,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     expect(body).toContain("abc123d");
     // A superseded run is informational — never the crash/failure reading, never a re-request.
     expect(body).not.toContain("did not complete");
-    expect(body).not.toContain("Re-request");
+    expect(body).not.toMatch(/re-request/i);
     expect(body).not.toContain("review-complete");
     // The wording must not over-assert: `cancelled` also fires for a manual cancel, so the cause is
     // hedged with "typically", and the run it links is this (cancelled) one, not a "latest" run it

@@ -2065,7 +2065,7 @@ const reportIncompleteCmd = defineCommand({
   meta: {
     name: "report-incomplete",
     description:
-      "Post (or update) the sticky when a review job hard-failed and posted nothing — an attributed 'did not complete' notice linking the run, telling the reader to re-request; with --cancelled, the informational 'superseded — no action needed' notice instead (issue #139). Never buries a completed review, and never overwrites a superseding run's live in-progress placeholder.",
+      "Post (or update) the sticky when a round's review never reached the PR (its review job failed, or its comment job ended without posting) — an attributed 'did not complete' notice linking the run, telling the reader to re-run its failed jobs or re-request; with --cancelled, the informational 'superseded — no action needed' notice instead (issue #139). Never buries a completed review, and never overwrites a superseding run's live in-progress placeholder.",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },

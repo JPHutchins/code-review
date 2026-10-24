@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   checkRun,
+  INCOMPLETE_REMEDY,
   decideCheckAction,
   decideCancelledAction,
   runIdFromUrl,
@@ -165,6 +166,19 @@ describe("checkRun", () => {
     expect(write?.args).toContain("repos/o/r/check-runs");
     const body = JSON.parse(write?.stdin ?? "{}") as Record<string, unknown>;
     expect(body).toMatchObject({ name: "Code review", head_sha: "abc", status: "in_progress" });
+  });
+
+  it("a failure check blames no job, since finalize also files one when only the comment job died", async () => {
+    const { calls, ghApi } = capture();
+    await checkRun({ repo: "o/r", headSha: "abc", intent: "failure", runUrl: "u" }, ghApi);
+    const body = JSON.parse(calls.find((c) => c.args.includes("POST"))?.stdin ?? "{}") as {
+      output?: { summary?: string };
+    };
+    expect(body.output?.summary).not.toContain("review job failed");
+    // The check can be filed over a review that landed but lost its posted signal, so it claims only
+    // what the run knows: that it did not confirm the post.
+    expect(body.output?.summary).not.toContain("never reached");
+    expect(body.output?.summary).toContain(INCOMPLETE_REMEDY);
   });
 
   it("makes no write call when the decision is a no-op (already-neutral owned check)", async () => {

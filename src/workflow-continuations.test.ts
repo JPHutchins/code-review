@@ -101,7 +101,7 @@ describe("route prose — the reusable workflow and the example teach the SAME i
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|RERUN_RULE|SUBAGENT_CONTEXT)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|SUBAGENT_CONTEXT)="/.test(
           line,
         ),
       )
@@ -340,6 +340,21 @@ describe("path plumbing — the reusable and the example hand-mirror the staging
 });
 
 describe("the subagent context — the fan-out subagents start with the full review's CI facts", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const scratch = (): string => {
+    const root = mkdtempSync(join(tmpdir(), "subagent-context-"));
+    roots.push(root);
+    return root;
+  };
+  const bashOutput = (script: string, env: Readonly<Record<string, string>>): string =>
+    execFileSync("bash", ["-euo", "pipefail", "-c", script], {
+      env: { ...process.env, ...env },
+      encoding: "utf-8",
+    });
+
   for (const workflowPath of [
     ".github/workflows/review-reusable.yaml",
     "examples/workflows/review.yaml",
@@ -347,34 +362,34 @@ describe("the subagent context — the fan-out subagents start with the full rev
     const lines = runScripts(workflowPath)
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim());
+    const lineFrom = (prefix: string): string => {
+      const found = lines.find((line) => line.startsWith(prefix));
+      expect(found, prefix).toBeDefined();
+      return found!;
+    };
 
-    it(`${workflowPath}: the context is the CI status note plus the same re-run rule the prompt carries`, () => {
-      const assignments = lines.filter((line) =>
-        /^(RERUN_RULE|ROUTE_NOTE|SUBAGENT_CONTEXT)="\$\{(CI_JOBS_NOTE|CI_STATUS_NOTE)\}|^RERUN_RULE="/.test(
-          line,
-        ),
+    it(`${workflowPath}: the context is the status note and the very route note the main agent reads`, () => {
+      const gatherDir = scratch();
+      writeFileSync(join(gatherDir, "ci_jobs.json"), "[]\n");
+      const start = lines.findIndex((line) => line.startsWith('CI_STATUS_NOTE="All CI jobs'));
+      const end = lines.indexOf(
+        "fi",
+        lines.findIndex((line) => line.startsWith('elif [ -f "$GATHER_DIR/ci_jobs.json" ]')),
       );
-      expect(assignments).toHaveLength(3);
-      const [routeNote = "", context = "", rule = ""] = execFileSync(
-        "bash",
+      const [status = "", routeNote = "", context = ""] = bashOutput(
         [
-          "-euo",
-          "pipefail",
-          "-c",
-          `${assignments.join("\n")}\nprintf '%s\\0%s\\0%s' "$ROUTE_NOTE" "$SUBAGENT_CONTEXT" "$RERUN_RULE"`,
-        ],
-        {
-          env: {
-            ...process.env,
-            CI_STATUS_NOTE: "All CI jobs have passed: 3/3. ",
-            CI_JOBS_NOTE: "",
-          },
-          encoding: "utf-8",
-        },
+          ...lines.slice(start, end + 1),
+          lineFrom('ROUTE_NOTE="${CI_JOBS_NOTE}'),
+          lineFrom('SUBAGENT_CONTEXT="${CI_STATUS_NOTE}'),
+          `printf '%s\\0%s\\0%s' "$CI_STATUS_NOTE" "$ROUTE_NOTE" "$SUBAGENT_CONTEXT"`,
+        ].join("\n"),
+        { GATHER_DIR: gatherDir, STAGED_JOB_LOGS: "15", CI_JOBS_PASSED: "15", CI_JOBS_RAN: "15" },
       ).split("\0");
-      expect(rule).toContain("Never re-run what passed");
-      expect(routeNote.endsWith(rule)).toBe(true);
-      expect(context).toBe(`All CI jobs have passed: 3/3. ${rule}`);
+      expect(context).toBe(`${status}${routeNote.replace(/^ /, "")}`);
+      expect(context).toMatch(/^All CI jobs have passed: 15\/15, named in \S+ci_jobs\.json\. \S/);
+      expect(context).toContain("PR-controlled");
+      expect(context).toContain("A skipped job verified nothing");
+      expect(context).toContain("Never re-run what passed");
     });
 
     it(`${workflowPath}: the settings receive the context, empty unless the full-review branch set it`, () => {
@@ -382,6 +397,28 @@ describe("the subagent context — the fan-out subagents start with the full rev
       const reset = lines.indexOf('SUBAGENT_CONTEXT=""');
       expect(reset).toBeGreaterThanOrEqual(0);
       expect(lines.indexOf('if [ "$CONCLUSION" = "success" ]; then')).toBe(reset + 1);
+    });
+
+    it(`${workflowPath}: a pinned CLI that drops the context is named, and an emitted hook or an empty context is quiet`, () => {
+      const start = lines.findIndex((line) =>
+        line.startsWith('if [ -n "$SUBAGENT_CONTEXT" ] && ! jq'),
+      );
+      expect(start).toBeGreaterThanOrEqual(0);
+      const check = lines.slice(start, lines.indexOf("fi", start) + 1).join("\n");
+      const warningFor = (hooks: Readonly<Record<string, unknown>>, context: string): string => {
+        const runnerTemp = scratch();
+        writeFileSync(join(runnerTemp, "review-settings.json"), JSON.stringify({ hooks }));
+        return bashOutput(check, {
+          RUNNER_TEMP: runnerTemp,
+          SUBAGENT_CONTEXT: context,
+          CODE_REVIEW_VERSION: "0.1.0-alpha.70",
+        });
+      };
+      expect(warningFor({ Stop: [] }, "All CI jobs have passed.")).toMatch(
+        /^::warning::the pinned code-review CLI \(0\.1\.0-alpha\.70\) emitted no SubagentStart hook/,
+      );
+      expect(warningFor({ Stop: [], SubagentStart: [{}] }, "All CI jobs have passed.")).toBe("");
+      expect(warningFor({ Stop: [] }, "")).toBe("");
     });
   }
 });

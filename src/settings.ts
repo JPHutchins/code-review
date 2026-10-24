@@ -46,6 +46,25 @@ export interface ComposeSettingsOptions {
   readonly subagentContext?: string;
 }
 
+// The budget command self-dispatches on the stdin event, so it is built once and wired to both.
+export const composeReviewSettings = (opts: ComposeSettingsOptions): ReviewHookSettings => {
+  const budgetCommand = budgetHookCommand(opts.draftPath, opts.budget);
+  return {
+    hooks: {
+      Stop: commandHooks(defaultHookCommand(opts.draftPath, opts.stop)),
+      PreToolUse: commandHooks(budgetCommand),
+      PostToolBatch: commandHooks(budgetCommand),
+      ...(opts.subagentContext !== undefined && opts.subagentContext.trim().length > 0
+        ? { SubagentStart: commandHooks(subagentContextHookCommand(opts.subagentContext)) }
+        : {}),
+    },
+  };
+};
+
+const commandHooks = (command: string): readonly HookEntry[] => [
+  { hooks: [{ type: "command", command }] },
+];
+
 // The JSON additionalContext form, the only one that reaches the subagent's context.
 export const subagentContextHookCommand = (context: string): string =>
   `printf '%s\\n' ${shellQuote(
@@ -53,28 +72,3 @@ export const subagentContextHookCommand = (context: string): string =>
       hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: context },
     }),
   )}`;
-
-// The budget command self-dispatches on the stdin event, so it is built once and wired to both.
-export const composeReviewSettings = (opts: ComposeSettingsOptions): ReviewHookSettings => {
-  const budgetCommand = budgetHookCommand(opts.draftPath, opts.budget);
-  return {
-    hooks: {
-      Stop: [
-        { hooks: [{ type: "command", command: defaultHookCommand(opts.draftPath, opts.stop) }] },
-      ],
-      PreToolUse: [{ hooks: [{ type: "command", command: budgetCommand }] }],
-      PostToolBatch: [{ hooks: [{ type: "command", command: budgetCommand }] }],
-      ...(opts.subagentContext !== undefined && opts.subagentContext.trim().length > 0
-        ? {
-            SubagentStart: [
-              {
-                hooks: [
-                  { type: "command", command: subagentContextHookCommand(opts.subagentContext) },
-                ],
-              },
-            ],
-          }
-        : {}),
-    },
-  };
-};

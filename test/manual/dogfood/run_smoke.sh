@@ -14,6 +14,8 @@
 #   LABEL=dollars WALL=30m BUDGET_USD=0.05 PRICES=... run_smoke.sh   # force the cost axis
 #   LABEL=time WALL=60s TIMEOUT=4m run_smoke.sh                      # time axis, no prices
 #   USE_SKILL=1 FANOUT=1 LABEL=fan WALL=60s RESERVE_WALL=15s run_smoke.sh  # real /code-review fan-out
+#   FANOUT=1 SUBAGENT_CONTEXT="All CI jobs have passed: 3/3." CLAUDE_BIN=<pinned claude> LABEL=ctx WALL=5m run_smoke.sh
+#     # the SubagentStart context: the run reports which subagent transcripts received it
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +31,7 @@ LABEL="${LABEL:?set LABEL}"
 WALL="${WALL:?set WALL, e.g. 60s or 5m}"
 TIMEOUT="${TIMEOUT:-$WALL}"
 EFFORT="${EFFORT:-xhigh}"
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 
 [ -f "$REPO/dist/index.js" ] || { echo "build first: (cd $REPO && npx tsup)"; exit 1; }
 
@@ -63,9 +66,10 @@ RESERVE_ARGS=()
 [ -n "${RESERVE_FRAC:-}" ] && RESERVE_ARGS+=(--reserve-frac "$RESERVE_FRAC")
 [ -n "${RESERVE_USD:-}" ] && RESERVE_ARGS+=(--reserve-usd "$RESERVE_USD")
 [ -n "${RESERVE_WALL:-}" ] && RESERVE_ARGS+=(--reserve-wall "$RESERVE_WALL")
+CONTEXT_ARGS=(); [ -n "${SUBAGENT_CONTEXT:-}" ] && CONTEXT_ARGS=(--subagent-context "$SUBAGENT_CONTEXT")
 
 code-review print-settings --draft "$DRAFT" --kind findings --wall "$WALL" \
-  "${BUDGET_ARGS[@]}" "${PRICES_ARGS[@]}" "${RESERVE_ARGS[@]}" >"$RUN/settings.json"
+  "${BUDGET_ARGS[@]}" "${PRICES_ARGS[@]}" "${RESERVE_ARGS[@]}" "${CONTEXT_ARGS[@]}" >"$RUN/settings.json"
 
 echo "=== $LABEL: wall=$WALL timeout=$TIMEOUT budget_usd=${BUDGET_USD:-<none>} prices=${PRICES:-<none>} effort=$EFFORT ==="
 echo "--- settings.json ---"; cat "$RUN/settings.json"; echo
@@ -111,7 +115,7 @@ fi
 START=$(date +%s)
 set +e
 timeout --kill-after=60s "$TIMEOUT" \
-  claude -p "$PROMPT" \
+  "$CLAUDE_BIN" -p "$PROMPT" \
     --permission-mode bypassPermissions \
     --settings "$RUN/settings.json" \
     --strict-mcp-config \
@@ -136,6 +140,17 @@ if [ -f "$DRAFT" ]; then
   echo "YES: $DRAFT"; code-review validate "$DRAFT" && echo "draft VALID" || echo "draft INVALID"
 else
   echo "NO draft written"
+fi
+
+if [ -n "${SUBAGENT_CONTEXT:-}" ]; then
+  echo "--- SubagentStart context delivery (per subagent transcript) ---"
+  find "$RUN/transcript" -path '*/subagents/*.jsonl' 2>/dev/null | while read -r sub; do
+    if grep '"type":"hook_additional_context"' "$sub" | grep -q '"hookEvent":"SubagentStart"'; then
+      echo "received: $sub"
+    else
+      echo "MISSING:  $sub"
+    fi
+  done
 fi
 
 echo "--- check-cost (true post-hoc, deduped) ---"

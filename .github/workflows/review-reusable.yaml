@@ -1,6 +1,8 @@
-# Jobs with DISTINCT permissions — the security boundary: review = model key + read-only token +
-# locked egress, runs untrusted PR code; announce + comment = pull-requests/issues:write, no agent,
-# no PR code (announce posts the in-progress sticky at start, comment posts the review at the end).
+# Jobs with DISTINCT permissions — the security boundary: review = model key + read-only token,
+# runs untrusted PR code with its agents in a network jail; announce + comment + finalize =
+# pull-requests/issues:write under an egress lock, no agent, no PR code (announce posts the
+# in-progress sticky at start, comment posts the review at the end, finalize settles the round
+# whenever comment does not).
 # A composite/JS/Docker action can't express that (one job, one permission set), so this is a
 # reusable workflow. Consumers call it from a thin ~20-line workflow; see the README.
 
@@ -289,9 +291,10 @@ jobs:
         run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Holds the write token, so lock egress like the comment job (it runs no untrusted PR code, but
-      # a write-token job must never run unenforced). Fixed host set: npm registry + the GitHub API.
+      # a write-token job must never run unenforced). Fixed host set: npm registry + the GitHub API;
+      # harden-runner admits the endpoints the runner itself needs on its own.
       - name: Lock network egress
-        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -301,8 +304,9 @@ jobs:
             objects.githubusercontent.com:443
             *.blob.core.windows.net:443
 
-      # Same fail-closed backstop as the commenter (harden-runner can silently downgrade block to
-      # audit — step-security/harden-runner#675); this job holds the write token and always blocks.
+      # Same fail-closed backstop as the commenter (harden-runner before v2.21.0 silently
+      # downgraded block to audit — step-security/harden-runner#675); this job holds the write
+      # token and always blocks.
       - name: Egress canary — verify the lock engaged
         run: |
           set -euo pipefail
@@ -1560,11 +1564,11 @@ jobs:
 
       # Egress is armed at job start (harden-runner Pre step), so this must allow the npm registry
       # for the commenter install above, plus the GitHub API + blob host for artifact download.
-      # Always block here — unlike the review job (whose model/ecosystem hosts a consumer may need to
-      # discover with egress-policy: audit), the commenter's host set is fixed and fully known, and
-      # this job holds the write token. It must never run unenforced, so it ignores inputs.egress_policy.
+      # Always block here: the commenter's host set is fixed (harden-runner admits the endpoints the
+      # runner itself needs on its own), and this job holds the write token. It must never run
+      # unenforced, so it ignores inputs.egress_policy.
       - name: Lock network egress
-        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1574,8 +1578,9 @@ jobs:
             objects.githubusercontent.com:443
             *.blob.core.windows.net:443
 
-      # Same fail-closed backstop as the review job (harden-runner can silently downgrade block to
-      # audit — step-security/harden-runner#675), unconditional here because this job always blocks.
+      # Same fail-closed backstop as announce and finalize (harden-runner before v2.21.0 silently
+      # downgraded block to audit — step-security/harden-runner#675),
+      # unconditional here because this job always blocks.
       - name: Egress canary — verify the lock engaged
         run: |
           set -euo pipefail
@@ -1841,9 +1846,10 @@ jobs:
         run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Holds the write token, so lock egress like announce/comment (it runs no untrusted PR code, but
-      # a write-token job must never run unenforced). Fixed host set: npm registry + the GitHub API.
+      # a write-token job must never run unenforced). Fixed host set: npm registry + the GitHub API;
+      # harden-runner admits the endpoints the runner itself needs on its own.
       - name: Lock network egress
-        uses: JPHutchins/harden-runner@ee143ec9798e02c7b6f70d1bb39864121a71345d # fork: v2.20.0 + fail-closed fix (step-security/harden-runner#676); revert to official on merge
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >

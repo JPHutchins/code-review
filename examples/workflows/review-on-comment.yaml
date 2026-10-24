@@ -19,8 +19,9 @@ on:
 
 # issue_comment runs in the DEFAULT-branch (trusted) context, so this file and its gate are your
 # reviewed code, never the PR's. This top-level block is the GITHUB_TOKEN ceiling — the union of what
-# the nested reusable jobs need (each narrows from it): the review job runs read-only, the comment
-# job writes the sticky/inline review, and the gate/ack react to the comment.
+# the nested reusable jobs need (each narrows from it): the review job runs read-only, the
+# announce/comment/finalize jobs write the sticky, inline review and check, and the gate/ack react to
+# the comment.
 permissions:
   contents: read
   actions: read
@@ -51,8 +52,9 @@ jobs:
       # id it does not recognize) — see model_full on review-reusable.yaml.
       model_full:      deepseek-v4-pro[1m]
       model_mechanic:  deepseek-v4-pro[1m]
-      # Optional per-repo tuning, same knobs as review.yaml — e.g. install_command, egress_policy,
-      # the ceilings the comment overrides are clamped to (max_duration / max_usd), tier aliases.
+      # Optional per-repo tuning, the inputs review-on-comment-reusable.yaml takes — e.g. install_command,
+      # extra_endpoints, the ceilings the comment overrides are clamped to (max_duration / max_usd),
+      # tier aliases.
       install_command: npm ci
       scope:            ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README (#139)
     secrets:

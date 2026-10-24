@@ -15,8 +15,8 @@ on:
     types: [completed]
 
 # Superset the reusable workflow's jobs narrow from: review → contents:read (runs untrusted PR code),
-# announce + comment → pull-requests/issues:write (no agent). Each internal job's own permissions
-# intersect with these, so the boundary is preserved inside the reusable workflow.
+# announce + comment + finalize → pull-requests/issues:write (no agent). Each internal job's own
+# permissions intersect with these, so the boundary is preserved inside the reusable workflow.
 permissions:
   contents: read
   actions: read

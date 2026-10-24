@@ -55,9 +55,9 @@ The design's hardest constraint is that the review agent runs *untrusted PR code
 key. The instinct is to lean on the preflight triage (does this diff look safe to apply and execute?),
 but the triage reads the very same untrusted diff an injection payload would ride in — so it is a
 **heuristic first filter, not the containment**. The controls that actually hold are structural: a
-read-only GitHub token on the agent job, an egress lock on the runner, and a **burner model key with a
-hard spend cap**. The residual exfiltration channel is the public comment/log itself, which is exactly
-why the spend cap — not the gate — is the real backstop.
+read-only GitHub token on the agent job, an egress lock on the agents (the network jail they run in),
+and a **burner model key with a hard spend cap**. The residual exfiltration channel is the public
+comment/log itself, which is exactly why the spend cap — not the gate — is the real backstop.
 
 **A Nix project's daemon.** A Nix project's reviewer has to enter its dev shell, and that means reaching
 the Nix daemon over a Unix socket. On Linux the jail can open Unix sockets only all at once, so the jail

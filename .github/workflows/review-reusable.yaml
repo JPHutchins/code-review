@@ -277,8 +277,8 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read         # the primary `commits/{sha}/pulls` PR lookup reads a commit — 403s without this (the review job resolves fine because it holds contents:read; a no-agent job, so read here is safe)
-      issues: write          # post/patch the sticky comment
-      pull-requests: read    # resolve the PR from the head SHA
+      issues: write          # patch the sticky comment
+      pull-requests: write   # create the sticky on a PR's first round — creating a PR comment 403s with issues: write alone
       checks: write          # create the in-progress check-run on the head SHA (attribution, survives cancellation)
     steps:
       - uses: actions/setup-node@v6
@@ -1829,8 +1829,8 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read         # resolve the PR from the head SHA (commits/{sha}/pulls)
-      issues: write          # post/patch the failure sticky
-      pull-requests: read    # resolve the PR
+      issues: write          # patch the failure sticky
+      pull-requests: write   # create the failure sticky when no sticky exists yet — creating a PR comment 403s with issues: write alone
       checks: write          # finalize the check-run (failure or neutral)
     steps:
       - uses: actions/setup-node@v6
@@ -1880,8 +1880,8 @@ jobs:
           RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
           # A review CANCELLED, or a review that FAILED whose comment job was then cancelled by a
           # superseding run, is informational (issue #139): the newer run owns the branch, so no
-          # failure attribution here. A SUCCEEDED review whose comment tail was cancelled settles
-          # neutral below — its post landed.
+          # failure attribution here. A SUCCEEDED review whose comment job was cancelled settles
+          # by its posted signal below.
           if [ "$REVIEW_RESULT" = "cancelled" ] || { [ "$REVIEW_RESULT" = "failure" ] && [ "$COMMENT_RESULT" = "cancelled" ]; }; then
             # A cancelled review is informational, not a failure (issue #139): post the "superseded"
             # sticky and settle THIS run's check to `cancelled` (ownership-matched by details_url, so a
@@ -1901,10 +1901,13 @@ jobs:
                 --head-sha "$HEAD_SHA" \
                 --run-url "$RUN_URL"
             fi
-          elif { [ "$REVIEW_RESULT" = "failure" ] && [ "$POSTED" != "true" ]; } || { [ "$REVIEW_RESULT" = "success" ] && [ "$COMMENT_RESULT" = "failure" ] && [ "$POSTED" = "" ]; }; then
+          elif { [ "$REVIEW_RESULT" = "failure" ] && [ "$POSTED" != "true" ]; } || { [ "$REVIEW_RESULT" = "success" ] && { [ "$COMMENT_RESULT" = "failure" ] || [ "$COMMENT_RESULT" = "cancelled" ]; } && [ "$POSTED" = "" ]; }; then
             # A review that never LANDED: the review job died (anything-but-true, including a
-            # deliberate false), or a SUCCEEDED review whose comment job failed with NO signal at
-            # all (POSTED = ''). A succeeded review with posted=false settles neutral below.
+            # deliberate false), or a SUCCEEDED review whose comment job failed or was cancelled with
+            # NO signal at all (POSTED = ''). A cancel without a signal is a superseding run or a
+            # runner that lost GitHub before the job could report; either way a post that did land
+            # stays, since neither command overwrites a completed review. A succeeded review with
+            # posted=false settles neutral below.
             code-review report-incomplete \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \
@@ -1915,8 +1918,9 @@ jobs:
               --head-sha "$HEAD_SHA" \
               --run-url "$RUN_URL"
           else
-            # gather-skip (nothing to review), or a completed review whose comment job was cancelled
-            # mid-post: settle the check neutral so it doesn't hang. Ownership-matched to this run.
+            # gather-skip (nothing to review), or a completed review whose comment job reported its
+            # post (true: it landed; false: it deliberately did not): settle the check neutral so it
+            # doesn't hang. Ownership-matched to this run.
             code-review check-run neutral \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

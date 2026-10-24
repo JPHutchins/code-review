@@ -170,6 +170,7 @@ jobs:
       - name: Set up the agent network jail (sandbox-runtime)
         id: jail
         env:
+          JOB_TOKEN: ${{ github.token }}
           API_BASE_URL: ${{ vars.API_BASE_URL }}
           KNOWN_MODEL_HOSTS: ${{ vars.KNOWN_MODEL_HOSTS }}
         run: |
@@ -205,7 +206,11 @@ jobs:
               sudo sed -i --follow-symlinks '/^[[:space:]]*access-tokens[[:space:]]*=/d' "$conf"
             fi
           done
-          if [ -f /nix/receipt.json ]; then sudo chmod 600 /nix/receipt.json; fi
+          # The installer's receipt keeps the token too; scrubbed by value, so the store cache can still
+          # read the receipt (a token that is not plainly a token is left for the search to refuse).
+          if [ -f /nix/receipt.json ] && [[ "$JOB_TOKEN" =~ ^[A-Za-z0-9_]+$ ]]; then
+            sudo sed -i "s/${JOB_TOKEN}/redacted/g" /nix/receipt.json
+          fi
           # A Nix project's dev shell needs its daemon, and Linux lets the jail reach it only by opening
           # every Unix socket. Asked for only when the project has a dev shell the daemon can serve.
           SOCKET_ARGS=()

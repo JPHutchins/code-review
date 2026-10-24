@@ -604,6 +604,12 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
     expect(between(linesOf(example, JAIL), "SOCKET_ARGS=()", "fi")).toEqual(
       between(linesOf(reusable, JAIL), "SOCKET_ARGS=()", "fi"),
     );
+    expect(between(linesOf(example, JAIL), "if [ -f /nix/receipt.json ]", "fi")).toEqual(
+      between(linesOf(reusable, JAIL), "if [ -f /nix/receipt.json ]", "fi"),
+    );
+    for (const path of copies) {
+      expect(stepNamed(path, JAIL).env?.["JOB_TOKEN"]).toBe("${{ github.token }}");
+    }
     expect(opening(example)).toEqual(opening(reusable));
     for (const name of [CANARY, TOKEN, RELEASE]) {
       expect(stepNamed(example, name), name).toEqual(stepNamed(reusable, name));

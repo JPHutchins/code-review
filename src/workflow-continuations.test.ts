@@ -609,6 +609,14 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
     );
     for (const path of copies) {
       expect(stepNamed(path, JAIL).env?.["JOB_TOKEN"]).toBe("${{ github.token }}");
+      // sudo logs its command line where the runner user can read it: the token never rides in it.
+      const sudoCommands = linesOf(path, JAIL)
+        .flatMap((line) => line.split("|"))
+        .filter((command) => /\bsudo\b/.test(command));
+      expect(sudoCommands.filter((command) => command.includes("JOB_TOKEN"))).toEqual([]);
+      expect(linesOf(path, JAIL)).toContain(
+        'printf \'%s\' "$JOB_TOKEN" | sudo python3 -c \'import sys; token = sys.stdin.read(); path = sys.argv[1]; text = open(path).read(); open(path, "w").write(text.replace(token, "redacted"))\' /nix/receipt.json',
+      );
     }
     expect(opening(example)).toEqual(opening(reusable));
     for (const name of [CANARY, TOKEN, RELEASE]) {
@@ -623,6 +631,7 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       "command -v nix",
       "flake.nix",
       "shell.nix",
+      "default.nix",
     ]) {
       expect(gate).toContain(condition);
     }
@@ -646,7 +655,7 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
     ]) {
       expect(closures, step).toContain(step);
     }
-    expect(lines.join("\n").indexOf("sudo")).toBeGreaterThan(opened);
+    expect(lines.findIndex((line) => line.includes("sudo"))).toBeGreaterThan(opened);
   });
 
   for (const workflowPath of copies) {
@@ -742,7 +751,7 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       expect(search).toBeLessThan(names.indexOf("Phase 1 — security triage"));
       const step = stepNamed(workflowPath, TOKEN);
       expect(step.env?.["JOB_TOKEN"]).toBe("${{ github.token }}");
-      expect(step.run).toContain('/etc /nix /run "$RUNNER_TEMP"');
+      expect(step.run).toContain('/etc /nix /run /var/log "$RUNNER_TEMP"');
       expect(step.run).toContain("--exclude-dir=store");
       expect(step.run).not.toMatch(/sudo\s+grep/);
       expect(step.run).toContain("exit 1");

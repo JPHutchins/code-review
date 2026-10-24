@@ -102,3 +102,27 @@ describe("buildSandboxConfig", () => {
     });
   });
 });
+
+describe("buildSandboxConfig — Unix sockets for a Nix project's daemon", () => {
+  it.each([
+    ["by default", undefined],
+    ["when not asked", false],
+  ])("keeps every Unix socket closed and /run visible %s", (_case, allowUnixSockets) => {
+    const config = buildSandboxConfig({
+      apiBaseUrl: "https://api.deepseek.com/anthropic",
+      ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
+    });
+    expect(config.network).not.toHaveProperty("allowAllUnixSockets");
+    expect(config.filesystem.denyRead).toEqual([]);
+  });
+
+  it("opens Unix sockets only together with /run masked inside the jail", () => {
+    const config = buildSandboxConfig({
+      apiBaseUrl: "https://api.deepseek.com/anthropic",
+      allowUnixSockets: true,
+    });
+    expect(config.network.allowAllUnixSockets).toBe(true);
+    expect(config.filesystem.denyRead).toEqual(["/run"]);
+    expect(config.network.allowedDomains).toEqual(["api.deepseek.com"]);
+  });
+});

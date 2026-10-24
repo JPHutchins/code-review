@@ -59,6 +59,28 @@ read-only GitHub token on the agent job, an egress lock on the runner, and a **b
 hard spend cap**. The residual exfiltration channel is the public comment/log itself, which is exactly
 why the spend cap — not the gate — is the real backstop.
 
+**A Nix project's daemon.** A Nix project's reviewer has to enter its dev shell, and that means reaching
+the Nix daemon over a Unix socket. On Linux the jail can open Unix sockets only all at once, so the jail
+step first closes every way out that opening would expose, verified on hosted runners before it shipped
+(probe runs on the `probe/nix-jail` branch, #323):
+
+- **The daemon gets no network.** It runs with `PrivateNetwork=yes`, so no build, fixed-output fetch or
+  substitution a client asks for leaves the runner, whatever options the client passes. A config lock
+  (`max-jobs = 0`, `substitute = false`) is not enough, because the client overrides both per connection.
+  Builds from what the store already holds still run, offline: the reviewer can edit and rebuild with the
+  project's own toolchain. A PR that changes the dev shell's inputs cannot be entered.
+- **No client is trusted** (`trusted-users = root`), so none can turn its build sandbox off and run a
+  builder as root on the host.
+- **The other sockets are gone or masked:** Docker and containerd stopped, the runner's systemd user
+  manager stopped (it starts processes outside the jail), determinate-nixd's socket made root-only, the
+  runner's .NET diagnostic sockets deleted, and `/run` masked inside the jail (systemd-resolved there
+  would carry DNS out).
+- **No token on disk:** the Nix installer writes the job's GitHub token into a world-readable config. It
+  is removed, and a search for the token fails the job if any copy remains (#324).
+
+The canary proves each of these inside the jail before any PR data is fetched, and fails closed. Only
+Determinate Nix has been probed; upstream multi-user Nix uses the same unit and drop-in but is untested.
+
 That reasoning is what forces the **write-token / model split**: the jobs that hold the write token
 (the commenter that posts the review, and the announcer that posts the in-progress sticky at the start)
 run no model and no PR code, and the job that runs the model holds only a read-only token. The split

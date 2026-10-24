@@ -102,7 +102,7 @@ describe("route prose — the reusable workflow and the example teach the SAME i
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|SUBAGENT_CONTEXT|LINKED_ISSUES_NOTE|LINKED_ISSUES_TRIAGE)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|SUBAGENT_CONTEXT|LINKED_ISSUES_NOTE|LINKED_ISSUES_TRIAGE|NIX_NOTE)="/.test(
           line,
         ),
       )
@@ -380,6 +380,7 @@ describe("the subagent context — the fan-out subagents start with the full rev
       const [status = "", routeNote = "", context = ""] = bashOutput(
         [
           'LINKED_ISSUES_NOTE=""',
+          'NIX_NOTE=""',
           ...lines.slice(start, end + 1),
           lineFrom('ROUTE_NOTE="${CI_JOBS_NOTE}'),
           lineFrom('SUBAGENT_CONTEXT="${CI_STATUS_NOTE}'),
@@ -487,7 +488,9 @@ describe("the issues a PR closes — the triage screens them and the review is t
       expect(staged).toContain("that issue's repository, not in this one");
       expect(noteFrom(block, "LINKED_ISSUES_NOTE", false)).toBe("");
       expect(
-        review.some((line) => line.includes("$CONVERSATION_NOTE$LINKED_ISSUES_NOTE$ROUTE_NOTE")),
+        review.some((line) =>
+          line.includes("$CONVERSATION_NOTE$LINKED_ISSUES_NOTE$NIX_NOTE$ROUTE_NOTE"),
+        ),
       ).toBe(true);
       expect(review.indexOf('LINKED_ISSUES_NOTE=""')).toBeLessThan(
         review.indexOf('if [ "$CONCLUSION" = "success" ]; then'),
@@ -537,8 +540,211 @@ describe("the issues a PR closes — the triage screens them and the review is t
       expect(scriptOfStep("code-review gather")).toContain("--linked-issues \\");
       const review = scriptOfStep('SUBAGENT_CONTEXT="${CI_STATUS_NOTE}');
       expect(
-        review.indexOf('SUBAGENT_CONTEXT="${CI_STATUS_NOTE}${ROUTE_NOTE# }${LINKED_ISSUES_NOTE}"'),
+        review.indexOf(
+          'SUBAGENT_CONTEXT="${CI_STATUS_NOTE}${ROUTE_NOTE# }${LINKED_ISSUES_NOTE}${NIX_NOTE}"',
+        ),
       ).toBeGreaterThan(review.indexOf(indexCheck));
+    });
+  }
+});
+
+describe("a Nix project's daemon — the jail opens to it only after closing everything else (#323)", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const scratch = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "nix-jail-"));
+    roots.push(dir);
+    return dir;
+  };
+  const stepsOf = (workflowPath: string) =>
+    Object.values(
+      (
+        parseYaml(readRepoFile(workflowPath)) as {
+          jobs: Record<
+            string,
+            {
+              steps?: {
+                name?: string;
+                id?: string;
+                if?: string;
+                env?: Record<string, string>;
+                run?: string;
+              }[];
+            }
+          >;
+        }
+      ).jobs,
+    ).flatMap((job) => job.steps ?? []);
+  const linesOf = (workflowPath: string, name: string): readonly string[] =>
+    (stepsOf(workflowPath).find((step) => step.name === name)?.run ?? "")
+      .split("\n")
+      .map((line) => line.trim());
+  const between = (lines: readonly string[], from: string, to: string): readonly string[] => {
+    const start = lines.findIndex((line) => line.startsWith(from));
+    const end = lines.indexOf(to, start);
+    expect(start, from).toBeGreaterThanOrEqual(0);
+    expect(end, to).toBeGreaterThan(start);
+    return lines.slice(start, end + 1);
+  };
+  const JAIL = "Set up the agent network jail (sandbox-runtime)";
+  const CANARY = "Jail canary — verify agent egress is denied";
+  const copies = [
+    ".github/workflows/review-reusable.yaml",
+    "examples/workflows/review.yaml",
+  ] as const;
+
+  it("both copies close the same things in the same order before opening the jail", () => {
+    const blockOf = (path: string) =>
+      between(linesOf(path, JAIL), "for conf in /etc/nix/nix.conf", "fi").join("\n") +
+      between(linesOf(path, JAIL), "SOCKET_ARGS=()", "SOCKET_ARGS=(--allow-unix-sockets)").join(
+        "\n",
+      );
+    expect(blockOf(copies[1])).toBe(blockOf(copies[0]));
+    const block = blockOf(copies[0]);
+    for (const step of [
+      "access-tokens",
+      "PrivateNetwork=yes",
+      "'trusted-users = root'",
+      'systemctl stop "user@$(id -u).service"',
+      "docker.socket docker.service containerd.service",
+      "chmod 600 /nix/var/determinate/determinate-nixd.socket",
+      "rm -f /tmp/dotnet-diagnostic-*",
+    ]) {
+      expect(block).toContain(step);
+    }
+    expect(block.indexOf("PrivateNetwork=yes")).toBeLessThan(block.indexOf("--allow-unix-sockets"));
+  });
+
+  for (const workflowPath of copies) {
+    it(`${workflowPath}: the review hears of the dev shell only when the emitted jail really opens to it`, () => {
+      const lines = linesOf(workflowPath, JAIL);
+      expect(lines).toContain('"${SOCKET_ARGS[@]}" \\');
+      const report = between(
+        lines,
+        "NIX_DEVSHELL=false",
+        'echo "nix_devshell=$NIX_DEVSHELL" >> "$GITHUB_OUTPUT"',
+      ).join("\n");
+      const run = (
+        socketArgs: string,
+        sandbox: unknown,
+      ): { readonly output: string; readonly stdout: string } => {
+        const temp = scratch();
+        writeFileSync(join(temp, "sandbox.json"), JSON.stringify(sandbox));
+        writeFileSync(join(temp, "out"), "");
+        const stdout = execFileSync(
+          "bash",
+          ["-euo", "pipefail", "-c", `SOCKET_ARGS=(${socketArgs})\n${report}`],
+          {
+            env: {
+              ...process.env,
+              RUNNER_TEMP: temp,
+              GITHUB_OUTPUT: join(temp, "out"),
+              CODE_REVIEW_VERSION: "0.1.0-alpha.71",
+            },
+            encoding: "utf-8",
+          },
+        );
+        return { output: readFileSync(join(temp, "out"), "utf-8"), stdout };
+      };
+      const opened = { network: { allowAllUnixSockets: true } };
+      expect(run("--allow-unix-sockets", opened).output).toBe("nix_devshell=true\n");
+      const ignored = run("--allow-unix-sockets", { network: {} });
+      expect(ignored.output).toBe("nix_devshell=false\n");
+      expect(ignored.stdout).toMatch(
+        /^::warning::the pinned code-review CLI \(0\.1\.0-alpha\.71\) does not open the jail/,
+      );
+      expect(run("", opened)).toEqual({ output: "nix_devshell=false\n", stdout: "" });
+    });
+
+    it(`${workflowPath}: the canary fails closed on any socket in the jail but the Nix daemon's and srt's own`, () => {
+      const lines = linesOf(workflowPath, CANARY);
+      const filter = lines.find((line) => line.startsWith("| grep -Ev '"));
+      expect(filter).toBeDefined();
+      const unknownOf = (sockets: readonly string[]): string =>
+        execFileSync(
+          "bash",
+          [
+            "-c",
+            `printf '%s\\n' "$@" ${filter!.replace(/ \|\| true\)$/, "")} || true`,
+            "_",
+            ...sockets,
+          ],
+          {
+            encoding: "utf-8",
+          },
+        ).trim();
+      expect(
+        unknownOf([
+          "/nix/var/nix/daemon-socket/socket",
+          "/tmp/srt-mux-5422-0.sock",
+          "/tmp/claude-http-22b158addfe20cde.sock",
+        ]),
+      ).toBe("");
+      expect(
+        unknownOf([
+          "/nix/var/nix/daemon-socket/socket",
+          "/run/systemd/resolve/io.systemd.Resolve",
+          "/run/dbus/system_bus_socket",
+          "/tmp/dotnet-diagnostic-2152-2891-socket",
+        ]).split("\n"),
+      ).toEqual([
+        "/run/systemd/resolve/io.systemd.Resolve",
+        "/run/dbus/system_bus_socket",
+        "/tmp/dotnet-diagnostic-2152-2891-socket",
+      ]);
+      const canary = lines.join("\n");
+      for (const failure of [
+        "sudo works inside the jail",
+        "systemd-run --user starts processes outside the jail",
+        "a fixed-output fetch through the Nix daemon succeeded",
+        "the Nix daemon fetched from the network for the jail",
+        "did not refuse an untrusted client's sandbox setting",
+      ]) {
+        expect(canary).toContain(failure);
+      }
+      expect(
+        stepsOf(workflowPath).find((step) => step.name === CANARY)?.env?.["NIX_DEVSHELL"],
+      ).toBe("${{ steps.jail.outputs.nix_devshell }}");
+    });
+
+    it(`${workflowPath}: the job token is searched for after the checkout's copy is gone and before any agent`, () => {
+      const names = stepsOf(workflowPath).map((step) => step.name);
+      const search = names.indexOf("Verify the job token is not on disk for the jailed agents");
+      expect(search).toBeGreaterThan(
+        names.indexOf("Remove the persisted git credential before the jailed agents"),
+      );
+      expect(search).toBeLessThan(names.indexOf("Phase 1 — security triage"));
+      const step = stepsOf(workflowPath)[search]!;
+      expect(step.env?.["JOB_TOKEN"]).toBe("${{ github.token }}");
+      expect(step.run).toContain('/etc /nix/var /run "$RUNNER_TEMP"');
+      expect(step.run).toContain("exit 1");
+    });
+
+    it(`${workflowPath}: the main agent and every subagent are told to use the dev shell, only when it is open`, () => {
+      const lines = runScripts(workflowPath)
+        .flatMap(({ script }) => script.split("\n"))
+        .map((line) => line.trim());
+      const note = between(lines, 'NIX_NOTE=""', "fi").join("\n");
+      const noteFor = (open: string): string =>
+        execFileSync("bash", ["-euo", "pipefail", "-c", `${note}\nprintf '%s' "$NIX_NOTE"`], {
+          env: { ...process.env, NIX_DEVSHELL: open },
+          encoding: "utf-8",
+        });
+      expect(noteFor("true")).toContain("nix develop --command");
+      expect(noteFor("true")).toContain("no network");
+      expect(noteFor("false")).toBe("");
+      expect(lines.some((line) => line.includes("$LINKED_ISSUES_NOTE$NIX_NOTE$ROUTE_NOTE"))).toBe(
+        true,
+      );
+      expect(lines).toContain(
+        'SUBAGENT_CONTEXT="${CI_STATUS_NOTE}${ROUTE_NOTE# }${LINKED_ISSUES_NOTE}${NIX_NOTE}"',
+      );
+      const release = stepsOf(workflowPath).find(
+        (step) => step.name === "Release the Nix store for the setup's post-steps",
+      );
+      expect(release?.if).toBe("${{ always() && steps.jail.outputs.nix_devshell == 'true' }}");
     });
   }
 });

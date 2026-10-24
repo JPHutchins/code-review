@@ -8,6 +8,7 @@ export interface SandboxConfig {
   readonly network: {
     readonly allowedDomains: readonly string[];
     readonly deniedDomains: readonly string[];
+    readonly allowAllUnixSockets?: true;
   };
   readonly filesystem: {
     readonly allowRead: readonly string[];
@@ -62,15 +63,25 @@ export const parseExtraEndpoints = (extra: string): readonly string[] =>
     .map((token) => token.replace(/:\d+$/, ""))
     .filter((token) => token.length > 0);
 
+// Opening Unix sockets (the Nix daemon's) is all-or-nothing on Linux, so it always comes with /run
+// masked inside the jail: the host's root daemons there (systemd-resolved over varlink or D-Bus, which
+// would carry DNS out of the jail, snapd, journald, PID 1's notify socket) stay out of reach.
 export const buildSandboxConfig = (opts: {
   readonly apiBaseUrl: string;
   readonly extra?: string;
+  readonly allowUnixSockets?: boolean;
 }): SandboxConfig => ({
   network: {
     allowedDomains: [
       ...new Set([deriveModelHost(opts.apiBaseUrl), ...parseExtraEndpoints(opts.extra ?? "")]),
     ],
     deniedDomains: [],
+    ...(opts.allowUnixSockets === true ? { allowAllUnixSockets: true as const } : {}),
   },
-  filesystem: { allowRead: [], denyRead: [], allowWrite: ["/"], denyWrite: [] },
+  filesystem: {
+    allowRead: [],
+    denyRead: opts.allowUnixSockets === true ? ["/run"] : [],
+    allowWrite: ["/"],
+    denyWrite: [],
+  },
 });

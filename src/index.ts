@@ -2348,6 +2348,11 @@ const sandboxConfigCmd = defineCommand({
       description:
         "Fail (instead of warning) when the model host derived from api_base_url is not a well-known or declared host — closes the fail-open-on-typo gap where a mistyped api_base_url would still be allowlisted and sent the key",
     },
+    "allow-unix-sockets": {
+      type: "boolean",
+      description:
+        "Let the jailed agent open Unix sockets (a Nix project's daemon), with /run masked inside the jail; pass it only after the host has closed every other socket the runner user can reach",
+    },
   },
   run: ({ args }) => {
     // The jail derives its ONLY egress allowlist entry from api_base_url; a typo now fails OPEN (dials
@@ -2372,7 +2377,11 @@ const sandboxConfigCmd = defineCommand({
       }
       process.stderr.write(`::warning::${annotationSafe(message)}\n`);
     }
-    const config = buildSandboxConfig({ apiBaseUrl: args["api-base-url"], extra: args.extra });
+    const config = buildSandboxConfig({
+      apiBaseUrl: args["api-base-url"],
+      extra: args.extra,
+      allowUnixSockets: args["allow-unix-sockets"],
+    });
     const json = `${JSON.stringify(config, null, 2)}\n`;
     if (args.out) {
       writeFileSync(resolve(args.out), json);

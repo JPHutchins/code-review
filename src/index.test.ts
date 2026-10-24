@@ -2854,6 +2854,22 @@ describe("cli — sandbox-config derived-host validation (issue #129)", () => {
     expect(config.network.allowedDomains).toContain("api.deepseek.com");
   });
 
+  it("--allow-unix-sockets opens the jail's Unix sockets with /run masked", async () => {
+    const { stdout, exitCode } = await runCli([
+      "sandbox-config",
+      "--api-base-url",
+      "https://api.deepseek.com/anthropic",
+      "--allow-unix-sockets",
+    ]);
+    expect(exitCode).toBeNull();
+    const config = JSON.parse(stdout) as {
+      network: { allowAllUnixSockets?: boolean };
+      filesystem: { denyRead: string[] };
+    };
+    expect(config.network.allowAllUnixSockets).toBe(true);
+    expect(config.filesystem.denyRead).toEqual(["/run"]);
+  });
+
   it("warns loudly but still emits config for an unknown-provider host (fail-open is at least visible)", async () => {
     const { stdout, stderr, exitCode } = await runCli([
       "sandbox-config",

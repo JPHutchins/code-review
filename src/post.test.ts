@@ -3914,7 +3914,9 @@ describe("announce — in-progress sticky", () => {
 
 describe("reportIncomplete — failed/cancelled review sticky", () => {
   const openPr = {
-    match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+    match: (a: readonly string[]) =>
+      (a[0]?.startsWith("repos/owner/repo/commits/") ?? false) &&
+      !(a[0]?.includes("/check-runs") ?? false),
     response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
   };
   const commentsMatch = (a: readonly string[]): boolean =>
@@ -3947,6 +3949,84 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     // notice blames no job and offers the re-run that re-posts saved findings.
     expect(body).not.toContain("review job failed");
     expect(body).toContain("Re-run its failed jobs");
+  });
+
+  // SPEC §4.3: a superseded run is informational. finalize cannot tell a comment job a newer run
+  // cancelled from one that was lost, so report-incomplete detects the supersede itself.
+  describe("a superseded run posts the informational notice, never the failure one", () => {
+    const runUrl = "https://github.com/owner/repo/actions/runs/12345";
+    const ownPlaceholder = [
+      "<!-- code-review -->",
+      "",
+      `🔄 **Code review in progress** for \`abc123d\` — see the [workflow run](${runUrl})`,
+    ].join("\n");
+    const patchedBody = async (prHead: string, checks: string): Promise<string> => {
+      const { api, calls } = mkMockGhApi([
+        { match: (a) => a[0]?.includes("/check-runs") ?? false, response: checks },
+        {
+          match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+          response: `{"number":42,"state":"open","headRef":"feature-branch","headSha":"${prHead}"}\n`,
+        },
+        { match: commentsMatch, response: commentRow(999, ownPlaceholder) },
+        { match: (a) => a[0] === "repos/owner/repo/issues/comments/999", response: "" },
+      ]);
+      await reportIncomplete(mkAnnounceInput({ runUrl }), api);
+      const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
+      return (JSON.parse(patch!.stdin!) as CommentBody).body;
+    };
+    const newerRunCheck =
+      '{"id":2,"status":"in_progress","conclusion":null,"detailsUrl":"https://github.com/owner/repo/actions/runs/12399"}\n';
+
+    it("when the PR's head moved past this run's commit", async () => {
+      const body = await patchedBody("f".repeat(40), "");
+      expect(body).toContain("Code review superseded");
+      expect(body).toContain("the PR moved on, or a newer review run took over");
+      expect(body).not.toContain("did not complete");
+      expect(body).not.toContain("cancelled before completing");
+    });
+
+    it("when a newer run opened a check on the same head", async () => {
+      const body = await patchedBody("abc123def456", newerRunCheck);
+      expect(body).toContain("Code review superseded");
+      expect(body).not.toContain("did not complete");
+    });
+
+    it("leaves a missing sticky to the superseding run, posting no notice of its own", async () => {
+      const { api, calls } = mkMockGhApi([
+        { match: (a) => a[0]?.includes("/check-runs") ?? false, response: "" },
+        {
+          match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+          response: `{"number":42,"state":"open","headRef":"feature-branch","headSha":"${"f".repeat(40)}"}\n`,
+        },
+        { match: commentsMatch, response: "" },
+      ]);
+      await reportIncomplete(mkAnnounceInput({ runUrl }), api);
+      expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    });
+
+    it("looks no checks up when the sticky already belongs to another run", async () => {
+      const { api, calls } = mkMockGhApi([
+        { match: (a) => a[0]?.includes("/check-runs") ?? false, response: newerRunCheck },
+        {
+          match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+          response:
+            '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
+        },
+        {
+          match: commentsMatch,
+          response: commentRow(999, ownPlaceholder.replace("/runs/12345", "/runs/12399")),
+        },
+      ]);
+      await reportIncomplete(mkAnnounceInput({ runUrl }), api);
+      expect(calls().some((c) => c.args[0]?.includes("/check-runs") ?? false)).toBe(false);
+      expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    });
+
+    it("but a run nothing superseded still reports that its review did not complete", async () => {
+      const ownCheck =
+        '{"id":1,"status":"in_progress","conclusion":null,"detailsUrl":"https://github.com/owner/repo/actions/runs/12345"}\n';
+      expect(await patchedBody("abc123def456", ownCheck)).toContain("Code review did not complete");
+    });
   });
 
   it("overwrites its OWN in-progress placeholder and carries its re-review markers forward", async () => {

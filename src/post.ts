@@ -128,7 +128,7 @@ import {
   type Response,
 } from "./responses.js";
 import { RulingCodec } from "./response-grammar.js";
-import { asRecord, errMsg, tryParseJson } from "./util.js";
+import { annotationSafe, asRecord, errMsg, tryParseJson } from "./util.js";
 
 export interface PostInput {
   readonly repo: string;
@@ -401,12 +401,12 @@ const postInlineReview = async (
       // An Actions annotation (::warning:: in the step output), not a GITHUB_OUTPUT key: the CLI
       // owns the loudness so every workflow copy and every pinned CLI version sees the degradation.
       process.stderr.write(
-        `::warning:: the review-object POST on PR #${String(pr.prNumber)} failed (${errMsg(err)}) — the sticky carries the review, but no diff-anchored review object exists this round\n`,
+        `${annotationSafe(`::warning::the review-object POST on PR #${String(pr.prNumber)} failed (${errMsg(err)}) — the sticky carries the review, but no diff-anchored review object exists this round`)}\n`,
       );
       return { url: undefined, posted: false, inlinePosted: 0, unposted: [] };
     }
     process.stderr.write(
-      `Warning: the batched inline review on PR #${String(pr.prNumber)} was rejected (${errMsg(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)\n`,
+      `${annotationSafe(`Warning: the batched inline review on PR #${String(pr.prNumber)} was rejected (${errMsg(err)}) — posting the review body-only, then each comment individually to keep the ones GitHub accepts (issue #57)`)}\n`,
     );
     let url: string | undefined;
     let posted = false;
@@ -418,7 +418,7 @@ const postInlineReview = async (
       // review object exists this round; the caller gates the dismiss/minimize on `posted` (the
       // POST's success — an unparseable response still means the object exists) (issue #223).
       process.stderr.write(
-        `::warning:: the body-only review retry on PR #${String(pr.prNumber)} failed (${errMsg(bodyErr)}) — individual comments still re-post, but no breadcrumb review object exists this round\n`,
+        `${annotationSafe(`::warning::the body-only review retry on PR #${String(pr.prNumber)} failed (${errMsg(bodyErr)}) — individual comments still re-post, but no breadcrumb review object exists this round`)}\n`,
       );
     }
     const commentsEndpoint = [

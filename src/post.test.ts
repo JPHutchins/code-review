@@ -365,7 +365,7 @@ describe("post — the landed signal (issue #254)", () => {
       expect(output).not.toContain("review-object");
       expect(
         stderrSpy.mock.calls.some(([chunk]) =>
-          String(chunk).includes("::warning:: the body-only review retry on PR #42 failed"),
+          String(chunk).includes("::warning::the body-only review retry on PR #42 failed"),
         ),
       ).toBe(true);
       const endpoints = calls().map((c) => c.args[0] ?? "");
@@ -421,6 +421,31 @@ describe("post — the landed signal (issue #254)", () => {
     }
   });
 
+  it.each([
+    ["the review-object POST", () => mkInput({})],
+    ["the batched review and its body-only retry", () => mkInlineInput()],
+  ])(
+    "keeps gh's error text on each log line when %s fails, so it cannot start a workflow command",
+    async (_case, input) => {
+      writeFileSync(outputPath(), "");
+      process.env["GITHUB_OUTPUT"] = outputPath();
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        const { api } = mkMockGhApi(degradedFixtures());
+        const forging: GhApi = (args, stdin, env) =>
+          args[0] === "repos/owner/repo/pulls/42/reviews" && !args.includes("--paginate")
+            ? Promise.reject(new Error("HTTP 422\n::error::forged"))
+            : api(args, stdin, env);
+        await expect(post(input(), forging)).resolves.toBeUndefined();
+        const written = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+        expect(written).toContain("HTTP 422 ::error::forged");
+        expect(written.split("\n").some((line) => line.startsWith("::error::forged"))).toBe(false);
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    },
+  );
+
   it("a body-only review-object POST failure degrades instead of aborting — no dismiss or minimize runs, and the CLI's annotation names it", async () => {
     writeFileSync(outputPath(), "");
     process.env["GITHUB_OUTPUT"] = outputPath();
@@ -437,7 +462,7 @@ describe("post — the landed signal (issue #254)", () => {
       expect(output).not.toContain("review-object");
       expect(
         stderrSpy.mock.calls.some(([chunk]) =>
-          String(chunk).includes("::warning:: the review-object POST on PR #42 failed"),
+          String(chunk).includes("::warning::the review-object POST on PR #42 failed"),
         ),
       ).toBe(true);
       const endpoints = calls().map((c) => c.args[0] ?? "");
@@ -473,7 +498,7 @@ describe("post — the landed signal (issue #254)", () => {
       expect(output).not.toContain("review-object");
       expect(
         stderrSpy.mock.calls.some(([chunk]) =>
-          String(chunk).includes("::warning:: the body-only review retry on PR #42 failed"),
+          String(chunk).includes("::warning::the body-only review retry on PR #42 failed"),
         ),
       ).toBe(true);
       const endpoints = calls().map((c) => c.args[0] ?? "");

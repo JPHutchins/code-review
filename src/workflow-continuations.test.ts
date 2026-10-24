@@ -8,6 +8,7 @@ import { readRepoFile, allWorkflows } from "./test-util.js";
 import { DISPOSITIONS, RESPONSE_FORM, RULINGS } from "./response-grammar.js";
 import { MAINTAINER_ASSOCIATIONS } from "./responses.js";
 import { LINKED_ISSUES_DIR } from "./linked-issues.js";
+import { budgetMessage, DEFAULT_RESERVE, DONE_RULE } from "./budget.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -102,7 +103,7 @@ describe("route prose — the reusable workflow and the example teach the SAME i
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|SUBAGENT_CONTEXT|LINKED_ISSUES_NOTE|LINKED_ISSUES_TRIAGE|NIX_NOTE)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|SUBAGENT_CONTEXT|LINKED_ISSUES_NOTE|LINKED_ISSUES_TRIAGE|NIX_NOTE|DONE_RULE)="/.test(
           line,
         ),
       )
@@ -381,6 +382,7 @@ describe("the subagent context — the fan-out subagents start with the full rev
         [
           'LINKED_ISSUES_NOTE=""',
           'NIX_NOTE=""',
+          lineFrom('DONE_RULE="'),
           ...lines.slice(start, end + 1),
           lineFrom('ROUTE_NOTE="${CI_JOBS_NOTE}'),
           lineFrom('SUBAGENT_CONTEXT="${CI_STATUS_NOTE}'),
@@ -388,7 +390,7 @@ describe("the subagent context — the fan-out subagents start with the full rev
         ].join("\n"),
         { GATHER_DIR: gatherDir, STAGED_JOB_LOGS: "15", CI_JOBS_PASSED: "15", CI_JOBS_RAN: "15" },
       ).split("\0");
-      expect(context).toBe(`${status}${routeNote.replace(/^ /, "")}`);
+      expect(context).toBe(`${status}${routeNote.replace(/^ /, "")} ${DONE_RULE}`);
       expect(context).toMatch(/^All CI jobs have passed: 15\/15, named in \S+ci_jobs\.json\. \S/);
       expect(context).toContain("PR-controlled");
       expect(context).toContain("A skipped job verified nothing");
@@ -541,7 +543,7 @@ describe("the issues a PR closes — the triage screens them and the review is t
       const review = scriptOfStep('SUBAGENT_CONTEXT="${CI_STATUS_NOTE}');
       expect(
         review.indexOf(
-          'SUBAGENT_CONTEXT="${CI_STATUS_NOTE}${ROUTE_NOTE# }${LINKED_ISSUES_NOTE}${NIX_NOTE}"',
+          'SUBAGENT_CONTEXT="${CI_STATUS_NOTE}${ROUTE_NOTE# }${LINKED_ISSUES_NOTE}${NIX_NOTE} ${DONE_RULE}"',
         ),
       ).toBeGreaterThan(review.indexOf(indexCheck));
     });
@@ -757,11 +759,46 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
         true,
       );
       expect(lines).toContain(
-        'SUBAGENT_CONTEXT="${CI_STATUS_NOTE}${ROUTE_NOTE# }${LINKED_ISSUES_NOTE}${NIX_NOTE}"',
+        'SUBAGENT_CONTEXT="${CI_STATUS_NOTE}${ROUTE_NOTE# }${LINKED_ISSUES_NOTE}${NIX_NOTE} ${DONE_RULE}"',
       );
       expect(stepNamed(workflowPath, RELEASE).if).toBe("${{ always() }}");
     });
   }
+});
+
+describe("when a planned check counts as done — one rule in every surface that names unfinished checks", () => {
+  for (const workflowPath of [
+    ".github/workflows/review-reusable.yaml",
+    "examples/workflows/review.yaml",
+  ]) {
+    it(`${workflowPath}: the workflow's rule is the CLI's, and the note, the seed and the subagents all use it`, () => {
+      const lines = runScripts(workflowPath)
+        .flatMap(({ script }) => script.split("\n"))
+        .map((line) => line.trim());
+      expect(lines).toContain(`DONE_RULE="${DONE_RULE}"`);
+      const using = (prefix: string): string | undefined =>
+        lines.find((line) => line.includes(prefix) && line.includes("${DONE_RULE}"));
+      expect(using('UNFINISHED_NOTE=" Name every check')).toBeDefined();
+      expect(using("Any checks the prior review's")).toBeDefined();
+      expect(using('SUBAGENT_CONTEXT="${CI_STATUS_NOTE}')).toBeDefined();
+      expect(lines.join("\n")).not.toContain("never one a CI job");
+    });
+  }
+
+  it("the budget hooks give the same rule to the main agent and to every subagent", () => {
+    const inputs = {
+      spentUsd: 0.9,
+      budgetUsd: 1,
+      elapsedMs: null,
+      wallMs: null,
+      reserve: DEFAULT_RESERVE,
+    };
+    for (const kind of ["soft", "hard"] as const) {
+      for (const isSubagent of [false, true]) {
+        expect(budgetMessage(inputs, { kind }, "/draft.json", isSubagent)).toContain(DONE_RULE);
+      }
+    }
+  });
 });
 
 describe("mechanic prompt assembly — the notes reach the prompt in the same order in both files", () => {

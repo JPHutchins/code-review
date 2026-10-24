@@ -98,6 +98,11 @@ const timeClause = (i: BudgetInputs): string | null =>
       ? `${mins(i.elapsedMs)}/${mins(i.wallMs)} elapsed (${pct(i.elapsedMs / i.wallMs)})`
       : `${mins(i.elapsedMs)} elapsed`;
 
+// When a planned check counts as done — one rule for the hooks here and the workflow's prompt notes,
+// which carry the same sentence (pinned by a test).
+export const DONE_RULE =
+  "A check is done once anything settled it: a CI job that ran and passed it, its logs, or the code itself. A check nothing settled stays unfinished even when this runner could not run it: name the check, not the method that failed.";
+
 // A subagent can't write the draft (single-writer deny below), so it is told to report back, not write.
 const directive = (
   phase: Exclude<BudgetPhase, { kind: "ok" }>,
@@ -106,11 +111,11 @@ const directive = (
 ): string => {
   if (isSubagent)
     return phase.kind === "hard"
-      ? `Budget nearly exhausted — STOP all new investigation now and report the findings you have back to the main agent in your reply, naming each check you planned but did not finish. Do not write ${draftPath} yourself; only the main agent writes it.`
-      : `Wind down investigation and report the findings you have back to the main agent in your reply, naming each check you planned but did not finish — do not write ${draftPath} yourself; the main agent writes it, and you may run out of budget otherwise.`;
+      ? `Budget nearly exhausted — STOP all new investigation now and report the findings you have back to the main agent in your reply, naming each check you planned but did not finish. ${DONE_RULE} Do not write ${draftPath} yourself; only the main agent writes it.`
+      : `Wind down investigation and report the findings you have back to the main agent in your reply, naming each check you planned but did not finish. ${DONE_RULE} Do not write ${draftPath} yourself; the main agent writes it, and you may run out of budget otherwise.`;
   return phase.kind === "hard"
-    ? `Budget nearly exhausted — STOP all new investigation now. Do not wait for subagents still running in the background. Write your COMPLETE findings from what you already have to ${draftPath}, listing in its \`unfinished\` field, when its schema has one, every check you or a subagent planned but did not finish (never one a CI job already ran and passed), and run \`code-review validate ${draftPath} --explain\` until it passes (--explain prints the exact schema when the shape is wrong). Other tools are blocked until that draft is written.`
-    : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, listing in its \`unfinished\` field, when its schema has one, every check you or a subagent planned but did not finish (never one a CI job already ran and passed), then run \`code-review validate ${draftPath} --explain\` (it prints the exact schema if the shape is wrong) — fold in the subagent reports you already have rather than waiting on stragglers; you may run out of budget before you finish otherwise.`;
+    ? `Budget nearly exhausted — STOP all new investigation now. Do not wait for subagents still running in the background. Write your COMPLETE findings from what you already have to ${draftPath}, listing in its \`unfinished\` field, when its schema has one, every check you or a subagent planned but did not finish (${DONE_RULE}), and run \`code-review validate ${draftPath} --explain\` until it passes (--explain prints the exact schema when the shape is wrong). Other tools are blocked until that draft is written.`
+    : `Wind down investigation and write your COMPLETE findings to ${draftPath} now, listing in its \`unfinished\` field, when its schema has one, every check you or a subagent planned but did not finish (${DONE_RULE}), then run \`code-review validate ${draftPath} --explain\` (it prints the exact schema if the shape is wrong) — fold in the subagent reports you already have rather than waiting on stragglers; you may run out of budget before you finish otherwise.`;
 };
 
 export const budgetMessage = (

@@ -37,6 +37,7 @@ const issueNode = (
   repository: string,
   number: number,
   body: string | null = `body of ${String(number)}`,
+  commentCount = 1,
 ) => ({
   number,
   title: `issue ${String(number)}`,
@@ -47,6 +48,7 @@ const issueNode = (
   authorAssociation: "NONE",
   author: { login: "reporter" },
   repository: { nameWithOwner: repository },
+  comments: { totalCount: commentCount },
 });
 
 const commentRow = (author: string, body: string) =>
@@ -161,11 +163,17 @@ describe("stageLinkedIssues — every issue the PR closes, with every comment, o
     expect(calls[0]?.some((arg) => arg.includes("closingIssuesReferences"))).toBe(true);
   });
 
-  it("writes no folder when the PR closes no issue, and clears one a previous gather left", async () => {
+  const previousGather = (): void => {
     mkdirSync(join(folder(), "owner__repo__1"), { recursive: true });
+    writeFileSync(join(folder(), LINKED_ISSUES_INDEX), '{"closes":1,"issues":[]}');
     writeFileSync(join(folder(), "owner__repo__1", "body.md"), "a previous PR's issue");
+  };
+
+  it("writes no folder when the PR closes no issue, and clears one a previous gather left", async () => {
+    previousGather();
     const { api } = ghWith(closingReply([]));
     expect(await stageLinkedIssues("owner/repo", 3, outDir, api)).toEqual({
+      indexed: false,
       issues: 0,
       comments: 0,
       bytes: 0,
@@ -173,8 +181,29 @@ describe("stageLinkedIssues — every issue the PR closes, with every comment, o
     expect(existsSync(folder())).toBe(false);
   });
 
+  it("never removes a linked_issues folder it did not write, and stages nothing", async () => {
+    mkdirSync(folder());
+    writeFileSync(join(folder(), "notes.md"), "someone's own folder");
+    const { api, calls } = ghWith(closingReply([issueNode("owner/repo", 7)]));
+    expect((await stageLinkedIssues("owner/repo", 3, outDir, api)).indexed).toBe(false);
+    expect(readdirSync(folder())).toEqual(["notes.md"]);
+    expect(calls).toEqual([]);
+    expect(warnings()).toEqual([expect.stringContaining("not written by code-review")]);
+  });
+
+  it("reads no comments for an issue that has none", async () => {
+    const { api, calls } = ghWith(closingReply([issueNode("owner/repo", 7, "body", 0)]));
+    expect(await stageLinkedIssues("owner/repo", 3, outDir, api)).toMatchObject({
+      indexed: true,
+      issues: 1,
+      comments: 0,
+    });
+    expect(calls.filter((args) => args[0] !== "graphql")).toEqual([]);
+    expect(stagedJson("owner__repo__7", "issue.json")).toMatchObject({ comments: [] });
+  });
+
   it("holds exactly the folders the index lists, whatever a previous gather left", async () => {
-    mkdirSync(join(folder(), "owner__repo__1"), { recursive: true });
+    previousGather();
     const { api } = ghWith(closingReply([issueNode("owner/repo", 7)]), {
       "repos/owner/repo/issues/7/comments": "",
     });
@@ -223,10 +252,9 @@ describe("stageLinkedIssues — every issue the PR closes, with every comment, o
       const { api } = ghWith(closingReply(nodes, total), {
         "repos/owner/repo/issues/7/comments": "",
       });
-      await stageLinkedIssues("owner/repo", 3, outDir, api);
+      expect((await stageLinkedIssues("owner/repo", 3, outDir, api)).indexed).toBe(true);
       expect(warnings()).toEqual([expect.stringContaining(cut)]);
-      if (existsSync(folder()))
-        expect(stagedJson(LINKED_ISSUES_INDEX)).toMatchObject({ closes: total });
+      expect(stagedJson(LINKED_ISSUES_INDEX)).toMatchObject({ closes: total });
     },
   );
 
@@ -237,6 +265,7 @@ describe("stageLinkedIssues — every issue the PR closes, with every comment, o
       "repos/owner/repo/issues/7/comments": "",
     });
     expect(await stageLinkedIssues("owner/repo", 3, blocked, api)).toEqual({
+      indexed: false,
       issues: 0,
       comments: 0,
       bytes: 0,

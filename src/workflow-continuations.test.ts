@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { readRepoFile, allWorkflows } from "./test-util.js";
 import { DISPOSITIONS, RESPONSE_FORM, RULINGS } from "./response-grammar.js";
 import { MAINTAINER_ASSOCIATIONS } from "./responses.js";
-import { LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX } from "./linked-issues.js";
+import { LINKED_ISSUES_DIR } from "./linked-issues.js";
 
 // A run script's own text, per step — parsed out of the workflow rather than grepped for, so a step
 // whose shape this file does not model shows up as a missing script instead of passing silently.
@@ -428,23 +428,19 @@ describe("the subagent context — the fan-out subagents start with the full rev
 });
 
 describe("the issues a PR closes — the triage screens them and the review is told, at gather's path", () => {
-  const indexCheck = `if [ -f "$GATHER_DIR/${LINKED_ISSUES_DIR}/${LINKED_ISSUES_INDEX}" ]; then`;
+  const indexCheck = 'if [ "${LINKED_ISSUES:-}" = "true" ]; then';
   const roots: string[] = [];
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
-  const gatherDir = (withIndex: boolean): string => {
+  const scratch = (): string => {
     const dir = mkdtempSync(join(tmpdir(), "linked-issues-note-"));
     roots.push(dir);
-    if (withIndex) {
-      mkdirSync(join(dir, LINKED_ISSUES_DIR));
-      writeFileSync(join(dir, LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX), "[]\n");
-    }
     return dir;
   };
-  const noteFrom = (block: string, name: string, withIndex: boolean): string =>
+  const noteFrom = (block: string, name: string, staged: boolean): string =>
     execFileSync("bash", ["-euo", "pipefail", "-c", `${block}\nprintf '%s' "$${name}"`], {
-      env: { ...process.env, GATHER_DIR: gatherDir(withIndex) },
+      env: { ...process.env, GATHER_DIR: scratch(), LINKED_ISSUES: String(staged) },
       encoding: "utf-8",
     });
 
@@ -496,6 +492,45 @@ describe("the issues a PR closes — the triage screens them and the review is t
       expect(review.indexOf('LINKED_ISSUES_NOTE=""')).toBeLessThan(
         review.indexOf('if [ "$CONCLUSION" = "success" ]; then'),
       );
+    });
+
+    it(`${workflowPath}: the notes follow gather's own report for this run, which reaches both agent steps`, () => {
+      for (const step of [
+        "Decide whether it is safe to check out",
+        'SUBAGENT_CONTEXT="${CI_STATUS_NOTE}',
+      ]) {
+        expect(scriptOfStep(step)).toContain(indexCheck);
+      }
+      const doc = parseYaml(readRepoFile(workflowPath)) as {
+        jobs: Record<string, { steps?: { name?: string; env?: Record<string, string> }[] }>;
+      };
+      const envOf = (name: string): Record<string, string> | undefined =>
+        Object.values(doc.jobs)
+          .flatMap((job) => job.steps ?? [])
+          .find((step) => step.name === name)?.env;
+      for (const name of ["Phase 1 — security triage", "Phase 2 — agentic review"]) {
+        expect(envOf(name)?.["LINKED_ISSUES"]).toBe("${{ steps.gather.outputs.linked_issues }}");
+      }
+    });
+
+    it(`${workflowPath}: a pinned CLI that does not report the issues is named, and a skip or a report is quiet`, () => {
+      const gatherStep = scriptOfStep("code-review gather");
+      const start = gatherStep.findIndex((line) => line.startsWith("if grep -q '^pr='"));
+      expect(start).toBeGreaterThanOrEqual(0);
+      const check = gatherStep.slice(start, gatherStep.indexOf("fi", start) + 1).join("\n");
+      const warningFor = (outputs: string): string => {
+        const runnerTemp = scratch();
+        writeFileSync(join(runnerTemp, "gather-outputs"), outputs);
+        return execFileSync("bash", ["-euo", "pipefail", "-c", check], {
+          env: { ...process.env, RUNNER_TEMP: runnerTemp, CODE_REVIEW_VERSION: "0.1.0-alpha.71" },
+          encoding: "utf-8",
+        });
+      };
+      expect(warningFor("pr=3\nconclusion=success\n")).toMatch(
+        /^::warning::the pinned code-review CLI \(0\.1\.0-alpha\.71\) does not stage the issues/,
+      );
+      expect(warningFor("pr=3\nlinked_issues=false\n")).toBe("");
+      expect(warningFor("skip=true\n")).toBe("");
     });
 
     it(`${workflowPath}: gather is asked for the issues, and the subagents get the same note as the main agent`, () => {

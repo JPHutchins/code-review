@@ -198,6 +198,7 @@ describe("gather — PR resolution", () => {
       stagedJobLogs: 0,
       failingJobs: 0,
       passedJobs: null,
+      linkedIssues: false,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -1477,9 +1478,10 @@ describe("renderOutputs", () => {
         stagedJobLogs: 0,
         failingJobs: 0,
         passedJobs: { passed: 15, ran: 15 },
+        linkedIssues: true,
       }),
     ).toBe(
-      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\nci_jobs_ran=15\n",
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\nci_jobs_ran=15\nlinked_issues=true\n",
     );
   });
 });
@@ -1723,6 +1725,7 @@ describe("gather — the issues the PR closes", () => {
               authorAssociation: "NONE",
               author: { login: "reporter" },
               repository: { nameWithOwner: "owner/repo" },
+              comments: { totalCount: 0 },
             },
           ],
         }),
@@ -1731,8 +1734,9 @@ describe("gather — the issues the PR closes", () => {
     ]);
     const { git } = mkMockGit([]);
 
-    await gather(mkInput({ linkedIssues: true }), api, git);
-
+    expect(await gather(mkInput({ linkedIssues: true }), api, git)).toMatchObject({
+      linkedIssues: true,
+    });
     expect(hasOutFile(join(LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX))).toBe(true);
     expect(hasOutFile(join(LINKED_ISSUES_DIR, "owner__repo__7", "body.md"))).toBe(true);
   });
@@ -1744,8 +1748,7 @@ describe("gather — the issues the PR closes", () => {
     const { api, calls } = mkMockGhApi([...prMocks, { match: jobsMatch, response: "" }]);
     const { git } = mkMockGit([]);
 
-    await gather(mkInput(over), api, git);
-
+    expect(await gather(mkInput(over), api, git)).toMatchObject({ linkedIssues: false });
     expect(calls().some((c) => closingIssuesRead(c.args))).toBe(false);
     expect(hasOutFile(LINKED_ISSUES_DIR)).toBe(false);
   });

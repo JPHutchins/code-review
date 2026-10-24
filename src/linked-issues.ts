@@ -2,7 +2,7 @@
 // issue and get it linked to a PR, so this text is attacker-reachable: the triage screens the
 // folder before any agent reads it, and the review reads it as claims, never instructions.
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
 import type { GhApi } from "./gh.js";
@@ -19,13 +19,17 @@ export const COMMENT_READ_CONCURRENCY = 8;
 export const READABLE_LINE_CHARS = 1000;
 
 export interface LinkedIssuesStaged {
+  // This run wrote index.json: the workflow tells the agents about the folder only then, never on
+  // the strength of files an earlier gather left behind.
+  readonly indexed: boolean;
   readonly issues: number;
   readonly comments: number;
   readonly bytes: number;
 }
 
 // Writes the folder from scratch, so it holds exactly what index.json lists; any failure stages
-// nothing and warns, because the review runs fine without the issues.
+// nothing and warns, because the review runs fine without the issues. A folder this module did not
+// write (no index.json) is never removed.
 export const stageLinkedIssues = async (
   repo: string,
   prNumber: number,
@@ -42,9 +46,14 @@ export const stageLinkedIssues = async (
       `the PR closes ${String(closing.total)} issues; only ${String(closing.issues.length)} are staged for the review`,
     );
   }
-  if (closing.issues.length === 0) return NOTHING_STAGED;
+  if (closing.total === 0) return NOTHING_STAGED;
   const issues = await inBatches(closing.issues, COMMENT_READ_CONCURRENCY, async (issue) =>
-    stagedIssue(issue, await fetchComments(issue.repository.nameWithOwner, issue.number, ghApi)),
+    stagedIssue(
+      issue,
+      issue.comments.totalCount === 0
+        ? []
+        : await fetchComments(issue.repository.nameWithOwner, issue.number, ghApi),
+    ),
   );
   try {
     const staged = writeLinkedIssues(dir, closing.total, issues);
@@ -58,7 +67,7 @@ export const stageLinkedIssues = async (
   }
 };
 
-const NOTHING_STAGED: LinkedIssuesStaged = { issues: 0, comments: 0, bytes: 0 };
+const NOTHING_STAGED: LinkedIssuesStaged = { indexed: false, issues: 0, comments: 0, bytes: 0 };
 
 const couldNotStage = (reason: string): LinkedIssuesStaged => {
   warn(`could not stage the issues this PR closes (${reason}), so the review runs without them`);
@@ -66,6 +75,9 @@ const couldNotStage = (reason: string): LinkedIssuesStaged => {
 };
 
 const clearFailure = (dir: string): string | null => {
+  if (existsSync(dir) && !existsSync(join(dir, LINKED_ISSUES_INDEX))) {
+    return `${dir} exists and was not written by code-review`;
+  }
   try {
     rmSync(dir, { recursive: true, force: true });
     return null;
@@ -84,6 +96,7 @@ const ClosingIssueCodec = t.type({
   authorAssociation: t.union([t.string, t.null]),
   author: t.union([t.type({ login: t.string }), t.null]),
   repository: t.type({ nameWithOwner: t.string }),
+  comments: t.type({ totalCount: t.number }),
 });
 type ClosingIssue = t.TypeOf<typeof ClosingIssueCodec>;
 
@@ -106,7 +119,7 @@ const CLOSING_ISSUES_QUERY = `query($owner: String!, $name: String!, $number: In
     pullRequest(number: $number) {
       closingIssuesReferences(first: ${String(CLOSING_ISSUES_LIMIT)}) {
         totalCount
-        nodes { number title body url state createdAt authorAssociation author { login } repository { nameWithOwner } }
+        nodes { number title body url state createdAt authorAssociation author { login } repository { nameWithOwner } comments { totalCount } }
       }
     }
   }
@@ -236,12 +249,13 @@ const writeLinkedIssues = (
     2,
   );
   mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, LINKED_ISSUES_INDEX), index);
   files.forEach(({ path, text }) => {
     mkdirSync(join(dir, path, ".."), { recursive: true });
     writeFileSync(join(dir, path), text);
   });
-  writeFileSync(join(dir, LINKED_ISSUES_INDEX), index);
   return {
+    indexed: true,
     issues: issues.length,
     comments: issues.reduce((sum, issue) => sum + (issue.comments?.length ?? 0), 0),
     bytes: [index, ...files.map(({ text }) => text)].reduce(

@@ -218,7 +218,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read            # await-ci lists the head's CI workflow runs (Actions API ⇒ actions:read)
       # write, not read: a reaction on a PR comment is scoped to Pull requests (issues:write does NOT
       # cover it — GitHub 403s). The same write also covers resolving the PR head by number.
       pull-requests: write
@@ -230,11 +229,6 @@ jobs:
       duration:      ${{ steps.parse.outputs.duration }}
       usd:           ${{ steps.parse.outputs.usd }}
       instructions:  ${{ steps.parse.outputs.instructions }}
-      # CI-result awareness — the review runs only when we KNOW the head's CI result, and routes on it.
-      ci_settled:    ${{ steps.ci.outputs.ci_settled }}
-      ci_conclusion: ${{ steps.ci.outputs.ci_conclusion }}
-      ci_run_id:     ${{ steps.ci.outputs.ci_run_id }}
-      ci_run_attempt: ${{ steps.ci.outputs.ci_run_attempt }}
     steps:
       - uses: actions/setup-node@v6
         with:
@@ -243,8 +237,8 @@ jobs:
         run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Holds a write token, so lock egress like review-reusable.yaml's announce (it runs no untrusted
-      # PR code, but a write-token job never runs unenforced). Fixed host set: npm registry + the GitHub
-      # API; harden-runner admits the endpoints the runner itself needs on its own.
+      # PR code, but a write-token job never runs unenforced). Only the two hosts this job reaches: the
+      # npm registry and the GitHub API; harden-runner admits the runner's own endpoints itself.
       - name: Lock network egress
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
@@ -252,9 +246,6 @@ jobs:
           allowed-endpoints: >
             registry.npmjs.org:443
             api.github.com:443
-            github.com:443
-            objects.githubusercontent.com:443
-            *.blob.core.windows.net:443
 
       # The same fail-closed backstop as announce: the job fails if it can reach the open internet.
       - name: Egress canary — verify the lock engaged
@@ -267,6 +258,16 @@ jobs:
             exit 1
           fi
           echo "Egress canary could not connect — block policy verified"
+
+      # The parse below reads a failed API call as "nothing to run", so a lock that refuses the GitHub
+      # API would skip the review silently; this fails the gate loudly instead, and ack shows 😕.
+      - name: Verify the GitHub API is reachable through the lock
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api rate_limit --jq .rate.limit >/dev/null \
+            || { echo "::error::the GitHub API is unreachable through the egress lock — failing the gate"; exit 1; }
 
       - name: Parse the command + resolve the PR head
         id: parse
@@ -295,7 +296,7 @@ jobs:
             >> "$GITHUB_OUTPUT"
 
       # Acknowledge only a real, runnable command (👀). Cosmetic — never fails the job. Fired BEFORE
-      # the CI wait so the commenter sees receipt immediately while CI (and this job) run.
+      # the CI wait (the ci job) so the commenter sees receipt immediately while CI runs.
       - name: Acknowledge the request (👀)
         if: ${{ steps.parse.outputs.should_run == 'true' }}
         env:
@@ -304,16 +305,38 @@ jobs:
           COMMENT_ID: ${{ github.event.comment.id }}
         run: code-review react --repo "$REPO" --comment-id "$COMMENT_ID" --add eyes
 
+  # Waits for the head's CI run with a read-only token. The wait can run for many minutes, so it stays
+  # out of the write-token gate: a long job under harden-runner's block mode is the runner-reclaim
+  # risk the review job moved off harden-runner for.
+  ci:
+    needs: gate
+    if: ${{ needs.gate.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read            # await-ci lists the head's CI workflow runs (Actions API ⇒ actions:read)
+    # CI-result awareness — the review runs only when we KNOW the head's CI result, and routes on it.
+    outputs:
+      ci_settled:    ${{ steps.ci.outputs.ci_settled }}
+      ci_conclusion: ${{ steps.ci.outputs.ci_conclusion }}
+      ci_run_id:     ${{ steps.ci.outputs.ci_run_id }}
+      ci_run_attempt: ${{ steps.ci.outputs.ci_run_attempt }}
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install code-review
+        run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
+
       # Wait for the head's CI run and emit its REAL conclusion + run id — the differentiator. The CLI
       # bounds the wait (--timeout), so no job-level timeout is needed. ci_settled=false ⇒ CI never
       # concluded in time; the review job below declines rather than reviewing without a CI result.
       - name: Wait for CI to conclude
         id: ci
-        if: ${{ steps.parse.outputs.should_run == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ steps.parse.outputs.head_sha }}
+          HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
           CI_WORKFLOW: ${{ inputs.ci_workflow }}
           CI_WAIT_TIMEOUT: ${{ inputs.ci_wait_timeout }}
           CI_POLL_INTERVAL: ${{ inputs.ci_poll_interval }}
@@ -328,23 +351,23 @@ jobs:
             >> "$GITHUB_OUTPUT"
 
   review:
-    needs: gate
+    needs: [gate, ci]
     # Run only when the command is real, we KNOW the head's CI result, and that result is reviewable.
     # ci_settled=false (CI never concluded in time) or a non-success/failure conclusion (cancelled,
     # neutral, timed_out, …) declines rather than reviewing blind — the ack then shows 😕.
     if: >-
       ${{ needs.gate.outputs.should_run == 'true' &&
-          needs.gate.outputs.ci_settled == 'true' &&
-          (needs.gate.outputs.ci_conclusion == 'success' ||
-           needs.gate.outputs.ci_conclusion == 'failure') }}
+          needs.ci.outputs.ci_settled == 'true' &&
+          (needs.ci.outputs.ci_conclusion == 'success' ||
+           needs.ci.outputs.ci_conclusion == 'failure') }}
     uses: ./.github/workflows/review-reusable.yaml
     with:
       head_sha:      ${{ needs.gate.outputs.head_sha }}
       head_branch:   ${{ needs.gate.outputs.head_branch }}
       head_repo:     ${{ needs.gate.outputs.head_repo }}
-      run_id:        ${{ needs.gate.outputs.ci_run_id }}     # the CI run — its logs feed the review
-      run_attempt:   ${{ needs.gate.outputs.ci_run_attempt }} # the attempt that concluded, not a re-run since
-      conclusion:    ${{ needs.gate.outputs.ci_conclusion }} # the REAL CI result: success → full, failure → mechanic
+      run_id:        ${{ needs.ci.outputs.ci_run_id }}     # the CI run — its logs feed the review
+      run_attempt:   ${{ needs.ci.outputs.ci_run_attempt }} # the attempt that concluded, not a re-run since
+      conclusion:    ${{ needs.ci.outputs.ci_conclusion }} # the REAL CI result: success → full, failure → mechanic
       trigger_event: pull_request
       api_base_url:    ${{ inputs.api_base_url }}
       model_full:      ${{ inputs.model_full }}
@@ -381,8 +404,10 @@ jobs:
 
   # Swap the 👀 ack for 🚀 (review completed → read the sticky) or 😕 (the run failed). Best-effort.
   ack:
-    needs: [gate, review]
-    if: ${{ always() && needs.gate.outputs.should_run == 'true' }}
+    needs: [gate, ci, review]
+    # A gate that FAILED (a refused API, a broken lock) may already have posted 👀 and never says
+    # should_run, so it settles the acknowledgement too: the review is then skipped, which reads as 😕.
+    if: ${{ always() && (needs.gate.outputs.should_run == 'true' || needs.gate.result == 'failure') }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write     # react to a PR comment ⇒ pull-requests:write (issues:write 403s)
@@ -394,8 +419,8 @@ jobs:
         run: npm install -g "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Holds a write token, so lock egress like review-reusable.yaml's announce (it runs no untrusted
-      # PR code, but a write-token job never runs unenforced). Fixed host set: npm registry + the GitHub
-      # API; harden-runner admits the endpoints the runner itself needs on its own.
+      # PR code, but a write-token job never runs unenforced). Only the two hosts this job reaches: the
+      # npm registry and the GitHub API; harden-runner admits the runner's own endpoints itself.
       - name: Lock network egress
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
@@ -403,9 +428,6 @@ jobs:
           allowed-endpoints: >
             registry.npmjs.org:443
             api.github.com:443
-            github.com:443
-            objects.githubusercontent.com:443
-            *.blob.core.windows.net:443
 
       # The same fail-closed backstop as announce: the job fails if it can reach the open internet.
       - name: Egress canary — verify the lock engaged

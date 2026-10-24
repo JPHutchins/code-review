@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import { readdirSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { allWorkflows, readRepoFile, repoRoot, WORKFLOW_EXTENSIONS } from "./test-util.js";
+import {
+  allWorkflows,
+  asPermissionSet,
+  readRepoFile,
+  repoRoot,
+  WORKFLOW_EXTENSIONS,
+} from "./test-util.js";
 import { readPackageVersion } from "./index.js";
 
 // The pin shape, wherever a consumer-facing surface names it: a uses: line in a workflow or a
@@ -152,43 +158,63 @@ describe("harden-runner pins", () => {
   const reviewWorkflows = (): readonly string[] =>
     allWorkflows().filter((path) => /\/review[\w-]*\.ya?ml$/.test(path));
 
-  type Step = { name?: string; uses?: string; with?: Record<string, unknown> };
-  type Job = { uses?: string; permissions?: unknown; steps?: readonly Step[] };
-
-  const writeTokenJobs = (path: string): readonly [string, Job][] => {
-    const workflow = parseYaml(readRepoFile(path)) as {
-      permissions?: unknown;
-      jobs: Record<string, Job>;
-    };
-    const holdsWrite = (permissions: unknown): boolean =>
-      permissions === "write-all" ||
-      (permissions !== null &&
-        typeof permissions === "object" &&
-        Object.values(permissions).includes("write"));
-    return Object.entries(workflow.jobs).filter(
-      ([, job]) =>
-        job.uses === undefined &&
-        holdsWrite(job.permissions !== undefined ? job.permissions : workflow.permissions),
-    );
+  type Step = {
+    name?: string;
+    uses?: string;
+    if?: unknown;
+    "continue-on-error"?: unknown;
+    with?: Record<string, unknown>;
+    run?: string;
   };
+  type Job = { uses?: string; permissions?: unknown; steps?: readonly Step[] };
+  type Workflow = { permissions?: unknown; jobs: Record<string, Job> };
 
+  const workflowOf = (path: string): Workflow => parseYaml(readRepoFile(path)) as Workflow;
   const isLock = (step: Step): boolean =>
     step.uses?.toLowerCase().startsWith("step-security/harden-runner@") === true;
+  const isCanary = (step: Step): boolean => (step.name ?? "").startsWith("Egress canary");
+  // The canary's commands, without its comments, which differ by job.
+  const canaryCommands = (step: Step): string =>
+    (step.run ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"))
+      .join("\n");
 
-  it("every review-workflow job that holds a write scope locks egress in block mode, with its canary after the lock", () => {
-    const jobs = reviewWorkflows().flatMap((path) =>
-      writeTokenJobs(path).map(([name, job]) => {
-        const steps = job.steps ?? [];
-        const lock = steps.findIndex(isLock);
-        return {
-          job: `${path} → ${name}`,
-          locks: steps.filter(isLock).map((step) => String(step.with?.["egress-policy"])),
-          canaryAfterLock: steps.some(
-            (step, index) => index > lock && (step.name ?? "").startsWith("Egress canary"),
-          ),
-        };
-      }),
-    );
+  const lockProblem = (job: Job, canonicalCanary: string): string | null => {
+    const steps = job.steps ?? [];
+    const lock = steps.findIndex(isLock);
+    const canary = steps.find((step, index) => index > lock && isCanary(step));
+    if (
+      steps
+        .filter(isLock)
+        .map((step) => String(step.with?.["egress-policy"]))
+        .join() !== "block"
+    )
+      return "not exactly one block-mode lock";
+    if (canary === undefined) return "no canary after the lock";
+    if (canary.if !== undefined || canary["continue-on-error"] !== undefined)
+      return "the canary can be skipped";
+    return canaryCommands(canary) === canonicalCanary ? null : "the canary differs from announce's";
+  };
+
+  it("every review-workflow job that holds a write scope locks egress in block mode, with announce's canary after the lock", () => {
+    const announce = workflowOf(".github/workflows/review-reusable.yaml").jobs["announce"];
+    const canonicalCanary = canaryCommands((announce?.steps ?? []).find(isCanary) ?? {});
+    expect(canonicalCanary).toContain("https://example.com");
+    const jobs = reviewWorkflows().flatMap((path) => {
+      const workflow = workflowOf(path);
+      return Object.entries(workflow.jobs).flatMap(([name, job]) => {
+        if (job.uses !== undefined) return [];
+        const granted = job.permissions !== undefined ? job.permissions : workflow.permissions;
+        const at = `${path} → ${name}`;
+        if (granted === undefined)
+          return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
+        return [...asPermissionSet(granted).values()].includes("write")
+          ? [{ job: at, problem: lockProblem(job, canonicalCanary) }]
+          : [];
+      });
+    });
     expect(jobs.map((entry) => entry.job)).toEqual([
       ".github/workflows/review-on-comment-reusable.yaml → gate",
       ".github/workflows/review-on-comment-reusable.yaml → ack",
@@ -199,8 +225,6 @@ describe("harden-runner pins", () => {
       "examples/workflows/review.yaml → comment",
       "examples/workflows/review.yaml → finalize",
     ]);
-    expect(
-      jobs.filter((entry) => entry.locks.join() !== "block" || !entry.canaryAfterLock),
-    ).toEqual([]);
+    expect(jobs.filter((entry) => entry.problem !== null)).toEqual([]);
   });
 });

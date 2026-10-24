@@ -229,8 +229,9 @@ each in the *trusted* default-branch context (`issue_comment` runs there, never 
   own sticky never begins with `/code-review`.
 
 The front-end's gate/ack jobs run only trusted code (the workflow + the CLI + the GitHub API), never
-PR code; they hold a write token, so they lock egress like the reusable workflow's write-token jobs.
-The network jail stays where untrusted code executes — the review job's agents.
+PR code; they hold a write token, so from v0.1.0-alpha.74 they lock egress like the reusable
+workflow's write-token jobs, and the CI wait runs in a separate read-only job. The network jail stays
+where untrusted code executes — the review job's agents.
 
 ## Cancel a review when the PR is merged or closed ([#183](../../../issues/183))
 
@@ -266,9 +267,9 @@ so it costs the gather step, not a full review.
    `code-review sandbox-config` call; reusable: `extra_endpoints`), and a jail canary proves on every
    run that nothing else is reachable
    ([SPEC Appendix A](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
-   The write-token jobs (announce, comment, finalize) always run harden-runner in `block` mode with a
-   fixed allowlist, and an egress **canary** proves on every run that the lock engaged — harden-runner
-   before v2.21.0 could silently degrade `block` to audit
+   The write-token jobs always run harden-runner in `block` mode with a fixed allowlist, and an egress
+   **canary** proves on every run that the lock engaged — harden-runner before v2.21.0 could silently
+   degrade `block` to audit
    ([harden-runner#675](https://github.com/step-security/harden-runner/issues/675)) — failing the job
    closed if it can reach the open internet. The reusable's `egress_policy` input is a no-op kept for
    compatibility.

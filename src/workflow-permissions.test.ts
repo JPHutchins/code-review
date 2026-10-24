@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { readRepoFile, allWorkflows } from "./test-util.js";
+import { readRepoFile, allWorkflows, asPermissionSet, type PermissionSet } from "./test-util.js";
 
 const ACCESS_RANK = new Map<string, number>([
   ["none", 0],
@@ -9,41 +9,6 @@ const ACCESS_RANK = new Map<string, number>([
 ]);
 
 const rankOf = (access: string | undefined): number => ACCESS_RANK.get(access ?? "none") ?? 0;
-
-type PermissionSet = ReadonlyMap<string, string>;
-
-const EMPTY: PermissionSet = new Map();
-
-// Every scope GitHub grants, so the `read-all` / `write-all` shorthands can be expanded to the set
-// they actually stand for instead of being read as no permissions at all.
-const ALL_SCOPES = [
-  "actions",
-  "attestations",
-  "checks",
-  "contents",
-  "deployments",
-  "discussions",
-  "id-token",
-  "issues",
-  "models",
-  "packages",
-  "pages",
-  "pull-requests",
-  "repository-projects",
-  "security-events",
-  "statuses",
-] as const;
-
-const asPermissionSet = (declared: unknown): PermissionSet => {
-  if (declared === "read-all") return new Map(ALL_SCOPES.map((scope) => [scope, "read"]));
-  if (declared === "write-all") return new Map(ALL_SCOPES.map((scope) => [scope, "write"]));
-  if (declared === null || typeof declared !== "object") return EMPTY;
-  return new Map(
-    Object.entries(declared).flatMap(([scope, access]) =>
-      typeof access === "string" ? [[scope, access] as const] : [],
-    ),
-  );
-};
 
 const union = (sets: readonly PermissionSet[]): PermissionSet =>
   sets

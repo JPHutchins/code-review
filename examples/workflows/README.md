@@ -26,8 +26,8 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   check-run `neutral` (non-gating — the review is informational).
 - **`finalize` job** — reaches a terminal state for the check-run whenever `comment` won't. A
   hard-**failed** review, or a review whose `comment` job ended without reporting a post, gets an
-  attributed "did not complete — re-request" sticky (`code-review
-  report-incomplete`) and a `failure` check; a **cancelled** review (typically superseded by a newer
+  attributed "did not complete" sticky offering a re-run of the failed jobs or a re-request
+  (`code-review report-incomplete`) and a `failure` check; a **cancelled** review (typically superseded by a newer
   run on the same branch) gets an informational "superseded — no action needed" sticky
   (`report-incomplete --cancelled`), *not* the failure reading — a superseded run is not an operational
   failure ([#139](../../../issues/139)) — and settles the check this run's announce created to

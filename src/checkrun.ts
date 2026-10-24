@@ -3,7 +3,8 @@
 // from the base repo's default branch with a write token — works for fork PRs too, whose head commit
 // is reachable in the base repo via the PR ref. The in-progress check is created at review start (the
 // announce job, in its own concurrency group) so it survives a superseding run's cancellation. A
-// completed review finalizes it `neutral` (non-gating); a hard-failed review finalizes it `failure`;
+// completed review finalizes it `neutral` (non-gating); a hard-failed review, or one whose comment
+// job ended without reporting a post, finalizes it `failure`;
 // a cancelled review finalizes its OWN check `cancelled` (issue #139). Every settlement is
 // OWNERSHIP-AWARE: it targets the check whose details_url carries this run's id (the announce stamps
 // `${server_url}/${repo}/actions/runs/<run_id>`), so a same-SHA supersede — where a newer run's
@@ -14,6 +15,11 @@ import { runGhApi } from "./gh.js";
 import { parseJsonl } from "./transcript.js";
 
 export const CHECK_RUN_NAME = "Code review";
+
+// A re-run of the failed jobs re-posts a succeeded review from its saved findings at no model cost,
+// and re-runs a failed one; both the sticky and the check offer it.
+export const INCOMPLETE_REMEDY =
+  "Re-run its failed jobs or re-request the review; do not treat this round as spent.";
 
 export type CheckIntent = "in_progress" | "neutral" | "failure" | "cancelled";
 
@@ -149,7 +155,7 @@ const output = (intent: CheckIntent, runUrl: string): { title: string; summary: 
     case "failure":
       return {
         title: "Code review did not complete",
-        summary: `This round's review never reached the PR — [see the run](${runUrl}). Re-run its failed jobs or re-request the review; do not treat this round as spent.`,
+        summary: `The run ended without confirming that its review reached the PR — [see the run](${runUrl}). ${INCOMPLETE_REMEDY}`,
       };
     case "cancelled":
       return {

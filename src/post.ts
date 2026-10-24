@@ -106,7 +106,7 @@ import {
 } from "./artifact.js";
 export type { GhApi } from "./gh.js";
 import { fetchDiff, fetchPrCandidates, resolvePr } from "./pr.js";
-import { runIdFromUrl } from "./checkrun.js";
+import { INCOMPLETE_REMEDY, runIdFromUrl } from "./checkrun.js";
 import {
   applyAnswered,
   applyAnsweredSystemic,
@@ -2630,7 +2630,7 @@ const incompleteBody = (
   existingBody: string | undefined,
 ): string =>
   noticeBody(
-    `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — this round's review never reached the PR ([run](${runUrl})). Re-run its failed jobs or re-request the review; do not treat this round as spent.`,
+    `${DEFAULT_MARKER}\n\n⚠️ **Code review did not complete** for \`${headSha.slice(0, 7)}\` — this round's review never reached the PR ([run](${runUrl})). ${INCOMPLETE_REMEDY}`,
     existingBody,
   );
 

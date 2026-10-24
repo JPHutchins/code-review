@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   checkRun,
+  INCOMPLETE_REMEDY,
   decideCheckAction,
   decideCancelledAction,
   runIdFromUrl,
@@ -174,7 +175,10 @@ describe("checkRun", () => {
       output?: { summary?: string };
     };
     expect(body.output?.summary).not.toContain("review job failed");
-    expect(body.output?.summary).toContain("Re-run its failed jobs");
+    // The check can be filed over a review that landed but lost its posted signal, so it claims only
+    // what the run knows: that it did not confirm the post.
+    expect(body.output?.summary).not.toContain("never reached");
+    expect(body.output?.summary).toContain(INCOMPLETE_REMEDY);
   });
 
   it("makes no write call when the decision is a no-op (already-neutral owned check)", async () => {

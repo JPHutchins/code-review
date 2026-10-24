@@ -1464,16 +1464,16 @@ jobs:
 
   # Reaches a terminal state for the check-run whenever `comment` won't (comment only runs on
   # has_findings == 'true'), so the announce check never lingers in_progress and a dead review is never
-  # silent. result == 'failure' (the review DIED) → a "did not complete, re-request" sticky + `failure`
+  # silent. result == 'failure' (the review DIED) → a "did not complete" sticky + `failure`
   # check; result == 'cancelled' (a review cancelled before completing, typically by a superseding run
   # on this branch) → an informational "superseded — no action needed" sticky — NOT the failure notice
   # (issue #139) — and the check this run's announce created is settled to `cancelled`
   # (ownership-matched by details_url, so a superseding run's live check is never touched); result ==
   # 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`; result == 'success'
-  # + the comment job was CANCELLED mid-post → settle the check `neutral` here (issue #139 r6). The
-  # comment job FAILING: posted != 'true' (the sticky never landed — e.g. the findings upload failed)
-  # → the re-request + `failure` pair; posted == 'true' (a later step failed after the review landed)
-  # → settle the check only — a posted review must not be re-requested or failed. The
+  # + the comment job FAILED or was CANCELLED with no `posted` signal (it ended before reporting) →
+  # the "did not complete" sticky + `failure` pair, which never overwrites a completed review; with
+  # `posted` set (true: landed; false: chose not to post) → settle the check `neutral` only — a
+  # posted review must not be re-requested or failed. The
   # has_findings guard excludes a review that DID post but failed a later step (comment finalized it)
   # — EXCEPT for a cancelled review, which runs finalize regardless so a cancellation racing past
   # assemble still gets settled (issue #139).

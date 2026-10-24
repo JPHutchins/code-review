@@ -164,6 +164,16 @@ this doc.
   containment for this new surface is the same structural boundary that already holds for the diff — a
   read-only token, the egress lock, the burner key's spend cap, and a deterministic commenter posting
   *data* — not the heuristic gate, so an injected comment can at worst produce a bogus advisory finding.
+- **The issues a PR closes, screened.** The reviewer holds no GitHub credential, so it cannot read the
+  bug report a PR says it fixes. On the full review, when the workflow asks (`gather --linked-issues`,
+  so a workflow whose triage does not screen them never stages them), gather stages the issues the PR
+  closes (`closingIssuesReferences`, up to 50, another repository's included) with the body and every
+  comment, one folder each under `linked_issues/`, and the reviewer reads them as claims to verify. Unlike the PR's
+  own conversation, this text **is** run through the Phase-1 triage: anyone can open an issue, plant an
+  instruction aimed at the reviewer, and get it linked to an unrelated PR, and a bug report has no
+  reason to address an AI. The triage treats only text addressed to an AI reviewer as unsafe (a
+  report's code, commands and logs are expected), and an unsafe issue fails the round like an unsafe
+  diff.
 - **In-progress sticky at start.** A `workflow_run` review runs from the default branch and leaves no
   trace on the PR until it finishes, so a separate write-token `announce` job upserts a placeholder
   sticky ("review in progress", linking the run) the moment it starts. It runs in parallel with the

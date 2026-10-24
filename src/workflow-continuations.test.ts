@@ -572,9 +572,36 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       (parseYaml(readRepoFile(workflowPath)) as { jobs: Record<string, { steps?: Step[] }> }).jobs,
     ).flatMap((job) => job.steps ?? []);
   const stepNamed = (workflowPath: string, name: string): Step => {
-    const step = stepsOf(workflowPath).find((candidate) => candidate.name === name);
-    expect(step, name).toBeDefined();
-    return step!;
+    const found = stepsOf(workflowPath).filter((candidate) => candidate.name === name);
+    expect(found, name).toHaveLength(1);
+    return found[0]!;
+  };
+  // An `srt` that skips its own arguments and answers for the jailed command: `true` starts, anything
+  // else prints STUB_OUT and exits STUB_RC, standing in for a search or inventory that ended that way.
+  const withStubSrt = (
+    script: string,
+    stub: { out: string; rc: number },
+  ): { status: number | null; stdout: string } => {
+    const root = scratch();
+    mkdirSync(join(root, "bin"));
+    writeFileSync(
+      join(root, "bin", "srt"),
+      '#!/usr/bin/env bash\nwhile [ "$1" != "--" ]; do shift; done; shift\n[ "$1" = true ] && exit 0\nprintf \'%s\' "$STUB_OUT"\nexit "$STUB_RC"\n',
+      { mode: 0o755 },
+    );
+    const run = spawnSync("bash", ["-c", script], {
+      env: {
+        ...process.env,
+        PATH: `${join(root, "bin")}:${process.env["PATH"] ?? ""}`,
+        RUNNER_TEMP: root,
+        HOME: root,
+        JOB_TOKEN: "ghs_tokenvalue",
+        STUB_OUT: stub.out,
+        STUB_RC: String(stub.rc),
+      },
+      encoding: "utf-8",
+    });
+    return { status: run.status, stdout: run.stdout };
   };
   const linesOf = (workflowPath: string, name: string): readonly string[] =>
     (stepNamed(workflowPath, name).run ?? "").split("\n").map((line) => line.trim());
@@ -755,7 +782,37 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
       expect(step.run).toContain("--exclude-dir=store");
       expect(step.run).not.toMatch(/sudo\s+grep/);
       expect(step.run).toContain('srt --settings "$RUNNER_TEMP/sandbox.json" -- grep -rlF');
-      expect(step.run).toContain("exit 1");
+    });
+
+    it(`${workflowPath}: a socket inventory that did not finish fails the canary, whatever it printed first`, () => {
+      const lines = linesOf(workflowPath, CANARY);
+      const start = lines.findIndex((line) => line.startsWith("jailed() {"));
+      const end = lines.findIndex((line) => line.startsWith('case "$sockets" in'));
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      const inventory = ["set -euo pipefail", ...lines.slice(start, end + 1)].join("\n");
+      const daemon = "/nix/var/nix/daemon-socket/socket\n";
+      expect(withStubSrt(inventory, { out: daemon, rc: 0 }).status).toBe(0);
+      for (const rc of [124, 137]) {
+        const aborted = withStubSrt(inventory, { out: daemon, rc });
+        expect(aborted.status).toBe(1);
+        expect(aborted.stdout).toContain(`socket inventory did not finish (exit ${String(rc)})`);
+      }
+    });
+
+    it(`${workflowPath}: the token search refuses the agents on a hit or a search that did not finish, and skips unreadable files`, () => {
+      const search = String(stepNamed(workflowPath, TOKEN).run);
+      const outcome = (out: string, rc: number): { status: number | null; stdout: string } =>
+        withStubSrt(search, { out, rc });
+      expect(outcome("", 1).status).toBe(0);
+      expect(outcome("", 2).status).toBe(0);
+      const hit = outcome("/etc/nix/nix.custom.conf\n", 0);
+      expect(hit.status).toBe(1);
+      expect(hit.stdout).toContain("/etc/nix/nix.custom.conf");
+      expect(outcome("/nix/receipt.json\n", 2).status).toBe(1);
+      const aborted = outcome("", 137);
+      expect(aborted.status).toBe(1);
+      expect(aborted.stdout).toContain("the job token search did not finish (exit 137)");
     });
 
     it(`${workflowPath}: the main agent and every subagent are told to use the dev shell, only when it is open`, () => {

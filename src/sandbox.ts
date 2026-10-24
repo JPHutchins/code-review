@@ -1,8 +1,9 @@
 // The untrusted review agent's network jail as one sandbox-runtime (`srt`) settings file (data, not
 // shell). The allowlist is the model endpoint the CLI actually dials plus any consumer-supplied
-// hosts; the host-side proxy denies everything else. Filesystem isolation is off —
-// the threat this closes is network exfil of the burner key, not the throwaway runner's disk — so the
-// jail confines only egress while the agent still reads the worktree and writes its draft freely.
+// hosts; the host-side proxy denies everything else. The filesystem stays open apart from a few read
+// masks over what the runner leaves behind — the threat this closes is exfil of the burner key and the
+// job token, not the throwaway runner's disk — so the agent still reads the worktree and writes its
+// draft freely.
 
 export interface SandboxConfig {
   readonly network: {

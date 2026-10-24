@@ -310,7 +310,12 @@ jobs:
             && { echo "::error::sudo works inside the jail — failing closed"; exit 1; }
           if [ "${NIX_DEVSHELL:-}" = "true" ]; then
             jailed() { timeout --kill-after=10s 120 srt --settings "$RUNNER_TEMP/sandbox.json" -- "$@"; }
-            sockets=$(jailed bash -c 'find / \( -path /proc -o -path /sys -o -path /nix/store \) -prune -o -type s -writable -print 2>/dev/null' || true)
+            # Every bound Unix socket on the host is listed in /proc/net/unix; the jail keeps those it can open.
+            bound=()
+            while read -r _ _ _ _ _ _ _ path; do
+              case "$path" in /*) bound+=("$path") ;; esac
+            done < /proc/net/unix
+            sockets=$(jailed bash -c "for path in \"\$@\"; do if [ -S \"\$path\" ] && [ -w \"\$path\" ]; then echo \"\$path\"; fi; done" _ "${bound[@]}" || true)
             case "$sockets" in *"/nix/var/nix/daemon-socket/socket"*) ;; *) echo "::error::the jail's socket inventory did not run (the daemon's own socket is missing from it) — failing closed"; exit 1 ;; esac
             unknown=$(printf '%s\n' "$sockets" \
               | grep -Ev '^(/nix/var/nix/daemon-socket/socket|/tmp/srt-mux-[0-9]+-[0-9]+\.sock|/tmp/claude-(http|socks)-[0-9a-f]+\.sock)$' || true)

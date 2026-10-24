@@ -101,7 +101,7 @@ describe("route prose — the reusable workflow and the example teach the SAME i
       .flatMap(({ script }) => script.split("\n"))
       .map((line) => line.trim())
       .filter((line) =>
-        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE)="/.test(
+        /^(PROMPT|LOG_SUBSET_NOTE|ROUTE_NOTE|JOBS_FILE_NOTE|SUBSET_JOBS_NOTE|CI_JOBS_NOTE|CI_STATUS_NOTE|UNFINISHED_NOTE|SEED_NOTE|RERUN_RULE|SUBAGENT_CONTEXT)="/.test(
           line,
         ),
       )
@@ -337,6 +337,53 @@ describe("path plumbing — the reusable and the example hand-mirror the staging
     ]);
     expect(inlineLine("examples/workflows/review.yaml")).toEqual(['INLINE: "false"']);
   });
+});
+
+describe("the subagent context — the fan-out subagents start with the full review's CI facts", () => {
+  for (const workflowPath of [
+    ".github/workflows/review-reusable.yaml",
+    "examples/workflows/review.yaml",
+  ]) {
+    const lines = runScripts(workflowPath)
+      .flatMap(({ script }) => script.split("\n"))
+      .map((line) => line.trim());
+
+    it(`${workflowPath}: the context is the CI status note plus the same re-run rule the prompt carries`, () => {
+      const assignments = lines.filter((line) =>
+        /^(RERUN_RULE|ROUTE_NOTE|SUBAGENT_CONTEXT)="\$\{(CI_JOBS_NOTE|CI_STATUS_NOTE)\}|^RERUN_RULE="/.test(
+          line,
+        ),
+      );
+      expect(assignments).toHaveLength(3);
+      const [routeNote = "", context = "", rule = ""] = execFileSync(
+        "bash",
+        [
+          "-euo",
+          "pipefail",
+          "-c",
+          `${assignments.join("\n")}\nprintf '%s\\0%s\\0%s' "$ROUTE_NOTE" "$SUBAGENT_CONTEXT" "$RERUN_RULE"`,
+        ],
+        {
+          env: {
+            ...process.env,
+            CI_STATUS_NOTE: "All CI jobs have passed: 3/3. ",
+            CI_JOBS_NOTE: "",
+          },
+          encoding: "utf-8",
+        },
+      ).split("\0");
+      expect(rule).toContain("Never re-run what passed");
+      expect(routeNote.endsWith(rule)).toBe(true);
+      expect(context).toBe(`All CI jobs have passed: 3/3. ${rule}`);
+    });
+
+    it(`${workflowPath}: the settings receive the context, empty unless the full-review branch set it`, () => {
+      expect(lines).toContain('--subagent-context "$SUBAGENT_CONTEXT" \\');
+      const reset = lines.indexOf('SUBAGENT_CONTEXT=""');
+      expect(reset).toBeGreaterThanOrEqual(0);
+      expect(lines.indexOf('if [ "$CONCLUSION" = "success" ]; then')).toBe(reset + 1);
+    });
+  }
 });
 
 describe("mechanic prompt assembly — the notes reach the prompt in the same order in both files", () => {

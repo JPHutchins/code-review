@@ -309,6 +309,25 @@ describe("cli — print-settings", () => {
     expect(pre).toBe(post);
   });
 
+  it.each([
+    ["adds the SubagentStart hook for a context", "All CI jobs have passed: 3/3.", 1],
+    ["adds none for the empty context the CI-fix route passes", "", 0],
+  ])("--subagent-context %s", async (_case, context, hooks) => {
+    const { stdout, exitCode } = await runCli([
+      "print-settings",
+      "--draft",
+      "/work/findings.json",
+      "--subagent-context",
+      context,
+    ]);
+    expect(exitCode).toBeNull();
+    const parsed = JSON.parse(stdout) as {
+      hooks: { SubagentStart?: { hooks: { command: string }[] }[] };
+    };
+    expect(parsed.hooks.SubagentStart ?? []).toHaveLength(hooks);
+    if (hooks > 0) expect(parsed.hooks.SubagentStart![0]!.hooks[0]!.command).toContain(context);
+  });
+
   it("rejects an invalid --kind at generation time (fail fast, not a settings file that breaks later)", async () => {
     const { stderr, exitCode } = await runCli([
       "print-settings",

@@ -782,7 +782,7 @@ const printSettingsCmd = defineCommand({
   meta: {
     name: "print-settings",
     description:
-      "Emit one Claude Code --settings JSON composing the Stop deliverable gate and the budget hooks (PreToolUse convergence + PostToolBatch steer) from one self-dispatching command",
+      "Emit one Claude Code --settings JSON composing the Stop deliverable gate and the budget hooks (PreToolUse convergence + PostToolBatch steer) from one self-dispatching command, plus a SubagentStart hook when --subagent-context is given",
   },
   args: {
     draft: {
@@ -843,6 +843,11 @@ const printSettingsCmd = defineCommand({
       description:
         "Flat wall-clock wind-down floor (e.g. 2m), whichever is larger with --reserve-frac (default: 2m)",
     },
+    "subagent-context": {
+      type: "string",
+      description:
+        "Trusted text every subagent receives as it starts, since the main agent's appended system prompt never reaches them (empty: no SubagentStart hook)",
+    },
   },
   run: async ({ args }) => {
     if (args.kind && !["findings", "triage", "prices"].includes(args.kind))
@@ -865,6 +870,7 @@ const printSettingsCmd = defineCommand({
         reserveUsd: args["reserve-usd"],
         reserveWall: args["reserve-wall"],
       },
+      subagentContext: args["subagent-context"],
     });
     process.stdout.write(`${JSON.stringify(settings)}\n`);
   },

@@ -206,7 +206,8 @@ than run on a guessed result. `code-review await-ci` does this in type-safe code
 
 **Acknowledgement** — the front-end's trusted gate reacts 👀 to your comment on receipt (before the
 CI wait, so you see receipt immediately); on completion the `ack` job swaps it for 🚀 (review posted
-— read the sticky summary) or 😕 (CI didn't conclude in time, or the run failed). The review job
+— read the sticky summary) or 😕 (CI didn't conclude in time, or the run failed — including a gate
+that failed before its 👀, so a command that never ran still gets an answer). The review job
 itself is read-only and runs untrusted PR code, so it can't post progress; the sticky comment is the
 result, exactly as with the CI trigger.
 

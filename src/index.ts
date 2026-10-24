@@ -1749,7 +1749,7 @@ const gatherCmd = defineCommand({
   meta: {
     name: "gather",
     description:
-      "Resolve the PR from the CI head SHA and gather review inputs (diff with git-diff fallback, PR context, prior bot review, untrusted PR conversation to triage, the CI run's job logs — the failing jobs' with their identities in failed_jobs.json on a failure, the jobs that ran, up to 64, indexed in ci_jobs.json on a pass) as files for the review agent",
+      "Resolve the PR from the CI head SHA and gather review inputs (diff with git-diff fallback, PR context, prior bot review, untrusted PR conversation to triage, the CI run's job logs — the failing jobs' with their identities in failed_jobs.json on a failure, the jobs that ran, up to 64, indexed in ci_jobs.json on a pass — and, with --linked-issues on a pass, the issues the PR closes in linked_issues/) as files for the review agent",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },
@@ -1794,6 +1794,11 @@ const gatherCmd = defineCommand({
       type: "string",
       description: "Directory to write gathered files into (default: current directory)",
     },
+    "linked-issues": {
+      type: "boolean",
+      description:
+        "On a pass, stage the issues the PR closes (other repositories' included), each with every comment, in linked_issues/: anyone can write them, so pass this only from a workflow whose triage screens that folder",
+    },
   },
   run: async ({ args }) => {
     const result = await gather({
@@ -1806,6 +1811,7 @@ const gatherCmd = defineCommand({
       conclusion: args.conclusion,
       botLogin: args["bot-login"] || "github-actions[bot]",
       outDir: args["out-dir"] ? resolve(args["out-dir"]) : process.cwd(),
+      linkedIssues: args["linked-issues"],
     });
     process.stdout.write(renderOutputs(result));
   },

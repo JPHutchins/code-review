@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { runCli } from "./test-util.js";
 import { priorContextPath } from "./budget.js";
 import { dialogueMarker } from "./surface.js";
+import { LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX } from "./linked-issues.js";
 import type { DialogueEntry } from "./dialogue.js";
 
 const sampleDiff = `diff --git a/src/foo.ts b/src/foo.ts
@@ -74,6 +75,10 @@ const mkMockGhApi = (
     // NDJSON stream (no commits) unless a test mocks it explicitly above.
     if ((args[0]?.startsWith("repos/owner/repo/compare/") ?? false) && args.includes("--jq")) {
       return Promise.resolve("");
+    }
+    // The full review's closing-issues read runs for every success-route PR; default it to none.
+    if (args[0] === "graphql" && args.some((a) => a.includes("closingIssuesReferences"))) {
+      return Promise.resolve('{"totalCount":0,"nodes":[]}');
     }
     return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
   };
@@ -193,6 +198,7 @@ describe("gather — PR resolution", () => {
       stagedJobLogs: 0,
       failingJobs: 0,
       passedJobs: null,
+      linkedIssues: false,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -1472,9 +1478,10 @@ describe("renderOutputs", () => {
         stagedJobLogs: 0,
         failingJobs: 0,
         passedJobs: { passed: 15, ran: 15 },
+        linkedIssues: true,
       }),
     ).toBe(
-      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\nci_jobs_ran=15\n",
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\nci_jobs_ran=15\nlinked_issues=true\n",
     );
   });
 });
@@ -1684,5 +1691,65 @@ describe("gather — failing-job identity", () => {
     expect(JSON.parse(outFile("failed_jobs.json"))).toEqual([
       { name: null, conclusion: "failure" },
     ]);
+  });
+});
+
+describe("gather — the issues the PR closes", () => {
+  const prMocks = [
+    {
+      match: candidatesMatch,
+      response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
+    },
+    { match: metaMatch(42), response: mkMeta({ changed_files: 1 }) },
+    { match: diffMatch(42), response: sampleDiff },
+    { match: commentsMatch(42), response: "" },
+  ];
+  const closingIssuesRead = (a: readonly string[]): boolean =>
+    a[0] === "graphql" && a.some((x) => x.includes("closingIssuesReferences"));
+
+  it("stages them for a full review the workflow asked for", async () => {
+    const { api } = mkMockGhApi([
+      ...prMocks,
+      {
+        match: closingIssuesRead,
+        response: JSON.stringify({
+          totalCount: 1,
+          nodes: [
+            {
+              number: 7,
+              title: "crash on a path input",
+              body: "repro: run it",
+              url: "https://github.com/owner/repo/issues/7",
+              state: "OPEN",
+              createdAt: null,
+              authorAssociation: "NONE",
+              author: { login: "reporter" },
+              repository: { nameWithOwner: "owner/repo" },
+              comments: { totalCount: 0 },
+            },
+          ],
+        }),
+      },
+      { match: (a) => a[0] === "repos/owner/repo/issues/7/comments", response: "" },
+    ]);
+    const { git } = mkMockGit([]);
+
+    expect(await gather(mkInput({ linkedIssues: true }), api, git)).toMatchObject({
+      linkedIssues: true,
+    });
+    expect(hasOutFile(join(LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX))).toBe(true);
+    expect(hasOutFile(join(LINKED_ISSUES_DIR, "owner__repo__7", "body.md"))).toBe(true);
+  });
+
+  it.each([
+    ["the CI-fix route, even when asked", { conclusion: "failure", linkedIssues: true }],
+    ["a full review the workflow did not ask for", {}],
+  ])("never asks on %s", async (_case, over) => {
+    const { api, calls } = mkMockGhApi([...prMocks, { match: jobsMatch, response: "" }]);
+    const { git } = mkMockGit([]);
+
+    expect(await gather(mkInput(over), api, git)).toMatchObject({ linkedIssues: false });
+    expect(calls().some((c) => closingIssuesRead(c.args))).toBe(false);
+    expect(hasOutFile(LINKED_ISSUES_DIR)).toBe(false);
   });
 });

@@ -103,12 +103,19 @@ describe("copy-paste version pins (#207)", () => {
   });
 });
 
-// The write-token jobs' egress lock is only as good as the harden-runner build every site runs, so all
-// sites run one upstream commit: a fork, a moving tag, or a site left behind on a bump fails here.
-describe("harden-runner pins", () => {
-  const HARDEN_RUNNER_RE = /uses:\s*([\w.-]+)\/harden-runner@(\S+)(?:\s+#\s*(\S+))?/;
+// The write-token jobs' egress lock is only as good as the harden-runner build every site runs, so every
+// site runs this one upstream commit: a fork, a moving tag, a site left behind, or a coordinated move to
+// another commit fails here until this constant moves with it, in the same reviewed change.
+const HARDEN_RUNNER = {
+  digest: "dc2769abcc0fcfbadfc1df54081c1608579ef6b2",
+  release: "v2.22.2",
+} as const;
 
-  it("every harden-runner use pins the same upstream commit by digest, labeled with its release", () => {
+describe("harden-runner pins", () => {
+  // A `uses:` line (mapping or list form) — a commented-out pin runs nothing, so it is not a site.
+  const HARDEN_RUNNER_RE = /^\s*(?:-\s*)?uses:\s*([\w.-]+)\/harden-runner@(\S+)(?:\s+#\s*(\S+))?/i;
+
+  it(`every harden-runner use pins step-security's ${HARDEN_RUNNER.release} by its digest`, () => {
     const sites = allWorkflows().flatMap((path) =>
       readRepoFile(path)
         .split("\n")
@@ -119,25 +126,23 @@ describe("harden-runner pins", () => {
             : [
                 {
                   at: `${path}:${String(index + 1)}`,
-                  owner: match[1],
-                  ref: match[2],
-                  label: match[3],
+                  owner: match[1] ?? "",
+                  ref: match[2] ?? "",
+                  label: match[3] ?? "(no label)",
                 },
               ];
         }),
     );
     expect(sites.length).toBeGreaterThan(0);
-    expect(sites.filter((site) => site.owner !== "step-security").map((site) => site.at)).toEqual(
-      [],
-    );
     expect(
-      sites.filter((site) => !/^[0-9a-f]{40}$/.test(site.ref ?? "")).map((site) => site.at),
+      sites
+        .filter(
+          (site) =>
+            site.owner.toLowerCase() !== "step-security" ||
+            site.ref !== HARDEN_RUNNER.digest ||
+            site.label !== HARDEN_RUNNER.release,
+        )
+        .map((site) => `${site.at}: ${site.owner}/harden-runner@${site.ref} # ${site.label}`),
     ).toEqual([]);
-    const sitesByPin = sites.reduce<Readonly<Record<string, readonly string[]>>>((groups, site) => {
-      const pin = `${site.ref ?? ""} # ${site.label ?? "(no label)"}`;
-      return { ...groups, [pin]: [...(groups[pin] ?? []), site.at] };
-    }, {});
-    expect(Object.keys(sitesByPin), JSON.stringify(sitesByPin, null, 2)).toHaveLength(1);
-    expect(sites[0]?.label).toMatch(/^v\d+\.\d+\.\d+$/);
   });
 });

@@ -2,11 +2,13 @@
 
 [`review.yaml`](review.yaml) is the copy-paste reference workflow for the spec's
 [GitHub Actions binding](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative):
-a single file, three jobs, triggered by your existing CI workflow completing. Its routing follows
+a single file, four jobs, triggered by your existing CI workflow completing. Its routing follows
 [SPEC §3.1](../../SPEC.md#31-trigger--routing) — CI success gets the comprehensive reviewer, CI failure
 gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
 
-- **`review` job** — holds the model key + a **read-only** token + locked egress. Fetches the diff
+- **`review` job** — holds the model key + a **read-only** token; its agents run in a network jail
+  that reaches only the model host and the hosts you add (setup and checkout run before it, on the
+  runner's own network). Fetches the diff
   as data via the API. `code-review gather` collects the inputs (resolves the PR, fetches the diff
   with a git-diff fallback, the PR context, the prior bot review, and the CI run's job logs as files —
   the failing jobs' on a failure, the jobs that ran on a pass, from the attempt that triggered the review),
@@ -23,7 +25,8 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   validates findings against the diff and posts the inline review + sticky summary, then finalizes the
   check-run `neutral` (non-gating — the review is informational).
 - **`finalize` job** — reaches a terminal state for the check-run whenever `comment` won't. A
-  hard-**failed** review gets an attributed "did not complete — re-request" sticky (`code-review
+  hard-**failed** review, or a review whose `comment` job ended without reporting a post, gets an
+  attributed "did not complete — re-request" sticky (`code-review
   report-incomplete`) and a `failure` check; a **cancelled** review (typically superseded by a newer
   run on the same branch) gets an informational "superseded — no action needed" sticky
   (`report-incomplete --cancelled`), *not* the failure reading — a superseded run is not an operational
@@ -40,7 +43,8 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   [`.github/workflows/review-reusable.yaml`](../../.github/workflows/review-reusable.yaml) via
   `workflow_call`, so an upgrade is an `@ref` bump instead of re-copying the file. The full pipeline
   (all jobs, the permission boundary, harden-runner, the CLI pins) lives in the pinned ref; you own
-  the trigger, secrets, egress policy, prices, version pin — and any check-running setup. Minimal
+  the trigger, secrets, the jail's extra hosts (`extra_endpoints`, `known_model_hosts`), prices,
+  version pin — and any check-running setup. Minimal
   caller (STATIC review — no PR-code execution):
 
   ```yaml
@@ -128,7 +132,9 @@ run's logs) — there are two opt-in hooks; the shared workflow deliberately own
 toolchain or cache action:
 
 - **Simple, shell-installable deps** — set `install_command` (a shell string): `npm ci`, `uv sync`,
-  `pip install -e .`, even a `pipx install uv && uv sync`. Add your registries via `extra_endpoints`.
+  `pip install -e .`, even a `pipx install uv && uv sync`. It runs before the agents' network jail, on
+  the runner's own network, so its registries need no allowlist entry; only a host the jailed agents
+  themselves must reach goes in `extra_endpoints`.
 - **Anything needing `uses:` steps** (a toolchain installer, a store cache) — commit your own composite
   at **`.github/actions/code-review-setup`** and set `use_setup_action: true`. The reusable workflow
   invokes it (resolved against *your* checked-out repo), so your toolchain + cache live in **your**
@@ -272,8 +278,8 @@ reusable workflow the same knobs are `with:` inputs. The backend endpoint is a p
 variable** (`API_BASE_URL`, required, no default — an unset endpoint fails loudly instead of letting
 the CLI choose where the key gets sent), and it is safe as one because the jail reaches only the host
 it names, and the setup fails closed when that host is neither a built-in provider (`anthropic.com`,
-`deepseek.com`) nor one you declare (copy-paste: the `KNOWN_MODEL_HOSTS` variable; reusable:
-`known_model_hosts`).
+`deepseek.com`) nor one you declare (copy-paste: the `KNOWN_MODEL_HOSTS` variable; either reusable:
+`known_model_hosts`) or allow as an extra host.
 
 The approach was proven by a live review on
 [camas PR #17](https://github.com/JPHutchins/camas/pull/17#issuecomment-4859543691); see

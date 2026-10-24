@@ -295,8 +295,9 @@ backend; the same contract fits other agent CLIs (e.g. OpenCode) and any compati
 
 ## Appendix A — Reference realization: GitHub Actions (non-normative)
 
-The reference binding is a single `review.yaml` with two jobs — `review` (reviewer) and `comment`
-(commenter) — triggered by `workflow_run` on completion of the project's existing CI. The full,
+The reference binding is a single `review.yaml` with four jobs — `review` (reviewer), `comment`
+(commenter), and `announce` and `finalize`, which post the in-progress notice and settle the round
+whenever `comment` does not — triggered by `workflow_run` on completion of the project's existing CI. The full,
 copy-paste-ready file is [`examples/workflows/review.yaml`](examples/workflows/review.yaml); this
 appendix records only the platform facts that make the binding safe.
 
@@ -305,8 +306,8 @@ appendix records only the platform facts that make the binding safe.
   was unprivileged ([GitHub — events][events]; [GitHub — `pull_request_target`][prtarget]). That is
   exactly why the reviewer must never check out and run fork code, and why the write role is a separate
   job ([GitHub — security hardening][ghsec]; [GitHub Security Lab, Part 4][seclab4]).
-- **Least-privilege token.** The `review` job is granted read-only scopes; the `comment` job is granted
-  only the write scopes it needs ([GitHub — controlling `GITHUB_TOKEN` permissions][ghtoken]).
+- **Least-privilege token.** The `review` job is granted read-only scopes; the `announce`, `comment`
+  and `finalize` jobs are granted only the write scopes they need ([GitHub — controlling `GITHUB_TOKEN` permissions][ghtoken]).
 - **Egress lock on every job.** The review agents run in a network namespace whose only way out is a
   proxy that allows the model host and any declared extras ([sandbox-runtime][srt]); trusted setup
   (CLI/dependency installs) runs before the jail, outside it. The write-token jobs, which run no agent

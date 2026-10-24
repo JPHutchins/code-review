@@ -1,6 +1,8 @@
-# Jobs with DISTINCT permissions — the security boundary: review = model key + read-only token +
-# locked egress, runs untrusted PR code; announce + comment = pull-requests/issues:write, no agent,
-# no PR code (announce posts the in-progress sticky at start, comment posts the review at the end).
+# Jobs with DISTINCT permissions — the security boundary: review = model key + read-only token,
+# runs untrusted PR code with its agents in a network jail; announce + comment + finalize =
+# pull-requests/issues:write under an egress lock, no agent, no PR code (announce posts the
+# in-progress sticky at start, comment posts the review at the end, finalize settles the round
+# whenever comment does not).
 # A composite/JS/Docker action can't express that (one job, one permission set), so this is a
 # reusable workflow. Consumers call it from a thin ~20-line workflow; see the README.
 

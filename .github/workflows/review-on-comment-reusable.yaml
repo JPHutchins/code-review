@@ -158,6 +158,11 @@ on:
         type: string
         required: false
         default: ""
+      known_model_hosts:
+        description: Bare hostname(s) to accept as the jail's model host when api_base_url is not a built-in provider (anthropic.com, deepseek.com). Passed through to review-reusable.yaml's known_model_hosts.
+        type: string
+        required: false
+        default: ""
       scope:
         description: >-
           The project's scope — the languages/inputs it accepts (whitespace/comma/semicolon-separated
@@ -167,7 +172,7 @@ on:
         required: false
         default: ""
       egress_policy:
-        description: Deprecated / no-op, passed through to review-reusable.yaml's egress_policy (the review agent is always jailed and the write-token jobs always block). Retained for interface compatibility.
+        description: Deprecated / no-op, passed through to review-reusable.yaml's egress_policy (its review agent is always jailed and its write-token jobs always block). Retained for interface compatibility.
         type: string
         required: false
         default: block
@@ -333,6 +338,7 @@ jobs:
       mechanic_grace_period:    ${{ inputs.mechanic_grace_period }}
       mechanic_usd_limit:       ${{ inputs.mechanic_usd_limit }}
       extra_endpoints: ${{ inputs.extra_endpoints }}
+      known_model_hosts: ${{ inputs.known_model_hosts }}
       egress_policy:   ${{ inputs.egress_policy }}
       claude_code_version: ${{ inputs.claude_code_version }}
       inline:          ${{ inputs.inline }}

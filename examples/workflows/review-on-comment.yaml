@@ -51,9 +51,11 @@ jobs:
       # id it does not recognize) — see model_full on review-reusable.yaml.
       model_full:      deepseek-v4-pro[1m]
       model_mechanic:  deepseek-v4-pro[1m]
-      # Optional per-repo tuning, same knobs as review.yaml — e.g. install_command, extra_endpoints,
-      # the ceilings the comment overrides are clamped to (max_duration / max_usd), tier aliases.
+      # Optional per-repo tuning, the inputs review-on-comment-reusable.yaml takes — e.g. install_command,
+      # extra_endpoints, the ceilings the comment overrides are clamped to (max_duration / max_usd),
+      # tier aliases.
       install_command: npm ci
       scope:            ${{ vars.SCOPE }}   # empty ⇒ the reviewer infers scope from the README (#139)
+      known_model_hosts: ${{ vars.KNOWN_MODEL_HOSTS }}   # a model host outside anthropic.com / deepseek.com
     secrets:
       MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}

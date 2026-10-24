@@ -1,4 +1,4 @@
-# Reference workflow (single file, three jobs) — copy into .github/workflows/; your CI (name: "CI") is
+# Reference workflow (single file, four jobs) — copy into .github/workflows/; your CI (name: "CI") is
 # unchanged. Quickstart: set the API_BASE_URL variable + MODEL_API_KEY secret, merge to the default
 # branch, open a test PR. See: https://github.com/JPHutchins/code-review
 
@@ -14,7 +14,7 @@ on:
 # hold their OWN group so they survive that cancellation — otherwise a failed review's attribution
 # (finalize) or its in-progress sticky (announce) would be cancelled with the review it describes.
 
-env:                         # one definition both jobs install from, so the two never skew
+env:                         # one definition every job installs from, so they never skew
   CODE_REVIEW_VERSION: 0.1.0-alpha.72
 
 jobs:
@@ -102,7 +102,7 @@ jobs:
             --head-sha "$HEAD_SHA" \
             --run-url "${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
-  # REVIEW — holds the model key + read-only token + locked egress
+  # REVIEW — holds the model key + read-only token; its agents run in a network jail
   review:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&

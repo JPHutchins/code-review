@@ -89,9 +89,9 @@ efforts, the subagent model, and the tier aliases, right where each is consumed 
 PR-reviewed like the rest of the file (implementation detail the spec deliberately leaves to this
 repo — see [SPEC Appendix A](SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
 The backend endpoint is a per-repo **Actions variable** (`API_BASE_URL`, required, no default). The jail
-reaches only the host it names, and a provider other than `anthropic.com` or `deepseek.com` must also be
-declared, in the `KNOWN_MODEL_HOSTS` variable or as an extra host (on the on-comment trigger, its
-`extra_endpoints`), or the setup fails closed.
+reaches only the host it names, and a model host outside the `anthropic.com` and `deepseek.com`
+subdomains must also be declared, in the `KNOWN_MODEL_HOSTS` variable (the on-comment example forwards
+it) or as an extra host, or the setup fails closed.
 
 ## Artifacts
 

@@ -147,25 +147,60 @@ describe("harden-runner pins", () => {
     ).toEqual([]);
   });
 
-  it.each([".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"])(
-    "%s: every write-token job locks egress with it in block mode",
-    (path) => {
-      const jobs = (
-        parseYaml(readRepoFile(path)) as {
-          jobs: Record<string, { steps?: { uses?: string; with?: Record<string, unknown> }[] }>;
-        }
-      ).jobs;
-      const locks = (job: string): readonly string[] =>
-        (jobs[job]?.steps ?? []).flatMap((step) =>
-          step.uses?.startsWith("step-security/harden-runner@") === true
-            ? [String(step.with?.["egress-policy"])]
-            : [],
-        );
-      expect(["announce", "comment", "finalize"].map((job) => [job, locks(job)])).toEqual([
-        ["announce", ["block"]],
-        ["comment", ["block"]],
-        ["finalize", ["block"]],
-      ]);
-    },
-  );
+  // Derived from the jobs' own permissions, so a new write-token job cannot skip the lock unnoticed.
+  // The review workflows are the product; this repo's own ci and release jobs are not in scope.
+  const reviewWorkflows = (): readonly string[] =>
+    allWorkflows().filter((path) => /\/review[\w-]*\.ya?ml$/.test(path));
+
+  type Step = { name?: string; uses?: string; with?: Record<string, unknown> };
+  type Job = { uses?: string; permissions?: unknown; steps?: readonly Step[] };
+
+  const writeTokenJobs = (path: string): readonly [string, Job][] => {
+    const workflow = parseYaml(readRepoFile(path)) as {
+      permissions?: unknown;
+      jobs: Record<string, Job>;
+    };
+    const holdsWrite = (permissions: unknown): boolean =>
+      permissions === "write-all" ||
+      (permissions !== null &&
+        typeof permissions === "object" &&
+        Object.values(permissions).includes("write"));
+    return Object.entries(workflow.jobs).filter(
+      ([, job]) =>
+        job.uses === undefined &&
+        holdsWrite(job.permissions !== undefined ? job.permissions : workflow.permissions),
+    );
+  };
+
+  const isLock = (step: Step): boolean =>
+    step.uses?.toLowerCase().startsWith("step-security/harden-runner@") === true;
+
+  it("every review-workflow job that holds a write scope locks egress in block mode, with its canary after the lock", () => {
+    const jobs = reviewWorkflows().flatMap((path) =>
+      writeTokenJobs(path).map(([name, job]) => {
+        const steps = job.steps ?? [];
+        const lock = steps.findIndex(isLock);
+        return {
+          job: `${path} → ${name}`,
+          locks: steps.filter(isLock).map((step) => String(step.with?.["egress-policy"])),
+          canaryAfterLock: steps.some(
+            (step, index) => index > lock && (step.name ?? "").startsWith("Egress canary"),
+          ),
+        };
+      }),
+    );
+    expect(jobs.map((entry) => entry.job)).toEqual([
+      ".github/workflows/review-on-comment-reusable.yaml → gate",
+      ".github/workflows/review-on-comment-reusable.yaml → ack",
+      ".github/workflows/review-reusable.yaml → announce",
+      ".github/workflows/review-reusable.yaml → comment",
+      ".github/workflows/review-reusable.yaml → finalize",
+      "examples/workflows/review.yaml → announce",
+      "examples/workflows/review.yaml → comment",
+      "examples/workflows/review.yaml → finalize",
+    ]);
+    expect(
+      jobs.filter((entry) => entry.locks.join() !== "block" || !entry.canaryAfterLock),
+    ).toEqual([]);
+  });
 });

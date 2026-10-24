@@ -24,11 +24,16 @@ permissions:
   actions: read
   pull-requests: write
   issues: write
-  checks: write            # the review's check-run attribution surface (announce/comment/attribute)
+  checks: write            # the review's check-run attribution surface (announce/comment/finalize)
 
 jobs:
   resolve:
     runs-on: ubuntu-latest
+    # Only reads (gh pr view, gh run list), so it holds no write scope and needs no egress lock.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     outputs:
       head_sha: ${{ steps.r.outputs.head_sha }}
       head_branch: ${{ steps.r.outputs.head_branch }}

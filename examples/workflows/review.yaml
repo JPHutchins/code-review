@@ -225,8 +225,9 @@ jobs:
           # your ecosystem's hosts (registries, a non-default model API) with a trailing
           # --extra "host1 host2", e.g. --extra "pypi.org files.pythonhosted.org". --strict-host fails
           # the setup closed if the host derived from API_BASE_URL is not a built-in provider
-          # (anthropic.com/deepseek.com) or one you declare via the KNOWN_MODEL_HOSTS var — the guard
-          # against a mistyped API_BASE_URL silently sending your key elsewhere.
+          # (a subdomain of anthropic.com or deepseek.com) or one you declare via the
+          # KNOWN_MODEL_HOSTS var — the guard against a mistyped API_BASE_URL silently sending your
+          # key elsewhere.
           code-review sandbox-config \
             --api-base-url "$API_BASE_URL" \
             --known-model-host "$KNOWN_MODEL_HOSTS" \

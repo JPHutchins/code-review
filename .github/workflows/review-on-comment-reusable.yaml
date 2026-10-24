@@ -159,7 +159,7 @@ on:
         required: false
         default: ""
       known_model_hosts:
-        description: Bare hostname(s) to accept as the jail's model host when api_base_url is not a built-in provider (anthropic.com, deepseek.com). Passed through to review-reusable.yaml's known_model_hosts.
+        description: Bare hostname(s) to accept as the jail's model host when api_base_url is not a built-in provider (a subdomain of anthropic.com or deepseek.com). Passed through to review-reusable.yaml's known_model_hosts.
         type: string
         required: false
         default: ""

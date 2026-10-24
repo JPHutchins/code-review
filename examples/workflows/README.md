@@ -278,8 +278,8 @@ models, efforts, the subagent model, and the tier aliases, scoped to where each 
 reusable workflow the same knobs are `with:` inputs. The backend endpoint is a per-repo **Actions
 variable** (`API_BASE_URL`, required, no default — an unset endpoint fails loudly instead of letting
 the CLI choose where the key gets sent), and it is safe as one because the jail reaches only the host
-it names, and the setup fails closed when that host is neither a built-in provider (`anthropic.com`,
-`deepseek.com`) nor one you declare (copy-paste: the `KNOWN_MODEL_HOSTS` variable; either reusable:
+it names, and the setup fails closed when that host is neither a built-in provider (a subdomain of
+`anthropic.com` or `deepseek.com`) nor one you declare (copy-paste: the `KNOWN_MODEL_HOSTS` variable; either reusable:
 `known_model_hosts`) or allow as an extra host.
 
 The approach was proven by a live review on

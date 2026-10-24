@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { readRepoFile, repoRoot, WORKFLOW_EXTENSIONS } from "./test-util.js";
+import { parse as parseYaml } from "yaml";
+import { allWorkflows, readRepoFile, repoRoot, WORKFLOW_EXTENSIONS } from "./test-util.js";
 import { readPackageVersion } from "./index.js";
 
 // The pin shape, wherever a consumer-facing surface names it: a uses: line in a workflow or a
@@ -101,4 +102,70 @@ describe("copy-paste version pins (#207)", () => {
     expect(lock.version).toBe(expected);
     expect(lock.packages?.[""]?.version).toBe(expected);
   });
+});
+
+// The write-token jobs' egress lock is only as good as the harden-runner build every site runs, so every
+// site runs this one upstream commit: a fork, a moving tag, a site left behind, or a coordinated move to
+// another commit fails here until this constant moves with it, in the same reviewed change.
+const HARDEN_RUNNER = {
+  digest: "dc2769abcc0fcfbadfc1df54081c1608579ef6b2",
+  release: "v2.22.2",
+} as const;
+
+describe("harden-runner pins", () => {
+  // A `uses:` line (mapping or list form) — a commented-out pin runs nothing, so it is not a site.
+  const HARDEN_RUNNER_RE = /^\s*(?:-\s*)?uses:\s*([\w.-]+)\/harden-runner@(\S+)(?:\s+#\s*(\S+))?/i;
+
+  it(`every harden-runner use pins step-security's ${HARDEN_RUNNER.release} by its digest`, () => {
+    const sites = allWorkflows().flatMap((path) =>
+      readRepoFile(path)
+        .split("\n")
+        .flatMap((line, index) => {
+          const match = HARDEN_RUNNER_RE.exec(line);
+          return match === null
+            ? []
+            : [
+                {
+                  at: `${path}:${String(index + 1)}`,
+                  owner: match[1] ?? "",
+                  ref: match[2] ?? "",
+                  label: match[3] ?? "(no label)",
+                },
+              ];
+        }),
+    );
+    expect(sites.length).toBeGreaterThan(0);
+    expect(
+      sites
+        .filter(
+          (site) =>
+            site.owner.toLowerCase() !== "step-security" ||
+            site.ref !== HARDEN_RUNNER.digest ||
+            site.label !== HARDEN_RUNNER.release,
+        )
+        .map((site) => `${site.at}: ${site.owner}/harden-runner@${site.ref} # ${site.label}`),
+    ).toEqual([]);
+  });
+
+  it.each([".github/workflows/review-reusable.yaml", "examples/workflows/review.yaml"])(
+    "%s: every write-token job locks egress with it in block mode",
+    (path) => {
+      const jobs = (
+        parseYaml(readRepoFile(path)) as {
+          jobs: Record<string, { steps?: { uses?: string; with?: Record<string, unknown> }[] }>;
+        }
+      ).jobs;
+      const locks = (job: string): readonly string[] =>
+        (jobs[job]?.steps ?? []).flatMap((step) =>
+          step.uses?.startsWith("step-security/harden-runner@") === true
+            ? [String(step.with?.["egress-policy"])]
+            : [],
+        );
+      expect(["announce", "comment", "finalize"].map((job) => [job, locks(job)])).toEqual([
+        ["announce", ["block"]],
+        ["comment", ["block"]],
+        ["finalize", ["block"]],
+      ]);
+    },
+  );
 });

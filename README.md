@@ -72,7 +72,9 @@ in [templates/](templates/). See [docs/adapters.md](docs/adapters.md) for the ad
    ([SPEC §4.4](SPEC.md#44-required-controls-conformance)).
 4. Merge to your default branch first — `workflow_run` only fires from the default branch, so the
    introducing PR won't review itself — then open a test PR.
-5. First run: consider `egress-policy: audit` to discover the real allowlist, then switch to `block`
+5. Egress needs no discovery run: the review agents' network jail reaches only the model host and the
+   hosts you add with `--extra` on the `code-review sandbox-config` call, and the write-token jobs
+   always lock egress
    ([SPEC Appendix A](SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
 6. Optional — add on-demand reviews too: copy
    [examples/workflows/review-on-comment.yaml](examples/workflows/review-on-comment.yaml) so a
@@ -86,9 +88,10 @@ Every model knob is committed step `env` on the workflow's triage and review ste
 efforts, the subagent model, and the tier aliases, right where each is consumed — edited and
 PR-reviewed like the rest of the file (implementation detail the spec deliberately leaves to this
 repo — see [SPEC Appendix A](SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
-Only the backend endpoint is a per-repo **Actions variable** (`API_BASE_URL`, required, no default); pointing it at
-another provider requires adding that provider's API host to the workflow's egress allowlist in the
-same reviewed PR.
+The backend endpoint is a per-repo **Actions variable** (`API_BASE_URL`, required, no default). The jail
+reaches only the host it names, and a provider other than `anthropic.com` or `deepseek.com` must also be
+declared, in the `KNOWN_MODEL_HOSTS` variable or as an extra host (on the on-comment trigger, its
+`extra_endpoints`), or the setup fails closed.
 
 ## Artifacts
 

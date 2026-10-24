@@ -66,8 +66,8 @@ Notes on the flags:
   a best-effort optimization, not a dependency. The schema MUST be inlined (no `$ref`/`$defs`/`$id`).
 - `--tools` restricts the toolset — read-only for triage, broader (e.g. adding the project's own
   test/build runner) for the phase-2 review.
-- `--permission-mode bypassPermissions` is safe only because the runner is throwaway, egress-locked,
-  and carries a read-only token; use a deny-by-default mode for triage so it never hangs in CI.
+- `--permission-mode bypassPermissions` is safe only because the runner is throwaway, its agents are
+  egress-jailed, and it carries a read-only token; use a deny-by-default mode for triage so it never hangs in CI.
 - `--strict-mcp-config` keeps ambient MCP servers out; `--disallowedTools` blocks `/proc` and `/sys`
   reads (deny beats allow).
 

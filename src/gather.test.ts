@@ -78,7 +78,7 @@ const mkMockGhApi = (
     }
     // The full review's closing-issues read runs for every success-route PR; default it to none.
     if (args[0] === "graphql" && args.some((a) => a.includes("closingIssuesReferences"))) {
-      return Promise.resolve('{"totalCount":0,"nodes":[]}');
+      return Promise.resolve('{"body":"","closingIssuesReferences":{"totalCount":0,"nodes":[]}}');
     }
     return Promise.reject(new Error(`Unexpected gh api call: ${args.join(" ")}`));
   };
@@ -199,6 +199,8 @@ describe("gather — PR resolution", () => {
       failingJobs: 0,
       passedJobs: null,
       linkedIssues: false,
+      // Three minutes when no issue was staged.
+      triageWallSec: 180,
     });
     expect(outFile("pr.diff")).toBe(sampleDiff);
     // A non-stacked PR reuses pr.diff as the full (triage) diff — no separate compare fetch.
@@ -1479,9 +1481,10 @@ describe("renderOutputs", () => {
         failingJobs: 0,
         passedJobs: { passed: 15, ran: 15 },
         linkedIssues: true,
+        triageWallSec: 300,
       }),
     ).toBe(
-      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\nci_jobs_ran=15\nlinked_issues=true\n",
+      "pr=42\nconclusion=success\ndiff_size=1234\nstacked=false\nbase_sha=abc1234\nstaged_job_logs=0\nfailing_jobs=0\nci_jobs_passed=15\nci_jobs_ran=15\nlinked_issues=true\ntriage_wall=300s\n",
     );
   });
 });
@@ -1713,21 +1716,24 @@ describe("gather — the issues the PR closes", () => {
       {
         match: closingIssuesRead,
         response: JSON.stringify({
-          totalCount: 1,
-          nodes: [
-            {
-              number: 7,
-              title: "crash on a path input",
-              body: "repro: run it",
-              url: "https://github.com/owner/repo/issues/7",
-              state: "OPEN",
-              createdAt: null,
-              authorAssociation: "NONE",
-              author: { login: "reporter" },
-              repository: { nameWithOwner: "owner/repo" },
-              comments: { totalCount: 0 },
-            },
-          ],
+          body: "",
+          closingIssuesReferences: {
+            totalCount: 1,
+            nodes: [
+              {
+                number: 7,
+                title: "crash on a path input",
+                body: "repro: run it",
+                url: "https://github.com/owner/repo/issues/7",
+                state: "OPEN",
+                createdAt: null,
+                authorAssociation: "NONE",
+                author: { login: "reporter" },
+                repository: { nameWithOwner: "owner/repo" },
+                comments: { totalCount: 0 },
+              },
+            ],
+          },
         }),
       },
       { match: (a) => a[0] === "repos/owner/repo/issues/7/comments", response: "" },

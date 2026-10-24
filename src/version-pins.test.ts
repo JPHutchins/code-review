@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { readRepoFile, repoRoot, WORKFLOW_EXTENSIONS } from "./test-util.js";
+import { allWorkflows, readRepoFile, repoRoot, WORKFLOW_EXTENSIONS } from "./test-util.js";
 import { readPackageVersion } from "./index.js";
 
 // The pin shape, wherever a consumer-facing surface names it: a uses: line in a workflow or a
@@ -100,5 +100,40 @@ describe("copy-paste version pins (#207)", () => {
     };
     expect(lock.version).toBe(expected);
     expect(lock.packages?.[""]?.version).toBe(expected);
+  });
+});
+
+// The write-token jobs' egress lock is only as good as the harden-runner build every site runs, so all
+// sites run one upstream commit: a fork, a moving tag, or a site left behind on a bump fails here.
+describe("harden-runner pins", () => {
+  const HARDEN_RUNNER_RE = /uses:\s*([\w.-]+)\/harden-runner@(\S+)(?:\s+#\s*(\S+))?/;
+
+  it("every harden-runner use pins the same upstream commit by digest, labeled with its release", () => {
+    const sites = allWorkflows().flatMap((path) =>
+      readRepoFile(path)
+        .split("\n")
+        .flatMap((line, index) => {
+          const match = HARDEN_RUNNER_RE.exec(line);
+          return match === null
+            ? []
+            : [
+                {
+                  at: `${path}:${String(index + 1)}`,
+                  owner: match[1],
+                  ref: match[2],
+                  label: match[3],
+                },
+              ];
+        }),
+    );
+    expect(sites.length).toBeGreaterThan(0);
+    expect(sites.filter((site) => site.owner !== "step-security").map((site) => site.at)).toEqual(
+      [],
+    );
+    expect(
+      sites.filter((site) => !/^[0-9a-f]{40}$/.test(site.ref ?? "")).map((site) => site.at),
+    ).toEqual([]);
+    expect(new Set(sites.map((site) => `${site.ref ?? ""} ${site.label ?? ""}`)).size).toBe(1);
+    expect(sites[0]?.label).toMatch(/^v\d+\.\d+\.\d+$/);
   });
 });

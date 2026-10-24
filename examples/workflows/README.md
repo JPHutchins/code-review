@@ -258,8 +258,8 @@ so it costs the gather step, not a full review.
    `harden-runner` step's `egress-policy: audit`. Reusable: pass `egress_policy: audit`. Then switch
    to `block` (copy-paste: add hosts to `allowed-endpoints`; reusable: add them via `extra_endpoints`)
    ([SPEC Appendix A](../../SPEC.md#appendix-a--reference-realization-github-actions-non-normative)).
-   An egress **canary** step then proves the lock actually engaged on every run — harden-runner can
-   silently degrade `block` to audit ([harden-runner#675](https://github.com/step-security/harden-runner/issues/675))
+   An egress **canary** step then proves the lock actually engaged on every run — harden-runner before
+   v2.21.0 could silently degrade `block` to audit ([harden-runner#675](https://github.com/step-security/harden-runner/issues/675))
    — and fails the job closed if it can reach the open internet. The reusable workflow skips it
    automatically in audit mode; in the copy-paste file, comment it out during audit discovery.
 

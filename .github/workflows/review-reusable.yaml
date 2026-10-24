@@ -1143,7 +1143,7 @@ jobs:
           if [ "$ROUTE" = "mechanic" ]; then
             :
           elif grep -q '"unfinished"' "$SCHEMA_FILE"; then
-            UNFINISHED_NOTE=" Name every check you planned but did not complete — an angle you skipped, a probe the budget cut short, a subagent that stopped early — in the findings document's \`unfinished\` field, one entry each. Leave it out only when every planned check finished: a review that reads complete when it was not is worse than one that says what it skipped. A check a CI job ran and passed is done, never unfinished."
+            UNFINISHED_NOTE=" Name every check you planned but did not complete — an angle you skipped, a probe the budget cut short, a subagent that stopped early — in the findings document's \`unfinished\` field, one entry each. Leave it out only when every planned check finished: a review that reads complete when it was not is worse than one that says what it skipped. A check is done once anything verified it: a CI job that ran and passed it, its logs, or the code itself. List only what nothing verified, never a method this runner could not use."
           else
             echo "the pinned code-review CLI (${CODE_REVIEW_VERSION}) has no \`unfinished\` field in its findings schema; this review is not asked to name its unfinished checks"
           fi

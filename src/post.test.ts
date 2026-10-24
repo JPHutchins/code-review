@@ -3914,7 +3914,9 @@ describe("announce — in-progress sticky", () => {
 
 describe("reportIncomplete — failed/cancelled review sticky", () => {
   const openPr = {
-    match: (a: readonly string[]) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+    match: (a: readonly string[]) =>
+      (a[0]?.startsWith("repos/owner/repo/commits/") ?? false) &&
+      !(a[0]?.includes("/check-runs") ?? false),
     response: '{"number":42,"state":"open","headRef":"feature-branch"}\n',
   };
   const commentsMatch = (a: readonly string[]): boolean =>
@@ -3978,13 +3980,46 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     it("when the PR's head moved past this run's commit", async () => {
       const body = await patchedBody("f".repeat(40), "");
       expect(body).toContain("Code review superseded");
+      expect(body).toContain("the PR moved on, or a newer review run took over");
       expect(body).not.toContain("did not complete");
+      expect(body).not.toContain("cancelled before completing");
     });
 
     it("when a newer run opened a check on the same head", async () => {
       const body = await patchedBody("abc123def456", newerRunCheck);
       expect(body).toContain("Code review superseded");
       expect(body).not.toContain("did not complete");
+    });
+
+    it("leaves a missing sticky to the superseding run, posting no notice of its own", async () => {
+      const { api, calls } = mkMockGhApi([
+        { match: (a) => a[0]?.includes("/check-runs") ?? false, response: "" },
+        {
+          match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+          response: `{"number":42,"state":"open","headRef":"feature-branch","headSha":"${"f".repeat(40)}"}\n`,
+        },
+        { match: commentsMatch, response: "" },
+      ]);
+      await reportIncomplete(mkAnnounceInput({ runUrl }), api);
+      expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
+    });
+
+    it("looks no checks up when the sticky already belongs to another run", async () => {
+      const { api, calls } = mkMockGhApi([
+        { match: (a) => a[0]?.includes("/check-runs") ?? false, response: newerRunCheck },
+        {
+          match: (a) => a[0]?.startsWith("repos/owner/repo/commits/") ?? false,
+          response:
+            '{"number":42,"state":"open","headRef":"feature-branch","headSha":"abc123def456"}\n',
+        },
+        {
+          match: commentsMatch,
+          response: commentRow(999, ownPlaceholder.replace("/runs/12345", "/runs/12399")),
+        },
+      ]);
+      await reportIncomplete(mkAnnounceInput({ runUrl }), api);
+      expect(calls().some((c) => c.args[0]?.includes("/check-runs") ?? false)).toBe(false);
+      expect(calls().some((c) => c.args.includes("--input"))).toBe(false);
     });
 
     it("but a run nothing superseded still reports that its review did not complete", async () => {

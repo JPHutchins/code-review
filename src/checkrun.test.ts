@@ -201,7 +201,13 @@ describe("checkRun", () => {
     );
     const patch = calls.find((c) => c.args.includes("PATCH"));
     expect(patch?.args).toContain("repos/o/r/check-runs/1");
-    expect(JSON.parse(patch?.stdin ?? "{}")).toMatchObject({ conclusion: "cancelled" });
+    const body = JSON.parse(patch?.stdin ?? "{}") as {
+      conclusion?: string;
+      output?: { title?: string; summary?: string };
+    };
+    expect(body.conclusion).toBe("cancelled");
+    expect(body.output?.title).toBe("Code review superseded");
+    expect(body.output?.summary).not.toContain(INCOMPLETE_REMEDY);
   });
 
   it("makes no write call when the decision is a no-op (already-neutral owned check)", async () => {

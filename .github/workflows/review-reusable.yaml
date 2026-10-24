@@ -1802,9 +1802,10 @@ jobs:
   #   - result == 'success' + the comment job FAILED or was CANCELLED: with no `posted` signal at all
   #     (it ended before reporting — a lost findings download, a runner that lost GitHub), post the
   #     "did not complete" sticky and finalize the check `failure`; neither command overwrites a
-  #     completed review, and both detect a run a newer one superseded and post the informational
-  #     notice instead. With `posted` set (true: it landed; false: it chose not to post), settle the
-  #     check `neutral` only — a posted review must not be re-requested or failed.
+  #     completed review, and a run a newer one superseded gets the informational notice instead
+  #     (report-incomplete sees the PR's head move or a newer run's check; check-run the check).
+  #     With `posted` set (true: it landed; false: it chose not to post), settle the check `neutral`
+  #     only — a posted review must not be re-requested or failed.
   # The has_findings guard excludes a review that DID post (including an honest triage-error notice)
   # but failed a later step — comment already finalized that one. EXCEPT for a cancelled review: a
   # cancellation racing just past the assemble step leaves has_findings=true but the comment job is
@@ -1912,9 +1913,11 @@ jobs:
             # deliberate false), or a SUCCEEDED review whose comment job failed or was cancelled with
             # NO signal at all (POSTED = ''): a lost findings download, or a runner that lost GitHub
             # before the job could report. A post that did land stays, since neither command
-            # overwrites a completed review, and a run a newer one superseded (the PR's head moved,
-            # or a newer run's check is on this head) gets the informational notice from both
-            # commands instead. A succeeded review with posted=false settles neutral below.
+            # overwrites a completed review. A run a newer one superseded gets the informational
+            # notice instead: report-incomplete sees the PR's head move or a newer run's check on this
+            # head, check-run the newer check — once that run's announce has opened it, so a finalize
+            # that wins that race still reports not-landed. A succeeded review with posted=false
+            # settles neutral below.
             code-review report-incomplete \
               --repo "$REPO" \
               --head-sha "$HEAD_SHA" \

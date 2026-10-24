@@ -2018,7 +2018,7 @@ const checkRunCmd = defineCommand({
   meta: {
     name: "check-run",
     description:
-      "Upsert the native 'Code review' check-run on the head SHA — the attribution surface that appears in the PR's own checks list and (writing to the base repo) works for fork PRs too. `in_progress` at review start, `neutral` when the review completes, `failure` when it didn't (`cancelled` instead when a newer run's check is on the same head — a superseded run is informational), `cancelled` when a cancelled review settles its own check (matched by details_url, so it never touches a superseding run's check). Forward-only: `failure`/`cancelled` never overwrite a completed review.",
+      "Upsert the native 'Code review' check-run on the head SHA — the attribution surface that appears in the PR's own checks list and (writing to the base repo) works for fork PRs too. `in_progress` at review start, `neutral` when the review completes, `failure` when it didn't (`cancelled` instead when a newer run's check is on the same head — a superseded run is informational), `cancelled` when a cancelled review settles its own check (matched by the run id in its external_id, so it never touches a superseding run's check). Forward-only: `failure`/`cancelled` never overwrite a completed review.",
   },
   args: {
     repo: { type: "string", description: "Repository (owner/name)", required: true },

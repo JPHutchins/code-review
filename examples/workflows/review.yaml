@@ -1471,7 +1471,7 @@ jobs:
   # check; result == 'cancelled' (a review cancelled before completing, typically by a superseding run
   # on this branch) → an informational "superseded — no action needed" sticky — NOT the failure notice
   # (issue #139) — and the check this run's announce created is settled to `cancelled`
-  # (ownership-matched by details_url, so a superseding run's live check is never touched); result ==
+  # (ownership-matched by the run id in its external_id, so a superseding run's live check is never touched); result ==
   # 'success' + no findings (a legitimate gather-skip) → just finalize `neutral`; result == 'success'
   # + the comment job FAILED or was CANCELLED with no `posted` signal (it ended before reporting) →
   # the "did not complete" sticky + `failure` pair, which never overwrites a completed review and
@@ -1560,7 +1560,7 @@ jobs:
           # by its posted signal below.
           if [ "$REVIEW_RESULT" = "cancelled" ] || { [ "$REVIEW_RESULT" = "failure" ] && [ "$COMMENT_RESULT" = "cancelled" ]; }; then
             # A cancelled review is informational, not a failure (issue #139): post the "superseded"
-            # sticky and settle THIS run's check to `cancelled` (ownership-matched by details_url, so a
+            # sticky and settle THIS run's check to `cancelled` (ownership-matched by the run id in its external_id, so a
             # superseding run's live check on the same head is never touched). Release-gated:
             # `--cancelled`/`check-run cancelled` ship with the same CLI release as `check-scope`, so
             # probe the exit-code way (the one idiom for this release); on an older pin citty would

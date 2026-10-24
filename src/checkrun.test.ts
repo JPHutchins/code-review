@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
+  CHECK_JQ,
   checkRun,
+  externalIdFor,
   INCOMPLETE_REMEDY,
   decideCheckAction,
   decideCancelledAction,
@@ -10,21 +13,31 @@ import {
 } from "./checkrun.js";
 
 // As GitHub returns them: details_url is the check's own page (GitHub replaces what a GitHub Actions
-// token sends); the run id lives in external_id.
+// token sends); the run lives in the external_id this project stamps.
 const open = (id: number, runId: string | null): ExistingCheck => ({
   id,
   status: "in_progress",
   conclusion: null,
   detailsUrl: `https://github.com/o/r/runs/${String(id)}`,
-  externalId: runId,
+  externalId: runId === null ? null : externalIdFor(runId),
 });
 const done = (id: number, runId: string | null, conclusion: string): ExistingCheck => ({
-  id,
+  ...open(id, runId),
   status: "completed",
   conclusion,
-  detailsUrl: `https://github.com/o/r/runs/${String(id)}`,
-  externalId: runId,
 });
+
+// A gh api double: the listing answers with `checks` (the post-jq lines), every write with "{}".
+const capture = (checks = "") => {
+  const calls: Array<{ args: readonly string[]; stdin?: string }> = [];
+  const ghApi = (args: readonly string[], stdin?: string): Promise<string> => {
+    calls.push({ args, stdin });
+    return Promise.resolve(args[0]?.includes("/check-runs?check_name=") === true ? checks : "{}");
+  };
+  return { calls, ghApi };
+};
+const lines = (...checks: readonly ExistingCheck[]): string =>
+  checks.map((check) => JSON.stringify(check)).join("\n");
 
 const ownedOpen = open(1, "123");
 const ownedNeutral = done(2, "123", "neutral");
@@ -113,7 +126,7 @@ describe("runIdFromUrl", () => {
 });
 
 describe("decideCancelledAction — issue #139", () => {
-  it("settles ONLY the check this run's announce created (matched by details_url run id)", () => {
+  it("settles ONLY the check this run's announce created (matched by the run in its external_id)", () => {
     // A successor run (1234) has already opened a NEWER in-progress check on the same head; the
     // cancelled run (123) must settle its own check, never the live successor.
     expect(
@@ -154,16 +167,6 @@ describe("decideCancelledAction — issue #139", () => {
 });
 
 describe("checkRun", () => {
-  const capture = () => {
-    const calls: Array<{ args: readonly string[]; stdin?: string }> = [];
-    const ghApi = (args: readonly string[], stdin?: string): Promise<string> => {
-      calls.push({ args, stdin });
-      if (args[0]?.includes("/check-runs?check_name=")) return Promise.resolve("");
-      return Promise.resolve("{}");
-    };
-    return { calls, ghApi };
-  };
-
   it("POSTs a new in_progress check on the head sha when none exists", async () => {
     const { calls, ghApi } = capture();
     await checkRun({ repo: "o/r", headSha: "abc", intent: "in_progress", runUrl: "u" }, ghApi);
@@ -187,18 +190,7 @@ describe("checkRun", () => {
   });
 
   it("settles a superseded run's failure as cancelled — a newer run's check is on the head", async () => {
-    const calls: Array<{ args: readonly string[]; stdin?: string }> = [];
-    const ghApi = (args: readonly string[], stdin?: string): Promise<string> => {
-      calls.push({ args, stdin });
-      return Promise.resolve(
-        args.some((a) => a.includes("/check-runs?check_name="))
-          ? [
-              '{"id":1,"status":"in_progress","conclusion":null,"detailsUrl":"https://g/runs/1","externalId":"123"}',
-              '{"id":2,"status":"in_progress","conclusion":null,"detailsUrl":"https://g/runs/2","externalId":"124"}',
-            ].join("\n")
-          : "{}",
-      );
-    };
+    const { calls, ghApi } = capture(lines(open(1, "123"), open(2, "124")));
     await checkRun(
       { repo: "o/r", headSha: "abc", intent: "failure", runUrl: "https://g/actions/runs/123" },
       ghApi,
@@ -215,14 +207,7 @@ describe("checkRun", () => {
   });
 
   it("makes no write call when the decision is a no-op (already-neutral owned check)", async () => {
-    const calls: Array<{ args: readonly string[] }> = [];
-    const ghApi = (args: readonly string[]): Promise<string> => {
-      calls.push({ args });
-      // The mock returns the POST-jq shape: the JQ maps details_url → detailsUrl (camelCase).
-      return Promise.resolve(
-        '{"id":1,"status":"completed","conclusion":"neutral","detailsUrl":"https://g/actions/runs/123"}',
-      );
-    };
+    const { calls, ghApi } = capture(lines(done(1, "123", "neutral")));
     await checkRun(
       { repo: "o/r", headSha: "abc", intent: "neutral", runUrl: "https://g/actions/runs/123" },
       ghApi,
@@ -245,13 +230,7 @@ describe("checkRun", () => {
 });
 
 describe("supersededOnHead", () => {
-  const check = (runId: string | null): ExistingCheck => ({
-    id: 1,
-    status: "in_progress",
-    conclusion: null,
-    detailsUrl: "https://g/runs/1",
-    externalId: runId,
-  });
+  const check = (runId: string | null): ExistingCheck => open(1, runId);
   const runUrl = "https://g/actions/runs/123";
 
   it("is true only when a check names a newer run", () => {
@@ -280,30 +259,53 @@ describe("check ownership — the run id GitHub keeps", () => {
     expect(decideCheckAction([done(8, null, "failure")], "neutral", runUrl).kind).toBe("create");
   });
 
-  it("still matches a check created before the id was stamped, by a run id its details_url carries", () => {
-    const legacy: ExistingCheck = {
-      id: 9,
+  it("owns no check by a check-page URL or another app's bare numeric external_id", () => {
+    const page: ExistingCheck = {
+      id: 123,
       status: "in_progress",
       conclusion: null,
-      detailsUrl: "https://github.com/o/r/actions/runs/123",
+      detailsUrl: "https://github.com/o/r/runs/123",
     };
-    expect(decideCancelledAction([legacy], runUrl)).toEqual({
-      kind: "patch",
-      id: 9,
-      status: "completed",
-      conclusion: "cancelled",
-    });
+    const otherApp: ExistingCheck = { ...open(9, null), externalId: "123" };
+    expect(decideCancelledAction([page, otherApp], runUrl).kind).toBe("noop");
+    expect(supersededOnHead([{ ...otherApp, externalId: "999" }], runUrl)).toBe(false);
   });
 
-  it("stamps the run id into external_id on create, and lists every check (filter=all)", async () => {
-    const calls: Array<{ args: readonly string[]; stdin?: string }> = [];
-    const ghApi = (args: readonly string[], stdin?: string): Promise<string> => {
-      calls.push({ args, stdin });
-      return Promise.resolve(args[0]?.includes("/check-runs?") === true ? "" : "{}");
-    };
+  it.skipIf(spawnSync("jq", ["--version"]).status !== 0)(
+    "reads the run from GitHub's own records through CHECK_JQ",
+    () => {
+      const raw = JSON.stringify({
+        total_count: 2,
+        check_runs: [
+          {
+            id: 7,
+            status: "in_progress",
+            conclusion: null,
+            details_url: "https://github.com/o/r/runs/7",
+            external_id: externalIdFor("123"),
+          },
+          {
+            id: 8,
+            status: "completed",
+            conclusion: "neutral",
+            details_url: "https://github.com/o/r/runs/8",
+            external_id: "",
+          },
+        ],
+      });
+      const checks = execFileSync("jq", ["-c", CHECK_JQ], { input: raw, encoding: "utf-8" })
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as ExistingCheck);
+      expect(decideCancelledAction(checks, runUrl)).toMatchObject({ kind: "patch", id: 7 });
+    },
+  );
+
+  it("stamps the run into external_id on create, and lists every check (filter=all)", async () => {
+    const { calls, ghApi } = capture();
     await checkRun({ repo: "o/r", headSha: "abc", intent: "in_progress", runUrl }, ghApi);
     expect(calls[0]?.args[0]).toContain("filter=all");
     const post = calls.find((c) => c.args.includes("POST"));
-    expect(JSON.parse(post?.stdin ?? "{}")).toMatchObject({ external_id: "123" });
+    expect(JSON.parse(post?.stdin ?? "{}")).toMatchObject({ external_id: externalIdFor("123") });
   });
 });

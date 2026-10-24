@@ -1705,7 +1705,7 @@ describe("gather — the issues the PR closes", () => {
   const closingIssuesRead = (a: readonly string[]): boolean =>
     a[0] === "graphql" && a.some((x) => x.includes("closingIssuesReferences"));
 
-  it("stages them for the full review", async () => {
+  it("stages them for a full review the workflow asked for", async () => {
     const { api } = mkMockGhApi([
       ...prMocks,
       {
@@ -1731,17 +1731,20 @@ describe("gather — the issues the PR closes", () => {
     ]);
     const { git } = mkMockGit([]);
 
-    await gather(mkInput({}), api, git);
+    await gather(mkInput({ linkedIssues: true }), api, git);
 
     expect(hasOutFile(join(LINKED_ISSUES_DIR, LINKED_ISSUES_INDEX))).toBe(true);
-    expect(hasOutFile(join(LINKED_ISSUES_DIR, "owner__repo__7.json"))).toBe(true);
+    expect(hasOutFile(join(LINKED_ISSUES_DIR, "owner__repo__7", "body.md"))).toBe(true);
   });
 
-  it("never asks on the CI-fix route", async () => {
+  it.each([
+    ["the CI-fix route, even when asked", { conclusion: "failure", linkedIssues: true }],
+    ["a full review the workflow did not ask for", {}],
+  ])("never asks on %s", async (_case, over) => {
     const { api, calls } = mkMockGhApi([...prMocks, { match: jobsMatch, response: "" }]);
     const { git } = mkMockGit([]);
 
-    await gather(mkInput({ conclusion: "failure" }), api, git);
+    await gather(mkInput(over), api, git);
 
     expect(calls().some((c) => closingIssuesRead(c.args))).toBe(false);
     expect(hasOutFile(LINKED_ISSUES_DIR)).toBe(false);

@@ -2,7 +2,7 @@
 // issue and get it linked to a PR, so this text is attacker-reachable: the triage screens the
 // folder before any agent reads it, and the review reads it as claims, never instructions.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
 import type { GhApi } from "./gh.js";
@@ -12,6 +12,11 @@ import { annotationSafe, errMsg } from "./util.js";
 export const LINKED_ISSUES_DIR = "linked_issues";
 export const LINKED_ISSUES_INDEX = "index.json";
 export const CLOSING_ISSUES_LIMIT = 50;
+// The comment reads are bounded like the passed run's log staging: the gather step has no timeout.
+export const COMMENT_READ_CONCURRENCY = 8;
+// The agents read these files a line at a time and cut a long line short, so a longer line is
+// folded: every character of an issue stays reachable to the triage that screens it.
+export const READABLE_LINE_CHARS = 1000;
 
 export interface LinkedIssuesStaged {
   readonly issues: number;
@@ -19,37 +24,55 @@ export interface LinkedIssuesStaged {
   readonly bytes: number;
 }
 
+// Writes the folder from scratch, so it holds exactly what index.json lists; any failure stages
+// nothing and warns, because the review runs fine without the issues.
 export const stageLinkedIssues = async (
   repo: string,
   prNumber: number,
   outDir: string,
   ghApi: GhApi,
 ): Promise<LinkedIssuesStaged> => {
+  const dir = join(outDir, LINKED_ISSUES_DIR);
+  const cleared = clearFailure(dir);
+  if (cleared !== null) return couldNotStage(cleared);
   const closing = await fetchClosingIssues(repo, prNumber, ghApi);
-  if (closing === null || closing.issues.length === 0) return NOTHING_STAGED;
+  if (closing === null) return NOTHING_STAGED;
   if (closing.total > closing.issues.length) {
     warn(
-      `the PR closes ${String(closing.total)} issues; only the first ${String(closing.issues.length)} are staged for the review`,
+      `the PR closes ${String(closing.total)} issues; only ${String(closing.issues.length)} are staged for the review`,
     );
   }
-  const staged = writeLinkedIssues(
-    join(outDir, LINKED_ISSUES_DIR),
-    await Promise.all(
-      closing.issues.map(async (issue) =>
-        stagedIssue(
-          issue,
-          await fetchComments(issue.repository.nameWithOwner, issue.number, ghApi),
-        ),
-      ),
-    ),
+  if (closing.issues.length === 0) return NOTHING_STAGED;
+  const issues = await inBatches(closing.issues, COMMENT_READ_CONCURRENCY, async (issue) =>
+    stagedIssue(issue, await fetchComments(issue.repository.nameWithOwner, issue.number, ghApi)),
   );
-  process.stderr.write(
-    `Staged ${String(staged.issues)} issue(s) this PR closes, with ${String(staged.comments)} comment(s) (${String(staged.bytes)} bytes), in ${LINKED_ISSUES_DIR}/ for the triage and the review\n`,
-  );
-  return staged;
+  try {
+    const staged = writeLinkedIssues(dir, closing.total, issues);
+    process.stderr.write(
+      `Staged ${String(staged.issues)} issue(s) this PR closes, with ${String(staged.comments)} comment(s) (${String(staged.bytes)} bytes), in ${LINKED_ISSUES_DIR}/ for the triage and the review\n`,
+    );
+    return staged;
+  } catch (err) {
+    clearFailure(dir);
+    return couldNotStage(errMsg(err));
+  }
 };
 
 const NOTHING_STAGED: LinkedIssuesStaged = { issues: 0, comments: 0, bytes: 0 };
+
+const couldNotStage = (reason: string): LinkedIssuesStaged => {
+  warn(`could not stage the issues this PR closes (${reason}), so the review runs without them`);
+  return NOTHING_STAGED;
+};
+
+const clearFailure = (dir: string): string | null => {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return null;
+  } catch (err) {
+    return errMsg(err);
+  }
+};
 
 const ClosingIssueCodec = t.type({
   number: t.number,
@@ -163,6 +186,18 @@ const fetchComments = async (
   }
 };
 
+const inBatches = async <A, B>(
+  items: readonly A[],
+  size: number,
+  each: (item: A) => Promise<B>,
+): Promise<readonly B[]> =>
+  Array.from({ length: Math.ceil(items.length / size) }, (_, i) =>
+    items.slice(i * size, (i + 1) * size),
+  ).reduce<Promise<readonly B[]>>(
+    async (done, batch) => [...(await done), ...(await Promise.all(batch.map(each)))],
+    Promise.resolve([]),
+  );
+
 const stagedIssue = (issue: ClosingIssue, comments: readonly CommentRow[] | null) => ({
   repository: issue.repository.nameWithOwner,
   number: issue.number,
@@ -177,43 +212,96 @@ const stagedIssue = (issue: ClosingIssue, comments: readonly CommentRow[] | null
 });
 type StagedIssue = ReturnType<typeof stagedIssue>;
 
-const writeLinkedIssues = (dir: string, issues: readonly StagedIssue[]): LinkedIssuesStaged => {
-  mkdirSync(dir, { recursive: true });
-  const files = issues.map((issue) => ({
-    issue,
-    file: issueFileName(issue),
-    json: JSON.stringify(issue),
-  }));
+// One folder per issue: issue.json carries who wrote what and when, which a body cannot forge, and
+// body.md plus one comment-NNN.md per comment carry the text with its own line breaks.
+const writeLinkedIssues = (
+  dir: string,
+  closes: number,
+  issues: readonly StagedIssue[],
+): LinkedIssuesStaged => {
+  const files = issues.flatMap((issue) => issueFiles(issueFolderName(issue), issue));
   const index = JSON.stringify(
-    files.map(({ issue, file }) => ({
-      repository: issue.repository,
-      number: issue.number,
-      url: issue.url,
-      title: issue.title,
-      comments: issue.comments === null ? null : issue.comments.length,
-      file,
-    })),
+    {
+      closes,
+      issues: issues.map((issue) => ({
+        repository: issue.repository,
+        number: issue.number,
+        url: issue.url,
+        title: issue.title,
+        folder: issueFolderName(issue),
+        comments: issue.comments === null ? null : issue.comments.length,
+      })),
+    },
+    null,
+    2,
   );
-  files.forEach(({ file, json }) => {
-    writeFileSync(join(dir, file), json);
+  mkdirSync(dir, { recursive: true });
+  files.forEach(({ path, text }) => {
+    mkdirSync(join(dir, path, ".."), { recursive: true });
+    writeFileSync(join(dir, path), text);
   });
   writeFileSync(join(dir, LINKED_ISSUES_INDEX), index);
   return {
     issues: issues.length,
     comments: issues.reduce((sum, issue) => sum + (issue.comments?.length ?? 0), 0),
-    bytes: [index, ...files.map(({ json }) => json)].reduce(
+    bytes: [index, ...files.map(({ text }) => text)].reduce(
       (sum, text) => sum + Buffer.byteLength(text, "utf8"),
       0,
     ),
   };
 };
 
+const issueFiles = (
+  folder: string,
+  issue: StagedIssue,
+): readonly { readonly path: string; readonly text: string }[] => [
+  {
+    path: join(folder, "issue.json"),
+    text: JSON.stringify(
+      {
+        ...issue,
+        body: "body.md",
+        comments:
+          issue.comments === null
+            ? null
+            : issue.comments.map(({ body: _body, ...comment }, i) => ({
+                ...comment,
+                file: commentFileName(i, issue.comments?.length ?? 0),
+              })),
+      },
+      null,
+      2,
+    ),
+  },
+  { path: join(folder, "body.md"), text: readable(issue.body) },
+  ...(issue.comments ?? []).map((comment, i, all) => ({
+    path: join(folder, commentFileName(i, all.length)),
+    text: readable(comment.body ?? ""),
+  })),
+];
+
 // GitHub owners never contain an underscore, so `__` separates owner from repository unambiguously.
-const issueFileName = (issue: StagedIssue): string =>
+const issueFolderName = (issue: StagedIssue): string =>
   `${issue.repository
     .split("/")
     .map((part) => part.replaceAll(/[^A-Za-z0-9._-]/g, "_"))
-    .join("__")}__${String(issue.number)}.json`;
+    .join("__")}__${String(issue.number)}`;
+
+const commentFileName = (index: number, count: number): string =>
+  `comment-${String(index + 1).padStart(Math.max(3, String(count).length), "0")}.md`;
+
+const readable = (text: string): string =>
+  text
+    .split("\n")
+    .flatMap((line) =>
+      ((chars: readonly string[]) =>
+        chars.length <= READABLE_LINE_CHARS
+          ? [line]
+          : Array.from({ length: Math.ceil(chars.length / READABLE_LINE_CHARS) }, (_, i) =>
+              chars.slice(i * READABLE_LINE_CHARS, (i + 1) * READABLE_LINE_CHARS).join(""),
+            ))(Array.from(line)),
+    )
+    .join("\n");
 
 const warn = (message: string): void => {
   process.stderr.write(`${annotationSafe(`::warning::${message}`)}\n`);

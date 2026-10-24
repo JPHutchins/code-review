@@ -27,6 +27,9 @@ export interface GatherInput {
   readonly conclusion: string;
   readonly botLogin: string;
   readonly outDir: string;
+  // Stage the issues the PR closes for a full review. Opt-in, so a workflow that does not screen
+  // them in its triage never hands their text to the review.
+  readonly linkedIssues?: boolean;
 }
 
 export type GatherResult =
@@ -587,6 +590,12 @@ export const gather = async (
     return { kind: "skip" };
   }
   const prNumber = resolution.prNumber;
+  // The full review only: the CI-fix pass reads the failure, not the bug report. Started now and
+  // awaited last, so its reads overlap the rest of gather.
+  const linkedIssues =
+    input.linkedIssues === true && input.conclusion === "success"
+      ? stageLinkedIssues(input.repo, prNumber, input.outDir, ghApi)
+      : null;
 
   const meta = await fetchPrMeta(input.repo, prNumber, ghApi);
 
@@ -722,10 +731,6 @@ export const gather = async (
     }),
   );
 
-  // The full review only: the CI-fix pass reads the failure, not the bug report.
-  if (input.conclusion === "success")
-    await stageLinkedIssues(input.repo, prNumber, input.outDir, ghApi);
-
   const jobLogs =
     input.conclusion === "failure"
       ? await downloadFailingJobLogs(input.repo, input.runId, input.runAttempt, input.outDir, ghApi)
@@ -734,6 +739,7 @@ export const gather = async (
     input.conclusion === "success"
       ? await stagePassedRun(input.repo, input.runId, input.runAttempt, input.outDir, ghApi)
       : { staged: 0, passed: null };
+  await linkedIssues;
 
   return {
     kind: "gathered",

@@ -1413,3 +1413,89 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     expect(reusable[0]).not.toContain("judge only");
   });
 });
+
+describe("finalize — every way the review and comment jobs end settles the sticky and the check", () => {
+  const FINALIZE = "Finalize the check-run and attribute the outcome";
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  // The CLI calls the real finalize script makes, with a stub `code-review` on PATH that records them.
+  const callsOf = (
+    script: string,
+    outcome: { review: string; comment: string; posted: string },
+  ): readonly string[] => {
+    const root = mkdtempSync(join(tmpdir(), "finalize-"));
+    roots.push(root);
+    const calls = join(root, "calls");
+    mkdirSync(join(root, "bin"));
+    writeFileSync(
+      join(root, "bin", "code-review"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`,
+      { mode: 0o755 },
+    );
+    execFileSync("bash", ["-c", script], {
+      env: {
+        ...process.env,
+        PATH: `${join(root, "bin")}:${process.env["PATH"] ?? ""}`,
+        REPO: "owner/repo",
+        HEAD_SHA: "abc1234",
+        HEAD_BRANCH: "feature",
+        GITHUB_SERVER_URL: "https://github.com",
+        GITHUB_RUN_ID: "42",
+        REVIEW_RESULT: outcome.review,
+        COMMENT_RESULT: outcome.comment,
+        POSTED: outcome.posted,
+      },
+    });
+    return existsSync(calls)
+      ? readFileSync(calls, "utf-8")
+          .trim()
+          .split("\n")
+          .filter((call) => !call.startsWith("check-scope"))
+          .map((call) => call.replace(/ --repo .*$/, "").replace(/ \\?$/, ""))
+      : [];
+  };
+
+  const NOT_LANDED = ["report-incomplete", "check-run failure"];
+  const SUPERSEDED = ["report-incomplete --cancelled", "check-run cancelled"];
+  const SETTLED = ["check-run neutral"];
+
+  for (const workflowPath of [
+    ".github/workflows/review-reusable.yaml",
+    "examples/workflows/review.yaml",
+  ]) {
+    const script = (): string => {
+      const found = runScripts(workflowPath).find(({ step }) => step.endsWith(FINALIZE));
+      expect(found, `${workflowPath} → ${FINALIZE}`).toBeDefined();
+      return found!.script;
+    };
+
+    it.each([
+      ["a comment job cancelled before it reported a post", "success", "cancelled", "", NOT_LANDED],
+      ["a comment job cancelled after its post landed", "success", "cancelled", "true", SETTLED],
+      [
+        "a comment job cancelled after deciding not to post",
+        "success",
+        "cancelled",
+        "false",
+        SETTLED,
+      ],
+      ["a comment job that failed before it reported a post", "success", "failure", "", NOT_LANDED],
+      [
+        "a comment job that failed after deciding not to post",
+        "success",
+        "failure",
+        "false",
+        SETTLED,
+      ],
+      ["a review with nothing to post", "success", "skipped", "", SETTLED],
+      ["a review job that failed", "failure", "skipped", "", NOT_LANDED],
+      ["a failed review whose comment job was cancelled", "failure", "cancelled", "", SUPERSEDED],
+      ["a cancelled review", "cancelled", "skipped", "", SUPERSEDED],
+    ])(`${workflowPath}: %s`, (_case, review, comment, posted, expected) => {
+      expect(callsOf(script(), { review, comment, posted })).toEqual(expected);
+    });
+  }
+});

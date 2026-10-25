@@ -1416,24 +1416,31 @@ describe("the maintainer roles — one definition for every gate that trusts the
 });
 
 describe("the on-comment ack — every request the gate saw gets an answer", () => {
-  const jobs = (): Record<string, { if?: string; needs?: unknown }> =>
-    (
+  type OnCommentJob = { if?: string; needs?: unknown; "continue-on-error"?: unknown };
+  const job = (name: string): OnCommentJob => {
+    const found = (
       parseYaml(readRepoFile(".github/workflows/review-on-comment-reusable.yaml")) as {
-        jobs: Record<string, { if?: string; needs?: unknown }>;
+        jobs: Record<string, OnCommentJob>;
       }
-    ).jobs;
+    ).jobs[name];
+    expect(found, `review-on-comment-reusable.yaml → ${name}`).toBeDefined();
+    return found ?? {};
+  };
 
   it("settles a gate that did not succeed, whatever ended it, beside one that said should_run", () => {
-    expect(jobs()["ack"]?.if).toBe(
+    expect(job("ack").needs).toContain("gate");
+    expect(job("ack").if).toBe(
       "${{ always() && (needs.gate.outputs.should_run == 'true' || needs.gate.result != 'success') }}",
     );
   });
 
   // ack reads any gate result but success as a request that failed. A gate that can be skipped (a
-  // job-level `if:`, or a `needs:` that fails) would make every non-command comment read as one.
-  it("runs a gate that nothing can skip, so a result other than success is always a failed request", () => {
-    expect(jobs()["gate"]?.if).toBeUndefined();
-    expect(jobs()["gate"]?.needs).toBeUndefined();
+  // job-level `if:`, or a `needs:` that fails) would make every non-command comment read as one, and
+  // a gate whose failure is tolerated would read as succeeded and leave a failed request unanswered.
+  it("runs a gate that nothing can skip or excuse, so its result is the request's", () => {
+    expect(job("gate").if).toBeUndefined();
+    expect(job("gate").needs).toBeUndefined();
+    expect(job("gate")["continue-on-error"]).toBeUndefined();
   });
 });
 

@@ -101,12 +101,6 @@ const callSites = (): readonly CallSite[] =>
     });
   });
 
-// A caller cannot grant a called reusable a permission it does not itself hold: GitHub refuses to
-// start the run, before any job-level `if:` is evaluated, with no log and no check anywhere. That is
-// how the /code-review comment trigger sat dead for three weeks (#208) after #115 added `checks:
-// write` to three reusable jobs and only two of the three callers were updated. The requirement is
-// derived from the reusables themselves, off a real YAML parse rather than a line scan, so a fourth
-// caller cannot repeat it and an unmodelled YAML form cannot quietly under-count the requirement.
 describe("isReusable — a workflow only another can start", () => {
   it("reads every form `on:` takes, and a workflow that can also run directly is not reusable", () => {
     expect(isReusable({ on: "workflow_call" })).toBe(true);
@@ -120,6 +114,12 @@ describe("isReusable — a workflow only another can start", () => {
   });
 });
 
+// A caller cannot grant a called reusable a permission it does not itself hold: GitHub refuses to
+// start the run, before any job-level `if:` is evaluated, with no log and no check anywhere. That is
+// how the /code-review comment trigger sat dead for three weeks (#208) after #115 added `checks:
+// write` to three reusable jobs and only two of the three callers were updated. The requirement is
+// derived from the reusables themselves, off a real YAML parse rather than a line scan, so a fourth
+// caller cannot repeat it and an unmodelled YAML form cannot quietly under-count the requirement.
 describe("reusable-workflow callers grant what the reusable requests (#208)", () => {
   // Computed INSIDE the tests (not at describe-body time: a uses: cycle in any call site would
   // throw during collection and abort the whole file — a cycle fails the one located test

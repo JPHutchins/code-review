@@ -168,7 +168,7 @@ describe("harden-runner pins", () => {
     run?: string;
   };
   type Job = {
-    uses?: string;
+    uses?: unknown;
     permissions?: unknown;
     "timeout-minutes"?: unknown;
     steps?: readonly Step[];
@@ -214,7 +214,7 @@ describe("harden-runner pins", () => {
   });
 
   const REVIEW_WORKFLOW_REF =
-    /^(?:\.\/|JPHutchins\/code-review\/)\.github\/workflows\/review[\w-]*\.ya?ml(?:@\S+)?$/;
+    /^(?:\.\/|JPHutchins\/code-review\/)\.github\/workflows\/review[\w-]*\.ya?ml(?:@\S+)?$/i;
   const workflowOf = (path: string): Workflow => parseYaml(readRepoFile(path)) as Workflow;
   const isLock = (step: Step): boolean =>
     step.uses?.toLowerCase().startsWith("step-security/harden-runner@") === true;
@@ -260,7 +260,35 @@ describe("harden-runner pins", () => {
     (job["timeout-minutes"] as number) >= 1 &&
     (job["timeout-minutes"] as number) <= WRITE_JOB_MAX_MINUTES
       ? null
-      : `timeout-minutes is ${job["timeout-minutes"] === undefined ? "absent" : JSON.stringify(job["timeout-minutes"])}, not a whole number of minutes from 1 to ${String(WRITE_JOB_MAX_MINUTES)}`;
+      : `timeout-minutes is ${job["timeout-minutes"] === undefined ? "absent" : typeof job["timeout-minutes"] === "number" ? String(job["timeout-minutes"]) : JSON.stringify(job["timeout-minutes"])}, not a whole number of minutes from 1 to ${String(WRITE_JOB_MAX_MINUTES)}`;
+
+  it("bounds a write job's timeout to whole minutes within the ceiling, and names what it found", () => {
+    expect(
+      [1, WRITE_JOB_MAX_MINUTES].map((minutes) => timeoutProblem({ "timeout-minutes": minutes })),
+    ).toEqual([null, null]);
+    const rejected: readonly unknown[] = [
+      undefined,
+      0,
+      0.5,
+      WRITE_JOB_MAX_MINUTES + 1,
+      360,
+      Infinity,
+      Number.NaN,
+      "10",
+    ];
+    expect(
+      rejected.map((minutes) => timeoutProblem({ "timeout-minutes": minutes })?.split(",")[0]),
+    ).toEqual([
+      "timeout-minutes is absent",
+      "timeout-minutes is 0",
+      "timeout-minutes is 0.5",
+      `timeout-minutes is ${String(WRITE_JOB_MAX_MINUTES + 1)}`,
+      "timeout-minutes is 360",
+      "timeout-minutes is Infinity",
+      "timeout-minutes is NaN",
+      'timeout-minutes is "10"',
+    ]);
+  });
 
   const lockProblem = (name: string, job: Job, canonicalCanary: string): string | null => {
     const steps = job.steps ?? [];
@@ -293,6 +321,8 @@ describe("harden-runner pins", () => {
         // which this test reads itself. Into any other, an undeclared grant is a risk: in a reusable
         // workflow it is the caller's, which may write; in a top-level one, the repository default.
         if (job.uses !== undefined) {
+          if (typeof job.uses !== "string" || job.uses === "")
+            return [{ job: at, problem: "uses: names no workflow" }];
           if (REVIEW_WORKFLOW_REF.test(job.uses)) return [];
           if (granted === undefined && !isReusable(workflow))
             return [{ job: at, problem: "permissions not declared — effective grant unknown" }];

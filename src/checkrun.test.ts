@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { checkLines, doneCheck, openCheck } from "./test-util.js";
+import { doneCheck, jsonLines, openCheck } from "./test-util.js";
 import {
   CHECK_JQ,
   checkRun,
@@ -102,6 +102,9 @@ describe("runIdFromUrl", () => {
     expect(runIdFromUrl("https://github.com/o/r/actions/runs/1234")).toBe("1234");
     expect(runIdFromUrl("https://github.com/o/r/actions/runs/123/job/456")).toBe("123");
     expect(runIdFromUrl("https://github.com/o/r/actions/runs/123/attempts/2")).toBe("123");
+    expect(runIdFromUrl("https://github.com/o/r/actions/runs/123?pr=7")).toBe("123");
+    expect(runIdFromUrl("https://github.com/o/r/actions/runs/123#summary")).toBe("123");
+    expect(runIdFromUrl("https://github.com/o/r/actions/runs/123/job/456?pr=7")).toBe("123");
   });
 
   it("returns null for a URL that carries no run id", () => {
@@ -109,6 +112,8 @@ describe("runIdFromUrl", () => {
     expect(runIdFromUrl("https://github.com/o/r")).toBeNull();
     expect(runIdFromUrl("https://github.com/o/r/actions/runs/")).toBeNull();
     expect(runIdFromUrl("https://github.com/o/r/actions/runs/123abc")).toBeNull();
+    expect(runIdFromUrl("https://github.com/o/r/pulls?q=actions/runs/123")).toBeNull();
+    expect(runIdFromUrl("actions/runs/123")).toBeNull();
   });
 });
 
@@ -132,7 +137,7 @@ describe("decideCancelledAction — issue #139", () => {
     ).toBe("noop");
   });
 
-  it("no-ops when this run created no check (e.g. the announce never ran), though a successor whose run id extends this one's has", () => {
+  it("no-ops when this run created no check (e.g. the announce never ran), even beside a successor's check whose run id has this run's as a prefix (1234 after 123)", () => {
     expect(
       decideCancelledAction([successorOpen], "https://github.com/o/r/actions/runs/123").kind,
     ).toBe("noop");
@@ -170,7 +175,7 @@ describe("checkRun", () => {
   });
 
   it("settles a superseded run's failure as cancelled — a newer run's check is on the head", async () => {
-    const { calls, ghApi } = capture(checkLines(openCheck(1, "123"), openCheck(2, "124")));
+    const { calls, ghApi } = capture(jsonLines([openCheck(1, "123"), openCheck(2, "124")]));
     await checkRun(
       { repo: "o/r", headSha: "abc", intent: "failure", runUrl: "https://g/actions/runs/123" },
       ghApi,
@@ -187,7 +192,7 @@ describe("checkRun", () => {
   });
 
   it("makes no write call when the decision is a no-op (already-neutral owned check)", async () => {
-    const { calls, ghApi } = capture(checkLines(doneCheck(1, "123", "neutral")));
+    const { calls, ghApi } = capture(jsonLines([doneCheck(1, "123", "neutral")]));
     await checkRun(
       { repo: "o/r", headSha: "abc", intent: "neutral", runUrl: "https://g/actions/runs/123" },
       ghApi,
@@ -235,6 +240,10 @@ describe("check ownership — the run id GitHub keeps", () => {
     expect(decideCheckAction([doneCheck(8, null, "failure")], "neutral", runUrl).kind).toBe(
       "create",
     );
+  });
+
+  it("stamps the external_id format earlier releases stamped, so the checks they opened stay owned", () => {
+    expect(externalIdFor("123")).toBe("code-review:run:123");
   });
 
   it("owns no check by another app's bare numeric external_id", () => {
@@ -289,12 +298,9 @@ describe("check ownership — the run id GitHub keeps", () => {
         .split("\n")
         .map((line) => JSON.parse(line) as ExistingCheck);
       expect(decideCancelledAction(checks, runUrl)).toMatchObject({ kind: "patch", id: 7 });
-      expect(
-        decideCancelledAction(
-          checks.filter((check) => check.id === 9),
-          runUrl,
-        ).kind,
-      ).toBe("noop");
+      const runUrlInDetailsOnly = checks.filter((check) => check.id === 9);
+      expect(runUrlInDetailsOnly).toHaveLength(1);
+      expect(decideCancelledAction(runUrlInDetailsOnly, runUrl).kind).toBe("noop");
     },
   );
 

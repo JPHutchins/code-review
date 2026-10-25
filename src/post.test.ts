@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { checkLines, legacyEmbeddedMarker, openCheck } from "./test-util.js";
+import { jsonLines, legacyEmbeddedMarker, openCheck } from "./test-util.js";
 import { RELEASED } from "./released.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -3974,7 +3974,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
       const patch = calls().find((c) => c.args[0] === "repos/owner/repo/issues/comments/999");
       return (JSON.parse(patch!.stdin!) as CommentBody).body;
     };
-    const newerRunCheck = `${checkLines(openCheck(2, "12399"))}\n`;
+    const newerRunCheck = jsonLines([openCheck(2, "12399")]);
 
     it("when the PR's head moved past this run's commit", async () => {
       const body = await patchedBody("f".repeat(40), "");
@@ -4022,7 +4022,7 @@ describe("reportIncomplete — failed/cancelled review sticky", () => {
     });
 
     it("but a run nothing superseded still reports that its review did not complete", async () => {
-      const ownCheck = `${checkLines(openCheck(1, "12345"))}\n`;
+      const ownCheck = jsonLines([openCheck(1, "12345")]);
       expect(await patchedBody("abc123def456", ownCheck)).toContain("Code review did not complete");
     });
   });

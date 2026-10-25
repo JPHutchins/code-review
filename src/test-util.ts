@@ -128,6 +128,6 @@ export const doneCheck = (id: number, runId: string | null, conclusion: string):
   conclusion,
 });
 
-/** The listing's output: one CHECK_JQ line per check. */
-export const checkLines = (...checks: readonly ExistingCheck[]): string =>
-  checks.map((check) => JSON.stringify(check)).join("\n");
+/** What `gh api --jq` prints for a stream of objects: one JSON line each, newline-terminated. */
+export const jsonLines = (rows: readonly unknown[]): string =>
+  rows.map((row) => `${JSON.stringify(row)}\n`).join("");

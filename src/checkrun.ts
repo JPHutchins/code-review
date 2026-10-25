@@ -53,12 +53,12 @@ export type CheckAction =
 
 const settled = new Set(["success", "neutral", "skipped"]);
 
-// The run id in a workflow run URL (`.../actions/runs/<run_id>`, or a job or attempt page under it).
-// null when the URL doesn't carry one.
-export const runIdFromUrl = (runUrl: string): string | null => {
-  const m = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(runUrl);
-  return m?.[1] ?? null;
-};
+// The run id in a workflow run URL (`.../actions/runs/<run_id>`, or a job or attempt page under it,
+// with any query or fragment). null when the URL doesn't carry one.
+export const runIdFromUrl = (runUrl: string): string | null =>
+  URL.canParse(runUrl)
+    ? (/\/actions\/runs\/(\d+)(?:\/|$)/.exec(new URL(runUrl).pathname)?.[1] ?? null)
+    : null;
 
 // The external_id this project stamps on a check it creates: the run's id, under a prefix of its own
 // so another app's numeric external_id on a same-named check is never read as a run.

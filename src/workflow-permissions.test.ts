@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { readRepoFile, allWorkflows, asPermissionSet, type PermissionSet } from "./test-util.js";
+import {
+  readRepoFile,
+  allWorkflows,
+  asPermissionSet,
+  isReusable,
+  type PermissionSet,
+} from "./test-util.js";
 
 const ACCESS_RANK = new Map<string, number>([
   ["none", 0],
@@ -80,11 +86,6 @@ const missingGrants = (granted: PermissionSet, required: PermissionSet): readonl
   [...required]
     .filter(([scope, access]) => rankOf(granted.get(scope)) < rankOf(access))
     .map(([scope, access]) => `${scope}: ${access} (granted ${granted.get(scope) ?? "none"})`);
-
-const isReusable = (workflow: Workflow): boolean =>
-  workflow.on !== null &&
-  typeof workflow.on === "object" &&
-  Object.keys(workflow.on).includes("workflow_call");
 
 type CallSite = { readonly path: string; readonly missing: readonly string[] };
 

@@ -112,3 +112,20 @@ export const asPermissionSet = (declared: unknown): PermissionSet => {
     ),
   );
 };
+
+/** A workflow's triggers, from any form `on:` takes: one name, a list of names, or a map. */
+const triggersOf = (on: unknown): readonly string[] =>
+  typeof on === "string"
+    ? [on]
+    : Array.isArray(on)
+      ? on.filter((trigger): trigger is string => typeof trigger === "string")
+      : on !== null && typeof on === "object"
+        ? Object.keys(on)
+        : [];
+
+/**
+ * Reusable only when workflow_call is its sole trigger: a workflow that can also run directly holds,
+ * on that run, the repository's default grant wherever it declares none.
+ */
+export const isReusable = (workflow: { readonly on?: unknown }): boolean =>
+  triggersOf(workflow.on).join() === "workflow_call";

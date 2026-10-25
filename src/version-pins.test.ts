@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import {
   allWorkflows,
   asPermissionSet,
+  isReusable,
   readRepoFile,
   repoRoot,
   WORKFLOW_EXTENSIONS,
@@ -166,15 +167,51 @@ describe("harden-runner pins", () => {
     with?: Record<string, unknown>;
     run?: string;
   };
-  type Job = { uses?: string; permissions?: unknown; steps?: readonly Step[] };
+  type Job = {
+    uses?: string;
+    permissions?: unknown;
+    "timeout-minutes"?: unknown;
+    steps?: readonly Step[];
+  };
   type Workflow = { on?: unknown; permissions?: unknown; jobs: Record<string, Job> };
 
-  // A step can be skipped when a condition might be false or its failure is tolerated; an explicit
-  // `if: true` / always() or `continue-on-error: false` cannot skip it.
+  // A value as GitHub evaluates it, in any spelling: `${{ always() }}`, `${{always()}}` and
+  // `always()` alike.
+  const expressionOf = (value: unknown): string =>
+    (typeof value === "string" ? value : JSON.stringify(value))
+      .trim()
+      .replace(/^\$\{\{([\s\S]*)\}\}$/, "$1")
+      .replace(/\s+/g, "");
+
+  // A step is skippable when its condition can be false while every step before it passed, or when
+  // its failure is tolerated. GitHub folds success() into a condition that names no status
+  // function, so `true` and success() skip exactly where no condition would, and always() never.
   const isSkippable = (step: Step): boolean =>
-    (step["continue-on-error"] !== undefined && step["continue-on-error"] !== false) ||
-    (step.if !== undefined &&
-      ![true, "true", "always()", "${{ always() }}"].includes(step.if as never));
+    (step["continue-on-error"] !== undefined &&
+      expressionOf(step["continue-on-error"]) !== "false") ||
+    (step.if !== undefined && !["true", "success()", "always()"].includes(expressionOf(step.if)));
+
+  it("reads a step's condition and tolerance in every spelling GitHub evaluates alike", () => {
+    const unconditional: readonly Step[] = [
+      {},
+      { if: true },
+      { if: "${{ true }}" },
+      { if: "always()" },
+      { if: "${{always()}}" },
+      { if: "${{ success() }}" },
+      { "continue-on-error": false },
+      { "continue-on-error": "${{ false }}" },
+    ];
+    const conditional: readonly Step[] = [
+      { if: "github.event_name == 'push'" },
+      { if: "${{ always() && inputs.lock }}" },
+      { if: false },
+      { "continue-on-error": true },
+      { "continue-on-error": "${{ inputs.tolerate }}" },
+    ];
+    expect(unconditional.filter(isSkippable)).toEqual([]);
+    expect(conditional.filter((step) => !isSkippable(step))).toEqual([]);
+  });
 
   const REVIEW_WORKFLOW_REF =
     /^(?:\.\/|JPHutchins\/code-review\/)\.github\/workflows\/review[\w-]*\.ya?ml(?:@\S+)?$/;
@@ -215,6 +252,12 @@ describe("harden-runner pins", () => {
       .filter((host) => host !== "")
       .sort();
 
+  // A write-token job that hangs holds its token until GitHub's 360-minute cap unless it bounds itself.
+  const timeoutProblem = (job: Job): string | null =>
+    typeof job["timeout-minutes"] === "number" && job["timeout-minutes"] > 0
+      ? null
+      : "no timeout-minutes bounds the token's lifetime";
+
   const lockProblem = (name: string, job: Job, canonicalCanary: string): string | null => {
     const steps = job.steps ?? [];
     const lock = steps.findIndex(isLock);
@@ -230,7 +273,7 @@ describe("harden-runner pins", () => {
     return canaryCommands(canary) === canonicalCanary ? null : "the canary differs from announce's";
   };
 
-  it("every review-workflow job that holds a write scope locks egress in block mode, with announce's canary after the lock", () => {
+  it("every review-workflow job that holds a write scope locks egress in block mode, with announce's canary after the lock, and bounds its run time", () => {
     const announce = workflowOf(".github/workflows/review-reusable.yaml").jobs["announce"];
     const canonicalCanary = canaryCommands((announce?.steps ?? []).find(isCanary) ?? {});
     expect(canonicalCanary).toContain("https://example.com");
@@ -243,29 +286,25 @@ describe("harden-runner pins", () => {
         const at = `${path} → ${name}`;
         // A called workflow's own jobs carry the steps; a write grant may only flow into one of this
         // project's review workflows, which this test reads itself.
-        // In a reusable workflow an undeclared grant is the caller's; in a top-level one it is the
-        // repository default, which may be write-all.
-        const reusable =
-          workflow.on !== null &&
-          typeof workflow.on === "object" &&
-          Object.keys(workflow.on).includes("workflow_call");
-        if (job.uses !== undefined && granted === undefined && !reusable)
+        // In a reusable workflow an undeclared grant is the caller's, which may write; in a top-level
+        // one it is the repository default, which may be write-all.
+        if (job.uses !== undefined && granted === undefined && !isReusable(workflow))
           return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
         if (job.uses !== undefined)
-          return granted !== undefined &&
-            [...asPermissionSet(granted).values()].includes("write") &&
+          return (granted === undefined ||
+            [...asPermissionSet(granted).values()].includes("write")) &&
             !REVIEW_WORKFLOW_REF.test(job.uses)
             ? [
                 {
                   job: at,
-                  problem: `passes a write scope to ${job.uses}, which this test does not read`,
+                  problem: `may pass a write scope to ${job.uses}, which this test does not read`,
                 },
               ]
             : [];
         if (granted === undefined)
           return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
         return [...asPermissionSet(granted).values()].includes("write")
-          ? [{ job: at, problem: lockProblem(name, job, canonicalCanary) }]
+          ? [{ job: at, problem: lockProblem(name, job, canonicalCanary) ?? timeoutProblem(job) }]
           : [];
       });
     });

@@ -1415,6 +1415,19 @@ describe("the maintainer roles — one definition for every gate that trusts the
   });
 });
 
+describe("the on-comment ack — every request the gate saw gets an answer", () => {
+  it("settles a gate that did not succeed, whatever ended it, beside one that said should_run", () => {
+    const ack = (
+      parseYaml(readRepoFile(".github/workflows/review-on-comment-reusable.yaml")) as {
+        jobs: Record<string, { if?: string }>;
+      }
+    ).jobs["ack"];
+    expect(ack?.if).toContain("always()");
+    expect(ack?.if).toContain("needs.gate.outputs.should_run == 'true'");
+    expect(ack?.if).toContain("needs.gate.result != 'success'");
+  });
+});
+
 describe("the review dialogue — the reviewer and the triage read the same protocol in both workflows", () => {
   const scriptOf = (workflowPath: string, stepName: string): string => {
     const found = runScripts(workflowPath).filter((s) => s.step.endsWith(`→ ${stepName}`));

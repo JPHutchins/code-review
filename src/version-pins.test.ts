@@ -260,7 +260,7 @@ describe("harden-runner pins", () => {
     (job["timeout-minutes"] as number) >= 1 &&
     (job["timeout-minutes"] as number) <= WRITE_JOB_MAX_MINUTES
       ? null
-      : `timeout-minutes is ${JSON.stringify(job["timeout-minutes"]) ?? "absent"}, not a whole number of minutes from 1 to ${String(WRITE_JOB_MAX_MINUTES)}`;
+      : `timeout-minutes is ${job["timeout-minutes"] === undefined ? "absent" : JSON.stringify(job["timeout-minutes"])}, not a whole number of minutes from 1 to ${String(WRITE_JOB_MAX_MINUTES)}`;
 
   const lockProblem = (name: string, job: Job, canonicalCanary: string): string | null => {
     const steps = job.steps ?? [];

@@ -119,14 +119,7 @@ import {
   applyOverruled,
   couldMatch,
 } from "./answered.js";
-import {
-  answersFrom,
-  closingResponses,
-  isTrustedResponse,
-  withRulingsOn,
-  type AnswerSources,
-  type Response,
-} from "./responses.js";
+import { answersFrom, closingResponses, isTrustedResponse, withRulingsOn } from "./responses.js";
 import { RulingCodec } from "./response-grammar.js";
 import { annotationSafe, asRecord, errMsg, tryParseJson } from "./util.js";
 
@@ -521,56 +514,6 @@ const parseIssueCommentRows = (
     (a, b) => a.created.localeCompare(b.created) || (a.id > b.id ? 1 : a.id < b.id ? -1 : 0),
   );
   return { rows, malformed };
-};
-
-// The author is the GitHub account the commit's author email resolves to, never the self-declared git
-// name; the time is the author date, which a rebase keeps.
-const COMMITS_JQ =
-  ".[] | {sha, message: .commit.message, author: (.author.login // null), date: (.commit.author.date // null)}";
-
-// The PR's commits, read for the answers in their messages. A failed fetch reads no commit answers,
-// and a row that does not decode is counted — named, never a failed post.
-const fetchCommitAnswersSource = async (
-  repo: string,
-  prNumber: number,
-  ghApi: GhApi,
-): Promise<AnswerSources["commits"]> => {
-  try {
-    const raw = await ghApi([
-      `repos/${repo}/pulls/${String(prNumber)}/commits?per_page=100`,
-      "--paginate",
-      "--jq",
-      COMMITS_JQ,
-    ]);
-    const lines = raw.split("\n").filter((line) => line.trim() !== "");
-    const commits = lines.flatMap((line) => {
-      const parsed = tryParseJson(line.trim());
-      const rec = parsed.ok ? asRecord(parsed.value) : null;
-      const sha = rec?.["sha"];
-      const message = rec?.["message"];
-      return typeof sha === "string" && typeof message === "string"
-        ? [
-            {
-              sha,
-              message,
-              author: nullableString(rec?.["author"]),
-              date: nullableString(rec?.["date"]),
-            },
-          ]
-        : [];
-    });
-    if (commits.length < lines.length) {
-      process.stderr.write(
-        `Warning: ${String(lines.length - commits.length)} of the PR's commits did not decode — their answers close nothing\n`,
-      );
-    }
-    return commits;
-  } catch (err) {
-    process.stderr.write(
-      `Warning: could not read the PR's commits (${errMsg(err)}) — no commit answer closes a finding this round\n`,
-    );
-    return [];
-  }
 };
 
 const fetchIssueCommentRows = async (
@@ -1488,12 +1431,6 @@ export const post = async (
     (loadedFindings.findings.length > 0 ||
       (loadedFindings.systemic_problems ?? []).length > 0 ||
       (dialogueRound && priorDialogue.entries.length > 0));
-  // A commit answer's trust is the push access a head branch IN the base repo implies, read from the
-  // PR itself: a fork's head, or a deleted fork's null one, trusts no commit, and its commits go unread.
-  const headInBaseRepo =
-    answerable &&
-    resolution.headRepo !== null &&
-    resolution.headRepo.toLowerCase() === input.repo.toLowerCase();
   const answers = answerable
     ? answersFrom({
         repo: input.repo,
@@ -1506,16 +1443,14 @@ export const post = async (
           created_at: row.created,
           author_association: row.association,
         })),
-        commits: headInBaseRepo ? await fetchCommitAnswersSource(input.repo, prNumber, ghApi) : [],
       })
-    : { comments: [], commits: [] };
-  const isTrusted = (response: Response): boolean => isTrustedResponse(response, headInBaseRepo);
+    : [];
   const allAnswers = withRulingsOn(
-    [...answers.comments, ...answers.commits],
+    answers,
     new Set(
       priorDialogue.entries.filter((entry) => entry.state !== "rebutted").map((entry) => entry.id),
     ),
-    isTrusted,
+    isTrustedResponse,
   );
   const unorderedRulings = allAnswers.filter(
     (answer) =>
@@ -1526,10 +1461,10 @@ export const post = async (
       `Warning: ${String(unorderedRulings)} maintainer ruling(s) carry no readable time, so they cannot be ordered against the other answers — not applied\n`,
     );
   }
-  const allClosures = closingResponses(allAnswers, isTrusted);
+  const allClosures = closingResponses(allAnswers, isTrustedResponse);
   const dialogue =
     answerable && dialogueRound
-      ? advanceDialogue(priorDialogue.entries, dialogueAnswers(allAnswers, isTrusted), [
+      ? advanceDialogue(priorDialogue.entries, dialogueAnswers(allAnswers, isTrustedResponse), [
           ...loadedFindings.findings.map((f) => ({
             id: resolveFindingId(f),
             title: f.title,
@@ -2508,10 +2443,11 @@ export const post = async (
   );
   if (answerable && dialogueRound) {
     appendRunSummary(process.env["GITHUB_STEP_SUMMARY"], () => {
-      const trustedAnswerIds = new Set(allAnswers.filter(isTrusted).map((answer) => answer.id));
+      const trustedAnswerIds = new Set(
+        allAnswers.filter(isTrustedResponse).map((answer) => answer.id),
+      );
       return dialogueMetricsTable({
-        commentAnswers: answers.comments.length,
-        commitAnswers: answers.commits.length,
+        answers: answers.length,
         closures: allClosures.length,
         droppedAnswered: answeredDropCount,
         droppedOverruled: overruledDropCount,

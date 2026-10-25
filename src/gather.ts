@@ -3,7 +3,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
-import { harvestResponses, RESPONSES_PER_CHANNEL } from "./responses.js";
+import { harvestResponses, RESPONSES_LIMIT } from "./responses.js";
 import { stageLinkedIssues, triageWallSeconds } from "./linked-issues.js";
 import { priorIdsFrom } from "./schema.js";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
@@ -696,7 +696,6 @@ export const gather = async (
         prNumber,
         botLogin: input.botLogin,
         priorIds: new Set([...priorIdsFrom(priorFindings), ...held.map((entry) => entry.id)]),
-        commits: commits.map((commit) => ({ ...commit, author: commit.login ?? null })),
         comments: issueComments ?? [],
       })
     : { file: { responses: [], unmatched: [] }, dropped: 0 };
@@ -721,7 +720,7 @@ export const gather = async (
   }
   if (harvest.dropped > 0) {
     process.stderr.write(
-      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_PER_CHANNEL)} per channel were not staged\n`,
+      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_LIMIT)} were not staged\n`,
     );
   }
   writeFileSync(

@@ -9,9 +9,7 @@ import {
 } from "./response-grammar.js";
 
 export const RESPONSE_REASON_CLIP_CHARS = 300;
-export const RESPONSES_PER_CHANNEL = 25;
-
-const ChannelCodec = t.keyof({ comment: null, commit: null });
+export const RESPONSES_LIMIT = 25;
 
 // The roles whose answers come from the maintainers, as the reviewer's note names them.
 export const MAINTAINER_ASSOCIATIONS: readonly string[] = ["OWNER", "MEMBER", "COLLABORATOR"];
@@ -22,7 +20,6 @@ const ResponseShape = t.type({
   id: t.string,
   disposition: ResponseDispositionCodec,
   reason: t.string,
-  channel: ChannelCodec,
   source_url: t.string,
   author: t.union([t.string, t.null]),
   author_association: t.union([t.string, t.null]),
@@ -32,7 +29,6 @@ export const ResponseCodec = strictExact("Response", ResponseShape, [ResponseSha
 
 const UnmatchedResponseShape = t.type({
   id: t.string,
-  channel: ChannelCodec,
   source_url: t.string,
 });
 export const UnmatchedResponseCodec = strictExact("UnmatchedResponse", UnmatchedResponseShape, [
@@ -289,17 +285,12 @@ export const parseResponses = (text: string): readonly ParsedLine[] => {
 export const isHuman = (login: string, type: string | null, botLogin: string): boolean =>
   login !== botLogin && type === "User";
 
-// Where answers come from: the PR's conversation comments and its commits.
+// Where answers come from: the PR's conversation comments, where the review's context is. A commit
+// message carries none of it, so an answer there is never read.
 export interface AnswerSources {
   readonly repo: string;
   readonly prNumber: number;
   readonly botLogin: string;
-  readonly commits: readonly {
-    readonly sha: string;
-    readonly message: string;
-    readonly author: string | null;
-    readonly date?: string | null;
-  }[];
   readonly comments: readonly {
     readonly id: number;
     readonly body: string | null;
@@ -315,7 +306,7 @@ export interface HarvestInput extends AnswerSources {
 
 export interface Harvest {
   readonly file: ResponsesFile;
-  // Response lines past a channel's cap: named by the caller, never cut silently.
+  // Response lines past the cap: named by the caller, never cut silently.
   readonly dropped: number;
 }
 
@@ -328,77 +319,46 @@ const newestFirst = (
   return left < right ? 1 : left > right ? -1 : b.id - a.id;
 };
 
-// Every answer on the PR — a Review-Response line or a verdict-table row — newest first per channel.
-// Only a human account answers: another bot's comment never poses as the implementer.
-export const answersFrom = (
-  input: AnswerSources,
-): { readonly comments: readonly Response[]; readonly commits: readonly Response[] } => {
-  const comments: readonly Response[] = [...input.comments]
+// Every answer on the PR — a Review-Response line or a verdict-table row — newest first. Only a human
+// account answers: another bot's comment never poses as the implementer.
+export const answersFrom = (input: AnswerSources): readonly Response[] =>
+  [...input.comments]
     .filter((comment) => isHuman(comment.user.login, comment.user.type ?? null, input.botLogin))
     .sort(newestFirst)
     .flatMap((comment) =>
       parseResponses(comment.body ?? "").map((line) => ({
         ...line,
-        channel: "comment" as const,
         source_url: `https://github.com/${input.repo}/pull/${String(input.prNumber)}#issuecomment-${String(comment.id)}`,
         author: comment.user.login,
         author_association: comment.author_association ?? null,
         created_at: comment.created_at ?? null,
       })),
     );
-  const commits: readonly Response[] = [...input.commits].reverse().flatMap((commit) =>
-    parseResponses(commit.message).map((line) => ({
-      ...line,
-      channel: "commit" as const,
-      source_url: `https://github.com/${input.repo}/commit/${commit.sha}`,
-      author: commit.author,
-      author_association: null,
-      created_at: commit.date ?? null,
-    })),
-  );
-  return { comments, commits };
-};
 
-// The answers staged for the reviewer, newest first per channel so a long PR never pushes its recent
-// answers out of the cap. An answer naming an id the prior round reported is a response; any other
-// id-shaped one is echoed as unmatched rather than silently dropped.
+// The answers staged for the reviewer, newest first so a long PR never pushes its recent answers out
+// of the cap. An answer naming an id the prior round reported is a response; any other id-shaped one
+// is echoed as unmatched rather than silently dropped.
 export const harvestResponses = (input: HarvestInput): Harvest => {
-  const { comments: fromComments, commits: fromCommits } = answersFrom(input);
-  const matched = (response: Response): boolean => input.priorIds.has(response.id);
-  const echoed = (response: Response): boolean =>
-    !matched(response) && ID_SHAPE_RE.test(response.id);
-  const groups = [fromComments, fromCommits].flatMap((channel) => [
-    channel.filter(matched),
-    channel.filter(echoed),
-  ]);
-  const [comments, commentEchoes, commits, commitEchoes] = groups.map((group) =>
-    group.slice(0, RESPONSES_PER_CHANNEL),
+  const answers = answersFrom(input);
+  const matched = answers.filter((response) => input.priorIds.has(response.id));
+  const echoed = answers.filter(
+    (response) => !input.priorIds.has(response.id) && ID_SHAPE_RE.test(response.id),
   );
   return {
     file: {
-      responses: [...(comments ?? []), ...(commits ?? [])],
-      unmatched: [...(commentEchoes ?? []), ...(commitEchoes ?? [])].map(
-        ({ id, channel, source_url }) => ({ id, channel, source_url }),
-      ),
+      responses: matched.slice(0, RESPONSES_LIMIT),
+      unmatched: echoed.slice(0, RESPONSES_LIMIT).map(({ id, source_url }) => ({ id, source_url })),
     },
-    dropped: groups.reduce(
-      (total, group) => total + Math.max(0, group.length - RESPONSES_PER_CHANNEL),
+    dropped: [matched, echoed].reduce(
+      (total, group) => total + Math.max(0, group.length - RESPONSES_LIMIT),
       0,
     ),
   };
 };
 
-// Whether an answer comes from the maintainers: a comment by its author's role on the base repo, a
-// commit by the push access a head branch IN the base repo implies — the caller reads that from the
-// PR itself, so a fork's commit, or one whose head repo could not be read, never does.
-export const isTrustedResponse = (response: Response, headInBaseRepo: boolean): boolean => {
-  switch (response.channel) {
-    case "comment":
-      return MAINTAINER_ASSOCIATIONS.includes(response.author_association ?? "");
-    case "commit":
-      return headInBaseRepo;
-  }
-};
+// Whether an answer comes from the maintainers: by its author's role on the base repo.
+export const isTrustedResponse = (response: Response): boolean =>
+  MAINTAINER_ASSOCIATIONS.includes(response.author_association ?? "");
 
 const answeredInstant = (response: Response): number =>
   response.created_at === null ? Number.NaN : Date.parse(response.created_at);

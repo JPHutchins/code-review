@@ -5,18 +5,6 @@ import { fetchPrCandidates, resolvePr } from "./pr.js";
 const sha = (n: number): string => String(n).padStart(40, "0");
 
 describe("resolvePr", () => {
-  it("carries the chosen candidate's head repository, null when the fork is gone", () => {
-    expect(
-      resolvePr(
-        [{ number: 7, state: "open", headRef: "b", headSha: "s", headRepo: "fork/repo" }],
-        "b",
-      ),
-    ).toEqual({ kind: "open", prNumber: 7, headRepo: "fork/repo" });
-    expect(
-      resolvePr([{ number: 7, state: "open", headRef: "b", headSha: "s", headRepo: null }], "b"),
-    ).toEqual({ kind: "open", prNumber: 7, headRepo: null });
-  });
-
   it("returns none for zero candidates", () => {
     expect(resolvePr([], "feature-branch")).toEqual({ kind: "none" });
   });
@@ -26,7 +14,6 @@ describe("resolvePr", () => {
     expect(resolvePr(candidates, undefined)).toEqual({
       kind: "open",
       prNumber: 42,
-      headRepo: null,
     });
   });
 
@@ -49,7 +36,6 @@ describe("resolvePr", () => {
     expect(resolvePr(candidates, "feature-branch")).toEqual({
       kind: "open",
       prNumber: 99,
-      headRepo: null,
     });
   });
 
@@ -61,7 +47,6 @@ describe("resolvePr", () => {
     expect(resolvePr(candidates, "feature-branch")).toEqual({
       kind: "open",
       prNumber: 42,
-      headRepo: null,
     });
   });
 
@@ -70,7 +55,6 @@ describe("resolvePr", () => {
     expect(resolvePr(candidates, "feature-branch")).toEqual({
       kind: "open",
       prNumber: 42,
-      headRepo: null,
     });
   });
 
@@ -82,7 +66,6 @@ describe("resolvePr", () => {
     expect(resolvePr(candidates, "feature-branch")).toEqual({
       kind: "open",
       prNumber: 99,
-      headRepo: null,
     });
   });
 });

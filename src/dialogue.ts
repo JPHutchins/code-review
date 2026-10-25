@@ -192,8 +192,7 @@ export const advanceDialogue = (
 };
 
 export interface DialogueMetrics {
-  readonly commentAnswers: number;
-  readonly commitAnswers: number;
+  readonly answers: number;
   readonly closures: number;
   readonly droppedAnswered: number;
   readonly droppedOverruled: number;
@@ -208,7 +207,7 @@ export const dialogueMetricsTable = (metrics: DialogueMetrics): string =>
     "",
     "| | |",
     "|---|--:|",
-    `| answers read (comments · commits) | ${String(metrics.commentAnswers)} · ${String(metrics.commitAnswers)} |`,
+    `| answers read | ${String(metrics.answers)} |`,
     `| trusted closing answers | ${String(metrics.closures)} |`,
     `| re-raises dropped (answered · overruled) | ${String(metrics.droppedAnswered)} · ${String(metrics.droppedOverruled)} |`,
     `| re-raises kept and annotated | ${String(metrics.annotated)} |`,

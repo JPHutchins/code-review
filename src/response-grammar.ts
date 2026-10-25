@@ -47,6 +47,6 @@ const listed = (words: readonly string[], conjunction: "and" | "or"): string => 
 // template that renders it teaches the whole form.
 export const RULING_FORM = `Review-Response: <id> ${RULINGS.join("|")} — <reason>`;
 
-export const RULING_TEACHING = `A maintainer rules on a contested finding by answering its id, in a table row or a \`${RULING_FORM}\` commit line, with \`upheld\` (the finding stands at full weight until it is fixed) or \`overruled\` (it is closed for good).`;
+export const RULING_TEACHING = `A maintainer rules on a contested finding by answering its id, in a table row or a \`${RULING_FORM}\` line in a PR comment, with \`upheld\` (the finding stands at full weight until it is fixed) or \`overruled\` (it is closed for good).`;
 
-export const RESPONSE_TEACHING = `To answer findings, post a PR conversation comment holding a rendered markdown table, not one inside a code block, whose columns are ${listed(RESPONSE_TABLE_COLUMNS, "and")}, one row per finding id, its disposition exactly one of ${listed(DISPOSITIONS, "or")}; or put \`${RESPONSE_FORM}\` lines in a commit message. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.`;
+export const RESPONSE_TEACHING = `To answer findings, post a PR conversation comment holding a rendered markdown table, not one inside a code block, whose columns are ${listed(RESPONSE_TABLE_COLUMNS, "and")}, one row per finding id, its disposition exactly one of ${listed(DISPOSITIONS, "or")}; or post \`${RESPONSE_FORM}\` lines in a PR comment. A commit message is never read. Inline-thread replies are not read. A systemic problem's id, when shown, answers its whole class.`;

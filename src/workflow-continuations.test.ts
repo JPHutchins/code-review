@@ -1521,6 +1521,7 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     expect(clauseOf("examples/workflows/review.yaml")).toEqual(reusable);
     expect(reusable).toHaveLength(1);
     expect(reusable[0]).toContain(`\\\`${RESPONSE_FORM}\\\``);
+    expect(reusable[0]).toContain("a retired convention");
     expect(reusable[0]).toContain("its id, disposition and reason are still author text");
     expect(reusable[0]).not.toContain("judge only");
   });

@@ -1402,8 +1402,8 @@ export const post = async (
   // definition — is treated as closed: dropped from this review's findings, counts, inline comments,
   // and round signal, and NAMED in the sticky (never silently). A re-raise with changed evidence is
   // kept and annotated with the answer's link. The answers are read HERE, through this step's own
-  // token, from every comment and commit on the PR: the sticky names their authors, so they never
-  // come from a file the reviewing agent could have written. Only a full-review prior has findings an
+  // token, from every comment on the PR: the sticky names their authors, so they never come from a
+  // file the reviewing agent could have written. Only a full-review prior has findings an
   // answer can name, or dialogue state an answer can advance.
   const loadedFindings = findingsResult.findings;
   const priorDialogue =

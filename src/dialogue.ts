@@ -2,8 +2,7 @@
 // maintainer answered again after the rebuttal (contested), and those a maintainer overruled. Every answer is re-read each round, so
 // an entry holds only what the answers cannot say again: which answer the reviewer rebutted, and
 // the claim's title and severity for the rounds the reviewer does not re-raise it. An answer is
-// known by its creation instant: an edited comment keeps it, and so does a rebased commit, whose
-// URL changes with its SHA.
+// known by its creation instant, which an edited comment keeps.
 
 import * as t from "io-ts";
 import { isRight } from "fp-ts/lib/Either.js";

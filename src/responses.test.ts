@@ -20,6 +20,7 @@ import {
   RESPONSE_TABLE_DELIMITER,
   RESPONSE_TABLE_HEADER,
   RESPONSE_TEACHING,
+  RULING_TEACHING,
   RULINGS,
 } from "./response-grammar.js";
 
@@ -623,6 +624,16 @@ describe("rulings — a maintainer's word on a contested id", () => {
   it("is never part of the answer instructions", () => {
     expect(RULINGS.some((ruling) => RESPONSE_TEACHING.includes(ruling))).toBe(false);
     expect(RULINGS.some((ruling) => RESPONSE_FORM.includes(ruling))).toBe(false);
+  });
+
+  it("is taught, like every answer, as landing in a PR comment, never a commit", () => {
+    expect(RESPONSE_TEACHING).toContain(`\`${RESPONSE_FORM}\` lines in a PR comment`);
+    expect(RULING_TEACHING).toContain("in a PR comment");
+    expect(
+      [RESPONSE_TEACHING, RULING_TEACHING].filter((teaching) =>
+        /commit line|lines in a commit/.test(teaching),
+      ),
+    ).toEqual([]);
   });
 
   it("counts only a maintainer's ruling on a contested id; any other reads as unstated", () => {

@@ -5356,7 +5356,6 @@ describe("post — answered findings (issue #151)", () => {
             "Review-Response: retry-plumbing dismissed — Each policy matches its endpoint's contract.",
           ),
         ],
-        commits: "",
       }),
       readArtifact: () => Promise.resolve(JSON.stringify(systemicOnly(systemic))),
     });
@@ -5446,7 +5445,7 @@ describe("post — answered findings (issue #151)", () => {
         join(tmpDir, "findings.json"),
         JSON.stringify({ ...current, schema_version: "0.11.0" }),
       );
-      const { api, calls } = mkMockGhApi(mkMocks(sticky, { comments, commits: "" }));
+      const { api, calls } = mkMockGhApi(mkMocks(sticky, { comments }));
       await post(mkInput({ route: "full review" }), api, () =>
         Promise.resolve(JSON.stringify({ ...mkFindings([argued]), schema_version: "0.11.0" })),
       );
@@ -5651,9 +5650,7 @@ describe("post — answered findings (issue #151)", () => {
           schema_version: "0.11.0",
         }),
       );
-      const { api, calls } = mkMockGhApi(
-        mkMocks(sticky, { comments: [answerRow(DISMISSAL)], commits: "" }),
-      );
+      const { api, calls } = mkMockGhApi(mkMocks(sticky, { comments: [answerRow(DISMISSAL)] }));
       await post(mkInput({ route: "full review", withoutDialogue: true }), api, () =>
         Promise.resolve(JSON.stringify({ ...mkFindings([argued]), schema_version: "0.11.0" })),
       );
@@ -5689,7 +5686,7 @@ describe("post — answered findings (issue #151)", () => {
           match: (a: readonly string[]) => a[0] === "repos/owner/repo/pulls/42" && a.includes("-H"),
           response: "",
         },
-        ...mkMocks(sticky, { comments: [], commits: "" }),
+        ...mkMocks(sticky, { comments: [] }),
       ]);
       const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
         throw new Error("exit");
@@ -5739,8 +5736,10 @@ describe("post — answered findings (issue #151)", () => {
     const { mocks, readArtifact } = withAnswers(answered, [], commit);
     const { api, calls } = mkMockGhApi(mocks);
     await post(mkInput({ route: "full review" }), api, readArtifact);
-    expect(patchedBody(calls())).not.toContain("treated as answered");
-    expect(calls().some((c) => c.args[0]?.includes("/commits?") ?? false)).toBe(false);
+    const body = patchedBody(calls());
+    expect(body).not.toContain("treated as answered");
+    expect(body).toContain(answered.title);
+    expect(calls().some((c) => c.args[0]?.includes("/pulls/42/commits") ?? false)).toBe(false);
   });
 
   it("resolves the prior once, for the answers and the nit stickiness alike", async () => {

@@ -218,7 +218,7 @@ const CommitCodec = t.intersection([
   t.partial({ date: t.union([t.string, t.null]), login: t.union([t.string, t.null]) }),
 ]);
 // `author` is the git name the triage must vet; `login` is the GitHub account the author's email
-// resolves to, which an answer is attributed by.
+// resolves to.
 const COMMIT_JQ =
   ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email, date: .commit.author.date, login: (.author.login // null)}";
 
@@ -720,7 +720,7 @@ export const gather = async (
   }
   if (harvest.dropped > 0) {
     process.stderr.write(
-      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_LIMIT)} were not staged\n`,
+      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_LIMIT)} to prior findings, or the newest ${String(RESPONSES_LIMIT)} naming no prior finding, were not staged\n`,
     );
   }
   writeFileSync(

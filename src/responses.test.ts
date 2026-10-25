@@ -5,7 +5,7 @@ import {
   parseResponseTables,
   parseResponses,
   RESPONSE_REASON_CLIP_CHARS,
-  RESPONSES_PER_CHANNEL,
+  RESPONSES_LIMIT,
   ResponsesFileCodec,
   MAINTAINER_ASSOCIATIONS,
   closingResponses,
@@ -20,6 +20,7 @@ import {
   RESPONSE_TABLE_DELIMITER,
   RESPONSE_TABLE_HEADER,
   RESPONSE_TEACHING,
+  RULING_TEACHING,
   RULINGS,
 } from "./response-grammar.js";
 
@@ -390,22 +391,13 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
     prNumber: 7,
     botLogin: "github-actions[bot]",
     priorIds: new Set(["known-id", "a-class", "dotted.id"]),
-    commits: [],
     comments: [],
     ...overrides,
   });
 
-  it("keeps responses to ids the prior round reported, with each source's link, author and time", () => {
+  it("keeps responses to ids the prior round reported, with each answer's link, author and time", () => {
     const harvest = harvestResponses(
       input({
-        commits: [
-          {
-            sha: "abc123",
-            message: "fix\n\nReview-Response: known-id fixed — guarded",
-            author: "Dev",
-            date: "2026-10-02T00:00:00Z",
-          },
-        ],
         comments: [
           {
             id: 99,
@@ -422,21 +414,10 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
         id: "a-class",
         disposition: "dismissed",
         reason: "out of scope",
-        channel: "comment",
         source_url: "https://github.com/o/r/pull/7#issuecomment-99",
         author: "maintainer",
         author_association: "OWNER",
         created_at: "2026-10-01T00:00:00Z",
-      },
-      {
-        id: "known-id",
-        disposition: "fixed",
-        reason: "guarded",
-        channel: "commit",
-        source_url: "https://github.com/o/r/commit/abc123",
-        author: "Dev",
-        author_association: null,
-        created_at: "2026-10-02T00:00:00Z",
       },
     ]);
     expect(harvest.file.unmatched).toEqual([]);
@@ -448,22 +429,22 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
   it("matches any prior id as written, and echoes only an id-shaped unknown one as unmatched", () => {
     const harvest = harvestResponses(
       input({
-        commits: [
+        comments: [
           {
-            sha: "s",
-            message: [
+            id: 5,
+            body: [
               "Review-Response: dotted.id fixed",
               "Review-Response: typo-id fixed",
               "Review-Response: <id> fixed — the sticky's template, copied",
             ].join("\n"),
-            author: null,
+            user: human,
           },
         ],
       }),
     );
     expect(harvest.file.responses.map((r) => r.id)).toEqual(["dotted.id"]);
     expect(harvest.file.unmatched).toEqual([
-      { id: "typo-id", channel: "commit", source_url: "https://github.com/o/r/commit/s" },
+      { id: "typo-id", source_url: "https://github.com/o/r/pull/7#issuecomment-5" },
     ]);
   });
 
@@ -488,8 +469,8 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
     expect(harvest.file.responses).toEqual([]);
   });
 
-  it("keeps the newest answers when a channel exceeds the cap, and counts what it dropped", () => {
-    const many = RESPONSES_PER_CHANNEL + 5;
+  it("keeps the newest answers past the cap, and counts what it dropped", () => {
+    const many = RESPONSES_LIMIT + 5;
     const harvest = harvestResponses(
       input({
         comments: Array.from({ length: many }, (_, i) => ({
@@ -498,27 +479,18 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
           user: human,
           created_at: `2026-10-01T00:00:${String(i).padStart(2, "0")}Z`,
         })),
-        commits: Array.from({ length: many }, (_, i) => ({
-          sha: `c${String(i)}`,
-          message: `Review-Response: known-id fixed — commit ${String(i)}`,
-          author: null,
-        })),
       }),
     );
-    const comments = harvest.file.responses.filter((r) => r.channel === "comment");
-    const commits = harvest.file.responses.filter((r) => r.channel === "commit");
-    expect(comments).toHaveLength(RESPONSES_PER_CHANNEL);
-    expect(commits).toHaveLength(RESPONSES_PER_CHANNEL);
-    expect(comments[0]?.reason).toBe(`comment ${String(many - 1)}`);
-    expect(commits[0]?.reason).toBe(`commit ${String(many - 1)}`);
-    expect(commits.at(-1)?.reason).toBe(`commit ${String(many - RESPONSES_PER_CHANNEL)}`);
-    expect(harvest.dropped).toBe(10);
+    expect(harvest.file.responses).toHaveLength(RESPONSES_LIMIT);
+    expect(harvest.file.responses[0]?.reason).toBe(`comment ${String(many - 1)}`);
+    expect(harvest.file.responses.at(-1)?.reason).toBe(`comment ${String(many - RESPONSES_LIMIT)}`);
+    expect(harvest.dropped).toBe(5);
   });
 
   it("breaks a same-second tie by the newer comment id, so the cap never keeps the older answer", () => {
     const harvest = harvestResponses(
       input({
-        comments: Array.from({ length: RESPONSES_PER_CHANNEL + 1 }, (_, i) => ({
+        comments: Array.from({ length: RESPONSES_LIMIT + 1 }, (_, i) => ({
           id: i,
           body: `Review-Response: known-id fixed — comment ${String(i)}`,
           user: human,
@@ -526,7 +498,7 @@ describe("harvestResponses — the implementer's answers to the prior round", ()
         })),
       }),
     );
-    expect(harvest.file.responses[0]?.reason).toBe(`comment ${String(RESPONSES_PER_CHANNEL)}`);
+    expect(harvest.file.responses[0]?.reason).toBe(`comment ${String(RESPONSES_LIMIT)}`);
     expect(harvest.file.responses.map((r) => r.reason)).not.toContain("comment 0");
   });
 });
@@ -536,7 +508,6 @@ describe("isTrustedResponse — only a maintainer's answer can close a finding",
     id: "x-y",
     disposition: "dismissed",
     reason: "tracked in #12",
-    channel: "comment",
     source_url: "https://github.com/o/r/pull/1#issuecomment-1",
     author: "alice",
     author_association: "OWNER",
@@ -544,23 +515,17 @@ describe("isTrustedResponse — only a maintainer's answer can close a finding",
     ...overrides,
   });
 
-  it("trusts a comment by its author's role, and only the maintainer roles", () => {
+  it("trusts an answer by its author's role, and only the maintainer roles", () => {
     expect(
       MAINTAINER_ASSOCIATIONS.map((role) =>
-        isTrustedResponse(answer({ author_association: role }), false),
+        isTrustedResponse(answer({ author_association: role })),
       ),
     ).toEqual([true, true, true]);
     expect(
       ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", null].map((role) =>
-        isTrustedResponse(answer({ author_association: role }), true),
+        isTrustedResponse(answer({ author_association: role })),
       ),
     ).toEqual([false, false, false, false, false]);
-  });
-
-  it("trusts a commit only when the PR's head branch is in the base repo", () => {
-    const commit = answer({ channel: "commit", author_association: null });
-    expect(isTrustedResponse(commit, true)).toBe(true);
-    expect(isTrustedResponse(commit, false)).toBe(false);
   });
 });
 
@@ -569,7 +534,6 @@ describe("closingResponses — the newest trusted answer per id decides", () => 
     id: "x-y",
     disposition: "dismissed",
     reason: "tracked in #12",
-    channel: "comment",
     source_url: "https://github.com/o/r/pull/1#issuecomment-1",
     author: "alice",
     author_association: "OWNER",
@@ -637,7 +601,6 @@ describe("rulings — a maintainer's word on a contested id", () => {
     id: "x-y",
     disposition: "overruled",
     reason: "The claim holds only for a configuration we do not ship.",
-    channel: "comment",
     source_url: "https://github.com/o/r/pull/1#issuecomment-1",
     author: "alice",
     author_association: "OWNER",
@@ -646,7 +609,7 @@ describe("rulings — a maintainer's word on a contested id", () => {
   });
   const maintainer = (response: Response): boolean => response.author_association === "OWNER";
 
-  it("parses a ruling from a commit line and from a table row", () => {
+  it("parses a ruling from a response line and from a table row", () => {
     expect(parseResponseLines("Review-Response: x-y overruled — Not shipped.")).toMatchObject([
       { id: "x-y", disposition: "overruled" },
     ]);
@@ -661,6 +624,17 @@ describe("rulings — a maintainer's word on a contested id", () => {
   it("is never part of the answer instructions", () => {
     expect(RULINGS.some((ruling) => RESPONSE_TEACHING.includes(ruling))).toBe(false);
     expect(RULINGS.some((ruling) => RESPONSE_FORM.includes(ruling))).toBe(false);
+  });
+
+  it("is taught, like every answer, as landing in a PR comment, never a commit", () => {
+    expect(RESPONSE_TEACHING).toContain(`\`${RESPONSE_FORM}\` lines in a PR comment`);
+    expect(RULING_TEACHING).toContain("in a PR comment");
+    const commitSentences = (teaching: string): readonly string[] =>
+      teaching.split(/(?<=\.)\s+/).filter((sentence) => /commit/i.test(sentence));
+    expect(commitSentences(RESPONSE_TEACHING)).toEqual([
+      "A commit message never answers a finding.",
+    ]);
+    expect(commitSentences(RULING_TEACHING)).toEqual([]);
   });
 
   it("counts only a maintainer's ruling on a contested id; any other reads as unstated", () => {

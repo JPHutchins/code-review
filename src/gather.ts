@@ -3,7 +3,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as t from "io-ts";
-import { harvestResponses, RESPONSES_PER_CHANNEL } from "./responses.js";
+import { harvestResponses, RESPONSES_LIMIT } from "./responses.js";
 import { stageLinkedIssues, triageWallSeconds } from "./linked-issues.js";
 import { priorIdsFrom } from "./schema.js";
 import { execFileWithTimeout, subprocessTimeoutMs } from "./exec.js";
@@ -218,7 +218,7 @@ const CommitCodec = t.intersection([
   t.partial({ date: t.union([t.string, t.null]), login: t.union([t.string, t.null]) }),
 ]);
 // `author` is the git name the triage must vet; `login` is the GitHub account the author's email
-// resolves to, which an answer is attributed by.
+// resolves to.
 const COMMIT_JQ =
   ".commits[] | {sha: .sha, message: .commit.message, author: .commit.author.name, email: .commit.author.email, date: .commit.author.date, login: (.author.login // null)}";
 
@@ -696,7 +696,6 @@ export const gather = async (
         prNumber,
         botLogin: input.botLogin,
         priorIds: new Set([...priorIdsFrom(priorFindings), ...held.map((entry) => entry.id)]),
-        commits: commits.map((commit) => ({ ...commit, author: commit.login ?? null })),
         comments: issueComments ?? [],
       })
     : { file: { responses: [], unmatched: [] }, dropped: 0 };
@@ -716,12 +715,12 @@ export const gather = async (
   );
   if (seedsFromPrior && priorFindings === null) {
     process.stderr.write(
-      "Note: the prior review's findings did not resolve — every id-shaped answer is staged as unmatched\n",
+      `Note: the prior review's findings did not resolve — id-shaped answers are staged as unmatched, the newest ${String(RESPONSES_LIMIT)}\n`,
     );
   }
   if (harvest.dropped > 0) {
     process.stderr.write(
-      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_PER_CHANNEL)} per channel were not staged\n`,
+      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_LIMIT)} matching a prior finding, or the newest ${String(RESPONSES_LIMIT)} id-shaped ones matching none, were not staged\n`,
     );
   }
   writeFileSync(

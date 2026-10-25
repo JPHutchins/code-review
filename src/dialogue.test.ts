@@ -12,7 +12,6 @@ const mkClosure = (overrides: Partial<Response> = {}): Response => ({
   id: "retry-plumbing",
   disposition: "refuted",
   reason: "Each policy matches its endpoint's contract.",
-  channel: "comment",
   source_url: "https://github.com/o/r/pull/1#issuecomment-1",
   author: "alice",
   author_association: "OWNER",
@@ -78,13 +77,12 @@ describe("advanceDialogue — one round of the review dialogue", () => {
     ]);
   });
 
-  it("keeps a rebutted id rebutted when a rebase moves the same commit answer to a new URL", () => {
-    const rebased = mkClosure({
-      channel: "commit",
-      source_url: "https://github.com/o/r/commit/def456",
+  it("keeps a rebutted id rebutted when the same answer is reposted at a new URL", () => {
+    const reposted = mkClosure({
+      source_url: "https://github.com/o/r/pull/1#issuecomment-456",
     });
-    expect(advanceDialogue([rebutted], answered([rebased]), [])).toEqual([
-      { ...rebutted, answer: rebased.source_url },
+    expect(advanceDialogue([rebutted], answered([reposted]), [])).toEqual([
+      { ...rebutted, answer: reposted.source_url },
     ]);
   });
 
@@ -291,8 +289,7 @@ describe("decodeDialogue — each entry decodes alone", () => {
 describe("dialogueMetricsTable — the round's dialogue in the run summary", () => {
   it("counts each state", () => {
     const table = dialogueMetricsTable({
-      commentAnswers: 3,
-      commitAnswers: 1,
+      answers: 3,
       closures: 2,
       droppedAnswered: 1,
       droppedOverruled: 0,

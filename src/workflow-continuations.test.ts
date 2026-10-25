@@ -1514,15 +1514,25 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     expect(script.indexOf('UNFINISHED_NOTE=" Name every check')).toBeGreaterThan(gate);
   });
 
-  it("the triage names the response form, as the CLI spells it, expected while judging every field, identically in both workflows", () => {
+  it("the triage expects the retired response form in commit messages, as the CLI spells it, while judging every field, identically in both workflows", () => {
     const clauseOf = (path: string): readonly string[] =>
       linesWith(scriptOf(path, "Phase 1 — security triage"), "Review-Response:");
     const reusable = clauseOf(".github/workflows/review-reusable.yaml");
     expect(clauseOf("examples/workflows/review.yaml")).toEqual(reusable);
     expect(reusable).toHaveLength(1);
     expect(reusable[0]).toContain(`\\\`${RESPONSE_FORM}\\\``);
+    expect(reusable[0]).toContain("a retired convention");
     expect(reusable[0]).toContain("its id, disposition and reason are still author text");
     expect(reusable[0]).not.toContain("judge only");
+  });
+
+  it("the reviewer is told a commit's response line answers nothing, identically in both workflows", () => {
+    const clauseOf = (path: string): readonly string[] =>
+      linesWith(readRepoFile(path), "is a retired convention that answers no finding");
+    const reusable = clauseOf(".github/workflows/review-reusable.yaml");
+    expect(clauseOf("examples/workflows/review.yaml")).toEqual(reusable);
+    expect(reusable).toHaveLength(1);
+    expect(reusable[0]).toContain("--append-system-prompt");
   });
 });
 

@@ -408,10 +408,11 @@ jobs:
   # Swap the 👀 ack for 🚀 (review completed → read the sticky) or 😕 (the run failed). Best-effort.
   ack:
     needs: [gate, ci, review]
-    # A gate that FAILED (a refused API, a head it could not resolve, a broken lock) never says
-    # should_run; the request still failed, so ack settles it too: the review is skipped, which reads
-    # as 😕. Every comment that reaches the gate passed the caller's trigger filter.
-    if: ${{ always() && (needs.gate.outputs.should_run == 'true' || needs.gate.result == 'failure') }}
+    # A gate that did not succeed (a refused API, a head it could not resolve, a broken lock, or its
+    # timeout, whatever result that ends in) never says should_run; the request still failed, so ack
+    # settles it too: the review is skipped, which reads as 😕. Every comment that reaches the gate
+    # passed the caller's trigger filter.
+    if: ${{ always() && (needs.gate.outputs.should_run == 'true' || needs.gate.result != 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10       # one reaction swap; bound a hung install/API
     permissions:

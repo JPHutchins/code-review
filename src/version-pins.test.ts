@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import {
   allWorkflows,
   asPermissionSet,
+  isReusable,
   readRepoFile,
   repoRoot,
   WORKFLOW_EXTENSIONS,
@@ -166,18 +167,54 @@ describe("harden-runner pins", () => {
     with?: Record<string, unknown>;
     run?: string;
   };
-  type Job = { uses?: string; permissions?: unknown; steps?: readonly Step[] };
+  type Job = {
+    uses?: unknown;
+    permissions?: unknown;
+    "timeout-minutes"?: unknown;
+    steps?: readonly Step[];
+  };
   type Workflow = { on?: unknown; permissions?: unknown; jobs: Record<string, Job> };
 
-  // A step can be skipped when a condition might be false or its failure is tolerated; an explicit
-  // `if: true` / always() or `continue-on-error: false` cannot skip it.
+  // A value as GitHub evaluates it, in any spelling: `${{ always() }}`, `${{always()}}` and
+  // `always()` alike.
+  const expressionOf = (value: unknown): string =>
+    (typeof value === "string" ? value : JSON.stringify(value))
+      .trim()
+      .replace(/^\$\{\{([\s\S]*)\}\}$/, "$1")
+      .replace(/\s+/g, "");
+
+  // A step is skippable when its condition can be false while every step before it passed, or when
+  // its failure is tolerated. GitHub folds success() into a condition that names no status
+  // function, so `true` and success() skip exactly where no condition would, and always() never.
   const isSkippable = (step: Step): boolean =>
-    (step["continue-on-error"] !== undefined && step["continue-on-error"] !== false) ||
-    (step.if !== undefined &&
-      ![true, "true", "always()", "${{ always() }}"].includes(step.if as never));
+    (step["continue-on-error"] !== undefined &&
+      expressionOf(step["continue-on-error"]) !== "false") ||
+    (step.if !== undefined && !["true", "success()", "always()"].includes(expressionOf(step.if)));
+
+  it("reads a step's condition and tolerance in every spelling GitHub evaluates alike", () => {
+    const unconditional: readonly Step[] = [
+      {},
+      { if: true },
+      { if: "${{ true }}" },
+      { if: "always()" },
+      { if: "${{always()}}" },
+      { if: "${{ success() }}" },
+      { "continue-on-error": false },
+      { "continue-on-error": "${{ false }}" },
+    ];
+    const conditional: readonly Step[] = [
+      { if: "github.event_name == 'push'" },
+      { if: "${{ always() && inputs.lock }}" },
+      { if: false },
+      { "continue-on-error": true },
+      { "continue-on-error": "${{ inputs.tolerate }}" },
+    ];
+    expect(unconditional.filter(isSkippable)).toEqual([]);
+    expect(conditional.filter((step) => !isSkippable(step))).toEqual([]);
+  });
 
   const REVIEW_WORKFLOW_REF =
-    /^(?:\.\/|JPHutchins\/code-review\/)\.github\/workflows\/review[\w-]*\.ya?ml(?:@\S+)?$/;
+    /^(?:\.\/|JPHutchins\/code-review\/)\.github\/workflows\/review[\w-]*\.ya?ml(?:@\S+)?$/i;
   const workflowOf = (path: string): Workflow => parseYaml(readRepoFile(path)) as Workflow;
   const isLock = (step: Step): boolean =>
     step.uses?.toLowerCase().startsWith("step-security/harden-runner@") === true;
@@ -215,6 +252,44 @@ describe("harden-runner pins", () => {
       .filter((host) => host !== "")
       .sort();
 
+  // A write-token job that hangs holds its token until GitHub's 360-minute cap unless it bounds itself;
+  // every one is quick (an install, a lock, a few API calls), so raising the bound is a reviewed change.
+  const WRITE_JOB_MAX_MINUTES = 10;
+  const timeoutProblem = (job: Job): string | null =>
+    Number.isInteger(job["timeout-minutes"]) &&
+    (job["timeout-minutes"] as number) >= 1 &&
+    (job["timeout-minutes"] as number) <= WRITE_JOB_MAX_MINUTES
+      ? null
+      : `timeout-minutes is ${job["timeout-minutes"] === undefined ? "absent" : typeof job["timeout-minutes"] === "number" ? String(job["timeout-minutes"]) : JSON.stringify(job["timeout-minutes"])}, not a whole number of minutes from 1 to ${String(WRITE_JOB_MAX_MINUTES)}`;
+
+  it("bounds a write job's timeout to whole minutes within the ceiling, and names what it found", () => {
+    expect(
+      [1, WRITE_JOB_MAX_MINUTES].map((minutes) => timeoutProblem({ "timeout-minutes": minutes })),
+    ).toEqual([null, null]);
+    const rejected: readonly unknown[] = [
+      undefined,
+      0,
+      0.5,
+      WRITE_JOB_MAX_MINUTES + 1,
+      360,
+      Infinity,
+      Number.NaN,
+      "10",
+    ];
+    expect(
+      rejected.map((minutes) => timeoutProblem({ "timeout-minutes": minutes })?.split(",")[0]),
+    ).toEqual([
+      "timeout-minutes is absent",
+      "timeout-minutes is 0",
+      "timeout-minutes is 0.5",
+      `timeout-minutes is ${String(WRITE_JOB_MAX_MINUTES + 1)}`,
+      "timeout-minutes is 360",
+      "timeout-minutes is Infinity",
+      "timeout-minutes is NaN",
+      'timeout-minutes is "10"',
+    ]);
+  });
+
   const lockProblem = (name: string, job: Job, canonicalCanary: string): string | null => {
     const steps = job.steps ?? [];
     const lock = steps.findIndex(isLock);
@@ -230,7 +305,7 @@ describe("harden-runner pins", () => {
     return canaryCommands(canary) === canonicalCanary ? null : "the canary differs from announce's";
   };
 
-  it("every review-workflow job that holds a write scope locks egress in block mode, with announce's canary after the lock", () => {
+  it("every review-workflow job that holds a write scope locks egress in block mode, with announce's canary after the lock, and bounds its run time", () => {
     const announce = workflowOf(".github/workflows/review-reusable.yaml").jobs["announce"];
     const canonicalCanary = canaryCommands((announce?.steps ?? []).find(isCanary) ?? {});
     expect(canonicalCanary).toContain("https://example.com");
@@ -241,31 +316,37 @@ describe("harden-runner pins", () => {
       return Object.entries(workflow.jobs).flatMap(([name, job]) => {
         const granted = job.permissions !== undefined ? job.permissions : workflow.permissions;
         const at = `${path} → ${name}`;
-        // A called workflow's own jobs carry the steps; a write grant may only flow into one of this
-        // project's review workflows, which this test reads itself.
-        // In a reusable workflow an undeclared grant is the caller's; in a top-level one it is the
-        // repository default, which may be write-all.
-        const reusable =
-          workflow.on !== null &&
-          typeof workflow.on === "object" &&
-          Object.keys(workflow.on).includes("workflow_call");
-        if (job.uses !== undefined && granted === undefined && !reusable)
-          return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
-        if (job.uses !== undefined)
-          return granted !== undefined &&
-            [...asPermissionSet(granted).values()].includes("write") &&
-            !REVIEW_WORKFLOW_REF.test(job.uses)
+        // A called workflow's own jobs carry the steps, the lock and the timeout (a calling job cannot
+        // set timeout-minutes), so any grant may flow into one of this project's review workflows,
+        // which this test reads itself. Into any other, an undeclared grant is a risk: in a reusable
+        // workflow it is the caller's, which may write; in a top-level one, the repository default.
+        if (job.uses !== undefined) {
+          if (typeof job.uses !== "string" || job.uses === "")
+            return [{ job: at, problem: "uses: names no workflow" }];
+          if (REVIEW_WORKFLOW_REF.test(job.uses)) return [];
+          if (granted === undefined && !isReusable(workflow))
+            return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
+          return granted === undefined || [...asPermissionSet(granted).values()].includes("write")
             ? [
                 {
                   job: at,
-                  problem: `passes a write scope to ${job.uses}, which this test does not read`,
+                  problem: `may pass a write scope to ${job.uses}, which this test does not read`,
                 },
               ]
             : [];
+        }
         if (granted === undefined)
           return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
         return [...asPermissionSet(granted).values()].includes("write")
-          ? [{ job: at, problem: lockProblem(name, job, canonicalCanary) }]
+          ? [
+              {
+                job: at,
+                problem:
+                  [lockProblem(name, job, canonicalCanary), timeoutProblem(job)]
+                    .filter((problem): problem is string => problem !== null)
+                    .join("; ") || null,
+              },
+            ]
           : [];
       });
     });

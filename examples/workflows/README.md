@@ -206,10 +206,10 @@ than run on a guessed result. `code-review await-ci` does this in type-safe code
 
 **Acknowledgement** — the front-end's trusted gate reacts 👀 to your comment on receipt (before the
 CI wait, so you see receipt immediately); on completion the `ack` job swaps it for 🚀 (review posted
-— read the sticky summary) or 😕 (CI didn't conclude in time, or the run failed — including a gate
-that failed before its 👀, so a command that never ran still gets an answer). The review job
-itself is read-only and runs untrusted PR code, so it can't post progress; the sticky comment is the
-result, exactly as with the CI trigger.
+— read the sticky summary) or 😕 (CI didn't conclude in time, or the run failed — and, from
+v0.1.0-alpha.74, a gate that failed or timed out, so a command that never ran still gets an
+answer). The review job itself is read-only and runs untrusted PR code, so it can't post progress;
+the sticky comment is the result, exactly as with the CI trigger.
 
 **Security model** — comment-triggering opens surfaces the CI trigger doesn't, so the recipe closes
 each in the *trusted* default-branch context (`issue_comment` runs there, never in PR-fork context):

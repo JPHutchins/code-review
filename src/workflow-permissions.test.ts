@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { readRepoFile, allWorkflows, asPermissionSet, type PermissionSet } from "./test-util.js";
+import {
+  readRepoFile,
+  allWorkflows,
+  asPermissionSet,
+  isReusable,
+  type PermissionSet,
+} from "./test-util.js";
 
 const ACCESS_RANK = new Map<string, number>([
   ["none", 0],
@@ -81,11 +87,6 @@ const missingGrants = (granted: PermissionSet, required: PermissionSet): readonl
     .filter(([scope, access]) => rankOf(granted.get(scope)) < rankOf(access))
     .map(([scope, access]) => `${scope}: ${access} (granted ${granted.get(scope) ?? "none"})`);
 
-const isReusable = (workflow: Workflow): boolean =>
-  workflow.on !== null &&
-  typeof workflow.on === "object" &&
-  Object.keys(workflow.on).includes("workflow_call");
-
 type CallSite = { readonly path: string; readonly missing: readonly string[] };
 
 const callSites = (): readonly CallSite[] =>
@@ -99,6 +100,19 @@ const callSites = (): readonly CallSite[] =>
         : [{ path, missing: missingGrants(grantedTo(workflow, job), requiredBy(callee)) }];
     });
   });
+
+describe("isReusable — a workflow only another can start", () => {
+  it("reads every form `on:` takes, and a workflow that can also run directly is not reusable", () => {
+    expect(isReusable({ on: "workflow_call" })).toBe(true);
+    expect(isReusable({ on: ["workflow_call"] })).toBe(true);
+    expect(isReusable({ on: { workflow_call: { inputs: {} } } })).toBe(true);
+    expect(isReusable({ on: { workflow_call: null } })).toBe(true);
+    expect(isReusable({ on: ["workflow_call", "push"] })).toBe(false);
+    expect(isReusable({ on: { workflow_call: {}, workflow_dispatch: {} } })).toBe(false);
+    expect(isReusable({ on: "push" })).toBe(false);
+    expect(isReusable({})).toBe(false);
+  });
+});
 
 // A caller cannot grant a called reusable a permission it does not itself hold: GitHub refuses to
 // start the run, before any job-level `if:` is evaluated, with no log and no check anywhere. That is

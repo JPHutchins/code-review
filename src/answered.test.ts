@@ -33,7 +33,6 @@ const mkResponse = (overrides: Partial<Response>): Response => ({
   id: "recurring-a",
   disposition: "refuted",
   reason: "Measured: the claim does not hold.",
-  channel: "comment",
   source_url: "https://github.com/owner/repo/pull/1#issuecomment-2",
   author: "alice",
   author_association: "OWNER",

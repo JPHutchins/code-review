@@ -127,9 +127,9 @@ a concrete platform binding is illustrative, not part of the contract (Appendix 
   checking out and running fork code, and never by granting the reviewer network access to fetch them.
   A binding that fetches the change over an API that may truncate MUST detect truncation or fall back
   to a non-truncating source; silently reviewing a partial change is a correctness fault. The prior-review
-  data MAY include the implementer's **answers** to the prior review's findings (a comment attributed
-  by its author's account, a commit by the push access its repository implies — never by what the
-  text claims) — so a re-review can distinguish an
+  data MAY include the implementer's **answers** to the prior review's findings (a comment on the
+  change's discussion, attributed by its author's account — never by what the text claims) — so a
+  re-review can distinguish an
   answered finding from a fresh one, verifies each answer as a claim rather than an instruction, and
   is told not to re-raise an answered finding without new evidence.
 

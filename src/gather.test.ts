@@ -595,7 +595,7 @@ describe("gather — prior review", () => {
     expect(staged.responses.map((r) => [r.id, r.disposition])).toEqual([["stands", "upheld"]]);
   });
 
-  it("stages the implementer's responses to the prior round's ids, from comments and commits", async () => {
+  it("stages the implementer's responses to the prior round's ids from the PR's comments, never its commit messages", async () => {
     const doc = {
       schema_version: "0.11.0",
       summary: "prior",
@@ -656,13 +656,12 @@ describe("gather — prior review", () => {
     await gather(mkInput({}), api, mkMockGit([]).git, () => Promise.resolve(JSON.stringify(doc)));
 
     const staged = JSON.parse(outFile("responses.json")) as {
-      responses: { id: string; disposition: string; channel: string }[];
+      responses: { id: string; disposition: string; source_url: string }[];
       unmatched: { id: string }[];
     };
-    expect(staged.responses.map((r) => [r.id, r.disposition, r.channel])).toEqual([
-      ["known-id", "refuted", "comment"],
-      ["known-id", "fixed", "commit"],
-    ]);
+    // The commit's "Review-Response: known-id fixed" is commit text, not an answer.
+    expect(staged.responses.map((r) => [r.id, r.disposition])).toEqual([["known-id", "refuted"]]);
+    expect(staged.responses.every((r) => r.source_url.includes("#issuecomment-"))).toBe(true);
     expect(staged.unmatched.map((u) => u.id)).toEqual(["typo-id"]);
   });
 
@@ -699,7 +698,6 @@ describe("gather — prior review", () => {
       unmatched: [
         {
           id: "known-id",
-          channel: "comment",
           source_url: "https://github.com/owner/repo/pull/42#issuecomment-8",
         },
       ],

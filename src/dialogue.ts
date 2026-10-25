@@ -2,8 +2,7 @@
 // maintainer answered again after the rebuttal (contested), and those a maintainer overruled. Every answer is re-read each round, so
 // an entry holds only what the answers cannot say again: which answer the reviewer rebutted, and
 // the claim's title and severity for the rounds the reviewer does not re-raise it. An answer is
-// known by its creation instant: an edited comment keeps it, and so does a rebased commit, whose
-// URL changes with its SHA.
+// known by its creation instant, which an edited comment keeps.
 
 import * as t from "io-ts";
 import { isRight } from "fp-ts/lib/Either.js";
@@ -192,8 +191,7 @@ export const advanceDialogue = (
 };
 
 export interface DialogueMetrics {
-  readonly commentAnswers: number;
-  readonly commitAnswers: number;
+  readonly answers: number;
   readonly closures: number;
   readonly droppedAnswered: number;
   readonly droppedOverruled: number;
@@ -208,7 +206,7 @@ export const dialogueMetricsTable = (metrics: DialogueMetrics): string =>
     "",
     "| | |",
     "|---|--:|",
-    `| answers read (comments · commits) | ${String(metrics.commentAnswers)} · ${String(metrics.commitAnswers)} |`,
+    `| answers read | ${String(metrics.answers)} |`,
     `| trusted closing answers | ${String(metrics.closures)} |`,
     `| re-raises dropped (answered · overruled) | ${String(metrics.droppedAnswered)} · ${String(metrics.droppedOverruled)} |`,
     `| re-raises kept and annotated | ${String(metrics.annotated)} |`,

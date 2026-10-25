@@ -107,6 +107,19 @@ const callSites = (): readonly CallSite[] =>
 // write` to three reusable jobs and only two of the three callers were updated. The requirement is
 // derived from the reusables themselves, off a real YAML parse rather than a line scan, so a fourth
 // caller cannot repeat it and an unmodelled YAML form cannot quietly under-count the requirement.
+describe("isReusable — a workflow only another can start", () => {
+  it("reads every form `on:` takes, and a workflow that can also run directly is not reusable", () => {
+    expect(isReusable({ on: "workflow_call" })).toBe(true);
+    expect(isReusable({ on: ["workflow_call"] })).toBe(true);
+    expect(isReusable({ on: { workflow_call: { inputs: {} } } })).toBe(true);
+    expect(isReusable({ on: { workflow_call: null } })).toBe(true);
+    expect(isReusable({ on: ["workflow_call", "push"] })).toBe(false);
+    expect(isReusable({ on: { workflow_call: {}, workflow_dispatch: {} } })).toBe(false);
+    expect(isReusable({ on: "push" })).toBe(false);
+    expect(isReusable({})).toBe(false);
+  });
+});
+
 describe("reusable-workflow callers grant what the reusable requests (#208)", () => {
   // Computed INSIDE the tests (not at describe-body time: a uses: cycle in any call site would
   // throw during collection and abort the whole file — a cycle fails the one located test

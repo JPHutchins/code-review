@@ -252,11 +252,15 @@ describe("harden-runner pins", () => {
       .filter((host) => host !== "")
       .sort();
 
-  // A write-token job that hangs holds its token until GitHub's 360-minute cap unless it bounds itself.
+  // A write-token job that hangs holds its token until GitHub's 360-minute cap unless it bounds itself;
+  // every one is quick (an install, a lock, a few API calls), so raising the bound is a reviewed change.
+  const WRITE_JOB_MAX_MINUTES = 10;
   const timeoutProblem = (job: Job): string | null =>
-    typeof job["timeout-minutes"] === "number" && job["timeout-minutes"] > 0
+    Number.isInteger(job["timeout-minutes"]) &&
+    (job["timeout-minutes"] as number) >= 1 &&
+    (job["timeout-minutes"] as number) <= WRITE_JOB_MAX_MINUTES
       ? null
-      : "no timeout-minutes bounds the token's lifetime";
+      : `timeout-minutes is ${JSON.stringify(job["timeout-minutes"]) ?? "absent"}, not a whole number of minutes from 1 to ${String(WRITE_JOB_MAX_MINUTES)}`;
 
   const lockProblem = (name: string, job: Job, canonicalCanary: string): string | null => {
     const steps = job.steps ?? [];
@@ -284,16 +288,15 @@ describe("harden-runner pins", () => {
       return Object.entries(workflow.jobs).flatMap(([name, job]) => {
         const granted = job.permissions !== undefined ? job.permissions : workflow.permissions;
         const at = `${path} → ${name}`;
-        // A called workflow's own jobs carry the steps; a write grant may only flow into one of this
-        // project's review workflows, which this test reads itself.
-        // In a reusable workflow an undeclared grant is the caller's, which may write; in a top-level
-        // one it is the repository default, which may be write-all.
-        if (job.uses !== undefined && granted === undefined && !isReusable(workflow))
-          return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
-        if (job.uses !== undefined)
-          return (granted === undefined ||
-            [...asPermissionSet(granted).values()].includes("write")) &&
-            !REVIEW_WORKFLOW_REF.test(job.uses)
+        // A called workflow's own jobs carry the steps, the lock and the timeout (a calling job cannot
+        // set timeout-minutes), so any grant may flow into one of this project's review workflows,
+        // which this test reads itself. Into any other, an undeclared grant is a risk: in a reusable
+        // workflow it is the caller's, which may write; in a top-level one, the repository default.
+        if (job.uses !== undefined) {
+          if (REVIEW_WORKFLOW_REF.test(job.uses)) return [];
+          if (granted === undefined && !isReusable(workflow))
+            return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
+          return granted === undefined || [...asPermissionSet(granted).values()].includes("write")
             ? [
                 {
                   job: at,
@@ -301,10 +304,19 @@ describe("harden-runner pins", () => {
                 },
               ]
             : [];
+        }
         if (granted === undefined)
           return [{ job: at, problem: "permissions not declared — effective grant unknown" }];
         return [...asPermissionSet(granted).values()].includes("write")
-          ? [{ job: at, problem: lockProblem(name, job, canonicalCanary) ?? timeoutProblem(job) }]
+          ? [
+              {
+                job: at,
+                problem:
+                  [lockProblem(name, job, canonicalCanary), timeoutProblem(job)]
+                    .filter((problem): problem is string => problem !== null)
+                    .join("; ") || null,
+              },
+            ]
           : [];
       });
     });

@@ -2035,7 +2035,7 @@ const checkRunCmd = defineCommand({
     "run-url": {
       type: "string",
       description:
-        "Workflow run URL the check-run's output links to; its run id is stamped into the check's external_id, the key every settlement matches its own check by",
+        "Workflow run URL the check-run's output links to (the run's page, or a job or attempt page under it); its run id is stamped into the check's external_id, the key every settlement matches its own check by. A URL without a run id can own no check: every settlement but `cancelled` creates a fresh check nothing can settle later, and `cancelled` settles nothing",
       required: true,
     },
   },

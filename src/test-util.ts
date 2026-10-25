@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { vi } from "vitest";
 import { runCommand } from "citty";
 import { main } from "./index.js";
+import { externalIdFor, type ExistingCheck } from "./checkrun.js";
 
 export const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -112,3 +113,21 @@ export const asPermissionSet = (declared: unknown): PermissionSet => {
     ),
   );
 };
+
+/** A check as CHECK_JQ projects GitHub's record: the run lives in the external_id this project stamps. */
+export const openCheck = (id: number, runId: string | null): ExistingCheck => ({
+  id,
+  status: "in_progress",
+  conclusion: null,
+  externalId: runId === null ? null : externalIdFor(runId),
+});
+
+export const doneCheck = (id: number, runId: string | null, conclusion: string): ExistingCheck => ({
+  ...openCheck(id, runId),
+  status: "completed",
+  conclusion,
+});
+
+/** What `gh api --jq` prints for a stream of objects: one JSON line each, newline-terminated. */
+export const jsonLines = (rows: readonly unknown[]): string =>
+  rows.map((row) => `${JSON.stringify(row)}\n`).join("");

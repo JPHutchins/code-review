@@ -12,13 +12,11 @@ import {
   type ExistingCheck,
 } from "./checkrun.js";
 
-// As GitHub returns them: details_url is the check's own page (GitHub replaces what a GitHub Actions
-// token sends); the run lives in the external_id this project stamps.
+// As CHECK_JQ projects GitHub's records: the run lives in the external_id this project stamps.
 const open = (id: number, runId: string | null): ExistingCheck => ({
   id,
   status: "in_progress",
   conclusion: null,
-  detailsUrl: `https://github.com/o/r/runs/${String(id)}`,
   externalId: runId === null ? null : externalIdFor(runId),
 });
 const done = (id: number, runId: string | null, conclusion: string): ExistingCheck => ({
@@ -158,8 +156,7 @@ describe("decideCancelledAction — issue #139", () => {
     ).toBe("noop");
   });
 
-  it("does not match a successor whose run id has this run's id as a numeric prefix", () => {
-    // Run 123 must NOT settle run 1234's check (123 is a prefix of 1234).
+  it("never settles a successor run's check", () => {
     expect(
       decideCancelledAction([successorOpen], "https://github.com/o/r/actions/runs/123").kind,
     ).toBe("noop");
@@ -216,11 +213,7 @@ describe("checkRun", () => {
   });
 
   it("makes no write call when a cancelled run owns no check", async () => {
-    const calls: Array<{ args: readonly string[] }> = [];
-    const ghApi = (args: readonly string[]): Promise<string> => {
-      calls.push({ args });
-      return Promise.resolve(""); // jq emits no lines when there are no check-runs
-    };
+    const { calls, ghApi } = capture();
     await checkRun(
       { repo: "o/r", headSha: "abc", intent: "cancelled", runUrl: "https://g/actions/runs/123" },
       ghApi,
@@ -259,16 +252,21 @@ describe("check ownership — the run id GitHub keeps", () => {
     expect(decideCheckAction([done(8, null, "failure")], "neutral", runUrl).kind).toBe("create");
   });
 
-  it("owns no check by a check-page URL or another app's bare numeric external_id", () => {
-    const page: ExistingCheck = {
-      id: 123,
-      status: "in_progress",
-      conclusion: null,
-      detailsUrl: "https://github.com/o/r/runs/123",
-    };
+  it("owns no check by another app's bare numeric external_id", () => {
     const otherApp: ExistingCheck = { ...open(9, null), externalId: "123" };
-    expect(decideCancelledAction([page, otherApp], runUrl).kind).toBe("noop");
+    expect(decideCancelledAction([otherApp], runUrl).kind).toBe("noop");
     expect(supersededOnHead([{ ...otherApp, externalId: "999" }], runUrl)).toBe(false);
+  });
+
+  it("lets a failure and a cancellation replace each other on the run's own check", () => {
+    expect(decideCancelledAction([done(1, "123", "failure")], runUrl)).toMatchObject({
+      kind: "patch",
+      conclusion: "cancelled",
+    });
+    expect(decideCheckAction([done(1, "123", "cancelled")], "failure", runUrl)).toMatchObject({
+      kind: "patch",
+      conclusion: "failure",
+    });
   });
 
   it.skipIf(spawnSync("jq", ["--version"]).status !== 0)(
@@ -291,6 +289,14 @@ describe("check ownership — the run id GitHub keeps", () => {
             details_url: "https://github.com/o/r/runs/8",
             external_id: "",
           },
+          {
+            // A run URL in details_url is never read: only the stamped external_id owns a check.
+            id: 9,
+            status: "in_progress",
+            conclusion: null,
+            details_url: "https://github.com/o/r/actions/runs/123",
+            external_id: "",
+          },
         ],
       });
       const checks = execFileSync("jq", ["-c", CHECK_JQ], { input: raw, encoding: "utf-8" })
@@ -305,6 +311,9 @@ describe("check ownership — the run id GitHub keeps", () => {
     const { calls, ghApi } = capture();
     await checkRun({ repo: "o/r", headSha: "abc", intent: "in_progress", runUrl }, ghApi);
     expect(calls[0]?.args[0]).toContain("filter=all");
+    expect(calls[0]?.args[0]).toContain("per_page=100");
+    expect(calls[0]?.args).toEqual(expect.arrayContaining(["--jq", CHECK_JQ]));
+    expect(calls[0]?.args).not.toContain("--paginate");
     const post = calls.find((c) => c.args.includes("POST"));
     expect(JSON.parse(post?.stdin ?? "{}")).toMatchObject({ external_id: externalIdFor("123") });
   });

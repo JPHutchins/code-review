@@ -10,7 +10,8 @@
 // created), so a same-SHA supersede — where a newer run's announce has already opened its own
 // in-progress check — never settles the wrong run's check. Not details_url: GitHub replaces the one a
 // GitHub Actions token sends with the check's own page. A failure and a cancellation may replace each
-// other on a run's own check — both settle a run that did not post; neither replaces a completed one.
+// other on a run's own check — both settle a run whose review did not confirm a post; neither replaces
+// a completed one.
 
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -29,7 +30,6 @@ export interface ExistingCheck {
   readonly id: number;
   readonly status: string;
   readonly conclusion: string | null;
-  readonly detailsUrl: string | null;
   readonly externalId?: string | null;
 }
 
@@ -71,8 +71,7 @@ const checkRunId = (check: ExistingCheck): string | null =>
     ? (/^\d+$/.exec(check.externalId.slice(EXTERNAL_ID_PREFIX.length))?.[0] ?? null)
     : null;
 
-// The check THIS run's announce created. Matching the whole run id (not a prefix) keeps a successor
-// whose run id has this one as a numeric prefix from being matched.
+// The check THIS run's announce created.
 const ownedCheck = (checks: readonly ExistingCheck[], runUrl: string): ExistingCheck | null => {
   const runId = runIdFromUrl(runUrl);
   if (runId === null) return null;
@@ -133,7 +132,7 @@ export const decideCancelledAction = (
 };
 
 export const CHECK_JQ =
-  ".check_runs[] | {id: .id, status: .status, conclusion: .conclusion, detailsUrl: .details_url, externalId: .external_id}";
+  ".check_runs[] | {id: .id, status: .status, conclusion: .conclusion, externalId: .external_id}";
 
 export const fetchChecks = async (
   repo: string,
@@ -143,7 +142,8 @@ export const fetchChecks = async (
   parseJsonl(
     await ghApi([
       // filter=all: the default (latest) lists only the newest check per name, hiding this run's own
-      // check once a newer run opened one. One page of 100: a head carries a check per review run.
+      // check once a newer run opened one. One page: the newest 100 checks of this name on the head
+      // (a check per review run); a head reviewed more than 100 times settles only its newest runs.
       `repos/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_RUN_NAME)}&filter=all&per_page=100`,
       "--jq",
       CHECK_JQ,
@@ -189,7 +189,10 @@ export const supersededOnHead = (checks: readonly ExistingCheck[], runUrl: strin
   const runId = runIdFromUrl(runUrl);
   return (
     runId !== null &&
-    checks.some((c) => ((id) => id !== null && Number(id) > Number(runId))(checkRunId(c)))
+    checks.some((c) => {
+      const id = checkRunId(c);
+      return id !== null && Number(id) > Number(runId);
+    })
   );
 };
 

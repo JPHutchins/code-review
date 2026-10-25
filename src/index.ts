@@ -2035,7 +2035,7 @@ const checkRunCmd = defineCommand({
     "run-url": {
       type: "string",
       description:
-        "Workflow run URL the check-run's details link to (also the ownership key for `cancelled`)",
+        "Workflow run URL the check-run's output links to; its run id is stamped into the check's external_id, the key every settlement matches its own check by",
       required: true,
     },
   },

@@ -11,7 +11,7 @@
 // in-progress check — never settles the wrong run's check. Not details_url: GitHub replaces the one a
 // GitHub Actions token sends with the check's own page. A failure and a cancellation may replace each
 // other on a run's own check — both settle a run whose review did not confirm a post; neither replaces
-// a completed one.
+// the conclusion a completed review settled.
 
 import type { GhApi } from "./gh.js";
 import { runGhApi } from "./gh.js";
@@ -53,9 +53,10 @@ export type CheckAction =
 
 const settled = new Set(["success", "neutral", "skipped"]);
 
-// The run id in a workflow run URL (`.../actions/runs/<run_id>`). null when the URL doesn't carry one.
+// The run id in a workflow run URL (`.../actions/runs/<run_id>`, or a job or attempt page under it).
+// null when the URL doesn't carry one.
 export const runIdFromUrl = (runUrl: string): string | null => {
-  const m = /\/actions\/runs\/(\d+)\/?$/.exec(runUrl);
+  const m = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(runUrl);
   return m?.[1] ?? null;
 };
 
@@ -142,8 +143,9 @@ export const fetchChecks = async (
   parseJsonl(
     await ghApi([
       // filter=all: the default (latest) lists only the newest check per name, hiding this run's own
-      // check once a newer run opened one. One page: the newest 100 checks of this name on the head
-      // (a check per review run); a head reviewed more than 100 times settles only its newest runs.
+      // check once a newer run opened one. One page: the newest 100 checks of this name on the head, as
+      // GitHub lists them newest first (a check per review run); a head reviewed more than 100 times
+      // settles only its newest runs.
       `repos/${repo}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(CHECK_RUN_NAME)}&filter=all&per_page=100`,
       "--jq",
       CHECK_JQ,

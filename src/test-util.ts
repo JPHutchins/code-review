@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { vi } from "vitest";
 import { runCommand } from "citty";
 import { main } from "./index.js";
+import { externalIdFor, type ExistingCheck } from "./checkrun.js";
 
 export const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -112,3 +113,21 @@ export const asPermissionSet = (declared: unknown): PermissionSet => {
     ),
   );
 };
+
+/** A check as CHECK_JQ projects GitHub's record: the run lives in the external_id this project stamps. */
+export const openCheck = (id: number, runId: string | null): ExistingCheck => ({
+  id,
+  status: "in_progress",
+  conclusion: null,
+  externalId: runId === null ? null : externalIdFor(runId),
+});
+
+export const doneCheck = (id: number, runId: string | null, conclusion: string): ExistingCheck => ({
+  ...openCheck(id, runId),
+  status: "completed",
+  conclusion,
+});
+
+/** The listing's output: one CHECK_JQ line per check. */
+export const checkLines = (...checks: readonly ExistingCheck[]): string =>
+  checks.map((check) => JSON.stringify(check)).join("\n");

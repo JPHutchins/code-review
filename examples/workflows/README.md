@@ -31,7 +31,7 @@ gets the fast "mechanic" that proposes minimal fixes from the failing-job logs.
   run on the same branch) gets an informational "superseded — no action needed" sticky
   (`report-incomplete --cancelled`), *not* the failure reading — a superseded run is not an operational
   failure ([#139](../../../issues/139)) — and settles the check this run's announce created to
-  `cancelled` (every settlement is ownership-matched by details_url, so a superseding run's live check
+  `cancelled` (every settlement is ownership-matched by the run id in its external_id, so a superseding run's live check
   is never touched); a legitimate **skip** just finalizes the check `neutral` so it never hangs
   `in_progress`.
 

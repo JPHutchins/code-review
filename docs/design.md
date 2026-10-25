@@ -233,8 +233,11 @@ this doc.
   `finalize` job now distinguishes `cancelled` from `failure`: a cancelled (superseded) run posts an
   informational "superseded — no action needed" sticky (`report-incomplete --cancelled`), never the
   failure reading, and it settles the check this run's announce created to `cancelled`. Every check
-  settlement (neutral, failure, cancelled) is ownership-matched by the check's details_url, which the
-  announce stamps with this run's URL — so a superseding run's live check on the same head is never
+  settlement (neutral, failure, cancelled) is ownership-matched by the run id the announce stamps
+  into the check's external_id (`code-review:run:<id>`) — GitHub replaces the details_url a GitHub
+  Actions token sends with the check's own page, so that field cannot carry it — and the lookup lists
+  the newest 100 checks of that name on the head (`filter=all`, one page; the default `latest` would
+  hide every run's check but the newest), so a superseding run's live check on the same head is never
   touched by another run's settlement. Each run owns its own check (announce always opens a fresh one,
   idempotently per run), so ownership is unambiguous across all three writers. The wording is soft about
   *why* it was cancelled — `result == 'cancelled'`

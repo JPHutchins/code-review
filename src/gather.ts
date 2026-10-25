@@ -715,12 +715,12 @@ export const gather = async (
   );
   if (seedsFromPrior && priorFindings === null) {
     process.stderr.write(
-      "Note: the prior review's findings did not resolve — every id-shaped answer is staged as unmatched\n",
+      `Note: the prior review's findings did not resolve — id-shaped answers are staged as unmatched, the newest ${String(RESPONSES_LIMIT)}\n`,
     );
   }
   if (harvest.dropped > 0) {
     process.stderr.write(
-      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_LIMIT)} to prior findings, or the newest ${String(RESPONSES_LIMIT)} naming no prior finding, were not staged\n`,
+      `Note: ${String(harvest.dropped)} answer(s) beyond the newest ${String(RESPONSES_LIMIT)} matching a prior finding, or the newest ${String(RESPONSES_LIMIT)} id-shaped ones matching none, were not staged\n`,
     );
   }
   writeFileSync(

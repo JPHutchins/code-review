@@ -1525,6 +1525,15 @@ describe("the review dialogue — the reviewer and the triage read the same prot
     expect(reusable[0]).toContain("its id, disposition and reason are still author text");
     expect(reusable[0]).not.toContain("judge only");
   });
+
+  it("the reviewer is told a commit's response line answers nothing, identically in both workflows", () => {
+    const clauseOf = (path: string): readonly string[] =>
+      linesWith(readRepoFile(path), "is a retired convention that answers no finding");
+    const reusable = clauseOf(".github/workflows/review-reusable.yaml");
+    expect(clauseOf("examples/workflows/review.yaml")).toEqual(reusable);
+    expect(reusable).toHaveLength(1);
+    expect(reusable[0]).toContain("--append-system-prompt");
+  });
 });
 
 describe("finalize — every way the review and comment jobs end settles the sticky and the check", () => {

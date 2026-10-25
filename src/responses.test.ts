@@ -629,11 +629,12 @@ describe("rulings — a maintainer's word on a contested id", () => {
   it("is taught, like every answer, as landing in a PR comment, never a commit", () => {
     expect(RESPONSE_TEACHING).toContain(`\`${RESPONSE_FORM}\` lines in a PR comment`);
     expect(RULING_TEACHING).toContain("in a PR comment");
-    expect(
-      [RESPONSE_TEACHING, RULING_TEACHING].filter((teaching) =>
-        /commit line|lines in a commit/.test(teaching),
-      ),
-    ).toEqual([]);
+    const commitSentences = (teaching: string): readonly string[] =>
+      teaching.split(/(?<=\.)\s+/).filter((sentence) => /commit/i.test(sentence));
+    expect(commitSentences(RESPONSE_TEACHING)).toEqual([
+      "A commit message never answers a finding.",
+    ]);
+    expect(commitSentences(RULING_TEACHING)).toEqual([]);
   });
 
   it("counts only a maintainer's ruling on a contested id; any other reads as unstated", () => {

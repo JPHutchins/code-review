@@ -182,7 +182,9 @@ jobs:
           # ubuntu-latest (24.04+) restricts the unprivileged user namespaces bubblewrap needs via
           # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
           # bwrap the capability (passwordless sudo on hosted runners).
-          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" != "0" ]; then
+          userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)"
+          echo "kernel.apparmor_restrict_unprivileged_userns=$userns_restriction on ${ImageOS:-an unknown image} ${ImageVersion:-}"
+          if [ "$userns_restriction" != "0" ]; then
             printf '%s\n' \
               'abi <abi/4.0>,' \
               'include <tunables/global>' \
@@ -191,6 +193,7 @@ jobs:
               '  include if exists <local/bwrap>' \
               '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
             sudo systemctl reload apparmor || sudo service apparmor reload || true
+            echo "granted bwrap user namespaces through /etc/apparmor.d/bwrap"
           fi
 
           # Assert the capability the jail depends on is usable, diagnosed HERE at setup rather than as

@@ -637,8 +637,21 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
   const opening = (path: string): readonly string[] =>
     between(linesOf(path, JAIL), "NIX_DEVSHELL=false", 'echo "nix_devshell=$NIX_DEVSHELL"');
 
-  it("both copies carry the same token scrub, Nix gate, opening, canary, token search and store release", () => {
+  it("both copies carry the same setup and grant, token scrub, Nix gate, opening, canary, token search and store release", () => {
     const [reusable, example] = copies;
+    expect(
+      between(
+        linesOf(example, JAIL),
+        "sudo apt-get update",
+        '|| { echo "::error::bwrap cannot create',
+      ),
+    ).toEqual(
+      between(
+        linesOf(reusable, JAIL),
+        "sudo apt-get update",
+        '|| { echo "::error::bwrap cannot create',
+      ),
+    );
     expect(between(linesOf(example, JAIL), "for conf in /etc/nix/nix.conf", "fi")).toEqual(
       between(linesOf(reusable, JAIL), "for conf in /etc/nix/nix.conf", "fi"),
     );

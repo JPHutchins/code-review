@@ -108,8 +108,8 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       (github.event.workflow_run.conclusion == 'success' ||
        github.event.workflow_run.conclusion == 'failure')
-    # Not ubuntu-latest, which moves to a new image without notice: Ubuntu 26.04 refuses the nested
-    # user namespace the jail's seccomp helper creates, so the jail canary fails closed there.
+    # Not ubuntu-latest, which moves to a new image without notice: a 26.04 build it serves refuses
+    # the nested user namespace the jail's seccomp helper creates, so the canary fails closed there.
     runs-on: ubuntu-24.04
     # A newer CI run for the same PR branch cancels an in-flight review + its comment — bounds spend.
     concurrency:
@@ -184,9 +184,9 @@ jobs:
           # Ubuntu 24.04+ restricts the unprivileged user namespaces bubblewrap needs via
           # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
           # bwrap the capability (passwordless sudo on hosted runners).
-          userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)"
-          echo "kernel.apparmor_restrict_unprivileged_userns=$userns_restriction on ${ImageOS:-an unknown image} ${ImageVersion:-}, kernel $(uname -r), $(bwrap --version)"
-          if [ "$userns_restriction" != "0" ]; then
+          userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" || userns_restriction=""
+          echo "kernel.apparmor_restrict_unprivileged_userns=${userns_restriction:-unreadable} on ${ImageOS:-an unknown image} ${ImageVersion:-}, kernel $(uname -r), $(bwrap --version)"
+          if [ "${userns_restriction:-0}" != "0" ]; then
             printf '%s\n' \
               'abi <abi/4.0>,' \
               'include <tunables/global>' \
@@ -195,7 +195,7 @@ jobs:
               '  include if exists <local/bwrap>' \
               '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
             sudo systemctl reload apparmor || sudo service apparmor reload || true
-            echo "granted bwrap user namespaces through /etc/apparmor.d/bwrap"
+            echo "wrote the bwrap user-namespace grant to /etc/apparmor.d/bwrap and asked AppArmor to reload"
           fi
 
           # Assert the capability the jail depends on is usable, diagnosed HERE at setup rather than as

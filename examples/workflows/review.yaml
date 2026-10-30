@@ -185,7 +185,7 @@ jobs:
           # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
           # bwrap the capability (passwordless sudo on hosted runners).
           userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)"
-          echo "kernel.apparmor_restrict_unprivileged_userns=$userns_restriction on ${ImageOS:-an unknown image} ${ImageVersion:-}"
+          echo "kernel.apparmor_restrict_unprivileged_userns=$userns_restriction on ${ImageOS:-an unknown image} ${ImageVersion:-}, kernel $(uname -r), $(bwrap --version)"
           if [ "$userns_restriction" != "0" ]; then
             printf '%s\n' \
               'abi <abi/4.0>,' \

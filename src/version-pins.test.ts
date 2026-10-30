@@ -377,7 +377,7 @@ describe("the jailed review's runner", () => {
   // still a jail.
   const setsUpTheJail = (job: Job): boolean =>
     (job.steps ?? []).some(
-      (step) => step.id === "jail" || step.run?.includes("@anthropic-ai/sandbox-runtime@") === true,
+      (step) => step.id === "jail" || step.run?.includes("@anthropic-ai/sandbox-runtime") === true,
     );
 
   it(`every job that sets up the jail runs on ${JAIL_RUNNER}`, () => {

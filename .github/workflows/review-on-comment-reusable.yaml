@@ -117,7 +117,7 @@ on:
         required: false
         default: false
       install_command:
-        description: Shell command to install project deps; forwarded to review-reusable.yaml, whose own input documents what it is for and which image it runs on. Empty ⇒ no shell install. Trusted consumer config.
+        description: Shell command to install project deps; forwarded to review-reusable.yaml, whose own input documents what it is for and advises naming the image's interpreter rather than a version. Empty ⇒ no shell install. Trusted consumer config.
         type: string
         required: false
         default: ""

@@ -119,6 +119,26 @@ const HARDEN_RUNNER = {
   release: "v2.22.2",
 } as const;
 
+type Step = {
+  id?: unknown;
+  name?: string;
+  uses?: string;
+  if?: unknown;
+  "continue-on-error"?: unknown;
+  with?: Record<string, unknown>;
+  run?: string;
+};
+type Job = {
+  uses?: unknown;
+  permissions?: unknown;
+  "runs-on"?: unknown;
+  "timeout-minutes"?: unknown;
+  steps?: readonly Step[];
+};
+type Workflow = { on?: unknown; permissions?: unknown; jobs: Record<string, Job> };
+
+const workflowOf = (path: string): Workflow => parseYaml(readRepoFile(path)) as Workflow;
+
 describe("harden-runner pins", () => {
   // A `uses:` line (mapping or list form) — a commented-out pin runs nothing, so it is not a site.
   const HARDEN_RUNNER_RE = /^\s*(?:-\s*)?uses:\s*([\w.-]+)\/harden-runner@(\S+)(?:\s+#\s*(\S+))?/i;
@@ -158,22 +178,6 @@ describe("harden-runner pins", () => {
   // The review workflows are the product; this repo's own ci and release jobs are not in scope.
   const reviewWorkflows = (): readonly string[] =>
     allWorkflows().filter((path) => /\/review[\w-]*\.ya?ml$/.test(path));
-
-  type Step = {
-    name?: string;
-    uses?: string;
-    if?: unknown;
-    "continue-on-error"?: unknown;
-    with?: Record<string, unknown>;
-    run?: string;
-  };
-  type Job = {
-    uses?: unknown;
-    permissions?: unknown;
-    "timeout-minutes"?: unknown;
-    steps?: readonly Step[];
-  };
-  type Workflow = { on?: unknown; permissions?: unknown; jobs: Record<string, Job> };
 
   // A value as GitHub evaluates it, in any spelling: `${{ always() }}`, `${{always()}}` and
   // `always()` alike.
@@ -215,7 +219,6 @@ describe("harden-runner pins", () => {
 
   const REVIEW_WORKFLOW_REF =
     /^(?:\.\/|JPHutchins\/code-review\/)\.github\/workflows\/review[\w-]*\.ya?ml(?:@\S+)?$/i;
-  const workflowOf = (path: string): Workflow => parseYaml(readRepoFile(path)) as Workflow;
   const isLock = (step: Step): boolean =>
     step.uses?.toLowerCase().startsWith("step-security/harden-runner@") === true;
   const isCanary = (step: Step): boolean => (step.name ?? "").startsWith("Egress canary");
@@ -370,16 +373,16 @@ describe("harden-runner pins", () => {
 const JAIL_RUNNER = "ubuntu-24.04";
 
 describe("the jailed review's runner", () => {
-  type JailJob = { "runs-on"?: unknown; steps?: readonly { id?: unknown }[] };
-
-  const setsUpTheJail = (job: JailJob): boolean =>
-    (job.steps ?? []).some((step) => step.id === "jail");
+  // Known by what the step is or by what it does: a jail renamed or installed under another id is
+  // still a jail.
+  const setsUpTheJail = (job: Job): boolean =>
+    (job.steps ?? []).some(
+      (step) => step.id === "jail" || step.run?.includes("@anthropic-ai/sandbox-runtime@") === true,
+    );
 
   it(`every job that sets up the jail runs on ${JAIL_RUNNER}`, () => {
     const sites = allWorkflows().flatMap((path) =>
-      Object.entries(
-        (parseYaml(readRepoFile(path)) as { jobs?: Record<string, JailJob> }).jobs ?? {},
-      ).flatMap(([name, job]) =>
+      Object.entries(workflowOf(path).jobs).flatMap(([name, job]) =>
         setsUpTheJail(job) ? [{ path, name, runsOn: job["runs-on"] }] : [],
       ),
     );

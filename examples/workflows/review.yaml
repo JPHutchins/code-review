@@ -158,7 +158,9 @@ jobs:
       - run: npm install -g @anthropic-ai/claude-code@2.1.197 "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Install project deps so the agent can validate findings — swap this for your ecosystem's
-      # install command (this repo is npm-based; a Python project would `uv sync`, etc.).
+      # install command (this repo is npm-based; a Python project would `uv sync --python python3`,
+      # etc.). It runs on this job's runner label, whose image GitHub updates in place: name the
+      # image's interpreter, not a version.
       # - run: npm ci
 
       # The untrusted review agent (Phase 1 triage + Phase 2 review) runs inside a per-process network
@@ -185,7 +187,7 @@ jobs:
           # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
           # bwrap the capability (passwordless sudo on hosted runners).
           userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" || userns_restriction=""
-          echo "kernel.apparmor_restrict_unprivileged_userns=${userns_restriction:-unreadable} on ${ImageOS:-an unknown image} ${ImageVersion:-}, kernel $(uname -r), $(bwrap --version)"
+          echo "kernel.apparmor_restrict_unprivileged_userns=${userns_restriction:-unreadable} on ${ImageOS:-an unknown image}${ImageVersion:+ $ImageVersion}, kernel $(uname -r), $(bwrap --version)"
           if [ "${userns_restriction:-0}" != "0" ]; then
             printf '%s\n' \
               'abi <abi/4.0>,' \

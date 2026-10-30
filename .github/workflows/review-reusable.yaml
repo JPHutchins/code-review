@@ -127,7 +127,7 @@ on:
         required: false
         default: false
       install_command:
-        description: Shell command to install project deps so the agent can run project code — the CI-fix pass reproducing a failure and checking a fix as its budget allows, the full review probing a suspected bug. Empty ⇒ no shell install. Runs on the review job's pinned image, which a release may move, so name its interpreter (`--python python3`) rather than a version. Trusted consumer config.
+        description: Shell command to install project deps so the agent can run project code — the CI-fix pass reproducing a failure and checking a fix as its budget allows, the full review probing a suspected bug. Empty ⇒ no shell install. Runs on the review job's runner label, whose image GitHub updates in place and a release may change, so name its interpreter (`--python python3`) rather than a version. Trusted consumer config.
         type: string
         required: false
         default: ""
@@ -459,7 +459,7 @@ jobs:
           # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
           # bwrap the capability (passwordless sudo on hosted runners).
           userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" || userns_restriction=""
-          echo "kernel.apparmor_restrict_unprivileged_userns=${userns_restriction:-unreadable} on ${ImageOS:-an unknown image} ${ImageVersion:-}, kernel $(uname -r), $(bwrap --version)"
+          echo "kernel.apparmor_restrict_unprivileged_userns=${userns_restriction:-unreadable} on ${ImageOS:-an unknown image}${ImageVersion:+ $ImageVersion}, kernel $(uname -r), $(bwrap --version)"
           if [ "${userns_restriction:-0}" != "0" ]; then
             printf '%s\n' \
               'abi <abi/4.0>,' \

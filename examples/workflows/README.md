@@ -159,9 +159,10 @@ toolchain or cache action:
   needs (`cache.nixos.org`, package registries, the Actions cache backend, …) need no allowlist entry.
   Only a host the jailed agents themselves must reach goes in `extra_endpoints`.
 
-Both hooks run on the review job's own runner image, which the reusable workflow pins (a caller cannot
-set a called workflow's `runs-on`) and a release may move. Name the image's interpreter, not a
-version (`UV_PYTHON_DOWNLOADS=never uv sync --python python3`), so a move cannot strand the install.
+Both hooks run on the review job's own runner, whose label the reusable workflow pins (a caller cannot
+set a called workflow's `runs-on`). GitHub updates the image under a label in place, and a release
+may change the label. Name the image's interpreter, not a version
+(`UV_PYTHON_DOWNLOADS=never uv sync --python python3`), so neither can strand the install.
 
 ## Comment / ChatOps trigger (on-demand reviews)
 

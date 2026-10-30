@@ -619,9 +619,15 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
   };
   const linesOf = (workflowPath: string, name: string): readonly string[] =>
     (stepNamed(workflowPath, name).run ?? "").split("\n").map((line) => line.trim());
+  // Untrimmed, without comment lines: the indentation is the shell's structure (what sits inside the
+  // grant's `if`), while prose may differ between the copies.
+  const structureOf = (workflowPath: string, name: string): readonly string[] =>
+    (stepNamed(workflowPath, name).run ?? "")
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"));
   const between = (lines: readonly string[], from: string, to: string): readonly string[] => {
-    const start = lines.findIndex((line) => line.startsWith(from));
-    const end = lines.findIndex((line, index) => index > start && line.startsWith(to));
+    const start = lines.findIndex((line) => line.trimStart().startsWith(from));
+    const end = lines.findIndex((line, index) => index > start && line.trimStart().startsWith(to));
     expect(start, from).toBeGreaterThanOrEqual(0);
     expect(end, to).toBeGreaterThan(start);
     return lines.slice(start, end + 1);
@@ -641,14 +647,14 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
     const [reusable, example] = copies;
     expect(
       between(
-        linesOf(example, JAIL),
-        "sudo apt-get update",
+        structureOf(example, JAIL),
+        "set -euo pipefail",
         '|| { echo "::error::bwrap cannot create',
       ),
     ).toEqual(
       between(
-        linesOf(reusable, JAIL),
-        "sudo apt-get update",
+        structureOf(reusable, JAIL),
+        "set -euo pipefail",
         '|| { echo "::error::bwrap cannot create',
       ),
     );

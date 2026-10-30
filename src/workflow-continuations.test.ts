@@ -619,15 +619,9 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
   };
   const linesOf = (workflowPath: string, name: string): readonly string[] =>
     (stepNamed(workflowPath, name).run ?? "").split("\n").map((line) => line.trim());
-  // Untrimmed, without comment lines: the indentation is the shell's structure (what sits inside the
-  // grant's `if`), while prose may differ between the copies.
-  const structureOf = (workflowPath: string, name: string): readonly string[] =>
-    (stepNamed(workflowPath, name).run ?? "")
-      .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#"));
   const between = (lines: readonly string[], from: string, to: string): readonly string[] => {
-    const start = lines.findIndex((line) => line.trimStart().startsWith(from));
-    const end = lines.findIndex((line, index) => index > start && line.trimStart().startsWith(to));
+    const start = lines.findIndex((line) => line.startsWith(from));
+    const end = lines.findIndex((line, index) => index > start && line.startsWith(to));
     expect(start, from).toBeGreaterThanOrEqual(0);
     expect(end, to).toBeGreaterThan(start);
     return lines.slice(start, end + 1);
@@ -642,31 +636,21 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
   ] as const;
   const opening = (path: string): readonly string[] =>
     between(linesOf(path, JAIL), "NIX_DEVSHELL=false", 'echo "nix_devshell=$NIX_DEVSHELL"');
+  // The jail step is mirrored whole up to `code-review sandbox-config`, whose arguments are where the
+  // copies' inputs differ. Untrimmed, so the shell's structure (what sits inside each `if`) is compared;
+  // without comment lines, whose prose may differ.
+  const sharedSetup = (path: string): readonly string[] => {
+    const lines = (stepNamed(path, JAIL).run ?? "")
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"));
+    const end = lines.findIndex((line) => line.startsWith("code-review sandbox-config"));
+    expect(end, path).toBeGreaterThan(0);
+    return lines.slice(0, end);
+  };
 
-  it("both copies carry the same setup and grant, token scrub, Nix gate, opening, canary, token search and store release", () => {
+  it("both copies carry the same jail setup up to its allowlist, opening, canary, token search and store release", () => {
     const [reusable, example] = copies;
-    expect(
-      between(
-        structureOf(example, JAIL),
-        "set -euo pipefail",
-        '|| { echo "::error::bwrap cannot create',
-      ),
-    ).toEqual(
-      between(
-        structureOf(reusable, JAIL),
-        "set -euo pipefail",
-        '|| { echo "::error::bwrap cannot create',
-      ),
-    );
-    expect(between(linesOf(example, JAIL), "for conf in /etc/nix/nix.conf", "fi")).toEqual(
-      between(linesOf(reusable, JAIL), "for conf in /etc/nix/nix.conf", "fi"),
-    );
-    expect(between(linesOf(example, JAIL), "SOCKET_ARGS=()", "fi")).toEqual(
-      between(linesOf(reusable, JAIL), "SOCKET_ARGS=()", "fi"),
-    );
-    expect(between(linesOf(example, JAIL), "if [ -f /nix/receipt.json ]", "fi")).toEqual(
-      between(linesOf(reusable, JAIL), "if [ -f /nix/receipt.json ]", "fi"),
-    );
+    expect(sharedSetup(example)).toEqual(sharedSetup(reusable));
     for (const path of copies) {
       expect(stepNamed(path, JAIL).env?.["JOB_TOKEN"]).toBe("${{ github.token }}");
       // sudo logs its command line where the runner user can read it: the token never rides in it.

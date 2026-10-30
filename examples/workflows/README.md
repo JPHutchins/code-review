@@ -131,10 +131,10 @@ full review probing a suspected bug (it never re-runs what a passed CI already r
 run's logs) — there are two opt-in hooks; the shared workflow deliberately owns **no** ecosystem
 toolchain or cache action:
 
-- **Simple, shell-installable deps** — set `install_command` (a shell string): `npm ci`, `uv sync`,
-  `pip install -e .`, even a `pipx install uv && uv sync`. It runs before the agents' network jail, on
-  the runner's own network, so its registries need no allowlist entry; only a host the jailed agents
-  themselves must reach goes in `extra_endpoints`.
+- **Simple, shell-installable deps** — set `install_command` (a shell string): `npm ci`,
+  `uv sync --python python3`, `pip install -e .`, even a `pipx install uv && uv sync --python python3`.
+  It runs before the agents' network jail, on the runner's own network, so its registries need no
+  allowlist entry; only a host the jailed agents themselves must reach goes in `extra_endpoints`.
 - **Anything needing `uses:` steps** (a toolchain installer, a store cache) — commit your own composite
   at **`.github/actions/code-review-setup`** and set `use_setup_action: true`. The reusable workflow
   invokes it (resolved against *your* checked-out repo), so your toolchain + cache live in **your**

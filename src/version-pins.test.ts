@@ -386,12 +386,12 @@ describe("the jailed review's runner", () => {
         setsUpTheJail(job) ? [{ path, name, runsOn: job["runs-on"] }] : [],
       ),
     );
-    expect(sites.map((site) => site.path)).toEqual(
-      expect.arrayContaining([
-        ".github/workflows/review-reusable.yaml",
-        "examples/workflows/review.yaml",
-      ]),
-    );
+    // Exactly these sites: adding, renaming or losing a jail is a deliberate edit here, never a
+    // detection outcome.
+    expect(sites.map((site) => `${site.path} → ${site.name}`)).toEqual([
+      ".github/workflows/review-reusable.yaml → review",
+      "examples/workflows/review.yaml → review",
+    ]);
     expect(
       sites
         .filter((site) => site.runsOn !== JAIL_RUNNER)

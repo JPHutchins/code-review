@@ -363,3 +363,38 @@ describe("harden-runner pins", () => {
     expect(jobs.filter((entry) => entry.problem !== null)).toEqual([]);
   });
 });
+
+// ubuntu-latest moves to a new image without notice, and the jail's seccomp helper needs a runner
+// whose AppArmor policy lets it create a nested user namespace: every job that sets up the jail
+// names the one image its canary passes on.
+const JAIL_RUNNER = "ubuntu-24.04";
+
+describe("the jailed review's runner", () => {
+  type JailJob = { "runs-on"?: unknown; steps?: readonly { run?: unknown }[] };
+
+  const setsUpTheJail = (job: JailJob): boolean =>
+    (job.steps ?? []).some(
+      (step) => typeof step.run === "string" && step.run.includes("@anthropic-ai/sandbox-runtime@"),
+    );
+
+  it(`every job that sets up the jail runs on ${JAIL_RUNNER}`, () => {
+    const sites = allWorkflows().flatMap((path) =>
+      Object.entries(
+        (parseYaml(readRepoFile(path)) as { jobs?: Record<string, JailJob> }).jobs ?? {},
+      ).flatMap(([name, job]) =>
+        setsUpTheJail(job) ? [{ path, name, runsOn: job["runs-on"] }] : [],
+      ),
+    );
+    expect(sites.map((site) => site.path)).toEqual(
+      expect.arrayContaining([
+        ".github/workflows/review-reusable.yaml",
+        "examples/workflows/review.yaml",
+      ]),
+    );
+    expect(
+      sites
+        .filter((site) => site.runsOn !== JAIL_RUNNER)
+        .map((site) => `${site.path} → ${site.name}: runs-on ${String(site.runsOn)}`),
+    ).toEqual([]);
+  });
+});

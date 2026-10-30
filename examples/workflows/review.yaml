@@ -108,7 +108,9 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       (github.event.workflow_run.conclusion == 'success' ||
        github.event.workflow_run.conclusion == 'failure')
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest, which moves to a new image without notice: Ubuntu 26.04 refuses the nested
+    # user namespace the jail's seccomp helper creates, so the jail canary fails closed there.
+    runs-on: ubuntu-24.04
     # A newer CI run for the same PR branch cancels an in-flight review + its comment — bounds spend.
     concurrency:
       group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
@@ -179,7 +181,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
           npm install -g @anthropic-ai/sandbox-runtime@0.0.70
 
-          # ubuntu-latest (24.04+) restricts the unprivileged user namespaces bubblewrap needs via
+          # Ubuntu 24.04+ restricts the unprivileged user namespaces bubblewrap needs via
           # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
           # bwrap the capability (passwordless sudo on hosted runners).
           userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)"

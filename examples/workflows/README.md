@@ -131,10 +131,10 @@ full review probing a suspected bug (it never re-runs what a passed CI already r
 run's logs) — there are two opt-in hooks; the shared workflow deliberately owns **no** ecosystem
 toolchain or cache action:
 
-- **Simple, shell-installable deps** — set `install_command` (a shell string): `npm ci`, `uv sync`,
-  `pip install -e .`, even a `pipx install uv && uv sync`. It runs before the agents' network jail, on
-  the runner's own network, so its registries need no allowlist entry; only a host the jailed agents
-  themselves must reach goes in `extra_endpoints`.
+- **Simple, shell-installable deps** — set `install_command` (a shell string): `npm ci`,
+  `uv sync --python python3`, `pip install -e .`, even a `pipx install uv && uv sync --python python3`.
+  It runs before the agents' network jail, on the runner's own network, so its registries need no
+  allowlist entry; only a host the jailed agents themselves must reach goes in `extra_endpoints`.
 - **Anything needing `uses:` steps** (a toolchain installer, a store cache) — commit your own composite
   at **`.github/actions/code-review-setup`** and set `use_setup_action: true`. The reusable workflow
   invokes it (resolved against *your* checked-out repo), so your toolchain + cache live in **your**
@@ -158,6 +158,15 @@ toolchain or cache action:
   The composite runs before the agents' network jail, on the runner's own network, so the hosts it
   needs (`cache.nixos.org`, package registries, the Actions cache backend, …) need no allowlist entry.
   Only a host the jailed agents themselves must reach goes in `extra_endpoints`.
+
+Both hooks run on the review job's own runner, whose label the reusable workflow pins (a caller cannot
+set a called workflow's `runs-on`) to a GitHub-hosted image, so a self-hosted fleet cannot serve it.
+That label may differ from your CI's, so a failure that reproduces only on your CI's image cannot be
+reproduced there. GitHub updates the image under a label in place; a code-review release may change
+the label. Name the image's interpreter, not a version
+(`UV_PYTHON_DOWNLOADS=never uv sync --python python3`), so an image update cannot strand the install.
+A project whose `requires-python` the image's interpreter cannot satisfy must let uv download one
+instead (drop `UV_PYTHON_DOWNLOADS=never`).
 
 ## Comment / ChatOps trigger (on-demand reviews)
 

@@ -636,19 +636,24 @@ describe("a Nix project's daemon — the jail opens to it only after closing eve
   ] as const;
   const opening = (path: string): readonly string[] =>
     between(linesOf(path, JAIL), "NIX_DEVSHELL=false", 'echo "nix_devshell=$NIX_DEVSHELL"');
+  // The jail step is mirrored whole up to `code-review sandbox-config`, whose arguments are where the
+  // copies' inputs differ. Untrimmed, so the shell's structure (what sits inside each `if`) is compared;
+  // without comment lines, whose prose may differ.
+  const sharedSetup = (step: Step): readonly string[] => {
+    const lines = (step.run ?? "").split("\n").filter((line) => !line.trimStart().startsWith("#"));
+    const end = lines.findIndex((line) => line.startsWith("code-review sandbox-config"));
+    expect(end, step.name).toBeGreaterThan(0);
+    return lines.slice(0, end);
+  };
 
-  it("both copies carry the same token scrub, Nix gate, opening, canary, token search and store release", () => {
+  it("both copies carry the same jail setup up to its allowlist, opening, canary, token search and store release", () => {
     const [reusable, example] = copies;
-    expect(between(linesOf(example, JAIL), "for conf in /etc/nix/nix.conf", "fi")).toEqual(
-      between(linesOf(reusable, JAIL), "for conf in /etc/nix/nix.conf", "fi"),
-    );
-    expect(between(linesOf(example, JAIL), "SOCKET_ARGS=()", "fi")).toEqual(
-      between(linesOf(reusable, JAIL), "SOCKET_ARGS=()", "fi"),
-    );
-    expect(between(linesOf(example, JAIL), "if [ -f /nix/receipt.json ]", "fi")).toEqual(
-      between(linesOf(reusable, JAIL), "if [ -f /nix/receipt.json ]", "fi"),
-    );
+    expect(sharedSetup(stepNamed(example, JAIL))).toEqual(sharedSetup(stepNamed(reusable, JAIL)));
     for (const path of copies) {
+      expect(linesOf(path, JAIL)).toContain(
+        "timeout 30s bwrap --unshare-net --unshare-user --bind / / -- /bin/sh -c 'exit 0' \\",
+      );
+      expect(linesOf(path, JAIL)).toContain("--strict-host \\");
       expect(stepNamed(path, JAIL).env?.["JOB_TOKEN"]).toBe("${{ github.token }}");
       // sudo logs its command line where the runner user can read it: the token never rides in it.
       const sudoCommands = linesOf(path, JAIL)

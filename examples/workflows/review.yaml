@@ -108,7 +108,9 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       (github.event.workflow_run.conclusion == 'success' ||
        github.event.workflow_run.conclusion == 'failure')
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest, which moves to a new image without notice: a 26.04 build it serves refuses
+    # the nested user namespace the jail's seccomp helper creates, so the canary fails closed there.
+    runs-on: ubuntu-24.04
     # A newer CI run for the same PR branch cancels an in-flight review + its comment — bounds spend.
     concurrency:
       group: review-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
@@ -156,7 +158,9 @@ jobs:
       - run: npm install -g @anthropic-ai/claude-code@2.1.197 "@jphutchins/code-review@${CODE_REVIEW_VERSION}"
 
       # Install project deps so the agent can validate findings — swap this for your ecosystem's
-      # install command (this repo is npm-based; a Python project would `uv sync`, etc.).
+      # install command (this repo is npm-based; a Python project would `uv sync --python python3`,
+      # etc.). It runs on this job's runner label, whose image GitHub updates in place: name the
+      # image's interpreter, not a version.
       # - run: npm ci
 
       # The untrusted review agent (Phase 1 triage + Phase 2 review) runs inside a per-process network
@@ -179,10 +183,12 @@ jobs:
           sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
           npm install -g @anthropic-ai/sandbox-runtime@0.0.70
 
-          # ubuntu-latest (24.04+) restricts the unprivileged user namespaces bubblewrap needs via
+          # Ubuntu 24.04+ restricts the unprivileged user namespaces bubblewrap needs via
           # AppArmor; when restricted (sysctl != 0 — covers 1 today and any future 2/3), grant just
           # bwrap the capability (passwordless sudo on hosted runners).
-          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" != "0" ]; then
+          userns_restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" || userns_restriction=""
+          echo "kernel.apparmor_restrict_unprivileged_userns=${userns_restriction:-unreadable} on ${ImageOS:-an unknown image}${ImageVersion:+ $ImageVersion}, kernel $(uname -r), $(bwrap --version)"
+          if [ "${userns_restriction:-0}" != "0" ]; then
             printf '%s\n' \
               'abi <abi/4.0>,' \
               'include <tunables/global>' \
@@ -191,6 +197,7 @@ jobs:
               '  include if exists <local/bwrap>' \
               '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
             sudo systemctl reload apparmor || sudo service apparmor reload || true
+            echo "wrote the bwrap user-namespace grant to /etc/apparmor.d/bwrap and asked AppArmor to reload"
           fi
 
           # Assert the capability the jail depends on is usable, diagnosed HERE at setup rather than as

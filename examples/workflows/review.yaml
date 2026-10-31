@@ -160,7 +160,8 @@ jobs:
       # Install project deps so the agent can validate findings — swap this for your ecosystem's
       # install command (this repo is npm-based; a Python project would `uv sync --python python3`,
       # etc.). It runs on this job's runner label, whose image GitHub updates in place: name the
-      # image's interpreter, not a version.
+      # image's interpreter, not a version. A project whose `requires-python` that interpreter can't
+      # satisfy requests a version it allows (`uv sync --python <version>`) and lets uv download it.
       # - run: npm ci
 
       # The untrusted review agent (Phase 1 triage + Phase 2 review) runs inside a per-process network

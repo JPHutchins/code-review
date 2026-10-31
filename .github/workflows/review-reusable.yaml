@@ -127,7 +127,7 @@ on:
         required: false
         default: false
       install_command:
-        description: Shell command to install project deps so the agent can run project code — the CI-fix pass reproducing a failure and checking a fix as its budget allows, the full review probing a suspected bug. Empty ⇒ no shell install. Runs on the review job's runner label, whose image GitHub updates in place and whose label a code-review release may change, so name the image's interpreter (`--python python3`) rather than a version. Trusted consumer config.
+        description: Shell command to install project deps so the agent can run project code — the CI-fix pass reproducing a failure and checking a fix as its budget allows, the full review probing a suspected bug. Empty ⇒ no shell install. Runs on the review job's runner label, whose image GitHub updates in place and whose label a code-review release may change, so name the image's interpreter (`--python python3`) rather than a version. A project whose `requires-python` that interpreter cannot satisfy requests a version it allows and lets uv download it (`uv sync --python <version>` without `UV_PYTHON_DOWNLOADS=never`). Trusted consumer config.
         type: string
         required: false
         default: ""

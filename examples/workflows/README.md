@@ -132,7 +132,8 @@ run's logs) — there are two opt-in hooks; the shared workflow deliberately own
 toolchain or cache action:
 
 - **Simple, shell-installable deps** — set `install_command` (a shell string): `npm ci`,
-  `uv sync --python python3`, `pip install -e .`, even a `pipx install uv && uv sync --python python3`.
+  `uv sync --python python3`, `pip install -e .`, even a `pipx install uv && uv sync --python python3`
+  (which interpreter to name, below).
   It runs before the agents' network jail, on the runner's own network, so its registries need no
   allowlist entry; only a host the jailed agents themselves must reach goes in `extra_endpoints`.
 - **Anything needing `uses:` steps** (a toolchain installer, a store cache) — commit your own composite
@@ -160,14 +161,17 @@ toolchain or cache action:
   Only a host the jailed agents themselves must reach goes in `extra_endpoints`.
 
 Both hooks run on the review job's own runner, whose label the reusable workflow pins (a caller cannot
-set a called workflow's `runs-on`) to a GitHub-hosted image; a self-hosted runner carrying that label
-would serve the job on an image whose jail is unproven. That label may differ from your CI's, so a
-failure that reproduces only on your CI's image cannot be reproduced there. GitHub updates the image
-under a label in place; a code-review release may change the label. Name the image's interpreter, not
-a version (`UV_PYTHON_DOWNLOADS=never uv sync --python python3`), so an image update cannot strand the
-install. uv never downloads for an interpreter named that way, so a project whose `requires-python`
-the image's interpreter cannot satisfy requests a version and lets uv download it instead
-(`uv sync --python 3.13`, without `UV_PYTHON_DOWNLOADS=never`).
+set a called workflow's `runs-on`) to a GitHub-hosted image. A self-hosted runner carrying that label
+would serve the job on a persistent machine, while the job assumes a throwaway GitHub-hosted runner (its
+agents run with bypassed permissions on the runner's filesystem). That label may differ from your CI's,
+so a failure that reproduces only on your CI's image cannot be reproduced there. GitHub updates the
+image under a label in place; a code-review release may change the label. Name the image's interpreter,
+not a version (`UV_PYTHON_DOWNLOADS=never uv sync --python python3`), so an image update cannot strand
+the install by moving the interpreter out from under a pinned version. uv never downloads for an
+interpreter named that way, so a project whose `requires-python` the image's interpreter cannot satisfy
+requests a version that range allows and lets uv download it (`uv sync --python <version>`, without
+`UV_PYTHON_DOWNLOADS=never`, and with no `python-downloads = "never"` or
+`python-preference = "only-system"` in the project's uv settings).
 
 ## Comment / ChatOps trigger (on-demand reviews)
 

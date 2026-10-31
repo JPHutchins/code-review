@@ -160,13 +160,14 @@ toolchain or cache action:
   Only a host the jailed agents themselves must reach goes in `extra_endpoints`.
 
 Both hooks run on the review job's own runner, whose label the reusable workflow pins (a caller cannot
-set a called workflow's `runs-on`) to a GitHub-hosted image, so a self-hosted fleet cannot serve it.
-That label may differ from your CI's, so a failure that reproduces only on your CI's image cannot be
-reproduced there. GitHub updates the image under a label in place; a code-review release may change
-the label. Name the image's interpreter, not a version
-(`UV_PYTHON_DOWNLOADS=never uv sync --python python3`), so an image update cannot strand the install.
-A project whose `requires-python` the image's interpreter cannot satisfy must let uv download one
-instead (drop `UV_PYTHON_DOWNLOADS=never`).
+set a called workflow's `runs-on`) to a GitHub-hosted image; a self-hosted runner carrying that label
+would serve the job on an image whose jail is unproven. That label may differ from your CI's, so a
+failure that reproduces only on your CI's image cannot be reproduced there. GitHub updates the image
+under a label in place; a code-review release may change the label. Name the image's interpreter, not
+a version (`UV_PYTHON_DOWNLOADS=never uv sync --python python3`), so an image update cannot strand the
+install. uv never downloads for an interpreter named that way, so a project whose `requires-python`
+the image's interpreter cannot satisfy requests a version and lets uv download it instead
+(`uv sync --python 3.13`, without `UV_PYTHON_DOWNLOADS=never`).
 
 ## Comment / ChatOps trigger (on-demand reviews)
 
